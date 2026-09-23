@@ -80,7 +80,7 @@ research-bench examples/benchmark_suite.toml \
 
 ## Manifests and outcomes
 
-Every run writes a sanitized experiment manifest to `RESEARCH_BENCHMARK_OUTPUT` (default `benchmark_outputs/`), or to `--manifest-output`. It records the git commit and dirty flag, package versions, redacted policy snapshots, graph version, evidence version, acquisition backends and fetch version, the suite file's hash and sources, the selected case IDs, and each run's job and root-run IDs. It never contains raw prompts, answers, credentials, or local paths.
+Every run writes a sanitized experiment manifest to `RESEARCH_BENCHMARK_OUTPUT` (default `benchmark_outputs/`), or to `--manifest-output`. It records the git commit and dirty flag, with `tree_sha256` hashing any uncommitted changes and untracked files (ignored files such as `.env` are left out); package versions, extraction libraries included; redacted policy snapshots; the effective run configuration; `prompts_sha256`, a fingerprint of every agent's instructions and output schema; graph, evidence, and evaluator versions; acquisition backends and fetch version; the suite file's hash and each source's `dataset_sha256`; the selected case IDs; and each run's job and root-run IDs. It never contains raw prompts, answers, credentials, or local paths.
 
 A failed case does not stop the suite. Its run record gets `status = "failed"` and the exception type only, because provider error messages can carry response bodies; for the same reason the console report omits errors. The manifest's `status` is `completed` when every case succeeded, `completed_with_failures` when some failed, and `failed` when all failed or the suite itself errored or was cancelled, in which case `error` holds the exception type; `failed_cases` counts failures across policies. Interrupting a run (Ctrl-C) marks its unfinished cases `failed` with `CancelledError`. A succeeded run also records `review_reasons`, what it left unresolved, which is empty for a clean result, and, for a case with blocked URLs, `blocked_sources`: how many blocked sources its tools refused, fetched anyway, showed in search results, and saw cited. The manifest records counts only, never the blocked URLs. The CLI exits non-zero unless the status is `completed`.
 
@@ -97,7 +97,7 @@ Compare runs only when these match:
 - **Attachment mode.** Never merge normalized and multimodal results into one number.
 - **Evaluator version.** Scores are comparable only under one set of metric definitions; `evaluator_version` changes when one does.
 
-The manifest's `config_fingerprint` hashes policies, attachment mode, tool mode, repository mode, acquisition, evidence version, and evaluator version. It hashes the suite file, not the downloaded dataset bytes, so record a dataset checksum separately for reproducible comparisons. Two different uncommitted trees can share a commit and fingerprint; commit before named comparison runs.
+The manifest's `config_fingerprint` hashes policies, the run configuration, attachment, tool, and repository modes, acquisition, the prompt fingerprint, dataset hashes, and the evidence and evaluator versions, so editing a prompt, a limit, or a dataset changes it. Code identity is the commit plus `tree_sha256`: two different uncommitted trees on one commit get different hashes, but prefer committing before named comparison runs.
 
 ## Metrics
 

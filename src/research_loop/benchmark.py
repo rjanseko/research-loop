@@ -7,6 +7,7 @@ import json
 import re
 from collections import defaultdict
 from contextlib import AsyncExitStack
+from dataclasses import asdict
 from datetime import UTC, datetime
 from statistics import mean
 from pathlib import Path
@@ -29,6 +30,7 @@ from .quotes import find_urls
 from .schemas import ResearchConstraints, SourceRef, is_research_tool
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
+from .telemetry import jsonable
 from .tools import ResearchToolMode
 
 
@@ -195,7 +197,7 @@ async def _run_policy_case(
     loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
     loop = loop_class(
         get_policy(policy_name, model_overrides=settings.model_overrides if settings else None),
-        ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode, scholarly_cache_mode="off"),
+        _benchmark_config(attachment_mode),
         repository=repo,
         settings=settings,
     )
@@ -304,6 +306,12 @@ _MEASURES = ("total_claims", "unsupported_claims", "major_unsupported_claims", "
              "attachment_count", "attachment_tool_calls")
 
 
+def _benchmark_config(attachment_mode: AttachmentMode) -> ResearchConfig:
+    """The run configuration of every benchmark case: normalized tools, caches off."""
+    return ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode,
+                          scholarly_cache_mode="off")
+
+
 def _case_name(spec: BenchmarkCaseSpec) -> str:
     return f"{spec.benchmark_id}:{spec.case_id}"
 
@@ -372,6 +380,7 @@ async def run_benchmark(
         tool_mode=ResearchToolMode.NORMALIZED.value,
         repository_mode=repository_mode,
         evaluator_version=EVALUATOR_VERSION,
+        run_config=jsonable(asdict(_benchmark_config(attachment_mode))),
         model_overrides=settings.model_overrides,
     )
     manifest["summary"] = {}

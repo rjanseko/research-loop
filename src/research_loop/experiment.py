@@ -11,14 +11,21 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .acquisition import FETCH_VERSION
-from .benchmarks.manifest import load_manifest
+from .agents import prompt_fingerprint
+from .benchmarks.manifest import ADAPTERS, load_manifest
 from .benchmarks.models import BenchmarkCaseSpec
 from .graph import RESEARCH_GRAPH_VERSION
 from .policy import get_policy
 from .schemas import EVIDENCE_VERSION
 
 
-PACKAGE_NAMES = ("research-loop-v5", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg")
+PACKAGE_NAMES = (
+    "research-loop-v5", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg",
+    # Acquisition and extraction: they shape what the models read.
+    "httpx", "anyio", "ddgs", "trafilatura", "pypdf", "beautifulsoup4", "python-docx", "openpyxl", "pillow",
+)
+# Recorded in manifests. 3: adds tree_sha256, prompts_sha256, run_config, and dataset digests.
+MANIFEST_SCHEMA_VERSION = 3
 SENSITIVE_KEYS = ("secret", "password", "api_key", "credential", "dsn", "url", "path", "host")
 
 
@@ -45,21 +52,46 @@ def package_versions() -> dict[str, str | None]:
     return result
 
 
-def git_state() -> dict[str, Any]:
-    root = Path(__file__).resolve().parents[2]
+def git_state(root: Path | None = None) -> dict[str, Any]:
+    """The commit, whether the tree is dirty, and for a dirty tree a hash of every uncommitted change.
+
+    tree_sha256 covers tracked changes (`git diff HEAD`) and untracked files git does not ignore, so
+    two different uncommitted trees on one commit hash differently. Ignored files, such as .env and
+    benchmark outputs, are left out.
+    """
+    root = root or Path(__file__).resolve().parents[2]
+
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+
     try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
-        )
-        status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=False
-        )
+        commit, status = git("rev-parse", "HEAD"), git("status", "--porcelain")
     except OSError:
-        return {"commit": None, "dirty": None}
-    return {
-        "commit": commit.stdout.strip() if commit.returncode == 0 else None,
-        "dirty": bool(status.stdout) if status.returncode == 0 else None,
-    }
+        return {"commit": None, "dirty": None, "tree_sha256": None}
+    if commit.returncode or status.returncode:
+        return {"commit": None if commit.returncode else commit.stdout.decode().strip(),
+                "dirty": None if status.returncode else bool(status.stdout), "tree_sha256": None}
+    tree = None
+    if status.stdout:
+        digest = hashlib.sha256(git("diff", "HEAD", "--binary").stdout)
+        untracked = git("ls-files", "--others", "--exclude-standard", "-z").stdout.split(b"\0")
+        for name in sorted(filter(None, untracked)):
+            digest.update(b"\0" + name + b"\0")
+            path = root / name.decode(errors="surrogateescape")
+            if path.is_file():
+                digest.update(path.read_bytes())
+        tree = digest.hexdigest()
+    return {"commit": commit.stdout.decode().strip(), "dirty": bool(status.stdout), "tree_sha256": tree}
+
+
+def file_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def fingerprint(value: Any) -> str:
@@ -77,6 +109,7 @@ def build_manifest(
     tool_mode: str,
     repository_mode: str,
     evaluator_version: int,
+    run_config: dict[str, Any],
     model_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if suite_path.suffix.lower() == ".toml":
@@ -91,6 +124,7 @@ def build_manifest(
                 "levels": source.levels,
                 "languages": source.languages,
                 "indices": source.indices,
+                "dataset_sha256": file_sha256(ADAPTERS[source.kind].dataset_path(source, base_dir=suite_path.parent)),
             }
             for source in load_manifest(suite_path).sources
         ]
@@ -107,8 +141,12 @@ def build_manifest(
         "scholarly_cache_mode": "off",
         "fetch_version": FETCH_VERSION,
     }
+    prompts_sha256 = prompt_fingerprint()
     config_fingerprint = fingerprint({
         "policy_schema_version": 1,
+        "run_config": run_config,
+        "prompts_sha256": prompts_sha256,
+        "datasets": [source.get("dataset_sha256") for source in sources],
         "policies": policy_snapshots,
         "attachment_mode": attachment_mode,
         "tool_mode": tool_mode,
@@ -118,7 +156,7 @@ def build_manifest(
         "evaluator_version": evaluator_version,
     })
     return {
-        "schema_version": 2,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "experiment_id": str(uuid4()),
         "git": git_state(),
         "config_fingerprint": config_fingerprint,
@@ -126,6 +164,8 @@ def build_manifest(
         "acquisition": acquisition,
         "evidence_version": EVIDENCE_VERSION,
         "evaluator_version": evaluator_version,
+        "prompts_sha256": prompts_sha256,
+        "run_config": run_config,
         "python_version": platform.python_version(),
         "status": "running",
         "graph_version": RESEARCH_GRAPH_VERSION,

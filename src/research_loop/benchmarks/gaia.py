@@ -16,15 +16,23 @@ class GaiaAdapter(BenchmarkAdapter):
     Download the authorized snapshot yourself, then point the manifest at the local file/folder.
     """
 
+    @staticmethod
+    def _metadata_file(source: Path, split: str | None) -> Path:
+        """The metadata file in a snapshot folder, or `source` itself when it is a file."""
+        if not source.is_dir():
+            return source
+        candidates = []
+        if split:
+            candidates.extend([source / f"metadata.{split}.parquet", source / split / "metadata.parquet"])
+        candidates.extend([source / "metadata.parquet", source / "metadata.jsonl"])
+        return next((p for p in candidates if p.exists()), source)
+
+    def dataset_path(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> Path | None:
+        source = spec.resolved_path(base_dir)
+        return self._metadata_file(source, spec.split) if source else None
+
     def _rows(self, source: Path, split: str | None) -> list[dict[str, Any]]:
-        if source.is_dir():
-            candidates = []
-            if split:
-                candidates.extend(
-                    [source / f"metadata.{split}.parquet", source / split / "metadata.parquet"]
-                )
-            candidates.extend([source / "metadata.parquet", source / "metadata.jsonl"])
-            source = next((p for p in candidates if p.exists()), source)
+        source = self._metadata_file(source, split)
 
         if source.suffix == ".jsonl":
             return read_jsonl(source)

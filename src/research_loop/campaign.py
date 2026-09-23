@@ -7,7 +7,7 @@ import hashlib
 import json
 import tomllib
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,7 +18,8 @@ from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
 from .acquisition import FETCH_VERSION
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
-from .experiment import fingerprint, git_state, package_versions, safe_value, write_manifest
+from .agents import prompt_fingerprint
+from .experiment import MANIFEST_SCHEMA_VERSION, fingerprint, git_state, package_versions, safe_value, write_manifest
 from .ledger import EvidenceLedger
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
@@ -36,6 +37,7 @@ from .schemas import (
     VerificationReport,
 )
 from .settings import ResearchSettings
+from .telemetry import jsonable
 from .tools import ResearchToolMode
 
 
@@ -108,10 +110,12 @@ def _objective_sha256(campaign: dict[str, Any], question: dict[str, str]) -> str
 def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_snapshot: dict[str, Any],
                    fingerprint_extra: dict[str, Any], persist: bool) -> dict[str, Any]:
     spec_hash = _spec_sha256(path)
+    prompts_sha256 = prompt_fingerprint()
     return {
-        "schema_version": 2, "kind": kind, "campaign_id": campaign["id"], "experiment_id": str(uuid4()),
-        "campaign_spec_sha256": spec_hash,
-        "config_fingerprint": fingerprint({"spec": spec_hash, "policy": policy_snapshot, **fingerprint_extra}),
+        "schema_version": MANIFEST_SCHEMA_VERSION, "kind": kind, "campaign_id": campaign["id"],
+        "experiment_id": str(uuid4()), "campaign_spec_sha256": spec_hash, "prompts_sha256": prompts_sha256,
+        "config_fingerprint": fingerprint({"spec": spec_hash, "policy": policy_snapshot,
+                                           "prompts_sha256": prompts_sha256, **fingerprint_extra}),
         "git": git_state(), "graph_version": campaign["graph_version"],
         "policy": policy_snapshot, "packages": package_versions(), "persistent": persist,
         "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "status": "running",
@@ -261,11 +265,13 @@ async def run_campaign(
                    "scholar": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
                    "cache_mode": "record", "fetch_version": FETCH_VERSION}
     manifest = _manifest_base(campaign, path, kind="questions", policy_snapshot=policy_snapshot,
-                              fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION},
+                              fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION,
+                                                 "run_config": jsonable(asdict(run_config))},
                               persist=persist)
     manifest |= {
         "evidence_version": EVIDENCE_VERSION,
         "tool_mode": "normalized", "acquisition": acquisition, "cache_mode": "record",
+        "run_config": jsonable(asdict(run_config)),
         "run_limits": {
             "max_parallel_scouts": run_config.max_parallel_scouts,
             "max_deep_dives_per_round": run_config.max_deep_dives_per_round,

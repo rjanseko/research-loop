@@ -39,7 +39,7 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     manifest = json.loads(output.read_text())
     assert manifest["status"] == "completed"
     assert manifest["graph_version"] == "research-graph-v1"
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["experiment_id"]
     assert len(manifest["config_fingerprint"]) == 64
     assert manifest["git"]["commit"]

@@ -13,11 +13,13 @@ OFFICIAL_TASKS_URL = (
 
 
 class DeepResearchBench2Adapter(BenchmarkAdapter):
+    def dataset_path(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> Path:
+        return spec.resolved_path(base_dir) or ResearchSettings.from_env().benchmark_cache / "drb2_tasks_and_rubrics.jsonl"
+
     def load(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> list[BenchmarkCaseSpec]:
-        source = spec.resolved_path(base_dir)
-        if source is None:
-            source = ResearchSettings.from_env().benchmark_cache / "drb2_tasks_and_rubrics.jsonl"
-            source = download_if_missing(OFFICIAL_TASKS_URL, source)
+        source = self.dataset_path(spec, base_dir=base_dir)
+        if not spec.path:
+            download_if_missing(OFFICIAL_TASKS_URL, source)
 
         cases: list[BenchmarkCaseSpec] = []
         for row in read_jsonl(source):

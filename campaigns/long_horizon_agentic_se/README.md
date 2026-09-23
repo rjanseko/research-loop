@@ -33,7 +33,7 @@ A completed question writes `outputs.question_files` to `<output>/<question id>/
 | `bibliography.json` | Distinct sources; preprint and publication records stay separate |
 | `run.json` | Written last: job ID, cost, config fingerprint, a hash of the rendered objective, and `review_reasons`. Its presence marks the question completed |
 
-Each invocation also writes its own manifest under `<output>/manifests/`, with the redacted policy, run limits, acquisition, evidence version, git state, and each question's outcome and cost.
+Each invocation also writes its own manifest under `<output>/manifests/`, with the redacted policy, run limits and full run configuration, the prompt fingerprint, acquisition, evidence version, git state including a hash of uncommitted changes, and each question's outcome and cost.
 
 Completed is not the same as sound. Each completed question records `review_reasons`: what it left unresolved, such as unsupported or major verifier findings or a verifier still asking for research. The CLI lists completed questions that need review, and campaign synthesis records each input's reasons in its manifest. The pilot's p01, for example, completed with 11 of 45 verifier checks unsupported, 5 rated major, and the verifier still asking for research.
 

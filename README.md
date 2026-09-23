@@ -58,7 +58,7 @@ Each concern has one owner:
 
 ## What a result depends on
 
-Results are compared only when these match. Manifests record them together with the git commit, a dirty-tree flag, package versions, and a configuration fingerprint.
+Results are compared only when these match. Manifests record them together with the git commit and a hash of any uncommitted changes, package versions, the effective run configuration, a fingerprint of every agent's instructions and output schema, dataset hashes, and a configuration fingerprint over all of it.
 
 | Dimension | Current | Defined in |
 |---|---|---|

@@ -13,6 +13,10 @@ class BenchmarkAdapter(ABC):
     def load(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> list[BenchmarkCaseSpec]:
         raise NotImplementedError
 
+    def dataset_path(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> Path | None:
+        """The local file the cases come from, hashed into the experiment manifest."""
+        return spec.resolved_path(base_dir)
+
 
 def deterministic_select(
     cases: Iterable[BenchmarkCaseSpec],

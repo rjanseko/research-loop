@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -43,22 +45,17 @@ class LedgerRefs:
     question_ids: frozenset[str]
 
 
-planner_agent = Agent(
-    output_type=ResearchPlan,
-    deps_type=PlanLimits,
-    instructions=(
+# What each agent is told. Kept in one table so prompt_fingerprint() can record it: manifests change
+# whenever an instruction or an output schema does.
+INSTRUCTIONS: dict[str, str] = {
+    "planner": (
         "Decompose the user's objective into independent, evidence-seeking research questions. "
         "Prefer questions answerable from primary or authoritative sources. Questions should be "
         "non-overlapping enough to parallelize. Inspect attachment metadata/tools when local materials are supplied, "
         "and mark image-dependent questions as requires_multimodal. Treat any supplied constraints as hard requirements. "
         "Do not answer the questions yourself."
     ),
-)
-
-scout_agent = Agent(
-    output_type=ResearchResult,
-    deps_type=ResearchAssignment,
-    instructions=(
+    "scout": (
         "Investigate exactly one research question. Use web and scholar tools when evidence is needed. "
         "Return atomic claims with source-backed evidence. Prefer primary, official, paper, or "
         "documentation sources over summaries. Summarize each piece of evidence briefly in `excerpt`; when a "
@@ -71,21 +68,11 @@ scout_agent = Agent(
         "Treat supplied constraints as hard requirements: never open or rely on blocked URLs, and never search for "
         "benchmark answer datasets or evaluator artifacts. Do not write a polished report."
     ),
-)
-
-gap_agent = Agent(
-    output_type=GapAnalysis,
-    deps_type=LedgerRefs,
-    instructions=(
+    "gap_analyst": (
         "Inspect the evidence ledger for missing evidence, contradictions, weak sourcing, stale evidence, "
         "and low confidence. Escalate only gaps that could materially change the final answer."
     ),
-)
-
-deep_dive_agent = Agent(
-    output_type=ResearchResult,
-    deps_type=ResearchAssignment,
-    instructions=(
+    "deep_dive": (
         "Resolve one difficult research gap. Use web and scholar tools efficiently. Preserve preprint versus published status and scholarly IDs. Favor primary "
         "or authoritative sources, look for disconfirming evidence, and explicitly state when the evidence "
         "remains inconclusive. Copy exact wording into evidence `quote` only from text a tool returned; quotes "
@@ -94,24 +81,14 @@ deep_dive_agent = Agent(
         "requirements: never open or rely on blocked URLs, and never search for benchmark answer datasets or "
         "evaluator artifacts. Return structured evidence, not prose polish."
     ),
-)
-
-synthesizer_agent = Agent(
-    output_type=FinalReport,
-    deps_type=LedgerRefs,
-    instructions=(
+    "synthesizer": (
         "Synthesize only from the supplied evidence ledger. In `claims`, attach every material factual "
         "statement to the exact evidence-ledger claim IDs that support it. Evidence marked "
         "`quote_check: not_found` quotes wording, and evidence marked `source_check: not_found` cites a source, "
         "that no research tool returned; do not rest a statement on such evidence alone. Preserve uncertainty and disagreement. Respect supplied benchmark/source constraints "
         "and do not cite blocked sources. Do not invent missing evidence or citations."
     ),
-)
-
-verifier_agent = Agent(
-    output_type=VerificationReport,
-    deps_type=LedgerRefs,
-    instructions=(
+    "verifier": (
         "Audit the proposed report claim-by-claim against the supplied evidence. Flag unsupported, "
         "overstated, stale, mismatched, or contradictory statements. Verify that cited claim IDs exist "
         "and really support each statement. Evidence marked `quote_check: not_found` quotes wording, and "
@@ -120,6 +97,58 @@ verifier_agent = Agent(
         "follow-up gap must reference an existing question_id from the supplied evidence ledger. Treat supplied constraints as hard requirements and flag any "
         "evidence that appears to violate them. Recommend more research only when the issue is material."
     ),
+    "campaign_synthesizer": (
+        "Synthesize a research campaign from the supplied per-question reports and evidence only; do not "
+        "research further or use outside knowledge. Cite evidence with the exact claim refs supplied (for "
+        "example 'q01/q1/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
+        "from multiple independent tier A-C sources), preliminary (single source, preprint-only, or narrow "
+        "evaluation), vendor_claims (results reported by a vendor without independent replication), "
+        "contradictory (cite both sides), or unknowns. Keep preprint, submission, and published status "
+        "distinct. Evidence with `quote_check: not_found` or `source_check: not_found` quotes wording or cites a "
+        "source that no research tool returned; it cannot make a finding well_supported. Each question's `verification.findings` lists statements its "
+        "verifier could not support or rated major: never present those as well_supported; carry material ones into preliminary, "
+        "contradictory, or unknowns. In the benchmark catalog, record versions, scope, evaluation method, "
+        "and limits only as the evidence states them. Hypotheses must be falsifiable, cite supporting and "
+        "any contradicting refs, and propose an experiment with an expected metric and an estimated cost. "
+        "Prefer fewer, well-grounded entries over broad coverage."
+    ),
+}
+
+
+planner_agent = Agent(
+    output_type=ResearchPlan,
+    deps_type=PlanLimits,
+    instructions=INSTRUCTIONS["planner"],
+)
+
+scout_agent = Agent(
+    output_type=ResearchResult,
+    deps_type=ResearchAssignment,
+    instructions=INSTRUCTIONS["scout"],
+)
+
+gap_agent = Agent(
+    output_type=GapAnalysis,
+    deps_type=LedgerRefs,
+    instructions=INSTRUCTIONS["gap_analyst"],
+)
+
+deep_dive_agent = Agent(
+    output_type=ResearchResult,
+    deps_type=ResearchAssignment,
+    instructions=INSTRUCTIONS["deep_dive"],
+)
+
+synthesizer_agent = Agent(
+    output_type=FinalReport,
+    deps_type=LedgerRefs,
+    instructions=INSTRUCTIONS["synthesizer"],
+)
+
+verifier_agent = Agent(
+    output_type=VerificationReport,
+    deps_type=LedgerRefs,
+    instructions=INSTRUCTIONS["verifier"],
 )
 
 
@@ -203,21 +232,7 @@ campaign_synthesizer_agent = Agent(
     deps_type=frozenset[str],
     # Two citation-fix retries; campaign synthesis.max_requests bounds the total.
     retries={"output": 2},
-    instructions=(
-        "Synthesize a research campaign from the supplied per-question reports and evidence only; do not "
-        "research further or use outside knowledge. Cite evidence with the exact claim refs supplied (for "
-        "example 'q01/q1/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
-        "from multiple independent tier A-C sources), preliminary (single source, preprint-only, or narrow "
-        "evaluation), vendor_claims (results reported by a vendor without independent replication), "
-        "contradictory (cite both sides), or unknowns. Keep preprint, submission, and published status "
-        "distinct. Evidence with `quote_check: not_found` or `source_check: not_found` quotes wording or cites a "
-        "source that no research tool returned; it cannot make a finding well_supported. Each question's `verification.findings` lists statements its "
-        "verifier could not support or rated major: never present those as well_supported; carry material ones into preliminary, "
-        "contradictory, or unknowns. In the benchmark catalog, record versions, scope, evaluation method, "
-        "and limits only as the evidence states them. Hypotheses must be falsifiable, cite supporting and "
-        "any contradicting refs, and propose an experiment with an expected metric and an estimated cost. "
-        "Prefer fewer, well-grounded entries over broad coverage."
-    ),
+    instructions=INSTRUCTIONS["campaign_synthesizer"],
 )
 
 
@@ -227,3 +242,21 @@ def _campaign_refs_exist(ctx: RunContext[frozenset[str]], output: CampaignSynthe
     if problems:
         raise ModelRetry("Fix these citation problems using only supplied claim refs: " + "; ".join(problems[:25]))
     return output
+
+
+AGENTS: dict[str, Agent] = {
+    "planner": planner_agent,
+    "scout": scout_agent,
+    "gap_analyst": gap_agent,
+    "deep_dive": deep_dive_agent,
+    "synthesizer": synthesizer_agent,
+    "verifier": verifier_agent,
+    "campaign_synthesizer": campaign_synthesizer_agent,
+}
+
+
+def prompt_fingerprint() -> str:
+    """SHA-256 of every agent's instructions and output schema: what models are told and must return."""
+    spec = {role: {"instructions": INSTRUCTIONS[role], "output_schema": agent.output_type.model_json_schema()}
+            for role, agent in AGENTS.items()}
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()

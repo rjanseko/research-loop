@@ -30,11 +30,13 @@ class BrowseCompAdapter(BenchmarkAdapter):
     contamination. We cache only the encrypted CSV and decrypt individual rows in memory.
     """
 
+    def dataset_path(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> Path:
+        return spec.resolved_path(base_dir) or ResearchSettings.from_env().benchmark_cache / "browse_comp_test_set.csv"
+
     def load(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> list[BenchmarkCaseSpec]:
-        source = spec.resolved_path(base_dir)
-        if source is None:
-            source = ResearchSettings.from_env().benchmark_cache / "browse_comp_test_set.csv"
-            source = download_if_missing(OFFICIAL_URL, source)
+        source = self.dataset_path(spec, base_dir=base_dir)
+        if not spec.path:
+            download_if_missing(OFFICIAL_URL, source)
 
         rows = read_csv(source)
         cases: list[BenchmarkCaseSpec] = []
