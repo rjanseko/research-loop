@@ -40,7 +40,7 @@ research-diagnose                             # local readiness; safe without AP
 research-bench examples/benchmark_cases.json  # synthetic run of the real graph
 ```
 
-None of these commands cost anything. The `synthetic` policy runs the real graph and repository with scripted role outputs, which checks the wiring without provider calls. Postgres, provider keys, and the first paid run are covered in [docs/setup.md](docs/setup.md).
+None of these commands cost anything. CI runs `ruff check .` and `pytest -q` on every push and pull request. The `synthetic` policy runs the real graph and repository with scripted role outputs, which checks the wiring without provider calls. Postgres, provider keys, and the first paid run are covered in [docs/setup.md](docs/setup.md).
 
 ## A run, step by step
 

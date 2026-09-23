@@ -20,9 +20,9 @@ from .schemas import EVIDENCE_VERSION
 
 
 PACKAGE_NAMES = (
-    "research-loop-v5", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg",
+    "research-loop", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg",
     # Acquisition and extraction: they shape what the models read.
-    "httpx", "anyio", "ddgs", "trafilatura", "pypdf", "beautifulsoup4", "python-docx", "openpyxl", "pillow",
+    "httpx", "anyio", "ddgs", "trafilatura", "pypdf", "fonttools", "beautifulsoup4", "python-docx", "openpyxl", "pillow",
 )
 # Recorded in manifests. 3: adds tree_sha256, prompts_sha256, run_config, and dataset digests.
 MANIFEST_SCHEMA_VERSION = 3

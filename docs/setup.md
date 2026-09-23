@@ -20,15 +20,15 @@ Python 3.12 or later is required. The package tracks the PydanticAI and Pydantic
 
 | Extra | Adds |
 |---|---|
-| `scholarly` | httpx, Trafilatura, and pypdf for web and scholarly full-text extraction |
-| `attachments` | pypdf, python-docx, openpyxl, Beautiful Soup, and Pillow for local attachments |
+| `scholarly` | httpx, Trafilatura, pypdf, and fontTools for web and scholarly full-text extraction |
+| `attachments` | pypdf, fontTools, python-docx, openpyxl, Beautiful Soup, and Pillow for local attachments |
 | `postgres` | psycopg with its connection pool |
 | `eval` | Pydantic Evals, which `research-bench` needs |
 | `benchmark` | pandas and pyarrow for Parquet datasets such as GAIA |
 | `observability` | Logfire |
 | `test` | pytest, pytest-asyncio, and reportlab |
 
-The test suite runs offline. `tests/conftest.py` refuses model-provider requests and fails any test that resolves or connects to a non-loopback host.
+The test suite runs offline, and GitHub Actions runs `ruff check .` and `pytest -q` on every push to `master` and every pull request (`.github/workflows/ci.yml`). `tests/conftest.py` refuses model-provider requests and fails any test that resolves or connects to a non-loopback host.
 
 ## Configuration
 
