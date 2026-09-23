@@ -15,14 +15,15 @@ import httpx
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
-from .db import migration_files, migration_status
+from .db import pending_migrations
 from .policy import ModelRoute, get_policy
 from .schemas import ResearchRole
 from .observability import configure_logfire
 from .settings import PROVIDER_KEY_ENV, ResearchSettings
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
-from .scholar import AcquisitionCache, ScholarClient, build_scholar_toolset
+from .acquisition import AcquisitionCache
+from .scholar import ScholarClient, build_scholar_toolset
 from .graph import get_research_graph
 
 
@@ -50,10 +51,7 @@ def _writable_probe(path: Path) -> None:
 
 
 def _database_probe(dsn: str) -> list[str]:
-    import psycopg
-
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as conn:
-        return [migration.name for migration, state in migration_status(conn, migration_files()) if state != "applied"]
+    return pending_migrations(dsn, connect_timeout=3)
 
 
 def _model_profile(model_id: str) -> dict[str, Any]:

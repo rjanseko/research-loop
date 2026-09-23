@@ -206,26 +206,22 @@ def _synthetic_policy() -> ModelPolicy:
     return ModelPolicy("synthetic", {role: route for role in ResearchRole}, planner_question_range=(1, 1))
 
 
-POLICY_PRESETS: dict[str, ModelPolicy] = {
-    "quality": _quality_policy(),
-    "breadth": _breadth_policy(),
-    "glm-heavy": _glm_heavy_policy(),
-    "synthetic": _synthetic_policy(),
+_POLICY_FACTORIES = {
+    "quality": _quality_policy,
+    "breadth": _breadth_policy,
+    "glm-heavy": _glm_heavy_policy,
+    "synthetic": _synthetic_policy,
 }
+# Built at import from the environment at that time; get_policy() builds fresh routes.
+POLICY_PRESETS: dict[str, ModelPolicy] = {name: factory() for name, factory in _POLICY_FACTORIES.items()}
 
 
 def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -> ModelPolicy:
     """Build fresh routes, optionally applying validated settings overrides."""
-    factories = {
-        "quality": _quality_policy,
-        "breadth": _breadth_policy,
-        "glm-heavy": _glm_heavy_policy,
-        "synthetic": _synthetic_policy,
-    }
     try:
-        policy = factories[name]()
+        policy = _POLICY_FACTORIES[name]()
     except KeyError as exc:
-        raise ValueError(f"unknown policy {name!r}; choose from {sorted(factories)}") from exc
+        raise ValueError(f"unknown policy {name!r}; choose from {sorted(_POLICY_FACTORIES)}") from exc
     if not model_overrides or name == "synthetic":
         return policy
 

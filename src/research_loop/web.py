@@ -9,16 +9,16 @@ from typing import Any
 import httpx
 from pydantic_ai import FunctionToolset, Tool
 
-from .scholar import (
+from .acquisition import (
     MAX_FETCH_CHARS,
     AcquisitionCache,
     CacheMode,
     FetchMemo,
-    _bounded_public_get,
-    _public_url,
-    _wait_rate_slot,
+    bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    public_url,
+    wait_rate_slot,
 )
 
 # Decoded HTML bytes read per page; some leaderboard pages embed a few MB of data.
@@ -37,7 +37,7 @@ def resilient_duckduckgo_tool(*, retry_delay: float = 2.0) -> Tool:
     async def duckduckgo_search(query: str) -> Any:
         error = "unknown"
         for attempt in range(2):
-            await _wait_rate_slot("duckduckgo")
+            await wait_rate_slot("duckduckgo")
             try:
                 return await inner.function(query=query)
             except Exception as exc:  # the search client raises its own types on rate limits and drops
@@ -69,7 +69,7 @@ class WebAcquisition:
             return {"url": url, "error": "CacheMiss", "cache_hit": False}
         document = self.memo.get("web", url)
         if document is None:
-            if not await _public_url(url):
+            if not await public_url(url):
                 return {"url": url, "error": "UnsafeURL"}
             try:
                 document = await self._extract(url)
@@ -92,10 +92,10 @@ class WebAcquisition:
     async def _extract(self, url: str) -> dict[str, Any]:
         """Download a public HTML page and extract its full main text."""
         if self.client:
-            response = await _bounded_public_get(self.client, url, _MAX_PAGE_BYTES)
+            response = await bounded_public_get(self.client, url, _MAX_PAGE_BYTES)
         else:
             async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-                response = await _bounded_public_get(client, url, _MAX_PAGE_BYTES)
+                response = await bounded_public_get(client, url, _MAX_PAGE_BYTES)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
         if media not in ("text/html", "application/xhtml+xml"):

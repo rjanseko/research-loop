@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -13,6 +15,7 @@ from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
+from .acquisition import AcquisitionCache, FetchMemo
 from .agents import (
     deep_dive_agent,
     gap_agent,
@@ -32,7 +35,7 @@ from .ledger import EvidenceLedger
 from .policy import ModelPolicy, ModelRoute
 from .quotes import check_quotes, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
-from .scholar import AcquisitionCache, FetchMemo, ScholarClient, build_scholar_toolset
+from .scholar import ScholarClient, build_scholar_toolset
 from .settings import ResearchSettings
 from .schemas import (
     FinalReport,
@@ -142,13 +145,94 @@ class AsyncResearchLoop:
         self.settings = ResearchSettings.from_env()
         self.config = config or ResearchConfig(scholarly_cache_mode=self.settings.scholarly_cache_mode)
         self.repository: ResearchRepository = repository or NullResearchRepository()
-        # Exposed to the graph orchestrator so agent definitions remain centralized here.
-        self._planner_agent = planner_agent
-        self._gap_agent = gap_agent
         # Per-job USD spend; None once any billed call could not be priced.
         self._job_spend: dict[UUID, Decimal | None] = {}
         # Per-job fetched documents, shared by the job's agents and dropped when it ends.
         self._fetch_memos: dict[UUID, FetchMemo] = {}
+
+    async def _create_job(
+        self,
+        objective: str,
+        constraints: ResearchConstraints,
+        *,
+        session_id: UUID | None,
+        root_run_id: UUID | None,
+        kind: str,
+        graph_version: str | None = None,
+    ) -> UUID:
+        """Persist a research job with its effective configuration; no local paths or file contents."""
+        return await self.repository.create_job(
+            session_id=session_id or uuid4(),
+            root_run_id=root_run_id or uuid4(),
+            objective=objective,
+            policy_name=self.policy.name,
+            config={
+                "orchestrator": {"kind": kind, "graph_version": graph_version},
+                "loop": jsonable(asdict(self.config)),
+                "policy": self.policy.snapshot(),
+                "constraints": {
+                    "blocked_urls": constraints.blocked_urls,
+                    "benchmark_id": constraints.benchmark_id,
+                    "benchmark_case_id": constraints.benchmark_case_id,
+                    "benchmark_suite": constraints.benchmark_suite,
+                    "notes": constraints.notes,
+                    "attachment_count": len(constraints.attachment_paths),
+                },
+            },
+        )
+
+    @asynccontextmanager
+    async def _job_scope(self, job_id: UUID) -> AsyncIterator[None]:
+        """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises."""
+        self._job_spend[job_id] = Decimal(0)
+        self._fetch_memos[job_id] = FetchMemo()
+        try:
+            yield
+        except Exception as exc:
+            await self.repository.finish_job(
+                job_id,
+                status="failed",
+                final_report=None,
+                verification=None,
+                error=error_snapshot(exc),
+            )
+            raise
+        finally:
+            self._job_spend.pop(job_id, None)
+            self._fetch_memos.pop(job_id, None)
+
+    async def _load_attachments(
+        self, job_id: UUID, constraints: ResearchConstraints
+    ) -> AttachmentCorpus | None:
+        if not constraints.attachment_paths:
+            return None
+        attachments = AttachmentCorpus.from_paths(
+            constraints.attachment_paths,
+            limits=self.config.attachment_limits,
+            strict=self.config.attachment_strict,
+        )
+        await self.repository.save_attachments(job_id, attachments.manifest())
+        return attachments
+
+    async def _finish(
+        self,
+        job_id: UUID,
+        plan: ResearchPlan,
+        report: FinalReport,
+        verification: VerificationReport,
+        ledger: EvidenceLedger,
+        attachments: AttachmentCorpus | None,
+    ) -> ResearchOutcome:
+        await self.repository.finish_job(
+            job_id,
+            status="succeeded",
+            final_report=report.model_dump(mode="json"),
+            verification=verification.model_dump(mode="json"),
+        )
+        return ResearchOutcome(
+            job_id, plan, report, verification, ledger, attachments,
+            cost_usd=self._job_spend.get(job_id),
+        )
 
     @staticmethod
     def _limits(route: ModelRoute, remaining_budget: float | None = None) -> UsageLimits:
@@ -377,6 +461,37 @@ class AsyncResearchLoop:
         except (JobBudgetExceeded, UsageLimitExceeded):
             return _budget_exhausted_result(question)
 
+    async def _plan(
+        self,
+        job_id: UUID,
+        objective: str,
+        constraints: ResearchConstraints,
+        attachments: AttachmentCorpus | None,
+    ) -> ResearchPlan:
+        qmin, qmax = self.policy.planner_question_range
+        plan: ResearchPlan = await self._run_agent(
+            job_id=job_id,
+            agent=planner_agent,
+            role=ResearchRole.PLANNER,
+            route=self.policy.for_role(ResearchRole.PLANNER),
+            prompt=json.dumps(
+                {
+                    "objective": objective,
+                    "constraints": self._constraints_payload(constraints, attachments),
+                    "planning_guidance": (
+                        f"Aim for {qmin}-{qmax} non-overlapping research questions when the objective "
+                        "is broad enough. Use fewer when additional questions would be artificial or redundant."
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            attachment_corpus=attachments,
+            attachment_tools=bool(attachments),
+            multimodal_inputs=bool(attachments),
+        )
+        await self.repository.save_plan(job_id, plan.model_dump(mode="json"))
+        return plan
+
     async def _run_scout(
         self,
         job_id: UUID,
@@ -445,6 +560,36 @@ class AsyncResearchLoop:
                 attachment_tools=bool(attachments),
                 multimodal_inputs=question.requires_multimodal,
             )
+
+    async def _analyze_gaps(
+        self,
+        job_id: UUID,
+        objective: str,
+        plan: ResearchPlan,
+        ledger: EvidenceLedger,
+        constraints: ResearchConstraints,
+        attachments: AttachmentCorpus | None,
+    ) -> tuple[list[Gap], UUID | None]:
+        """The analyst's gaps plus low-confidence ones, at most one per question, and the analyst's task ID."""
+        task_ids: list[UUID] = []
+        analysis: GapAnalysis = await self._run_agent(
+            job_id=job_id,
+            agent=gap_agent,
+            role=ResearchRole.GAP_ANALYST,
+            route=self.policy.for_role(ResearchRole.GAP_ANALYST),
+            prompt=json.dumps(
+                {
+                    "objective": objective,
+                    "plan": plan.model_dump(mode="json"),
+                    "results": [r.model_dump(mode="json") for r in ledger.all()],
+                    "constraints": self._constraints_payload(constraints, attachments),
+                },
+                ensure_ascii=False,
+            ),
+            task_ids=task_ids,
+        )
+        gaps = self._dedupe_gaps(analysis.gaps + self._confidence_gaps(plan, ledger))
+        return gaps, (task_ids[0] if task_ids else None)
 
     async def _synthesize(
         self,
@@ -606,9 +751,7 @@ class AsyncResearchLoop:
                 **(config or {}),
             },
         )
-        self._job_spend[job_id] = Decimal(0)
-        self._fetch_memos[job_id] = FetchMemo()
-        try:
+        async with self._job_scope(job_id):
             output = await self._run_agent(
                 job_id=job_id, agent=agent, role=role, route=route, prompt=prompt, deps=deps
             )
@@ -619,18 +762,6 @@ class AsyncResearchLoop:
                 verification=None,
             )
             return AgentJobOutcome(job_id, output, cost_usd=self._job_spend.get(job_id))
-        except Exception as exc:
-            await self.repository.finish_job(
-                job_id,
-                status="failed",
-                final_report=None,
-                verification=None,
-                error=error_snapshot(exc),
-            )
-            raise
-        finally:
-            self._job_spend.pop(job_id, None)
-            self._fetch_memos.pop(job_id, None)
 
     async def run(
         self,
@@ -640,66 +771,13 @@ class AsyncResearchLoop:
         root_run_id: UUID | None = None,
         constraints: ResearchConstraints | None = None,
     ) -> ResearchOutcome:
-        session_id = session_id or uuid4()
-        root_run_id = root_run_id or uuid4()
         constraints = constraints or ResearchConstraints()
-
-        job_id = await self.repository.create_job(
-            session_id=session_id,
-            root_run_id=root_run_id,
-            objective=objective,
-            policy_name=self.policy.name,
-            config={
-                "orchestrator": {"kind": "async-legacy", "graph_version": None},
-                "loop": jsonable(asdict(self.config)),
-                "policy": self.policy.snapshot(),
-                "constraints": {
-                    "blocked_urls": constraints.blocked_urls,
-                    "benchmark_id": constraints.benchmark_id,
-                    "benchmark_case_id": constraints.benchmark_case_id,
-                    "benchmark_suite": constraints.benchmark_suite,
-                    "notes": constraints.notes,
-                    "attachment_count": len(constraints.attachment_paths),
-                },
-            },
+        job_id = await self._create_job(
+            objective, constraints, session_id=session_id, root_run_id=root_run_id, kind="async-legacy"
         )
-
-        self._job_spend[job_id] = Decimal(0)
-        self._fetch_memos[job_id] = FetchMemo()
-        try:
-            attachments = None
-            if constraints.attachment_paths:
-                attachments = AttachmentCorpus.from_paths(
-                    constraints.attachment_paths,
-                    limits=self.config.attachment_limits,
-                    strict=self.config.attachment_strict,
-                )
-                await self.repository.save_attachments(job_id, attachments.manifest())
-
-            planner_route = self.policy.for_role(ResearchRole.PLANNER)
-            qmin, qmax = self.policy.planner_question_range
-            planner_prompt = json.dumps(
-                {
-                    "objective": objective,
-                    "constraints": self._constraints_payload(constraints, attachments),
-                    "planning_guidance": (
-                        f"Aim for {qmin}-{qmax} non-overlapping research questions when the objective "
-                        "is broad enough. Use fewer when additional questions would be artificial or redundant."
-                    ),
-                },
-                ensure_ascii=False,
-            )
-            plan: ResearchPlan = await self._run_agent(
-                job_id=job_id,
-                agent=planner_agent,
-                role=ResearchRole.PLANNER,
-                route=planner_route,
-                prompt=planner_prompt,
-                attachment_corpus=attachments,
-                attachment_tools=bool(attachments),
-                multimodal_inputs=bool(attachments),
-            )
-            await self.repository.save_plan(job_id, plan.model_dump(mode="json"))
+        async with self._job_scope(job_id):
+            attachments = await self._load_attachments(job_id, constraints)
+            plan = await self._plan(job_id, objective, constraints, attachments)
             questions = {q.id: q for q in plan.questions}
 
             ledger = EvidenceLedger()
@@ -713,28 +791,12 @@ class AsyncResearchLoop:
             for result in scout_results:
                 ledger.add(result)
 
-            gap_route = self.policy.for_role(ResearchRole.GAP_ANALYST)
-            gap_task_ids: list[UUID] = []
-            gap_analysis: GapAnalysis = await self._run_agent(
-                job_id=job_id,
-                agent=gap_agent,
-                role=ResearchRole.GAP_ANALYST,
-                route=gap_route,
-                prompt=json.dumps(
-                    {
-                        "objective": objective,
-                        "plan": plan.model_dump(mode="json"),
-                        "results": [r.model_dump(mode="json") for r in ledger.all()],
-                        "constraints": self._constraints_payload(constraints, attachments),
-                    },
-                    ensure_ascii=False,
-                ),
-                task_ids=gap_task_ids,
+            gaps, gap_task_id = await self._analyze_gaps(
+                job_id, objective, plan, ledger, constraints, attachments
             )
-            gaps = self._dedupe_gaps(gap_analysis.gaps + self._confidence_gaps(plan, ledger))
             await self._resolve_gaps(
                 job_id, gaps, questions, ledger, constraints, attachments, attempt=0,
-                parent_task_id=gap_task_ids[0] if gap_task_ids else None,
+                parent_task_id=gap_task_id,
             )
 
             report = await self._synthesize(job_id, objective, ledger, constraints, attachments)
@@ -761,25 +823,4 @@ class AsyncResearchLoop:
                     job_id, objective, report, ledger, constraints, attachments, task_ids=verify_task_ids
                 )
 
-            await self.repository.finish_job(
-                job_id,
-                status="succeeded",
-                final_report=report.model_dump(mode="json"),
-                verification=verification.model_dump(mode="json"),
-            )
-            return ResearchOutcome(
-                job_id, plan, report, verification, ledger, attachments,
-                cost_usd=self._job_spend.get(job_id),
-            )
-        except Exception as exc:
-            await self.repository.finish_job(
-                job_id,
-                status="failed",
-                final_report=None,
-                verification=None,
-                error=error_snapshot(exc),
-            )
-            raise
-        finally:
-            self._job_spend.pop(job_id, None)
-            self._fetch_memos.pop(job_id, None)
+            return await self._finish(job_id, plan, report, verification, ledger, attachments)

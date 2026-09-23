@@ -1,7 +1,7 @@
-"""Adapted from research-graph's workflow, failure-boundary and prompt tests.
+"""The public run contract, exercised through real agents, tools, and persistence.
 
-Exercise this repo's public run contract through real agents and persistence.
-Only model responses are scripted; graph and legacy behavior must both hold.
+Only model responses are scripted; graph and legacy behavior must both hold. Adapted from
+research-graph's workflow, failure-boundary, and prompt tests.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from pydantic_ai import models
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
@@ -25,6 +24,26 @@ from research_loop.policy import ModelPolicy, ModelRoute
 from research_loop.repository import InMemoryResearchRepository
 from research_loop.schemas import ResearchConstraints, ResearchRole
 from research_loop.tools import ResearchToolMode
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_parallel_scouts", 0),  # a zero-slot semaphore would wait forever
+        ("max_parallel_deep_dives", 0),
+        ("max_deep_dives_per_round", -1),
+        ("max_verification_rounds", -1),
+        ("min_scout_confidence", 1.5),
+    ],
+)
+def test_research_config_rejects_values_that_cannot_run(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match=field):
+        ResearchConfig(**{field: value})
+
+
+def test_research_config_allows_disabling_deep_dives_and_verification_rounds() -> None:
+    config = ResearchConfig(max_deep_dives_per_round=0, max_verification_rounds=0)
+    assert (config.max_deep_dives_per_round, config.max_verification_rounds) == (0, 0)
 
 
 def gap(question_id: str = "q1", severity: int = 4) -> dict[str, Any]:
@@ -77,9 +96,7 @@ class Script:
 
 
 @pytest.fixture(params=[ResearchLoop, LegacyResearchLoop], ids=["graph", "legacy"])
-def workflow(request, monkeypatch):
-    # FunctionModel remains usable while accidental provider requests are refused.
-    monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", False)
+def workflow(request):
     route = ModelRoute("test", 5, 5, 50_000)
     loop = request.param(
         ModelPolicy("workflow-contract", {role: route for role in ResearchRole}),
@@ -275,3 +292,57 @@ async def test_followup_prompts_keep_constraints_and_evidence_without_prior_task
         ids = [c["id"] for result in verification["evidence"] for c in result["claims"]]
         assert verification["report"]["claims"][0]["claim_ids"] == ids
     assert len(outcome.ledger.claim_ids()) == 3
+
+
+def _one_followup_round(loop, script) -> None:
+    """Low-confidence scouting forces an initial deep dive; one verifier follow-up adds another."""
+    loop.config = replace(loop.config, max_verification_rounds=1)
+    script.confidence = 0.3
+    script.verification = {"needs_research": True, "followups": [gap()]}
+
+
+@pytest.mark.asyncio
+async def test_deep_dives_record_the_task_that_asked_for_them(workflow):
+    loop, script = workflow
+    _one_followup_round(loop, script)
+    await run(loop)
+    tasks = list(loop.repository.tasks.values())
+
+    def only(role: ResearchRole, attempt: int = 0) -> dict[str, Any]:
+        (task,) = [t for t in tasks if t["role"] is role and t["attempt"] == attempt]
+        return task
+
+    first_verifier = min((t for t in tasks if t["role"] is ResearchRole.VERIFIER), key=lambda t: t["started_at"])
+    assert only(ResearchRole.DEEP_DIVE, attempt=0)["parent_task_id"] == only(ResearchRole.GAP_ANALYST)["id"]
+    assert only(ResearchRole.DEEP_DIVE, attempt=1)["parent_task_id"] == first_verifier["id"]
+    assert only(ResearchRole.SCOUT)["parent_task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_research_agents_in_one_job_share_one_fetch_memo(workflow, monkeypatch):
+    import research_loop.async_orchestrator as orchestrator
+
+    loop, script = workflow
+    _one_followup_round(loop, script)
+    loop.config = replace(loop.config, scholarly_tools=True)
+    memos: list[Any] = []
+
+    def recording(cls):
+        class Recording(cls):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                memos.append(self.memo)
+        return Recording
+
+    monkeypatch.setattr(orchestrator, "WebAcquisition", recording(orchestrator.WebAcquisition))
+    monkeypatch.setattr(orchestrator, "ScholarClient", recording(orchestrator.ScholarClient))
+    await run(loop)
+    first_job = list(memos)
+    memos.clear()
+    await run(loop)
+
+    # The scout and both deep dives each build a web fetcher and a scholar client.
+    assert len(first_job) == 6
+    assert all(memo is first_job[0] for memo in first_job)
+    assert all(memo is memos[0] for memo in memos) and memos[0] is not first_job[0]
+    assert loop._fetch_memos == {}

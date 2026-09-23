@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,23 @@ def migration_status(conn: Any, migrations: list[Migration]) -> list[tuple[Migra
         state = "pending" if saved is None else "applied" if saved == migration.sha256 else "changed"
         result.append((migration, state))
     return result
+
+
+def pending_migrations(dsn: str, *, connect_timeout: int = 5) -> list[str]:
+    """Names of SQL migrations the database at `dsn` has not applied, or applied in another version."""
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=connect_timeout) as conn:
+        return [migration.name for migration, state in migration_status(conn, migration_files()) if state != "applied"]
+
+
+async def open_migrated_pool(stack: AsyncExitStack, dsn: str) -> Any:
+    """Open a connection pool on `stack`; fail before any paid model call if migrations are pending."""
+    if await asyncio.to_thread(pending_migrations, dsn):
+        raise RuntimeError("database migrations are pending or changed; run research-db migrate")
+    from psycopg_pool import AsyncConnectionPool
+
+    return await stack.enter_async_context(AsyncConnectionPool(conninfo=dsn, open=False))
 
 
 def apply_migrations(conn: Any, migrations: list[Migration]) -> list[str]:

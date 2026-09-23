@@ -8,32 +8,29 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import ipaddress
 import json
 import re
-import socket
-import threading
-import time
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
-from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urljoin, urlparse
-from uuid import uuid4
+from urllib.parse import quote, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset
 
+from .acquisition import (
+    MAX_FETCH_CHARS,
+    AcquisitionCache,
+    FetchMemo,
+    bounded_public_get,
+    fetch_cache_key,
+    fetch_window,
+    public_url,
+    wait_rate_slot,
+)
 
-ADAPTER_VERSION = 1
-# Recorded in manifests. 1: fetch returned only the first 12,000 characters.
-# 2: fetch pages through a document with `start`, backed by a per-job memo.
-FETCH_VERSION = 2
-# Longest text window one fetch returns; `start` pages through the rest.
-MAX_FETCH_CHARS = 12_000
+
 _PDF_PAGE_LIMIT = 30
-CacheMode = Literal["off", "live", "record", "replay"]
 Status = Literal["preprint", "journal", "accepted_conference", "conference_submission", "unknown"]
 
 
@@ -72,138 +69,6 @@ class ScholarResponse(BaseModel):
     next_start: int | None = None
     # Set when extraction itself stopped early (PDF page limit), so total_chars is not the whole document.
     extraction_truncated: bool | None = None
-
-
-class AcquisitionCache:
-    """Small per-request cache; benchmark mode defaults to off."""
-
-    def __init__(self, root: Path, mode: CacheMode = "live", ttl_seconds: int = 86400) -> None:
-        self.root, self.mode, self.ttl_seconds = root, mode, ttl_seconds
-
-    def _path(self, provider: str, key: str) -> Path:
-        digest = hashlib.sha256(f"v{ADAPTER_VERSION}:{provider}:{key}".encode()).hexdigest()
-        return self.root / provider / f"{digest}.json"
-
-    def get(self, provider: str, key: str) -> Any | None:
-        if self.mode not in ("live", "replay"):
-            return None
-        path = self._path(provider, key)
-        try:
-            payload = json.loads(path.read_text())
-            if self.mode == "replay" or time.time() - payload["created_at"] <= self.ttl_seconds:
-                return payload["value"]
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        return None
-
-    def put(self, provider: str, key: str, value: Any) -> None:
-        if self.mode not in ("live", "record"):
-            return
-        encoded = json.dumps({"created_at": time.time(), "value": value}, ensure_ascii=False)
-        if len(encoded) > 128_000:
-            return
-        path = self._path(provider, key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + f".{uuid4().hex}.tmp")
-        tmp.write_text(encoded)
-        tmp.replace(path)
-
-
-class FetchMemo:
-    """Full extracted documents fetched during one research job, shared by all of its agents.
-
-    Agents page through a memoized document instead of downloading it again, and a second
-    agent reuses the first one's fetch, whatever the disk cache mode. Each job gets its own
-    memo, so benchmark cases stay independent.
-    """
-
-    def __init__(self, max_documents: int = 64) -> None:
-        self.max_documents = max_documents
-        self._documents: OrderedDict[str, dict[str, Any]] = OrderedDict()
-
-    def get(self, kind: str, url: str) -> dict[str, Any] | None:
-        document = self._documents.get(f"{kind}|{url}")
-        if document is not None:
-            self._documents.move_to_end(f"{kind}|{url}")
-        return document
-
-    def put(self, kind: str, url: str, document: dict[str, Any]) -> None:
-        self._documents[f"{kind}|{url}"] = document
-        self._documents.move_to_end(f"{kind}|{url}")
-        while len(self._documents) > self.max_documents:
-            self._documents.popitem(last=False)
-
-
-def fetch_window(text: str, start: int, max_chars: int) -> dict[str, Any] | None:
-    """The `max_chars` characters of `text` from `start`, or None when `start` is past the end."""
-    if start and start >= len(text):
-        return None
-    end = start + max_chars
-    more = end < len(text)
-    return {"text": text[start:end], "start": start, "total_chars": len(text), "truncated": more,
-            "next_start": end if more else None}
-
-
-def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
-    # Windows from the start keep the version-1 key, so earlier recordings still replay.
-    return f"{url}|max_chars={max_chars}" + (f"|start={start}" if start else "")
-
-
-_rate_lock = threading.Lock()
-_next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "opencitations": 0.3, "acl": 0.3,
-                  "duckduckgo": 1.0}
-
-
-async def _wait_rate_slot(provider: str) -> None:
-    with _rate_lock:
-        now = time.monotonic()
-        reserved = max(now, _next_request_at.get(provider, now))
-        _next_request_at[provider] = reserved + _RATE_INTERVAL[provider]
-    if reserved > now:
-        await asyncio.sleep(reserved - now)
-
-
-# Sites such as Wikimedia reject the default library User-Agent; identify the fetcher instead.
-FETCH_USER_AGENT = "research-loop/0.5 (research agent page fetcher)"
-
-
-async def _bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int) -> httpx.Response:
-    for _ in range(4):
-        if not await _public_url(url):
-            raise ValueError("unsafe URL")
-        async with client.stream("GET", url, headers={"User-Agent": FETCH_USER_AGENT},
-                                 follow_redirects=False, timeout=15) as response:
-            if response.is_redirect:
-                location = response.headers.get("location")
-                if not location:
-                    raise ValueError("redirect missing location")
-                url = urljoin(url, location)
-                continue
-            chunks = []
-            total = 0
-            async for chunk in response.aiter_bytes():  # decoded bytes, so the cap bounds decompression
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError("response exceeded size limit")
-                chunks.append(chunk)
-            # The body is already decoded: drop encoding headers or httpx would decode it again.
-            headers = [(key, value) for key, value in response.headers.multi_items()
-                       if key.lower() not in ("content-encoding", "content-length")]
-            return httpx.Response(response.status_code, headers=headers,
-                                  content=b"".join(chunks), request=response.request)
-    raise ValueError("too many redirects")
-
-
-async def _public_url(url: str) -> bool:
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        return False
-    try:
-        addresses = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or 443)
-        return bool(addresses) and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses)
-    except (OSError, ValueError):
-        return False
 
 
 def _openalex_work(raw: dict[str, Any]) -> ScholarWork:
@@ -307,7 +172,7 @@ class ScholarClient:
         async with self._semaphores[provider]:
             for attempt in range(2):
                 if self.client is None:
-                    await _wait_rate_slot(provider)
+                    await wait_rate_slot(provider)
                     async with httpx.AsyncClient(follow_redirects=False) as client:
                         response = await client.get(hosts[provider] + path, params=params, headers=headers, timeout=15)
                 else:
@@ -451,7 +316,7 @@ class ScholarClient:
             return result
         document = self.memo.get("fetch", url)
         if document is None:
-            if not await _public_url(url):
+            if not await public_url(url):
                 result.provider_errors.append("fetch:UnsafeURL")
                 return result
             try:
@@ -479,7 +344,7 @@ class ScholarClient:
     async def _extract(self, url: str) -> dict[str, Any]:
         """Download a public page or PDF and extract its full text."""
         async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
-            response = await _bounded_public_get(client, url, 5_000_000)
+            response = await bounded_public_get(client, url, 5_000_000)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
         extraction_truncated = False

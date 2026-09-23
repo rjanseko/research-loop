@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from research_loop.scholar import AcquisitionCache, ScholarClient, _arxiv_works, build_scholar_toolset
-from research_loop.telemetry import safe_tool_args, safe_tool_result
+from research_loop.acquisition import AcquisitionCache, FetchMemo
+from research_loop.scholar import ScholarClient, _arxiv_works, build_scholar_toolset
 
 
 ARXIV_XML = '''<feed xmlns="http://www.w3.org/2005/Atom"><entry>
@@ -55,75 +55,12 @@ def test_replay_cache_does_not_call_network(tmp_path) -> None:
     assert AcquisitionCache(tmp_path, "off").get("crossref", "k") is None
 
 
-def test_scholar_telemetry_omits_full_text_and_query() -> None:
-    secret = "PRIVATE_BENCHMARK_INPUT"
-    body = {"operation": "fetch", "text": secret * 300, "works": [], "content_sha256": "abc"}
-    summary = safe_tool_result("scholar_fetch", body)
-    assert secret not in str(summary)
-    args = safe_tool_args({"query": secret, "limit": 5})
-    assert secret not in str(args)
-    assert args["limit"] == 5
-
-
 @pytest.mark.asyncio
 async def test_openreview_is_explicitly_disabled_without_credentials(tmp_path) -> None:
     client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"))
     result = await client.get("openreview:some-forum-id")
     assert result.works == []
     assert result.provider_errors == ["openreview:Disabled"]
-
-
-@pytest.mark.asyncio
-async def test_grobid_unavailable_falls_back_to_pdf_text(monkeypatch, tmp_path) -> None:
-    import io
-    from reportlab.pdfgen import canvas
-
-    stream = io.BytesIO()
-    pdf = canvas.Canvas(stream)
-    pdf.drawString(72, 720, "Fallback PDF evidence")
-    pdf.save()
-
-    async def safe(_: str) -> bool:
-        return True
-
-    async def bounded(_client, url, _limit):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=stream.getvalue(), request=request)
-
-    monkeypatch.setattr("research_loop.scholar._public_url", safe)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
-    client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), grobid_url="http://127.0.0.1:1")
-    result = await client.fetch("https://arxiv.org/pdf/2601.01234")
-    assert result.extraction_method == "pypdf"
-    assert "Fallback PDF evidence" in result.text
-
-
-@pytest.mark.asyncio
-async def test_fetch_records_then_replays_without_network(monkeypatch, tmp_path) -> None:
-    async def safe(_: str) -> bool:
-        return True
-
-    async def bounded(_client, url, _limit):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, headers={"content-type": "text/html"}, request=request,
-                              text="<html><body><article><p>Recorded full text evidence.</p></article></body></html>")
-
-    monkeypatch.setattr("research_loop.scholar._public_url", safe)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
-    recorded = await ScholarClient(cache=AcquisitionCache(tmp_path, "record")).fetch("https://example.org/paper")
-    assert "Recorded full text" in recorded.text
-
-    async def offline(*_args, **_kwargs):
-        raise AssertionError("replay must not touch DNS or network")
-
-    monkeypatch.setattr("research_loop.scholar._public_url", offline)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", offline)
-    replay = ScholarClient(cache=AcquisitionCache(tmp_path, "replay"))
-    replayed = await replay.fetch("https://example.org/paper")
-    assert replayed.text == recorded.text
-    assert replayed.cache_hits == 1
-    missing = await replay.fetch("https://example.org/other")
-    assert missing.provider_errors == ["fetch:CacheMiss"]
 
 
 def _pdf(pages: int) -> bytes:
@@ -140,23 +77,42 @@ def _pdf(pages: int) -> bytes:
     return stream.getvalue()
 
 
+def _pdf_response(pages: int):
+    body = _pdf(pages)
+    return lambda _url: httpx.Response(200, headers={"content-type": "application/pdf"}, content=body)
+
+
 @pytest.mark.asyncio
-async def test_scholar_fetch_pages_through_a_paper_and_flags_unextracted_pages(monkeypatch, tmp_path) -> None:
-    from research_loop.scholar import FetchMemo
+async def test_grobid_unavailable_falls_back_to_pdf_text(serve, tmp_path) -> None:
+    serve(_pdf_response(1))
+    # Nothing listens on loopback port 1, so the GROBID request fails.
+    client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), grobid_url="http://127.0.0.1:1")
+    result = await client.fetch("https://arxiv.org/pdf/2601.01234")
+    assert result.extraction_method == "pypdf"
+    assert "Page 1 line 1 carries scholarly evidence text." in result.text
 
+
+@pytest.mark.asyncio
+async def test_fetch_records_then_replays_without_network(serve, go_offline, tmp_path) -> None:
+    serve(lambda _url: httpx.Response(200, headers={"content-type": "text/html"},
+                                      text="<html><body><article><p>Recorded full text evidence.</p></article></body></html>"))
+    recorded = await ScholarClient(cache=AcquisitionCache(tmp_path, "record")).fetch("https://example.org/paper")
+    assert "Recorded full text" in recorded.text
+
+    go_offline()
+    replay = ScholarClient(cache=AcquisitionCache(tmp_path, "replay"))
+    replayed = await replay.fetch("https://example.org/paper")
+    assert replayed.text == recorded.text
+    assert replayed.cache_hits == 1
+    missing = await replay.fetch("https://example.org/other")
+    assert missing.provider_errors == ["fetch:CacheMiss"]
+
+
+@pytest.mark.asyncio
+async def test_scholar_fetch_pages_through_a_paper_and_flags_unextracted_pages(serve, tmp_path) -> None:
     downloads: list[str] = []
-    body = _pdf(31)
-
-    async def safe(_: str) -> bool:
-        return True
-
-    async def bounded(_client, url, _limit):
-        downloads.append(url)
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=body,
-                              request=httpx.Request("GET", url))
-
-    monkeypatch.setattr("research_loop.scholar._public_url", safe)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
+    respond = _pdf_response(31)
+    serve(lambda url: (downloads.append(url), respond(url))[1])
     client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), memo=FetchMemo())
     first = await client.fetch("https://arxiv.org/pdf/2601.01234")
     assert first.start == 0 and first.truncated is True
@@ -173,24 +129,12 @@ async def test_scholar_fetch_pages_through_a_paper_and_flags_unextracted_pages(m
 
 
 @pytest.mark.asyncio
-async def test_scholar_fetch_pages_replay_from_recorded_windows(monkeypatch, tmp_path) -> None:
-    async def safe(_: str) -> bool:
-        return True
-
-    async def bounded(_client, url, _limit):
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=_pdf(3),
-                              request=httpx.Request("GET", url))
-
-    monkeypatch.setattr("research_loop.scholar._public_url", safe)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
+async def test_scholar_fetch_pages_replay_from_recorded_windows(serve, go_offline, tmp_path) -> None:
+    serve(_pdf_response(3))
     recorder = ScholarClient(cache=AcquisitionCache(tmp_path, "record"))
     page_two = await recorder.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=1000)
 
-    async def offline(*_args, **_kwargs):
-        raise AssertionError("replay must not touch DNS or network")
-
-    monkeypatch.setattr("research_loop.scholar._public_url", offline)
-    monkeypatch.setattr("research_loop.scholar._bounded_public_get", offline)
+    go_offline()
     replay = ScholarClient(cache=AcquisitionCache(tmp_path, "replay"))
     replayed = await replay.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=1000)
     assert replayed.text == page_two.text and replayed.start == 1000

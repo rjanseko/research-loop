@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from .acquisition import FETCH_VERSION
 from .benchmarks.manifest import load_manifest
 from .benchmarks.models import BenchmarkCaseSpec
 from .graph import RESEARCH_GRAPH_VERSION
 from .policy import get_policy
-from .scholar import FETCH_VERSION
 from .schemas import EVIDENCE_VERSION
 
 
@@ -22,19 +22,20 @@ PACKAGE_NAMES = ("research-loop-v5", "pydantic", "pydantic-ai", "pydantic-graph"
 SENSITIVE_KEYS = ("secret", "password", "api_key", "credential", "dsn", "url", "path", "host")
 
 
-def _safe_value(value: Any, key: str = "") -> Any:
+def safe_value(value: Any, key: str = "") -> Any:
+    """Redact secrets, credentials, URLs, and local paths before a value goes into a manifest."""
     if any(part in key.lower() for part in SENSITIVE_KEYS) or key.lower().endswith("_token"):
         return "[redacted]"
     if isinstance(value, dict):
-        return {str(k): _safe_value(v, str(k)) for k, v in value.items()}
+        return {str(k): safe_value(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
-        return [_safe_value(item) for item in value]
+        return [safe_value(item) for item in value]
     if isinstance(value, str) and (value.startswith("/") or value.startswith("file:")):
         return "[redacted]"
     return value
 
 
-def _packages() -> dict[str, str | None]:
+def package_versions() -> dict[str, str | None]:
     result = {}
     for name in PACKAGE_NAMES:
         try:
@@ -44,8 +45,7 @@ def _packages() -> dict[str, str | None]:
     return result
 
 
-
-def _git_state() -> dict[str, Any]:
+def git_state() -> dict[str, Any]:
     root = Path(__file__).resolve().parents[2]
     try:
         commit = subprocess.run(
@@ -62,7 +62,8 @@ def _git_state() -> dict[str, Any]:
     }
 
 
-def _fingerprint(value: Any) -> str:
+def fingerprint(value: Any) -> str:
+    """Stable SHA-256 of a JSON-serializable configuration."""
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -95,7 +96,7 @@ def build_manifest(
     else:
         sources = [{"name": suite_name, "kind": "legacy_json"}]
     policy_snapshots = {
-        name: _safe_value(get_policy(name, model_overrides=model_overrides).snapshot())
+        name: safe_value(get_policy(name, model_overrides=model_overrides).snapshot())
         for name in policies
     }
     acquisition = {
@@ -105,7 +106,7 @@ def build_manifest(
         "scholarly_cache_mode": "off",
         "fetch_version": FETCH_VERSION,
     }
-    config_fingerprint = _fingerprint({
+    config_fingerprint = fingerprint({
         "policy_schema_version": 1,
         "policies": policy_snapshots,
         "attachment_mode": attachment_mode,
@@ -117,7 +118,7 @@ def build_manifest(
     return {
         "schema_version": 2,
         "experiment_id": str(uuid4()),
-        "git": _git_state(),
+        "git": git_state(),
         "config_fingerprint": config_fingerprint,
         "policy_schema_version": 1,
         "acquisition": acquisition,
@@ -135,7 +136,7 @@ def build_manifest(
         "attachment_mode": attachment_mode,
         "tool_mode": tool_mode,
         "repository_mode": repository_mode,
-        "packages": _packages(),
+        "packages": package_versions(),
         "started_at": datetime.now(UTC).isoformat(),
         "finished_at": None,
         "runs": [],

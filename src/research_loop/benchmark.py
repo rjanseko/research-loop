@@ -17,12 +17,12 @@ from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
 from .evals import BenchmarkOutput, make_dataset
 from .experiment import build_manifest, write_manifest
-from .db import migration_files, migration_status
+from .db import open_migrated_pool
 from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .observability import configure_logfire
 from .policy import POLICY_PRESETS, get_policy
 from .repository import CapturingResearchRepository, InMemoryResearchRepository, PostgresResearchRepository
-from .schemas import ResearchConstraints
+from .schemas import ResearchConstraints, is_research_tool
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
 from .tools import ResearchToolMode
@@ -196,7 +196,7 @@ async def _run_policy_case(
     unsupported = [c for c in checks if not c.supported]
     major = [c for c in unsupported if c.severity == "major"]
     tool_calls, total_tokens = _sum_usage(repo)
-    research_tool_calls = sum(1 for event in repo.tool_events if _is_research_event(event))
+    research_tool_calls = sum(1 for event in repo.tool_events if is_research_tool(str(event.get("tool_name", ""))))
     attachment_tool_calls = sum(1 for event in repo.tool_events if _is_attachment_event(event))
     search_queries = _extract_search_queries(repo.tool_events)
 
@@ -262,21 +262,6 @@ def _is_attachment_event(event: dict[str, Any]) -> bool:
     return "attachment" in str(event.get("tool_name", "")).lower()
 
 
-def _is_research_event(event: dict[str, Any]) -> bool:
-    name = str(event.get("tool_name", "")).lower()
-    return any(token in name for token in ("search", "fetch", "page", "url", "attachment"))
-
-
-def _verify_database_schema(dsn: str) -> None:
-    """Fail before any paid model call when durable benchmark storage is not ready."""
-    import psycopg
-
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
-        pending = [m.name for m, state in migration_status(conn, migration_files()) if state != "applied"]
-    if pending:
-        raise RuntimeError("database migrations are pending or changed; run research-db migrate")
-
-
 async def run_benchmark(
     suite_path: Path,
     *,
@@ -337,12 +322,7 @@ async def run_benchmark(
         async with AsyncExitStack() as stack:
             pool = None
             if repository_mode == "postgres":
-                await asyncio.to_thread(_verify_database_schema, settings.database_dsn)
-                from psycopg_pool import AsyncConnectionPool
-
-                pool = await stack.enter_async_context(
-                    AsyncConnectionPool(conninfo=settings.database_dsn, open=False)
-                )
+                pool = await open_migrated_pool(stack, settings.database_dsn)
             for policy_name in policies:
                 async def task(case: BenchmarkCaseSpec, _policy: str = policy_name) -> BenchmarkOutput:
                     run_record: dict[str, str] | None = None

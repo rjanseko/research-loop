@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from research_loop.policy import get_policy
-from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 
 
@@ -21,19 +19,6 @@ def test_settings_reads_environment_without_exposing_secrets() -> None:
     assert settings.model_overrides["RESEARCH_SCOUT_MODEL"] == "openai:configured-scout"
     assert "private-key" not in repr(settings)
     assert "password" not in repr(settings)
-
-
-def test_policy_uses_current_nonempty_override(monkeypatch) -> None:
-    monkeypatch.setenv("RESEARCH_SCOUT_MODEL", "openai:configured-scout")
-    assert get_policy("quality").for_role(ResearchRole.SCOUT).model == "openai:configured-scout"
-    monkeypatch.setenv("RESEARCH_SCOUT_MODEL", "")
-    assert get_policy("quality").for_role(ResearchRole.SCOUT).model != ""
-
-
-def test_policy_applies_typed_settings_override() -> None:
-    settings = ResearchSettings.from_env({"RESEARCH_SCOUT_MODEL": "openai:typed-scout"})
-    policy = get_policy("quality", model_overrides=settings.model_overrides)
-    assert policy.for_role(ResearchRole.SCOUT).model == "openai:typed-scout"
 
 
 def test_local_dotenv_loads_with_exported_environment_precedence(tmp_path, monkeypatch) -> None:

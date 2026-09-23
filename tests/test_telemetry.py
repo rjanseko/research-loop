@@ -21,3 +21,15 @@ def test_benchmark_audit_uses_ephemeral_raw_arguments_before_storage_redaction()
     assert _blocked_accesses([event], [url]) == [url]
     assert url not in str(safe_tool_args(event["args"]))
     assert "PRIVATE_PAPER_TEXT" not in str(safe_tool_result(event["tool_name"], event["result"]))
+
+
+def test_scholar_telemetry_omits_full_text_and_query() -> None:
+    from research_loop.telemetry import safe_tool_args, safe_tool_result
+
+    secret = "PRIVATE_BENCHMARK_INPUT"
+    body = {"operation": "fetch", "text": secret * 300, "works": [], "content_sha256": "abc"}
+    summary = safe_tool_result("scholar_fetch", body)
+    assert secret not in str(summary)
+    args = safe_tool_args({"query": secret, "limit": 5})
+    assert secret not in str(args)
+    assert args["limit"] == 5

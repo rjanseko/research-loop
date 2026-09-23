@@ -97,8 +97,6 @@ class Contradiction(BaseModel):
     source_urls: list[HttpUrl] = Field(default_factory=list)
 
 
-
-
 class ResearchConstraints(BaseModel):
     blocked_urls: list[str] = Field(default_factory=list)
     attachment_paths: list[str] = Field(default_factory=list)
@@ -189,6 +187,15 @@ class VerificationReport(BaseModel):
     followups: list[Gap] = Field(default_factory=list)
 
 
+# Tool-name fragments that mark acquisition tools: web, scholarly, and attachment.
+_RESEARCH_TOOL_TOKENS = ("search", "fetch", "page", "url", "attachment")
+
+
+def is_research_tool(tool_name: str) -> bool:
+    name = tool_name.lower()
+    return any(token in name for token in _RESEARCH_TOOL_TOKENS)
+
+
 class ToolEvent(BaseModel):
     tool_name: str
     tool_call_id: str | None = None
@@ -202,8 +209,7 @@ class ToolEvent(BaseModel):
 
     @property
     def is_research_tool(self) -> bool:
-        name = self.tool_name.lower()
-        return any(token in name for token in ("search", "fetch", "page", "url", "attachment"))
+        return is_research_tool(self.tool_name)
 
 
 # Campaign-level synthesis over completed campaign questions. Claim refs such as

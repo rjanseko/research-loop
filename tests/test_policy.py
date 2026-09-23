@@ -1,5 +1,6 @@
 from research_loop.policy import get_policy
 from research_loop.schemas import ResearchQuestion, ResearchRole
+from research_loop.settings import ResearchSettings
 
 
 def test_quality_policy_routes_easy_question_to_cheap_scout():
@@ -25,3 +26,16 @@ def test_structured_output_roles_raise_default_output_cap():
         policy = get_policy(name, model_overrides={"RESEARCH_SYNTH_MODEL": "openai:override"})
         for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
             assert policy.for_role(role).model_settings()["max_tokens"] >= 16_000
+
+
+def test_policy_uses_current_nonempty_override(monkeypatch) -> None:
+    monkeypatch.setenv("RESEARCH_SCOUT_MODEL", "openai:configured-scout")
+    assert get_policy("quality").for_role(ResearchRole.SCOUT).model == "openai:configured-scout"
+    monkeypatch.setenv("RESEARCH_SCOUT_MODEL", "")
+    assert get_policy("quality").for_role(ResearchRole.SCOUT).model != ""
+
+
+def test_policy_applies_typed_settings_override() -> None:
+    settings = ResearchSettings.from_env({"RESEARCH_SCOUT_MODEL": "openai:typed-scout"})
+    policy = get_policy("quality", model_overrides=settings.model_overrides)
+    assert policy.for_role(ResearchRole.SCOUT).model == "openai:typed-scout"

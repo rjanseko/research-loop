@@ -4,9 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 
-from research_loop.scholar import AcquisitionCache, ScholarClient
+from research_loop.acquisition import AcquisitionCache
+from research_loop.scholar import ScholarClient
 from research_loop.settings import ResearchSettings
 
 

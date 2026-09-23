@@ -10,20 +10,20 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 from .agents import campaign_synthesizer_agent
-from .async_orchestrator import ResearchConfig
-from .db import migration_files, migration_status
+from .async_orchestrator import ResearchConfig, ResearchOutcome
+from .acquisition import FETCH_VERSION
+from .db import open_migrated_pool
 from .diagnose import run_diagnose
-from .experiment import _fingerprint, _git_state, _packages, _safe_value, write_manifest
+from .experiment import fingerprint, git_state, package_versions, safe_value, write_manifest
 from .ledger import EvidenceLedger
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
-from .policy import get_policy
+from .policy import ModelPolicy, get_policy
 from .repository import InMemoryResearchRepository, PostgresResearchRepository
-from .scholar import FETCH_VERSION
 from .schemas import (
     EVIDENCE_VERSION,
     CampaignFindings,
@@ -93,22 +93,6 @@ def render_objective(campaign: dict[str, Any], question: dict[str, str]) -> str:
     ])
 
 
-def _check_database(dsn: str) -> None:
-    import psycopg
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
-        pending = [m.name for m, state in migration_status(conn, migration_files()) if state != "applied"]
-    if pending:
-        raise RuntimeError("database migrations pending or changed; run research-db migrate")
-
-
-async def _open_pool(stack: AsyncExitStack, settings: ResearchSettings, persist: bool) -> Any:
-    if not persist:
-        return None
-    await asyncio.to_thread(_check_database, settings.database_dsn)
-    from psycopg_pool import AsyncConnectionPool
-    return await stack.enter_async_context(AsyncConnectionPool(conninfo=settings.database_dsn, open=False))
-
-
 def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -127,9 +111,9 @@ def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_sn
     return {
         "schema_version": 2, "kind": kind, "campaign_id": campaign["id"], "experiment_id": str(uuid4()),
         "campaign_spec_sha256": spec_hash,
-        "config_fingerprint": _fingerprint({"spec": spec_hash, "policy": policy_snapshot, **fingerprint_extra}),
-        "git": _git_state(), "graph_version": campaign["graph_version"],
-        "policy": policy_snapshot, "packages": _packages(), "persistent": persist,
+        "config_fingerprint": fingerprint({"spec": spec_hash, "policy": policy_snapshot, **fingerprint_extra}),
+        "git": git_state(), "graph_version": campaign["graph_version"],
+        "policy": policy_snapshot, "packages": package_versions(), "persistent": persist,
         "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "status": "running",
     }
 
@@ -176,24 +160,9 @@ def render_question_report(report: FinalReport, verification: VerificationReport
     return "\n".join(lines) + "\n"
 
 
-async def run_campaign(
-    path: Path,
-    *,
-    question_ids: list[str],
-    policy_name: str,
-    settings: ResearchSettings,
-    output_dir: Path,
-    persist: bool,
-) -> Path:
-    campaign = load_campaign(path)
-    questions = {item["id"]: item for item in campaign["questions"]}
-    unknown = set(question_ids) - set(questions)
-    if unknown:
-        raise ValueError(f"unknown campaign question IDs: {', '.join(sorted(unknown))}")
-    if persist and not settings.database_dsn:
-        raise ValueError("DATABASE_URL required for --persist")
-    configure_logfire(settings)
-    policy = get_policy(policy_name, model_overrides=settings.model_overrides)
+def campaign_policy(campaign: dict[str, Any], policy_name: str, model_overrides: Mapping[str, str]) -> ModelPolicy:
+    """The named policy with the campaign's question budget, planner range, and route limits applied."""
+    policy = get_policy(policy_name, model_overrides=model_overrides)
     execution = campaign["execution"]
     policy.planner_question_range = (
         int(execution["planner_question_min"]), int(execution["planner_question_max"])
@@ -217,7 +186,12 @@ async def run_campaign(
             policy.cheap_scout = replace(policy.cheap_scout, **scout_limits)
         if policy.multimodal_scout:
             policy.multimodal_scout = replace(policy.multimodal_scout, **scout_limits)
-    run_config = ResearchConfig(
+    return policy
+
+
+def campaign_run_config(campaign: dict[str, Any]) -> ResearchConfig:
+    execution = campaign["execution"]
+    return ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode="record",
         max_parallel_scouts=int(execution["max_parallel_scouts"]),
@@ -226,7 +200,64 @@ async def run_campaign(
         max_verification_rounds=int(execution["max_verification_rounds"]),
         salvage_exhausted_research=True,
     )
-    policy_snapshot = _safe_value(policy.snapshot())
+
+
+def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: str,
+                            manifest: dict[str, Any]) -> dict[str, Any]:
+    """Export one completed question; returns its manifest record. run.json is written last."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification, outcome.ledger),
+                                      encoding="utf-8")
+    (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    _write_json(folder / "evidence_ledger.json", {
+        key: [item.model_dump(mode="json") for item in values]
+        for key, values in outcome.ledger.results.items()
+    })
+    bibliography = list({
+        json.dumps(source.model_dump(mode="json"), sort_keys=True): source.model_dump(mode="json")
+        for source in outcome.ledger.sources()
+    }.values())
+    _write_json(folder / "bibliography.json", bibliography)
+    (folder / "verification.json").write_text(outcome.verification.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    record = {
+        "id": folder.name, "job_id": str(outcome.job_id),
+        "claim_count": outcome.ledger.claim_count(),
+        "source_count": len(bibliography), "status": "completed",
+        "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
+    }
+    # run.json marks the folder as a completed, attributable run.
+    _write_json(folder / "run.json", record | {
+        "experiment_id": manifest["experiment_id"],
+        "campaign_spec_sha256": manifest["campaign_spec_sha256"],
+        # What the evidence answers; budget-only spec edits leave it unchanged.
+        "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
+        "config_fingerprint": manifest["config_fingerprint"],
+        "finished_at": datetime.now(UTC).isoformat(),
+    })
+    return record
+
+
+async def run_campaign(
+    path: Path,
+    *,
+    question_ids: list[str],
+    policy_name: str,
+    settings: ResearchSettings,
+    output_dir: Path,
+    persist: bool,
+) -> Path:
+    campaign = load_campaign(path)
+    questions = {item["id"]: item for item in campaign["questions"]}
+    unknown = set(question_ids) - set(questions)
+    if unknown:
+        raise ValueError(f"unknown campaign question IDs: {', '.join(sorted(unknown))}")
+    if persist and not settings.database_dsn:
+        raise ValueError("DATABASE_URL required for --persist")
+    configure_logfire(settings)
+    execution = campaign["execution"]
+    policy = campaign_policy(campaign, policy_name, settings.model_overrides)
+    run_config = campaign_run_config(campaign)
+    policy_snapshot = safe_value(policy.snapshot())
     acquisition = {"search": "duckduckgo", "web_fetch": "trafilatura+bs4",
                    "scholar": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
                    "cache_mode": "record", "fetch_version": FETCH_VERSION}
@@ -253,16 +284,11 @@ async def run_campaign(
     failed = 0
     try:
         async with AsyncExitStack() as stack:
-            pool = await _open_pool(stack, settings, persist)
+            pool = await open_migrated_pool(stack, settings.database_dsn) if persist else None
             for index, question_id in enumerate(question_ids):
                 backend = PostgresResearchRepository(pool) if pool else InMemoryResearchRepository()
-                loop = ResearchLoop(
-                    policy,
-                    run_config,
-                    repository=backend,
-                )
-                question = questions[question_id]
-                objective = render_objective(campaign, question)
+                loop = ResearchLoop(policy, run_config, repository=backend)
+                objective = render_objective(campaign, questions[question_id])
                 try:
                     outcome = await loop.run(
                         objective,
@@ -281,36 +307,7 @@ async def run_campaign(
                             manifest["not_run"] = question_ids[index + 1:]
                         break
                     continue
-                folder = output_dir / question_id
-                folder.mkdir(parents=True, exist_ok=True)
-                (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification, outcome.ledger),
-                                                  encoding="utf-8")
-                (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                _write_json(folder / "evidence_ledger.json", {
-                    key: [item.model_dump(mode="json") for item in values]
-                    for key, values in outcome.ledger.results.items()
-                })
-                bibliography = list({
-                    json.dumps(source.model_dump(mode="json"), sort_keys=True): source.model_dump(mode="json")
-                    for source in outcome.ledger.sources()
-                }.values())
-                _write_json(folder / "bibliography.json", bibliography)
-                (folder / "verification.json").write_text(outcome.verification.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                record = {
-                    "id": question_id, "job_id": str(outcome.job_id),
-                    "claim_count": outcome.ledger.claim_count(),
-                    "source_count": len(bibliography), "status": "completed",
-                    "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
-                }
-                # run.json is written last: it marks the folder as a completed, attributable run.
-                _write_json(folder / "run.json", record | {
-                    "experiment_id": manifest["experiment_id"],
-                    "campaign_spec_sha256": manifest["campaign_spec_sha256"],
-                    # What the evidence answers; budget-only spec edits leave it unchanged.
-                    "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
-                    "config_fingerprint": manifest["config_fingerprint"],
-                    "finished_at": datetime.now(UTC).isoformat(),
-                })
+                record = _write_question_outputs(output_dir / question_id, outcome, objective, manifest)
                 manifest["questions"].append(record)
                 write_manifest(manifest_path, manifest)
         completed = len(manifest["questions"]) - failed
@@ -587,11 +584,11 @@ async def synthesize_campaign(
          "campaign_spec_sha256": item.run.get("campaign_spec_sha256")}
         for item in evidence.completed
     ]
-    manifest = _manifest_base(campaign, path, kind="synthesis", policy_snapshot=_safe_value(policy.snapshot()),
+    manifest = _manifest_base(campaign, path, kind="synthesis", policy_snapshot=safe_value(policy.snapshot()),
                               fingerprint_extra={"route": route.snapshot(), "prompt_sha256": prompt_sha256},
                               persist=persist)
     manifest |= {
-        "synthesis_route": _safe_value(route.snapshot()), "prompt_sha256": prompt_sha256, "prompt_chars": len(prompt),
+        "synthesis_route": safe_value(route.snapshot()), "prompt_sha256": prompt_sha256, "prompt_chars": len(prompt),
         "inputs": inputs, "missing_question_ids": evidence.missing, "stale_question_ids": evidence.stale,
         "partial": bool(evidence.missing),
         "mixed_question_configs": len({item["config_fingerprint"] for item in inputs}) > 1,
@@ -603,7 +600,7 @@ async def synthesize_campaign(
     write_manifest(manifest_path, manifest)
     try:
         async with AsyncExitStack() as stack:
-            pool = await _open_pool(stack, settings, persist)
+            pool = await open_migrated_pool(stack, settings.database_dsn) if persist else None
             loop = ResearchLoop(policy, repository=PostgresResearchRepository(pool) if pool else InMemoryResearchRepository())
             outcome = await loop.run_agent_job(
                 f"{campaign['title']}: campaign synthesis",

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from research_loop.diagnose import run_diagnose
 from research_loop.settings import ResearchSettings
 
