@@ -5,8 +5,10 @@ import asyncio
 import hashlib
 import json
 import re
+from collections import defaultdict
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from statistics import mean
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
@@ -16,7 +18,7 @@ from pydantic_evals import Case
 from .acquisition import SourcePolicy
 from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
-from .evals import BenchmarkOutput, make_dataset
+from .evals import EVALUATOR_VERSION, BenchmarkOutput, make_dataset
 from .experiment import build_manifest, write_manifest
 from .db import open_migrated_pool
 from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
@@ -295,6 +297,40 @@ def _is_attachment_event(event: dict[str, Any]) -> bool:
     return "attachment" in str(event.get("tool_name", "")).lower()
 
 
+# Safe numbers behind a case's scores: counts, tokens, and cost, never prompts, answers, or URLs.
+_MEASURES = ("total_claims", "unsupported_claims", "major_unsupported_claims", "tool_calls", "research_tool_calls",
+             "total_tokens", "cost_usd", "quotes", "quotes_not_found", "sources", "sources_not_found",
+             "attachment_count", "attachment_tool_calls")
+
+
+def _case_name(spec: BenchmarkCaseSpec) -> str:
+    return f"{spec.benchmark_id}:{spec.case_id}"
+
+
+def _measures(output: BenchmarkOutput) -> dict[str, Any]:
+    # Integrity flags are this module's own fixed phrases, safe to keep verbatim.
+    return {name: getattr(output, name) for name in _MEASURES} | {"integrity_flags": output.integrity_flags}
+
+
+def _policy_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """One policy's results: case outcomes, spend, and each metric's mean over the cases it applied to."""
+    succeeded = [run for run in runs if run.get("status") == "succeeded"]
+    costs = [run["measures"]["cost_usd"] for run in succeeded if "measures" in run]
+    scores: dict[str, list[float]] = defaultdict(list)
+    for run in succeeded:
+        for name, value in run.get("scores", {}).items():
+            scores[name].append(value)
+    return {
+        "cases": len(runs),
+        "succeeded": len(succeeded),
+        "failed": sum(run.get("status") == "failed" for run in runs),
+        "needs_review": sum(bool(run.get("review_reasons")) for run in succeeded),
+        # Spend of succeeded cases; unknown once any of them had an unpriced call.
+        "succeeded_cost_usd": None if not costs or None in costs else round(sum(costs), 6),
+        "scores": {name: {"mean": round(mean(values), 6), "cases": len(values)} for name, values in sorted(scores.items())},
+    }
+
+
 async def run_benchmark(
     suite_path: Path,
     *,
@@ -334,13 +370,15 @@ async def run_benchmark(
         attachment_mode=attachment_mode.value,
         tool_mode=ResearchToolMode.NORMALIZED.value,
         repository_mode=repository_mode,
+        evaluator_version=EVALUATOR_VERSION,
         model_overrides=settings.model_overrides,
     )
+    manifest["summary"] = {}
     write_manifest(manifest_path, manifest)
 
     cases = [
         Case(
-            name=f"{spec.benchmark_id}:{spec.case_id}",
+            name=_case_name(spec),
             inputs=spec,
             expected_output=spec.expected_answer,
             metadata={"benchmark": spec.benchmark_id, **spec.metadata},
@@ -350,6 +388,7 @@ async def run_benchmark(
     dataset = make_dataset(cases)
     baseline = None
     failed_cases = 0
+    run_records: dict[tuple[str, str], dict[str, Any]] = {}  # (policy, case name) -> manifest run record
 
     try:
         async with AsyncExitStack() as stack:
@@ -371,6 +410,7 @@ async def run_benchmark(
                             "status": "running",
                         }
                         manifest["runs"].append(run_record)
+                        run_records[(_policy, _case_name(case))] = run_record
                         write_manifest(manifest_path, manifest)
 
                     try:
@@ -385,6 +425,7 @@ async def run_benchmark(
                         )
                         if run_record:
                             run_record["status"] = "succeeded"
+                            run_record["measures"] = _measures(output)
                             run_record["review_reasons"] = output.review_reasons
                             if case.blocked_urls:  # counts only: the entries are case inputs
                                 run_record["blocked_sources"] = {
@@ -402,6 +443,7 @@ async def run_benchmark(
                                 "root_run_id": None,
                             }
                             manifest["runs"].append(run_record)
+                            run_records[(_policy, _case_name(case))] = run_record
                         run_record["status"] = "failed"
                         run_record["error"] = type(exc).__name__
                         raise
@@ -429,6 +471,17 @@ async def run_benchmark(
                     include_averages=True,
                     include_errors=False,
                 )
+                # Keep every score after the process exits: a metric that did not apply has no entry.
+                for case in report.cases:
+                    if record := run_records.get((policy_name, case.name)):
+                        record["scores"] = {name: result.value for name, result in case.scores.items()}
+                        record["duration_seconds"] = round(case.task_duration, 3)
+                        if case.evaluator_failures:
+                            record["evaluator_failures"] = sorted(failure.name for failure in case.evaluator_failures)
+                manifest["summary"][policy_name] = _policy_summary(
+                    [run for run in manifest["runs"] if run["policy"] == policy_name]
+                )
+                write_manifest(manifest_path, manifest)
                 if report.failures:
                     print(f"{len(report.failures)} of {len(specs)} cases failed for policy {policy_name}.")
                 failed_cases += len(report.failures)

@@ -84,6 +84,8 @@ Every run writes a sanitized experiment manifest to `RESEARCH_BENCHMARK_OUTPUT` 
 
 A failed case does not stop the suite. Its run record gets `status = "failed"` and the exception type only, because provider error messages can carry response bodies; for the same reason the console report omits errors. The manifest's `status` is `completed` when every case succeeded, `completed_with_failures` when some failed, and `failed` when all failed or the suite itself errored or was cancelled, in which case `error` holds the exception type; `failed_cases` counts failures across policies. Interrupting a run (Ctrl-C) marks its unfinished cases `failed` with `CancelledError`. A succeeded run also records `review_reasons`, what it left unresolved, which is empty for a clean result, and, for a case with blocked URLs, `blocked_sources`: how many blocked sources its tools refused, fetched anyway, showed in search results, and saw cited. The manifest records counts only, never the blocked URLs. The CLI exits non-zero unless the status is `completed`.
 
+Scores outlive the process. Each succeeded run record holds `scores`, the value of every metric that applied to the case (a metric that did not apply has no entry, so it is never averaged in as a pass or a failure), and `measures`, the counts behind them: checked and unsupported claims, tool calls, research tool calls, tokens, cost (`null` when unpriced), quotes and sources and how many were not found, attachments, and integrity flags. It also records `duration_seconds` and, if an evaluator itself failed, `evaluator_failures`. `summary` holds one entry per policy: cases run, succeeded, failed, and needing review, the succeeded cases' total cost (`null` once any was unpriced), and each metric's mean with the number of cases it covers. None of it contains prompts, answers, search queries, or URLs.
+
 ## Comparability
 
 Compare runs only when these match:
@@ -93,8 +95,9 @@ Compare runs only when these match:
 - **Fetch version.** Version 2 pages through long documents and shares fetches within a case; version 3 also refuses blocked sources. It is part of the configuration fingerprint.
 - **Evidence version.** Version 2 adds verbatim quotes checked against tool output; version 3 checks every role's output against the run (see [Metrics](#metrics)).
 - **Attachment mode.** Never merge normalized and multimodal results into one number.
+- **Evaluator version.** Scores are comparable only under one set of metric definitions; `evaluator_version` changes when one does.
 
-The manifest's `config_fingerprint` hashes policies, attachment mode, tool mode, repository mode, acquisition, and evidence version. It hashes the suite file, not the downloaded dataset bytes, so record a dataset checksum separately for reproducible comparisons. Two different uncommitted trees can share a commit and fingerprint; commit before named comparison runs.
+The manifest's `config_fingerprint` hashes policies, attachment mode, tool mode, repository mode, acquisition, evidence version, and evaluator version. It hashes the suite file, not the downloaded dataset bytes, so record a dataset checksum separately for reproducible comparisons. Two different uncommitted trees can share a commit and fingerprint; commit before named comparison runs.
 
 ## Metrics
 

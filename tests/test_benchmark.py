@@ -52,6 +52,17 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     assert manifest["policies"]["synthetic"]["routes"]["scout"]["model"] == "synthetic:fake"
     assert manifest["runs"][0]["status"] == "succeeded"
     assert manifest["runs"][0]["review_reasons"] == []  # the synthetic verifier supports its one claim
+    # Scores survive the process: metrics that applied, the counts behind them, and a per-policy summary.
+    assert manifest["evaluator_version"] == 1
+    run = manifest["runs"][0]
+    assert run["scores"] == {"SupportedClaimRate": 1.0, "MajorErrorFreeRate": 1.0, "PrimarySourceRate": 1.0,
+                             "ToolEfficiency": 1.0, "UniqueSearchRate": 1.0}
+    assert run["measures"]["total_claims"] == 1 and run["measures"]["cost_usd"] == 0.0
+    assert run["duration_seconds"] >= 0 and "evaluator_failures" not in run
+    summary = manifest["summary"]["synthetic"]
+    assert (summary["cases"], summary["succeeded"], summary["failed"], summary["needs_review"]) == (1, 1, 0, 0)
+    assert summary["scores"]["SupportedClaimRate"] == {"mean": 1.0, "cases": 1}
+    assert "ReferenceAnswerMatch" not in summary["scores"]  # no reference answer: not applicable, not zero
     assert manifest["runs"][0]["job_id"]
     assert "Private fixture prompt" not in output.read_text()
     assert str(tmp_path) not in output.read_text()
@@ -192,6 +203,10 @@ async def test_failed_cases_set_manifest_status_without_printing_errors(
     assert runs["broken"]["status"] == "failed"
     assert runs["broken"]["error"] == "RuntimeError"
     assert runs["broken"]["job_id"] is None
+    assert "scores" in runs["working"] and "scores" not in runs["broken"]
+    summary = manifest["summary"]["synthetic"]
+    assert (summary["cases"], summary["succeeded"], summary["failed"]) == (2, 1, 1)
+    assert summary["scores"]["SupportedClaimRate"]["cases"] == 1
 
     failed = await run_benchmark(
         _two_case_suite(tmp_path, ["broken"]), policies=["synthetic"], max_concurrency=1,
@@ -269,3 +284,19 @@ async def test_cancelled_benchmark_marks_its_runs_and_manifest_failed(
     manifest = json.loads(manifest_path.read_text())
     assert (manifest["status"], manifest["error"]) == ("failed", "CancelledError")
     assert [(run["status"], run["error"]) for run in manifest["runs"]] == [("failed", "CancelledError")]
+
+
+def test_policy_summary_averages_applicable_scores_and_keeps_unknown_cost_unknown() -> None:
+    from research_loop.benchmark import _policy_summary
+
+    runs = [
+        {"status": "succeeded", "scores": {"A": 1.0, "B": 0.0}, "measures": {"cost_usd": 0.5}, "review_reasons": []},
+        {"status": "succeeded", "scores": {"A": 0.5}, "measures": {"cost_usd": 0.25}, "review_reasons": ["x"]},
+        {"status": "failed"},
+    ]
+    assert _policy_summary(runs) == {
+        "cases": 3, "succeeded": 2, "failed": 1, "needs_review": 1, "succeeded_cost_usd": 0.75,
+        "scores": {"A": {"mean": 0.75, "cases": 2}, "B": {"mean": 0.0, "cases": 1}},
+    }
+    runs[1]["measures"]["cost_usd"] = None  # one unpriced case makes the total unknown
+    assert _policy_summary(runs)["succeeded_cost_usd"] is None

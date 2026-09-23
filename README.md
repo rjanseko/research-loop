@@ -68,6 +68,7 @@ Results are compared only when these match. Manifests record them together with 
 | Fetch behavior | `fetch_version` 3: paged fetches with a per-job document memo; the task's blocked sources are refused | `acquisition.py` |
 | Tool mode | `normalized` (benchmarks, campaigns) or `adaptive` (library default) | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |
+| Scoring | `evaluator_version` 1: the benchmark metrics' definitions | `evals.py` |
 
 A new topology becomes `research-graph-v2`; `v1` does not change silently. Policies differ in routes and planning breadth, not in the algorithm. `quality` is the default for paid runs; `breadth` plans 16-24 questions and scouts them on a cheaper route; `glm-heavy` moves gap analysis and cheap scouting to GLM; `synthetic` makes no calls.
 

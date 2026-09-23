@@ -76,6 +76,7 @@ def build_manifest(
     attachment_mode: str,
     tool_mode: str,
     repository_mode: str,
+    evaluator_version: int,
     model_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if suite_path.suffix.lower() == ".toml":
@@ -114,6 +115,7 @@ def build_manifest(
         "repository_mode": repository_mode,
         "acquisition": acquisition,
         "evidence_version": EVIDENCE_VERSION,
+        "evaluator_version": evaluator_version,
     })
     return {
         "schema_version": 2,
@@ -123,6 +125,7 @@ def build_manifest(
         "policy_schema_version": 1,
         "acquisition": acquisition,
         "evidence_version": EVIDENCE_VERSION,
+        "evaluator_version": evaluator_version,
         "python_version": platform.python_version(),
         "status": "running",
         "graph_version": RESEARCH_GRAPH_VERSION,
