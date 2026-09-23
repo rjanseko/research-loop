@@ -2,7 +2,10 @@ from uuid import uuid4
 
 import pytest
 
-from research_loop.repository import CapturingResearchRepository, InMemoryResearchRepository
+from research_loop.repository import (
+    CapturingResearchRepository,
+    InMemoryResearchRepository,
+)
 from research_loop.schemas import ResearchRole, ToolEvent
 
 

@@ -32,7 +32,6 @@ from .acquisition import (
     wait_rate_slot,
 )
 
-
 _PDF_PAGE_LIMIT = 30
 # Largest metadata response read from a provider; reading stops once a response passes it.
 _MAX_METADATA_BYTES = 2_000_000
@@ -248,7 +247,7 @@ class ScholarClient:
             if re.fullmatch(r"W\d+", identifier) or identifier.startswith("https://openalex.org/W"):
                 work_id = identifier.rstrip("/").split("/")[-1]
                 result.works.append(_openalex_work(await self._request("openalex", f"/works/{work_id}")))
-            elif identifier.startswith("10.") or identifier.startswith("https://doi.org/10."):
+            elif identifier.startswith(("10.", "https://doi.org/10.")):
                 doi = identifier.removeprefix("https://doi.org/")
                 raw = await self._request("crossref", f"/works/{quote(doi, safe='')}")
                 result.works.append(_crossref_work(raw["message"]))
@@ -259,8 +258,8 @@ class ScholarClient:
                 if not re.fullmatch(r"[A-Za-z0-9.\-]+", acl_id):
                     raise ValueError("invalid ACL ID")
                 bib = await self._request("acl", f"/{acl_id}.bib", text=True)
-                title = re.search(r"title\s*=\s*\{([^}]+)\}", bib, re.I)
-                doi = re.search(r"doi\s*=\s*\{([^}]+)\}", bib, re.I)
+                title = re.search(r"title\s*=\s*\{([^}]+)\}", bib, re.IGNORECASE)
+                doi = re.search(r"doi\s*=\s*\{([^}]+)\}", bib, re.IGNORECASE)
                 result.works.append(ScholarWork(provider="acl", provider_id=acl_id, acl_id=acl_id,
                     title=title.group(1) if title else acl_id, doi=doi.group(1) if doi else None,
                     url=f"https://aclanthology.org/{acl_id}/", publication_status="unknown",
@@ -281,7 +280,7 @@ class ScholarClient:
         limit = max(1, min(limit, 10))
         hits_before = self.cache_hits
         try:
-            if identifier.startswith("10.") or identifier.startswith("https://doi.org/10."):
+            if identifier.startswith(("10.", "https://doi.org/10.")):
                 doi = identifier.removeprefix("https://doi.org/")
                 path = f"/index/v2/{direction}/doi:{quote(doi, safe='')}"
                 raw = await self._request("opencitations", path)
@@ -342,7 +341,7 @@ class ScholarClient:
                 result.provider_errors.append("fetch:BlockedSource")
                 result.blocked_source = exc.entry
                 return result
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - extractors raise their own types on arbitrary documents
                 result.provider_errors.append(f"fetch:{type(exc).__name__}")
                 return result
             if not document["text"].strip():
@@ -396,6 +395,7 @@ class ScholarClient:
                     pass
             if not extracted:
                 import io
+
                 from pypdf import PdfReader
                 pages = PdfReader(io.BytesIO(response.content)).pages
                 extracted = "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT])

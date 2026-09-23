@@ -385,12 +385,13 @@ def render_basis_papers(report: BasisPaperReport, title: str) -> str:
     lines = [
         f"# Basis papers: {title}",
         "",
-        f"Works cited by at least {report.min_seed_citations} of the study's {report.resolved_seeds} resolved "
-        f"seeds, ranked by how many seeds cite them, then by total citations (Semantic Scholar). "
-        f"{report.sources} bibliography entries gave {report.seeds} DOI or arXiv lookups; "
-        f"{report.sources_without_identifier} entries had neither, {report.resolved_by_title} were found by title, and "
-        f"{len(report.unresolved)} lookups were not found. {report.seeds_without_references} resolved seeds listed no references, and "
-        f"{report.unmatched_references} of {report.references} references matched no paper.",
+        (f"Works cited by at least {report.min_seed_citations} of the study's {report.resolved_seeds} resolved "
+         f"seeds, ranked by how many seeds cite them, then by total citations (Semantic Scholar). "
+         f"{report.sources} bibliography entries gave {report.seeds} DOI or arXiv lookups; "
+         f"{report.sources_without_identifier} entries had neither, {report.resolved_by_title} were found by title, "
+         f"and {len(report.unresolved)} lookups were not found. {report.seeds_without_references} resolved seeds "
+         f"listed no references, and {report.unmatched_references} of {report.references} references matched no "
+         "paper."),
         "",
         "| # | Work | Year | Cited by seeds | Citations | In study | ID |",
         "|---:|---|---:|---:|---:|:---:|---|",

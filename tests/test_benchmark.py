@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 import pytest
 
@@ -171,7 +171,7 @@ def _two_case_suite(tmp_path: Path, names: list[str]) -> Path:
 @pytest.fixture
 def broken_case(monkeypatch: pytest.MonkeyPatch) -> str:
     """Make the case named 'broken' fail with a provider-style error body."""
-    import research_loop.benchmark as benchmark
+    from research_loop import benchmark
 
     marker = "PRIVATE-PROVIDER-BODY"
     real_case = benchmark._run_policy_case
@@ -221,7 +221,7 @@ async def test_failed_cases_set_manifest_status_without_printing_errors(
 def test_cli_exits_nonzero_when_a_case_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, broken_case: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import research_loop.benchmark as benchmark
+    from research_loop import benchmark
 
     settings = ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)})
     monkeypatch.setattr(benchmark, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
@@ -238,7 +238,7 @@ def test_cli_exits_nonzero_when_a_case_fails(
 
 @pytest.mark.asyncio
 async def test_unpriced_model_call_leaves_benchmark_cost_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    import research_loop.benchmark as benchmark
+    from research_loop import benchmark
     from research_loop.benchmarks import BenchmarkCaseSpec
     from research_loop.synthetic import SyntheticResearchLoop
 
@@ -262,7 +262,7 @@ async def test_cancelled_benchmark_marks_its_runs_and_manifest_failed(
     import asyncio
     from uuid import uuid4
 
-    import research_loop.benchmark as benchmark
+    from research_loop import benchmark
 
     started = asyncio.Event()
 
@@ -304,7 +304,7 @@ def test_policy_summary_averages_applicable_scores_and_keeps_unknown_cost_unknow
 
 @pytest.mark.asyncio
 async def test_benchmark_runs_use_the_settings_they_were_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import research_loop.benchmark as benchmark
+    from research_loop import benchmark
 
     seen = []
 

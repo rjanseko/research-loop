@@ -24,3 +24,6 @@ benchmark_outputs/
 .DS_Store
 .idea/
 .vscode/
+
+# Personal Claude Code settings
+.claude/settings.local.json

@@ -13,8 +13,17 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart, UserPromptPart
+from pydantic_ai.exceptions import (
+    ModelHTTPError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
+from pydantic_ai.messages import (
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
 from research_loop import agents

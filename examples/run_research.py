@@ -8,7 +8,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from research_loop import POLICY_PRESETS, ResearchConfig, ResearchLoop, ResearchToolMode, get_policy
+from research_loop import (
+    POLICY_PRESETS,
+    ResearchConfig,
+    ResearchLoop,
+    ResearchToolMode,
+    get_policy,
+)
 from research_loop.observability import configure_logfire
 from research_loop.repository import InMemoryResearchRepository
 from research_loop.settings import ResearchSettings

@@ -8,15 +8,15 @@ from uuid import uuid4
 
 import pytest
 
-from research_loop.long_horizon import SPEC_FILE, load_spec, render_objective
 from research_loop.ledger import EvidenceLedger
+from research_loop.long_horizon import SPEC_FILE, load_spec, render_objective
 from research_loop.schemas import (
-    LongHorizonFindings,
     Claim,
     Contradiction,
     Evidence,
     FinalReport,
     Hypothesis,
+    LongHorizonFindings,
     ReportClaim,
     ResearchResult,
     SourceRef,
@@ -214,7 +214,7 @@ async def test_long_horizon_stops_once_failures_suggest_a_shared_cause(monkeypat
 def test_long_horizon_cli_exits_nonzero_and_names_failed_questions(monkeypatch, tmp_path: Path, capsys) -> None:
     import sys
 
-    import research_loop.long_horizon as long_horizon
+    from research_loop import long_horizon
 
     settings = ResearchSettings.from_env({})
     monkeypatch.setattr(long_horizon, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
@@ -481,7 +481,11 @@ def test_question_report_counts_quotes_not_found_in_tool_output() -> None:
 
 @pytest.mark.asyncio
 async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.long_horizon import aggregate_long_horizon, run_long_horizon, synthesis_prompt
+    from research_loop.long_horizon import (
+        aggregate_long_horizon,
+        run_long_horizon,
+        synthesis_prompt,
+    )
 
     class QuotingLoop:
         def __init__(self, *_args, **_kwargs):
@@ -606,7 +610,10 @@ def test_prompt_source_table_lists_each_work_once_across_questions() -> None:
 
 @pytest.mark.asyncio
 async def test_a_report_citing_no_claims_is_named_in_the_synthesis_inputs(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.long_horizon import aggregate_long_horizon, render_long_horizon_report
+    from research_loop.long_horizon import (
+        aggregate_long_horizon,
+        render_long_horizon_report,
+    )
     from research_loop.schemas import LongHorizonSynthesis
 
     def report_for(question_id: str) -> FinalReport:
@@ -631,8 +638,8 @@ def test_long_horizon_instruction_omits_unknown_statuses_from_a_present_list() -
 
 @pytest.mark.asyncio
 async def test_repeated_stored_claim_id_keeps_every_copy(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.long_horizon import aggregate_long_horizon, synthesis_prompt
     from research_loop.experiment import file_sha256
+    from research_loop.long_horizon import aggregate_long_horizon, synthesis_prompt
     from research_loop.schemas import ClaimCheck
 
     await _complete_questions(monkeypatch, tmp_path, ["q01"])
@@ -716,7 +723,7 @@ async def test_cancelled_long_horizon_run_marks_its_manifest_failed(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch, tmp_path: Path) -> None:
-    import research_loop.long_horizon as long_horizon
+    from research_loop import long_horizon
 
     await _complete_questions(monkeypatch, tmp_path, ["q01"])
     folder = tmp_path / "q01"

@@ -3,9 +3,9 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from PIL import Image
 from docx import Document
 from openpyxl import Workbook
+from PIL import Image
 from reportlab.pdfgen import canvas
 
 from research_loop.attachments import AttachmentCorpus, AttachmentKind
@@ -116,7 +116,10 @@ def test_attachment_source_ref_requires_no_fake_url() -> None:
 def test_multimodal_input_refuses_a_file_changed_since_ingestion(tmp_path: Path) -> None:
     import pytest
 
-    from research_loop.attachments import AttachmentIngestionError, build_multimodal_prompt
+    from research_loop.attachments import (
+        AttachmentIngestionError,
+        build_multimodal_prompt,
+    )
 
     path = tmp_path / "chart.png"
     Image.new("RGB", (8, 8), "red").save(path)

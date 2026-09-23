@@ -58,7 +58,7 @@ class SourceRef(BaseModel):
     is_retracted: bool | None = None
 
     @model_validator(mode="after")
-    def validate_source_identity(self) -> "SourceRef":
+    def validate_source_identity(self) -> SourceRef:
         if self.url is None and not self.attachment_id:
             raise ValueError("source must provide either url or attachment_id")
         if self.attachment_id and not self.locator:

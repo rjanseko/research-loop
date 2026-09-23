@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from html import escape
+from itertools import pairwise
 from pathlib import Path
 
 ASSETS = Path(__file__).resolve().parents[1] / "docs" / "assets"
@@ -523,7 +524,7 @@ def long_horizon() -> Svg:
     qs = ["q01", "q02", "q03", "q04", "q05", "q06"]
     boxes = [Box(262 + i * 88, 200, 74, 46) for i in range(len(qs))]
     edge(svg, curve(spec.right, boxes[0].left))
-    for a, b in zip(boxes, boxes[1:]):
+    for a, b in pairwise(boxes):
         edge(svg, curve(a.right, b.left))
     svg.add(text(boxes[-1].x + 54, 196, "…", size=18, cls="muted"))
     agg = Box(850, 200, 148, 56)

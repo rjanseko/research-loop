@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -40,8 +40,6 @@ from .observability import job_span
 from .policy import ModelPolicy, ModelRoute, retry_token_budget
 from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
-from .scholar import ScholarClient, build_scholar_toolset
-from .settings import ResearchSettings
 from .schemas import (
     FinalReport,
     Gap,
@@ -53,7 +51,15 @@ from .schemas import (
     ResearchRole,
     VerificationReport,
 )
-from .telemetry import error_snapshot, extract_tool_events, jsonable, safe_tool_args, usage_snapshot
+from .scholar import ScholarClient, build_scholar_toolset
+from .settings import ResearchSettings
+from .telemetry import (
+    error_snapshot,
+    extract_tool_events,
+    jsonable,
+    safe_tool_args,
+    usage_snapshot,
+)
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
 
@@ -104,7 +110,7 @@ def _recording_failure(exc: BaseException) -> Iterator[None]:
     with anyio.move_on_after(_FAILURE_WRITE_SECONDS, shield=True) as scope:
         try:
             yield
-        except Exception as write_error:
+        except Exception as write_error:  # noqa: BLE001 - a failed write must never replace the primary error
             exc.add_note(f"Recording this failure also failed ({type(write_error).__name__}).")
     if scope.cancelled_caught:
         exc.add_note("Recording this failure timed out.")
@@ -576,10 +582,9 @@ class AsyncResearchLoop:
                 captured.extend(run_messages)
             with _recording_failure(exc):
                 if run_messages:
-                    try:
+                    # Keep the original failure; the task row still records it.
+                    with suppress(Exception):
                         await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
-                    except Exception:
-                        pass  # keep the original failure; the task row still records it
                 await self.repository.finish_task(
                     task_id,
                     status="failed",
@@ -861,7 +866,7 @@ class AsyncResearchLoop:
 
         sem = asyncio.Semaphore(self.config.max_parallel_deep_dives)
         deep_results = await _gather_or_cancel(
-            (
+            
                 self._run_gap(
                     job_id,
                     g,
@@ -873,7 +878,7 @@ class AsyncResearchLoop:
                     parent_task_id=parent_task_id,
                 )
                 for g in valid
-            )
+            
         )
         for result in deep_results:
             ledger.add(result)

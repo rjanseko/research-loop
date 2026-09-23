@@ -7,8 +7,8 @@ from uuid import UUID
 
 from pydantic_graph import GraphBuilder, StepContext, reduce_list_append
 
-from .attachments import AttachmentCorpus
 from .async_orchestrator import AsyncResearchLoop
+from .attachments import AttachmentCorpus
 from .ledger import EvidenceLedger
 from .schemas import (
     FinalReport,

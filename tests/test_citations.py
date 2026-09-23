@@ -8,7 +8,12 @@ import httpx
 import pytest
 
 from research_loop.acquisition import AcquisitionCache
-from research_loop.citations import SemanticScholar, discover_basis_papers, render_basis_papers, seeds_from_bibliography
+from research_loop.citations import (
+    SemanticScholar,
+    discover_basis_papers,
+    render_basis_papers,
+    seeds_from_bibliography,
+)
 
 
 def test_seeds_come_from_arxiv_ids_and_dois_in_fields_or_urls() -> None:

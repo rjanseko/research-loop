@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-from typing import Any, ContextManager
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any
 from uuid import UUID
 
 from .settings import ResearchSettings
-
 
 _configured = False
 _instance: Any = None
@@ -41,7 +40,7 @@ def configure_logfire(settings: ResearchSettings) -> bool:
     return True
 
 
-def job_span(job_id: UUID, policy_name: str) -> ContextManager[Any]:
+def job_span(job_id: UUID, policy_name: str) -> AbstractContextManager[Any]:
     """One span per research job, so its agent calls share a trace; a no-op without Logfire.
 
     Attributes identify the job only; the objective and constraints stay out of traces.
