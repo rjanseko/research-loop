@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .schemas import Claim, ResearchResult, SourceRef
 
@@ -56,3 +57,14 @@ class EvidenceLedger:
 
     def claim_count(self) -> int:
         return len(self.claims())
+
+    def to_json(self) -> dict[str, list[dict[str, Any]]]:
+        """Results by question, as stored in Postgres and exported as evidence_ledger.json."""
+        return {question_id: [result.model_dump(mode="json") for result in results]
+                for question_id, results in self.results.items()}
+
+    @classmethod
+    def from_json(cls, data: dict[str, list[dict[str, Any]]]) -> EvidenceLedger:
+        """Reload a stored ledger as is; its claim IDs are already unique, so nothing is renamed."""
+        return cls(results={question_id: [ResearchResult.model_validate(item) for item in results]
+                            for question_id, results in data.items()})

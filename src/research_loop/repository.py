@@ -67,6 +67,8 @@ class ResearchRepository(Protocol):
         final_report: dict[str, Any] | None,
         verification: dict[str, Any] | None,
         error: dict[str, Any] | None = None,
+        evidence_ledger: dict[str, Any] | None = None,
+        review_reasons: list[str] | None = None,
     ) -> None: ...
 
 
@@ -309,6 +311,8 @@ class PostgresResearchRepository:
                        final_report = %s,
                        verification = %s,
                        error = %s,
+                       evidence_ledger = %s,
+                       review_reasons = %s,
                        finished_at = now()
                  where id = %s
                 """,
@@ -317,6 +321,8 @@ class PostgresResearchRepository:
                     _pg_json(kwargs.get("final_report")),
                     _pg_json(kwargs.get("verification")),
                     _pg_json(kwargs.get("error")),
+                    _pg_json(kwargs.get("evidence_ledger")),
+                    _pg_json(kwargs.get("review_reasons")),
                     job_id,
                 ),
             )

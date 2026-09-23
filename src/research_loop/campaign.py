@@ -210,10 +210,7 @@ def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: s
     (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification, outcome.ledger),
                                       encoding="utf-8")
     (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    _write_json(folder / "evidence_ledger.json", {
-        key: [item.model_dump(mode="json") for item in values]
-        for key, values in outcome.ledger.results.items()
-    })
+    _write_json(folder / "evidence_ledger.json", outcome.ledger.to_json())
     bibliography = list({
         json.dumps(source.model_dump(mode="json"), sort_keys=True): source.model_dump(mode="json")
         for source in outcome.ledger.sources()
@@ -379,7 +376,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
             question=question,
             run=run,
             report=FinalReport.model_validate_json((folder / "report.json").read_text(encoding="utf-8")),
-            ledger={key: [ResearchResult.model_validate(item) for item in items] for key, items in raw_ledger.items()},
+            ledger=EvidenceLedger.from_json(raw_ledger).results,
             verification=VerificationReport.model_validate_json(
                 (folder / "verification.json").read_text(encoding="utf-8")
             ),

@@ -14,6 +14,8 @@ Finding 5 is addressed for the normalized tool stack (`fetch_version` 3): a job-
 
 Findings 1 and 4 now have durable case records: each benchmark manifest run keeps its applicable scores, the safe counts behind them (cost `null` when unpriced), duration, and evaluator failures, and each policy gets a summary of outcomes, spend, and per-metric means with their denominators. `evaluator_version` joins the manifest and fingerprint. Scores live in the manifest, not Postgres, and official graders remain separate.
 
+Finding 6 is addressed: migration `003_research_evidence.sql` adds `evidence_ledger` and `review_reasons` to `research_jobs`. A finished job stores its ledger whole, so its report's and verification's claim IDs resolve from Postgres without replaying normalization, and a failed job keeps the evidence gathered before the failure. Task outputs still hold each worker's raw IDs, and the ledger object stays mutable in memory.
+
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 
 **Recommendation.** Keep PydanticAI, Pydantic Graph, the evidence ledger, and Postgres. Make a focused internal restructure around run lifecycle, canonical evidence, and bounded prompts. The graph is a useful description of the research algorithm. The largest problems occur in the contracts around it: what counts as a successful run, whether citations resolve, whether campaign artifacts belong together, and how much evidence a model receives.

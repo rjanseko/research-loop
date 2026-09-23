@@ -50,9 +50,9 @@ class ResearchLoop(AsyncResearchLoop):
             objective, constraints, session_id=session_id, root_run_id=root_run_id,
             kind="pydantic-graph", graph_version=self.graph_version,
         )
-        async with self._job_scope(job_id, constraints):
+        ledger = EvidenceLedger()
+        async with self._job_scope(job_id, constraints, ledger):
             attachments = await self._load_attachments(job_id, constraints)
-            ledger = EvidenceLedger()
             result = await self.graph.run(
                 state=ResearchGraphState(
                     job_id=job_id,

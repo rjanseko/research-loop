@@ -36,3 +36,15 @@ def test_ledger_makes_claim_ids_unique_and_remaps_contradictions():
     # Within a result, a claim's own ID wins; an already-prefixed reference is kept as given.
     assert second.contradictions[0].claim_ids == ["q1/c1~2", "q1/c2"]
     assert scout.claims[0].id == "c1"  # the worker's object is not mutated
+
+
+def test_ledger_round_trips_through_json_without_renaming_claims():
+    from research_loop.schemas import Claim
+
+    ledger = EvidenceLedger()
+    for conclusion in ("scout", "deep dive"):
+        ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion=conclusion, confidence=0.8,
+                                  claims=[Claim(id="c1", statement="s", confidence=0.8)]))
+    restored = EvidenceLedger.from_json(ledger.to_json())
+    assert restored.claim_ids() == ledger.claim_ids() == {"q1/c1", "q1/c1~2"}
+    assert [result.conclusion for result in restored.for_question("q1")] == ["scout", "deep dive"]

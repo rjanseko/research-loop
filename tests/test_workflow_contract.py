@@ -19,10 +19,11 @@ from pydantic_ai.models.function import FunctionModel
 
 from research_loop import agents
 from research_loop.async_orchestrator import ResearchConfig
+from research_loop.ledger import EvidenceLedger
 from research_loop.orchestrator import LegacyResearchLoop, ResearchLoop
 from research_loop.policy import ModelPolicy, ModelRoute
 from research_loop.repository import InMemoryResearchRepository
-from research_loop.schemas import ResearchConstraints, ResearchRole
+from research_loop.schemas import FinalReport, ResearchConstraints, ResearchRole
 from research_loop.tools import ResearchToolMode
 
 
@@ -213,6 +214,12 @@ async def test_happy_path_persists_report_and_releases_job_resources(workflow):
     assert loop._job_spend == loop._fetch_memos == loop._source_policies == {}
     # The run succeeded, but the scripted verifier checked nothing, so the report is unassessed.
     assert outcome.review_reasons == ["the verifier checked none of the report's statements"]
+    assert job["review_reasons"] == outcome.review_reasons
+    # The stored ledger alone resolves every claim the stored report and verification cite.
+    stored = EvidenceLedger.from_json(job["evidence_ledger"])
+    cited = set(FinalReport.model_validate(job["final_report"]).claim_ids_used)
+    cited |= {claim_id for check in outcome.verification.checks for claim_id in check.claim_ids}
+    assert cited and cited <= stored.claim_ids() == outcome.ledger.claim_ids()
 
 
 @pytest.mark.asyncio
@@ -317,6 +324,11 @@ async def test_provider_failure_records_failed_task_and_job_without_response_bod
     assert job["status"] == "failed"
     assert job["final_report"] is job["verification"] is None
     assert job["error"] == failed[0]["error"] == {"type": "ModelHTTPError", "status_code": 401}
+    # Evidence gathered before the failure is kept; a run that failed before any is stored without one.
+    stored = job["evidence_ledger"]
+    assert (stored is None) == (role in {"planner", "scout"})
+    if stored:
+        assert EvidenceLedger.from_json(stored).for_question("q1")
     assert "PRIVATE-PROVIDER-BODY" not in str(loop.repository.tasks)
     assert all(task["status"] in {"succeeded", "failed"} for task in loop.repository.tasks.values())
     assert loop._job_spend == loop._fetch_memos == {}

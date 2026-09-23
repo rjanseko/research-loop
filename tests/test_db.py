@@ -61,3 +61,9 @@ def test_migrations_reject_changed_sql(tmp_path: Path) -> None:
     path.write_text("select 2;")
     with pytest.raises(RuntimeError, match="changed"):
         apply_migrations(conn, migration_files(tmp_path))
+
+
+def test_repository_migrations_are_numbered_in_order() -> None:
+    names = [migration.name for migration in migration_files()]
+    assert names == sorted(names)
+    assert names[:3] == ["001_research.sql", "002_research_attachments.sql", "003_research_evidence.sql"]

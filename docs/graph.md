@@ -122,6 +122,8 @@ The graph is typed control flow, not durable execution, and not a crash-resumabl
 - tool calls
 - attachment manifests
 - the final report and verification
+- the evidence ledger, whose unique claim IDs the report and verification cite, including a failed job's partial ledger
+- `review_reasons`, what a finished job left unresolved
 
 Every job and task ends in a terminal record when the process survives: a failure, a cancelled run (Ctrl-C reaches the run as cancellation), and a sibling branch the graph cancels because another failed are all recorded as `failed`, with the error type (`CancelledError` for cancellation). These writes are shielded from cancellation for up to ten seconds, and if one fails, the original error is still the one raised, with a note. A killed process still leaves `running` records, and runs have no deadline.
 

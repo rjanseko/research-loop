@@ -237,11 +237,12 @@ class AsyncResearchLoop:
         )
 
     @asynccontextmanager
-    async def _job_scope(self, job_id: UUID, constraints: ResearchConstraints | None = None) -> AsyncIterator[None]:
+    async def _job_scope(self, job_id: UUID, constraints: ResearchConstraints | None = None,
+                         ledger: EvidenceLedger | None = None) -> AsyncIterator[None]:
         """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises.
 
         Cancellation, which is how Ctrl-C reaches the run, is recorded too, so an interrupted
-        run does not stay "running".
+        run does not stay "running". A failed job keeps the evidence `ledger` gathered so far.
         """
         self._job_spend[job_id] = Decimal(0)
         self._fetch_memos[job_id] = FetchMemo()
@@ -256,6 +257,7 @@ class AsyncResearchLoop:
                     final_report=None,
                     verification=None,
                     error=error_snapshot(exc),
+                    evidence_ledger=ledger.to_json() if ledger and ledger.results else None,
                 )
             raise
         finally:
@@ -285,11 +287,14 @@ class AsyncResearchLoop:
         ledger: EvidenceLedger,
         attachments: AttachmentCorpus | None,
     ) -> ResearchOutcome:
+        # The ledger is stored whole: its unique claim IDs are the ones the report and verification cite.
         await self.repository.finish_job(
             job_id,
             status="succeeded",
             final_report=report.model_dump(mode="json"),
             verification=verification.model_dump(mode="json"),
+            evidence_ledger=ledger.to_json(),
+            review_reasons=review_reasons(report, verification, ledger),
         )
         return ResearchOutcome(
             job_id, plan, report, verification, ledger, attachments,
@@ -863,12 +868,12 @@ class AsyncResearchLoop:
         job_id = await self._create_job(
             objective, constraints, session_id=session_id, root_run_id=root_run_id, kind="async-legacy"
         )
-        async with self._job_scope(job_id, constraints):
+        ledger = EvidenceLedger()
+        async with self._job_scope(job_id, constraints, ledger):
             attachments = await self._load_attachments(job_id, constraints)
             plan = await self._plan(job_id, objective, constraints, attachments)
             questions = {q.id: q for q in plan.questions}
 
-            ledger = EvidenceLedger()
             scout_sem = asyncio.Semaphore(self.config.max_parallel_scouts)
             scout_results = await asyncio.gather(
                 *(
