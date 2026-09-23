@@ -190,8 +190,8 @@ class ToolEvent(BaseModel):
 
 
 # Campaign-level synthesis over completed campaign questions. Claim refs such as
-# "q01/c3" identify claims in the aggregated campaign evidence ledger.
-_CLAIM_REFS = "Campaign claim refs such as 'q01/c3', copied exactly from the supplied evidence"
+# "q01/q1/c3" identify claims in the aggregated campaign evidence ledger.
+_CLAIM_REFS = "Campaign claim refs such as 'q01/q1/c3', copied exactly from the supplied evidence"
 
 
 class CampaignFinding(BaseModel):

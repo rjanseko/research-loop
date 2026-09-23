@@ -60,7 +60,7 @@ def _ledger(question_id: str) -> EvidenceLedger:
     journal = SourceRef(url="https://example.org/journal", title="Paper", source_type="paper", publication_status="journal")
     ledger = EvidenceLedger()
     ledger.add(ResearchResult(
-        question_id=f"{question_id}-sub1", question="definitions", conclusion="A finding",
+        question_id="q1", question="definitions", conclusion="A finding",
         claims=[Claim(id="c1", statement=f"{question_id} scout finding",
                       evidence=[Evidence(source=preprint, excerpt="Short evidence", confidence=0.8)], confidence=0.8)],
         contradictions=[Contradiction(description="Sources disagree", claim_ids=["c1"])],
@@ -69,7 +69,7 @@ def _ledger(question_id: str) -> EvidenceLedger:
     ))
     # A deep dive may reuse a claim ID; campaign refs must still be unique.
     ledger.add(ResearchResult(
-        question_id=f"{question_id}-sub1", question="definitions", conclusion="Deeper finding",
+        question_id="q1", question="definitions", conclusion="Deeper finding",
         claims=[Claim(id="c1", statement=f"{question_id} deep-dive finding",
                       evidence=[Evidence(source=journal, excerpt="Published evidence", confidence=0.9)], confidence=0.9)],
         confidence=0.9,
@@ -150,8 +150,8 @@ async def test_aggregate_assigns_unique_refs_and_keeps_source_versions(monkeypat
     evidence = aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path)
     assert [item.question["id"] for item in evidence.completed] == ["q01", "q02"]
     assert evidence.missing == [f"q{index:02d}" for index in range(3, 12)]
-    assert evidence.refs == {"q01/c1", "q01/c1~2", "q02/c1", "q02/c1~2"}
-    assert evidence.contradictions["q01"] == [{"description": "Sources disagree", "claim_refs": ["q01/c1"]}]
+    assert evidence.refs == {"q01/q1/c1", "q01/q1/c1~2", "q02/q1/c1", "q02/q1/c1~2"}
+    assert evidence.contradictions["q01"] == [{"description": "Sources disagree", "claim_refs": ["q01/q1/c1"]}]
     # Preprint and journal records stay distinct; each lists every question that cited it.
     assert sorted(item["publication_status"] for item in evidence.bibliography) == ["journal", "preprint"]
     assert all(item["question_ids"] == ["q01", "q02"] for item in evidence.bibliography)
@@ -200,7 +200,7 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
 
     def respond(messages, info: AgentInfo) -> ModelResponse:
         prompts.append(str(messages[-1].parts[-1].content))
-        refs = ["q01/c1", "q07/c9"] if len(prompts) == 1 else ["q01/c1", "q02/c1~2"]
+        refs = ["q01/q1/c1", "q07/c9"] if len(prompts) == 1 else ["q01/q1/c1", "q02/q1/c1~2"]
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _synthesis_body(refs))])
 
     with campaign_synthesizer_agent.override(model=FunctionModel(respond)):
@@ -210,16 +210,16 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
         )
 
     assert len(prompts) == 2
-    assert '"ref": "q02/c1~2"' in prompts[0]
+    assert '"ref": "q02/q1/c1~2"' in prompts[0]
     assert "q07/c9" in prompts[1]  # the retry names the invented ref
     campaign_dir = tmp_path / SYNTHESIS_DIR
     assert {item.name for item in campaign_dir.iterdir()} == set(load_campaign(CAMPAIGN_FILE)["outputs"]["campaign_files"])
     hypotheses = json.loads((campaign_dir / "hypotheses.json").read_text())
-    assert hypotheses[0]["supporting_evidence"] == ["q01/c1", "q02/c1~2"]
+    assert hypotheses[0]["supporting_evidence"] == ["q01/q1/c1", "q02/q1/c1~2"]
     report = (campaign_dir / "report.md").read_text()
-    assert "Partial synthesis" in report and "q01/c1, q02/c1~2" in report
+    assert "Partial synthesis" in report and "q01/q1/c1, q02/q1/c1~2" in report
     ledger = json.loads((campaign_dir / "evidence_ledger.json").read_text())
-    assert {item["ref"] for item in ledger["claims"]} == {"q01/c1", "q01/c1~2", "q02/c1", "q02/c1~2"}
+    assert {item["ref"] for item in ledger["claims"]} == {"q01/q1/c1", "q01/q1/c1~2", "q02/q1/c1", "q02/q1/c1~2"}
     manifest = json.loads(manifest_path.read_text())
     assert manifest["kind"] == "synthesis"
     assert manifest["status"] == "completed"
@@ -265,4 +265,30 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
     assert policy.job_reserve_usd == execution["question_reserve_usd"]
     assert policy.for_role(ResearchRole.SCOUT).total_tokens_limit == execution["scout_total_tokens_limit"]
     assert policy.cheap_scout.total_tokens_limit == execution["scout_total_tokens_limit"]
+    scout = policy.for_role(ResearchRole.SCOUT)
+    assert (scout.max_requests, scout.max_tool_calls) == (execution["scout_max_requests"], execution["scout_max_tool_calls"])
+    assert policy.for_role(ResearchRole.DEEP_DIVE).cost_limit == execution["deep_dive_cost_limit_usd"]
+    assert seen["config"].max_deep_dives_per_round == execution["max_deep_dives_per_round"]
+    assert seen["config"].max_parallel_deep_dives == execution["max_parallel_deep_dives"]
     assert seen["notes"] == execution["research_notes"]
+
+
+def test_question_report_carries_caveats_and_verifier_findings() -> None:
+    from research_loop.campaign import render_question_report
+    from research_loop.schemas import ClaimCheck
+
+    report = FinalReport(answer="## Summary\n\nSWE-bench has 2,294 tasks.", caveats=["Dataset card was not version-pinned."])
+    verification = VerificationReport(needs_research=True, checks=[
+        ClaimCheck(statement="Task count", claim_ids=["q1/c1"], supported=True, severity="none", explanation="ok"),
+        ClaimCheck(statement="Lite excluded repo", claim_ids=[], supported=False, severity="minor", explanation="unconfirmed"),
+        ClaimCheck(statement="OpenAI audit figures", claim_ids=["q3/c4"], supported=False, severity="major",
+                   explanation="secondary sources only"),
+    ])
+    text = render_question_report(report, verification)
+    assert text.startswith("## Summary")
+    assert "## Caveats\n\n- Dataset card was not version-pinned." in text
+    assert "checked 3 statements: 1 supported, 2 not supported (1 major)" in text
+    assert "unresolved" in text
+    assert text.index("OpenAI audit figures") < text.index("Lite excluded repo")  # major first
+    assert "**[major, not supported]** OpenAI audit figures (claims: q3/c4): secondary sources only" in text
+    assert "Task count" not in text  # supported, non-major checks stay in verification.json

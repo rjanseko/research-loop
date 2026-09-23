@@ -68,14 +68,16 @@ class SyntheticResearchLoop(ResearchLoop):
             elif role is ResearchRole.GAP_ANALYST:
                 output = GapAnalysis()
             elif role is ResearchRole.SYNTHESIZER:
+                # Cite the ledger's claim IDs as given in the prompt; the ledger renames claims.
+                claim_ids = [claim["id"] for result in payload["evidence"] for claim in result["claims"]]
                 output = FinalReport(
                     answer="Synthetic evidence is available.",
-                    claims=[ReportClaim(statement="Synthetic evidence is available.", claim_ids=["synthetic-claim-1"])],
+                    claims=[ReportClaim(statement="Synthetic evidence is available.", claim_ids=claim_ids)],
                 )
             elif role is ResearchRole.VERIFIER:
                 output = VerificationReport(checks=[ClaimCheck(
                     statement="Synthetic evidence is available.",
-                    claim_ids=["synthetic-claim-1"],
+                    claim_ids=payload["report"]["claims"][0]["claim_ids"],
                     supported=True,
                     severity="none",
                     explanation="Supported by synthetic fixture.",

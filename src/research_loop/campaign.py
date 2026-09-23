@@ -29,6 +29,7 @@ from .schemas import (
     ResearchConstraints,
     ResearchResult,
     ResearchRole,
+    VerificationReport,
 )
 from .settings import ResearchSettings
 from .tools import ResearchToolMode
@@ -112,6 +113,33 @@ def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_sn
     }
 
 
+_SEVERITY_ORDER = {"major": 0, "minor": 1, "none": 2}
+
+
+def render_question_report(report: FinalReport, verification: VerificationReport) -> str:
+    """The synthesized answer, its caveats, and the verifier's unresolved findings."""
+    lines = [report.answer.rstrip(), ""]
+    if report.caveats:
+        lines += ["## Caveats", "", *[f"- {caveat}" for caveat in report.caveats], ""]
+    checks = verification.checks
+    unsupported = [check for check in checks if not check.supported]
+    major = sum(1 for check in unsupported if check.severity == "major")
+    lines += ["## Verification", "",
+              f"The verifier checked {len(checks)} statements: {len(checks) - len(unsupported)} supported, "
+              f"{len(unsupported)} not supported ({major} major)."]
+    if verification.needs_research:
+        lines.append("It asked for more research, which this run did not do, so the issues below are unresolved.")
+    flagged = sorted((check for check in checks if not check.supported or check.severity == "major"),
+                     key=lambda check: (_SEVERITY_ORDER[check.severity], check.supported))
+    if flagged:
+        lines.append("")
+    for check in flagged:
+        label = f"{check.severity}, {'supported' if check.supported else 'not supported'}"
+        cited = f" (claims: {', '.join(check.claim_ids)})" if check.claim_ids else ""
+        lines.append(f"- **[{label}]** {check.statement}{cited}: {check.explanation}")
+    return "\n".join(lines) + "\n"
+
+
 async def run_campaign(
     path: Path,
     *,
@@ -141,16 +169,23 @@ async def run_campaign(
     )
     policy.job_cost_limit = float(execution["question_cost_limit_usd"])
     policy.job_reserve_usd = float(execution.get("question_reserve_usd", 0.0))
-    if scout_tokens := execution.get("scout_total_tokens_limit"):
-        policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], total_tokens_limit=int(scout_tokens))
+    scout_limits = {
+        route_field: int(execution[key])
+        for key, route_field in (("scout_max_requests", "max_requests"), ("scout_max_tool_calls", "max_tool_calls"),
+                                 ("scout_total_tokens_limit", "total_tokens_limit"))
+        if key in execution
+    }
+    if scout_limits:
+        policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], **scout_limits)
         if policy.cheap_scout:
-            policy.cheap_scout = replace(policy.cheap_scout, total_tokens_limit=int(scout_tokens))
+            policy.cheap_scout = replace(policy.cheap_scout, **scout_limits)
         if policy.multimodal_scout:
-            policy.multimodal_scout = replace(policy.multimodal_scout, total_tokens_limit=int(scout_tokens))
+            policy.multimodal_scout = replace(policy.multimodal_scout, **scout_limits)
     run_config = ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode="record",
         max_parallel_scouts=int(execution["max_parallel_scouts"]),
+        max_parallel_deep_dives=int(execution.get("max_parallel_deep_dives", ResearchConfig.max_parallel_deep_dives)),
         max_deep_dives_per_round=int(execution["max_deep_dives_per_round"]),
         max_verification_rounds=int(execution["max_verification_rounds"]),
         salvage_exhausted_research=True,
@@ -166,6 +201,7 @@ async def run_campaign(
         "run_limits": {
             "max_parallel_scouts": run_config.max_parallel_scouts,
             "max_deep_dives_per_round": run_config.max_deep_dives_per_round,
+            "max_parallel_deep_dives": run_config.max_parallel_deep_dives,
             "max_verification_rounds": run_config.max_verification_rounds,
             "question_cost_limit_usd": policy.job_cost_limit,
             "question_reserve_usd": policy.job_reserve_usd,
@@ -198,7 +234,7 @@ async def run_campaign(
                     raise
                 folder = output_dir / question_id
                 folder.mkdir(parents=True, exist_ok=True)
-                (folder / "report.md").write_text(outcome.report.answer + "\n", encoding="utf-8")
+                (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification), encoding="utf-8")
                 (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
                 _write_json(folder / "evidence_ledger.json", {
                     key: [item.model_dump(mode="json") for item in values]
@@ -393,7 +429,7 @@ def render_campaign_report(campaign: dict[str, Any], evidence: CampaignEvidence,
         lines.append("- None recorded.")
     lines += ["", "## Catalogs", ""]
     lines += [f"- `{name}.json`: {len(getattr(synthesis, name))} entries" for name in CATALOGS]
-    lines += ["", "Claim refs such as `q01/c3` resolve in `evidence_ledger.json` under `claims`.", ""]
+    lines += ["", "Claim refs such as `q01/q1/c3` resolve in `evidence_ledger.json` under `claims`.", ""]
     return "\n".join(lines)
 
 

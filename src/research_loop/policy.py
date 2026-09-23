@@ -42,7 +42,7 @@ class ModelRoute:
             self,
             max_requests=2,
             total_tokens_limit=80_000,
-            cost_limit=None if self.cost_limit is None else round(self.cost_limit * 0.25, 4),
+            cost_limit=None if self.cost_limit is None else round(self.cost_limit * 0.5, 4),
         )
 
 

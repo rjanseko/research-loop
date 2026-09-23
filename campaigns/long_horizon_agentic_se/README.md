@@ -17,15 +17,16 @@ research-campaign --spec campaigns/long_horizon_agentic_se/pilot.toml --question
 
 The per-task usage in Postgres then shows what each step cost, which is how to set budgets for the campaign questions. Each question runs under the `[execution]` limits:
 
-- a $5 question cap, with a $2 reserve for gap analysis, synthesis, verification, and salvage;
-- a 400k-token scout limit;
+- a $5 question cap, with a $2.50 reserve for gap analysis, synthesis, verification, and salvage (about $4 expected per question);
+- scouts limited to 16 requests, 36 tool calls, and 500k tokens;
+- up to 2 deep dives per question, capped at $1.25 each and run one at a time, so each budget check sees the previous one's spend;
 - research notes that guide the scholarly search and ask scouts to finish before their budget runs out.
 
 ## Campaign synthesis
 
 Catalogs and hypotheses come from campaign synthesis over completed questions:
 
-- `research-campaign --aggregate` makes no model calls. It merges the completed questions' ledgers and bibliographies into `campaign/`. Each claim gets a campaign ref such as `q01/c3`; a claim ID repeated within a question gets a suffix such as `q01/c3~2`.
+- `research-campaign --aggregate` makes no model calls. It merges the completed questions' ledgers and bibliographies into `campaign/`. Each claim gets a campaign ref: the campaign question plus the ledger claim ID, such as `q01/q1/c3`. The run ledger already makes claim IDs unique (`q1/c3`, `q1/c3~2`), and a repeated ID in an older ledger gets a `~2` suffix.
 - `research-campaign --synthesize --dry-run` makes no calls. It reports which questions are complete and the prompt size against `synthesis.max_prompt_chars`.
 - `research-campaign --synthesize --paid [--persist]` runs the same preflight as question runs. It then makes one campaign-level synthesizer job under the `[synthesis]` limits and writes the `outputs.campaign_files`. Every finding, catalog entry, and hypothesis must cite existing claim refs; an invented ref triggers a bounded retry. Synthesis requires every question to be complete unless `--allow-partial` is passed. Partial runs are labeled in the report and manifest.
 

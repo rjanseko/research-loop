@@ -169,7 +169,7 @@ async def test_exhausted_research_is_salvaged_without_persisting_tool_output() -
     assert salvaged["status"] == "succeeded"
     assert salvaged["effective_config"]["salvage"] is True
     assert salvaged["effective_config"]["max_requests"] == 2
-    assert salvaged["effective_config"]["cost_limit"] == pytest.approx(0.2)
+    assert salvaged["effective_config"]["cost_limit"] == pytest.approx(0.4)  # half the route cap
     assert "result_sha256" in salvaged["prompt"]
     assert "PRIVATE-FULL-TEXT" not in salvaged["prompt"]
 

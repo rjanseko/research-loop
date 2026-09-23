@@ -14,16 +14,21 @@ first_run = "One narrow pilot question, followed by evidence review before the f
 max_parallel_scouts = 2
 planner_question_min = 1
 planner_question_max = 3
-max_deep_dives_per_round = 1
+max_deep_dives_per_round = 2
+# Run deep dives one at a time so each budget check sees the previous one's spend.
+max_parallel_deep_dives = 1
 max_verification_rounds = 0
-deep_dive_cost_limit_usd = 3.0
+deep_dive_cost_limit_usd = 1.25
 # Soft cap across all model calls for one question; checked before each call.
 question_cost_limit_usd = 5.0
 # Part of the cap that scouts, deep dives, and the planner leave for gap analysis,
 # synthesis, verification, and salvaging research that ran out of budget.
-question_reserve_usd = 2.0
-# Scouts are cheap per token; let their dollar and request limits bind before tokens.
-scout_total_tokens_limit = 400_000
+question_reserve_usd = 2.5
+# Scouts are cheap per token. The pilot's scouts stopped on request and tool-call counts
+# at 15-25% of their dollar cap, so these limits buy depth; tokens are sized to fit.
+scout_max_requests = 16
+scout_max_tool_calls = 36
+scout_total_tokens_limit = 500_000
 research_notes = [
     "Use primary benchmark papers and official repositories for benchmark claims.",
     "Label publication status and include DOI/arXiv/OpenAlex/ACL IDs when available.",

@@ -88,7 +88,7 @@ campaign_synthesizer_agent = Agent(
     instructions=(
         "Synthesize a research campaign from the supplied per-question reports and evidence only; do not "
         "research further or use outside knowledge. Cite evidence with the exact claim refs supplied (for "
-        "example 'q01/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
+        "example 'q01/q1/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
         "from multiple independent tier A-C sources), preliminary (single source, preprint-only, or narrow "
         "evaluation), vendor_claims (results reported by a vendor without independent replication), "
         "contradictory (cite both sides), or unknowns. Keep preprint, submission, and published status "
