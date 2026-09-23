@@ -29,7 +29,7 @@ A completed question writes `outputs.question_files` to `<output>/<question id>/
 |---|---|
 | `report.md` | The answer, caveats, the verifier's unsupported or major findings, and how many quoted passages were not found in tool output |
 | `report.json`, `verification.json` | The final report and the verifier's checks |
-| `evidence_ledger.json` | Every research result, with unique claim IDs such as `q1/c3` |
+| `evidence_ledger.json` | Every research result, with unique claim IDs such as `q1/c3`; the report and verification cite only these IDs |
 | `bibliography.json` | Distinct sources; preprint and publication records stay separate |
 | `run.json` | Written last: job ID, cost, config fingerprint, and a hash of the rendered objective. Its presence marks the question completed |
 

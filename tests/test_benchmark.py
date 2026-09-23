@@ -46,7 +46,7 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     assert manifest["policy_schema_version"] == 1
     assert manifest["acquisition"]["search_backend"] == "duckduckgo"
     assert manifest["acquisition"]["fetch_version"] == 2
-    assert manifest["evidence_version"] == 2
+    assert manifest["evidence_version"] == 3
     assert manifest["python_version"]
     assert manifest["policies"]["synthetic"]["routes"]["scout"]["model"] == "synthetic:fake"
     assert manifest["runs"][0]["status"] == "succeeded"

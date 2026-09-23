@@ -13,8 +13,8 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
-from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 
 from research_loop import agents
@@ -93,7 +93,10 @@ class Script:
         self.hang_question: str | None = None
         self.reached = asyncio.Event()  # set once a hanging call is in flight
         self.invalid_scout = False
+        # Upcoming synthesizer or verifier calls that cite a claim ID missing from the ledger.
+        self.invented_refs: dict[str, int] = {}
         self.prompts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.retries: dict[str, list[str]] = defaultdict(list)  # retry prompts each role received
 
     def model(self, role: str) -> FunctionModel:
         async def respond(messages, info):
@@ -101,6 +104,11 @@ class Script:
                           if isinstance(part, UserPromptPart))
             payload = json.loads(prompt)
             self.prompts[role].append(payload)
+            self.retries[role] += [str(part.content) for part in messages[-1].parts
+                                   if isinstance(part, RetryPromptPart)]
+            invent = self.invented_refs.get(role, 0) > 0
+            if invent:
+                self.invented_refs[role] -= 1
             question_id = payload.get("question", {}).get("id")
             if role == self.hang_role and self.hang_question in (None, question_id):
                 self.reached.set()
@@ -124,10 +132,15 @@ class Script:
                 output = {"gaps": self.gaps}
             elif role == "synthesizer":
                 refs = [claim["id"] for result in payload["evidence"] for claim in result["claims"]]
+                refs += ["q9/c9"] if invent else []
                 output = {"answer": "The measurement is approximate.",
                           "claims": [{"statement": "The measurement is approximate.", "claim_ids": refs}]}
             elif role == "verifier":
                 output = self.verification
+                if invent:
+                    output = {**output, "checks": [*output.get("checks", []), {
+                        "statement": "Invented", "claim_ids": ["q9/c9"], "supported": False,
+                        "severity": "major", "explanation": "cites a claim the ledger does not have"}]}
             else:
                 raise AssertionError(role)
             return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
@@ -440,3 +453,38 @@ async def test_failure_survives_a_failed_cleanup_write(workflow):
     # Both the task and the job write failed; the provider error still surfaces, with notes.
     assert raised.value.__notes__ == ["Recording this failure also failed (RuntimeError)."] * 2
     assert loop._job_spend == loop._fetch_memos == {}
+
+
+def _cited_claim_ids(outcome) -> set[str]:
+    return {*outcome.report.claim_ids_used,
+            *(claim_id for check in outcome.verification.checks for claim_id in check.claim_ids)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["synthesizer", "verifier"])
+async def test_invented_claim_citation_gets_a_retry_that_fixes_it(workflow, role):
+    loop, script = workflow
+    script.invented_refs[role] = 1
+    outcome = await run(loop)
+
+    (retry,) = script.retries[role]
+    assert "q9/c9" in retry
+    assert _cited_claim_ids(outcome) <= outcome.ledger.claim_ids()
+    (task,) = [task for task in loop.repository.tasks.values() if task["role"].value == role]
+    assert task["status"] == "succeeded"
+    assert task["usage"]["requests"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["synthesizer", "verifier"])
+async def test_run_fails_when_citations_stay_invented(workflow, role):
+    loop, script = workflow
+    script.invented_refs[role] = 99
+    with pytest.raises(UnexpectedModelBehavior):
+        await run(loop)
+
+    assert len(script.retries[role]) == 1  # one retry, then the run stops
+    (job,) = loop.repository.jobs.values()
+    (task,) = [task for task in loop.repository.tasks.values() if task["role"].value == role]
+    assert job["status"] == task["status"] == "failed"
+    assert task["error"] == {"type": "UnexpectedModelBehavior"}

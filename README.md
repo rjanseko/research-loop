@@ -64,7 +64,7 @@ Results are compared only when these match. Manifests record them together with 
 |---|---|---|
 | Graph topology | `research-graph-v1` | `graph.py` |
 | Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
-| Evidence schema | `evidence_version` 2: summary `excerpt` plus a verbatim `quote` checked against tool output | `schemas.py`, `quotes.py` |
+| Evidence schema | `evidence_version` 3: summary `excerpt` plus a verbatim `quote` checked against tool output; report and verifier citations must be ledger claim IDs | `schemas.py`, `quotes.py`, `agents.py` |
 | Fetch behavior | `fetch_version` 2: paged fetches with a per-job document memo | `acquisition.py` |
 | Tool mode | `normalized` (benchmarks, campaigns) or `adaptive` (library default) | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |

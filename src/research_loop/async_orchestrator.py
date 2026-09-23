@@ -635,6 +635,7 @@ class AsyncResearchLoop:
             agent=synthesizer_agent,
             role=ResearchRole.SYNTHESIZER,
             route=route,
+            deps=frozenset(ledger.claim_ids()),
             prompt=json.dumps(
                 {
                     "objective": objective,
@@ -662,6 +663,7 @@ class AsyncResearchLoop:
             agent=verifier_agent,
             role=ResearchRole.VERIFIER,
             route=route,
+            deps=frozenset(ledger.claim_ids()),
             prompt=json.dumps(
                 {
                     "objective": objective,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .schemas import (
@@ -63,6 +65,7 @@ deep_dive_agent = Agent(
 
 synthesizer_agent = Agent(
     output_type=FinalReport,
+    deps_type=frozenset[str],  # the evidence ledger's claim IDs
     instructions=(
         "Synthesize only from the supplied evidence ledger. In `claims`, attach every material factual "
         "statement to the exact evidence-ledger claim IDs that support it. Evidence marked "
@@ -74,6 +77,7 @@ synthesizer_agent = Agent(
 
 verifier_agent = Agent(
     output_type=VerificationReport,
+    deps_type=frozenset[str],  # the evidence ledger's claim IDs
     instructions=(
         "Audit the proposed report claim-by-claim against the supplied evidence. Flag unsupported, "
         "overstated, stale, mismatched, or contradictory statements. Verify that cited claim IDs exist "
@@ -83,6 +87,28 @@ verifier_agent = Agent(
         "evidence that appears to violate them. Recommend more research only when the issue is material."
     ),
 )
+
+def _require_ledger_claims(cited: Iterable[str], ledger_claim_ids: frozenset[str]) -> None:
+    """Ask for another answer when output cites claim IDs the evidence ledger does not have."""
+    unknown = sorted(set(cited) - ledger_claim_ids)
+    if unknown:
+        raise ModelRetry(
+            f"These claim IDs are not in the evidence ledger: {', '.join(unknown[:25])}. Cite only claim "
+            "IDs that appear in the supplied evidence, copied exactly, or drop the citation."
+        )
+
+
+@synthesizer_agent.output_validator
+def _report_cites_ledger_claims(ctx: RunContext[frozenset[str]], output: FinalReport) -> FinalReport:
+    _require_ledger_claims(output.claim_ids_used, ctx.deps)
+    return output
+
+
+@verifier_agent.output_validator
+def _checks_cite_ledger_claims(ctx: RunContext[frozenset[str]], output: VerificationReport) -> VerificationReport:
+    _require_ledger_claims((claim_id for check in output.checks for claim_id in check.claim_ids), ctx.deps)
+    return output
+
 
 # Campaign-level only: runs once over completed campaign questions, outside research-graph-v1.
 campaign_synthesizer_agent = Agent(

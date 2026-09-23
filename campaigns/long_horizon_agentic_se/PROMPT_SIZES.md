@@ -147,7 +147,7 @@ Dropping null and empty fields alone would remove about 11% of the block (97,291
 before the deep dive's result was added). Synthesis gets it as `evidence`. The verifier gets it
 again, plus the 27,801-character report.
 
-**Headroom depends on not retrying.** If a step's output fails validation, PydanticAI makes another
+**Headroom depends on not retrying.** Evidence version 3 adds a citation check to synthesis and verification, so a retry is now also triggered by a citation to a claim ID the ledger does not have. If a step's output fails validation, PydanticAI makes another
 request that resends the prompt and the first output, and the token count covers both requests.
 
 | Step | One attempt / limit | With one retry *(estimate)* | Deeper research (1.5–2× ledger) with one retry *(estimate)* |

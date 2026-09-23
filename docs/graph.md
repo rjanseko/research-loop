@@ -43,6 +43,8 @@ Graph steps own control flow only. Each role call is a method on `AsyncResearchL
 | Synthesize report | `_synthesize` |
 | Verify report | `_verify` |
 
+The synthesizer and verifier agents (`agents.py`) accept only citations to claim IDs in the run's ledger; an invented ID gets one retry, then fails the run.
+
 Job creation, attachment loading, spend tracking, the per-job fetch memo, and the terminal job record (`_create_job`, `_load_attachments`, `_job_scope`, `_finish`) are shared the same way.
 
 ## State and dependencies
