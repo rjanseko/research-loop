@@ -1,6 +1,6 @@
-# Attachment ingestion and benchmark fairness
+# Attachments
 
-Introduced in v4 and retained in v5, the project provides a provider-neutral local attachment corpus for research tasks and GAIA-style benchmarks.
+Research runs can include local files, passed as `ResearchConstraints.attachment_paths` or supplied by GAIA-style benchmark cases. They become a provider-neutral attachment corpus (`attachments.py`) that the planner, scouts, and deep dives read through tools.
 
 ## Two lanes
 
@@ -26,9 +26,9 @@ Supported deterministic extractors:
 | XLSX/XLSM | sheet + row-range table chunks |
 | Images | dimensions/format metadata only |
 
-Every attachment gets a SHA-256 hash, stable per-run attachment ID, media type, extraction metadata, chunk locators, and chunk hashes.
+Every attachment gets a SHA-256 hash, a stable per-run attachment ID, a media type, extraction metadata, chunk locators, and chunk hashes. Search is deterministic TF-IDF over the extracted chunks.
 
-## `multimodal`
+### `multimodal`
 
 The normalized tools remain available, but local images are also sent as PydanticAI `BinaryContent`. PDFs are sent as binary only when deterministic extraction indicates that visual understanding is required (for example a scanned PDF with little/no extractable text).
 
@@ -66,12 +66,7 @@ Host filesystem paths are intentionally kept inside the application process:
 - Postgres stores filename, hash, media type, extractor, size, chunk count, and extraction metadata;
 - file bytes are not copied into Postgres by this layer.
 
-Apply both migrations:
-
-```text
-migrations/001_research.sql
-migrations/002_research_attachments.sql
-```
+The `research_attachments` table comes from `migrations/002_research_attachments.sql`; `research-db migrate` applies it with the others (see [setup.md](setup.md#postgres)).
 
 ## Limits
 

@@ -1,203 +1,77 @@
-# Research Loop (v5 graph, v6 lab)
+# Research Loop
 
-Evidence-first, role-routed PydanticAI research orchestration with a typed Pydantic Graph control plane, normalized attachments, reproducible benchmark adapters, and Postgres telemetry.
+Evidence-first research orchestration on PydanticAI. A planner splits an objective into research questions. Scouts and deep dives answer them with web, scholarly, and attachment tools and return typed, sourced claims. A synthesizer writes a report that cites those claims, and a verifier audits it. The workflow is an explicit, versioned Pydantic Graph (`research-graph-v1`), model routing is configuration (`ModelPolicy`), and Postgres keeps durable history and telemetry. Benchmark adapters and a campaign launcher run the same loop under recorded, reproducible conditions.
 
-## Local research lab quick start
+## Quick start
 
 ```bash
-make setup
+make setup                                    # .venv with every extra
 source .venv/bin/activate
-pytest -q
-research-diagnose                         # safe with no API keys
+pytest -q                                     # offline: no model or network calls
+research-diagnose                             # local readiness; safe without API keys
+research-bench examples/benchmark_cases.json  # synthetic run of the real graph
 ```
 
-For the local Postgres database, copy `.env.example` to an ignored `.env`; the CLI reads it automatically and exported variables take precedence. Then:
+None of these commands cost anything. The `synthetic` policy runs the real graph and repository with scripted role outputs, which checks the wiring without provider calls. Postgres, provider keys, and the first paid run are covered in [docs/setup.md](docs/setup.md).
 
-```bash
-cp .env.example .env
-chmod 600 .env
-docker compose up -d postgres
-research-db status
-research-db migrate
-research-db status
-research-bench examples/benchmark_cases.json --policies synthetic --repository postgres
-```
+## Commands
 
-The synthetic policy exercises the real graph and Postgres writes without model or web calls. A sanitized experiment manifest is written under `RESEARCH_BENCHMARK_OUTPUT` (default `benchmark_outputs/`). The manifest records policy/model settings, package versions, benchmark selection, graph version, timestamps, and job/root-run IDs; it omits raw benchmark prompts, answers, credentials, and local paths.
+| Command | Purpose | Paid calls |
+|---|---|---|
+| `research-diagnose` | Check dependencies, graph, tools, directories, database, providers, and model routes | Only with `--smoke` |
+| `research-db status` / `migrate` | Show or apply the SQL migrations | No |
+| `research-bench SUITE` | Run benchmark cases under one or more policies and write a sanitized manifest | Only with `--paid` |
+| `research-campaign` | Run campaign questions, aggregate their evidence, and synthesize the campaign | Only with `--paid` |
+| `research-graph` | Print the executable graph as Mermaid | No |
 
-Before a paid run, set the provider keys and verified `RESEARCH_*_MODEL` overrides in the environment. Then validate the configured routes and run a small benchmark:
-
-```bash
-research-diagnose --policy quality --attachments --smoke
-research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
-```
-
-`--smoke` makes bounded provider calls; without it, diagnosis checks local configuration and model profiles only. `research-bench` defaults to synthetic runs and disposable in-memory mode. Real policies require `--paid` and run one suite case unless `--max-cases N` or `--all-cases` is specified. `--repository postgres` persists runs. Keep `research-graph-v1` fixed while comparing policies. See [`LOCAL_SETUP.md`](LOCAL_SETUP.md) for environment details.
-
-### Optional Logfire traces
-
-Install `pip install -e ".[observability]"`, then set `RESEARCH_LOGFIRE_ENABLED=true` and `LOGFIRE_TOKEN` in your ignored `.env` (or run `logfire auth` followed by `logfire projects use <project-name>`). Benchmark runs and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Tracing is off by default. The integration excludes prompts, completions, tool arguments/results, and binary content from exported spans. It uses an isolated tracer so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported by this setup. It sends to Logfire only when a token is available; Postgres remains the durable record of jobs and research evidence. Library callers can opt in by calling `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
-
-## v5 architecture
-
-v5 changes **workflow topology**, not agent semantics. The public `ResearchLoop.run(...)` interface remains compatible with v4, while the internal research algorithm is now an explicit `pydantic-graph` `GraphBuilder` workflow.
-
-The graph is versioned independently from model routing:
-
-```text
-graph_version = research-graph-v1
-policy        = quality | breadth | glm-heavy | ...
-benchmark     = browsecomp | gaia | drb2 | ...
-```
-
-This lets experiments distinguish a better **model policy** from a better **research algorithm**.
-
-New in v5:
-
-- `ResearchLoop` is backed by `pydantic_graph.GraphBuilder`;
-- explicit map/join fan-out for scouts and deep dives;
-- explicit decisions for initial escalation and verifier follow-up research;
-- bounded concurrency remains controlled by `ResearchConfig` semaphores;
-- graph state is intentionally small and contains no evidence ledger;
-- evidence is appended only after parallel joins;
-- `LegacyResearchLoop` preserves the v4 plain-async orchestrator for parity/regression tests;
-- `research-graph` renders the topology as Mermaid;
-- `research-graph-v1` is stored in job/benchmark metadata;
-- deterministic parity coverage exercises both initial escalation and a verifier-driven research cycle;
-- all v4 attachment, benchmark, provenance, routing, telemetry, and Postgres behavior remains in place.
-
-See [`GRAPH.md`](GRAPH.md), [`ATTACHMENTS.md`](ATTACHMENTS.md), and [`BENCHMARKS.md`](BENCHMARKS.md).
+`make` wraps the common ones: `setup`, `test`, `diagnose`, `graph`, `postgres-up`, `postgres-down`, `db-status`, `migrate`.
 
 ## Architecture
 
-```text
-CLI
- │
- ▼
-Session
- │
- ▼
-Run
- │
- ▼
-ResearchLoop                 public facade
- │
- ▼
-ResearchGraph                control plane
- │
- ├── Plan
- │     │
- │     ▼
- │   Map<Scout> ───────────────┐
- │                             ▼
- │                         Join results
- │                             │
- │                             ▼
- │                       Gap analysis
- │                         /       \
- │                    gaps         ready
- │                     │             │
- │               Map<DeepDive>       │
- │                     │             │
- │                   Join            │
- │                     └──────┬──────┘
- │                            ▼
- │                       Synthesize
- │                            │
- │                            ▼
- │                         Verify
- │                         /    \
- │                  follow-up   pass/max rounds
- │                      │          │
- │                Map<DeepDive>    │
- │                      │          │
- │                    Join         │
- │                      └──► Synthesize
- │                                  │
- │                                  └──► Verify
- │
- ├── PydanticAI Agents         model/tool semantics
- ├── ModelPolicy               provider/model routing
- ├── AttachmentCorpus          normalized local evidence
- └── EvidenceLedger            append-only run data plane
- │
- ▼
-Postgres                      durable history + telemetry
-```
+One run of `research-graph-v1`:
 
-The ownership boundary is deliberate:
+1. **Plan.** The planner splits the objective into research questions.
+2. **Scout** every question in parallel, then record the results in plan order.
+3. **Analyze gaps.** The gap analyst names material gaps, and any question whose best result is below `min_scout_confidence` is added. The most severe gap per question, up to `max_deep_dives_per_round`, gets a **deep dive**, again in parallel.
+4. **Synthesize** a report from the whole ledger, citing claim IDs.
+5. **Verify** the report claim by claim. If the verifier asks for more research and rounds remain (`max_verification_rounds`), its follow-ups get deep dives, which can use the policy's alternate deep-dive route, and steps 4-5 repeat.
 
-```text
-PydanticAI Agent   owns agent/model/tool semantics
-Pydantic Graph     owns workflow topology
-Run                owns execution lifecycle
-ModelPolicy        owns model selection
-EvidenceLedger     owns current research evidence
-Postgres           owns durable history + telemetry
-CLI                owns presentation
-```
+[docs/graph.md](docs/graph.md) has the topology as Mermaid, generated by `research-graph` from the executable graph.
 
-Pydantic Graph does **not** become the durable database and does not replace `Run`.
+Each concern has one owner:
 
-## Why evidence is not graph state
+| Owner | Responsibility |
+|---|---|
+| PydanticAI `Agent` | Model and tool semantics (`agents.py`) |
+| Pydantic Graph | Workflow topology only (`graph.py`) |
+| `ResearchLoop` run | One execution's lifecycle: job record, spend, fetch memo, terminal state (`orchestrator.py`, `async_orchestrator.py`) |
+| `ModelPolicy` | Model selection and budgets (`policy.py`) |
+| `EvidenceLedger` | Evidence gathered during a run (`ledger.py`) |
+| Postgres | Durable history and telemetry (`repository.py`, `migrations/`) |
+| CLI | Presentation |
 
-Pydantic Graph parallel branches share mutable graph state. v5 therefore does not let scouts append directly to shared state.
+**Evidence is not graph state.** Mapped graph branches share mutable state, so scouts and deep dives never write to it. They return typed `ResearchResult` values; the join collects them, and a serial record step appends them to the ledger in plan order, however the branches finished. `ResearchGraphState` holds only control data: objective, plan, phase, and verification-round counters.
 
-Parallel workers return typed `ResearchResult` values:
+**Graph and legacy share one runtime.** `ResearchLoop` (graph-backed) and `LegacyResearchLoop` (the v4 plain-async loop) inherit the same role calls, prompts, budget accounting, and persistence from `AsyncResearchLoop`. Only the control flow differs, and parity tests hold the two to the same results.
 
-```text
-Map<Scout>
-  ├── ResearchResult
-  ├── ResearchResult
-  └── ResearchResult
-          │
-          ▼
-        Join
-          │
-          ▼
-Record evidence  ← serial step
-```
+**Acquisition is normalized.** Scouts and deep dives get the same DuckDuckGo search, page fetch, scholarly tools (OpenAlex, Crossref, arXiv, ACL Anthology, OpenCitations), and attachment tools whatever the model provider, so policy comparisons do not also compare search stacks. See [docs/acquisition.md](docs/acquisition.md) and [docs/attachments.md](docs/attachments.md).
 
-Only the serial record step appends to `EvidenceLedger`.
+## What a result depends on
 
-`ResearchGraphState` contains control data only: objective, plan, workflow phase, and verification-round counters.
+Results are compared only when these match. Manifests record them together with the git commit, a dirty-tree flag, package versions, and a configuration fingerprint.
 
-## Install
+| Dimension | Current | Defined in |
+|---|---|---|
+| Graph topology | `research-graph-v1` | `graph.py` |
+| Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
+| Evidence schema | `evidence_version` 2: summary `excerpt` plus a verbatim `quote` checked against tool output | `schemas.py`, `quotes.py` |
+| Fetch behavior | `fetch_version` 2: paged fetches with a per-job document memo | `acquisition.py` |
+| Tool mode | `normalized` (benchmarks, campaigns) or `adaptive` (library default) | `tools.py` |
+| Attachment mode | `normalized` or `multimodal` | `attachments.py` |
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[all]'
-```
+A new topology becomes `research-graph-v2`; `v1` does not change silently. Policies differ in routes and planning breadth, not in the algorithm. `quality` is the default for paid runs; `breadth` plans 16-24 questions and scouts them on a cheaper route; `glm-heavy` moves gap analysis and cheap scouting to GLM; `synthetic` makes no calls.
 
-The graph-backed version targets the current Pydantic v2 line:
-
-```text
-pydantic-ai   >= 2.47, < 3
-pydantic-graph >= 2.47, < 3
-```
-
-For a smaller production install:
-
-```bash
-pip install -e '.[attachments,postgres]'
-```
-
-## Render the research algorithm
-
-```bash
-research-graph
-```
-
-or:
-
-```bash
-research-graph --direction TB --output research-graph.mmd
-```
-
-The output is Mermaid generated by the executable graph itself, rather than a separately maintained architecture diagram.
-
-## Production research
+## Using the library
 
 ```python
 from research_loop import (
@@ -213,7 +87,7 @@ from research_loop.repository import PostgresResearchRepository
 loop = ResearchLoop(
     get_policy("quality"),
     ResearchConfig(
-        tool_mode=ResearchToolMode.ADAPTIVE,
+        tool_mode=ResearchToolMode.NORMALIZED,
         attachment_mode=AttachmentMode.NORMALIZED,
     ),
     repository=PostgresResearchRepository(existing_async_psycopg_pool),
@@ -223,106 +97,39 @@ outcome = await loop.run(
     "Compare the claims in the attached report with current primary sources.",
     session_id=session.id,
     root_run_id=run.id,
-    constraints=ResearchConstraints(
-        attachment_paths=["/local/path/report.pdf"],
-    ),
+    constraints=ResearchConstraints(attachment_paths=["/local/path/report.pdf"]),
 )
 print(outcome.report.answer)
 ```
 
-The model never receives the host file path. Attachments are exposed through stable IDs and normalized tools.
+`outcome` carries the plan, report, verification, evidence ledger, attachment corpus, and the job's spend. The model never sees host file paths; attachments are exposed through stable IDs and normalized tools. `examples/run_research.py` runs one objective from the command line.
 
-## Legacy async baseline
+`LegacyResearchLoop` takes the same arguments. It exists for parity and regression work and will be retired once the graph implementation has enough benchmark history.
 
-The old orchestration remains intentionally available:
+## Budgets
 
-```python
-from research_loop import LegacyResearchLoop
+Every route in a policy caps each call's requests, tool calls, tokens, and cost. On top of that:
 
-legacy = LegacyResearchLoop(get_policy("quality"), ResearchConfig(...))
-```
+- `ModelPolicy.job_cost_limit` is a soft USD cap across one job. It is checked before every agent call, and each call's `cost_limit` is clamped to what remains; calls already in flight can overshoot it. PydanticAI can only price models it has pricing data for. Once any billed call comes back unpriced, the job's reported cost becomes unknown (`None`) rather than a partial sum, and a capped job stops before its next call with `JobBudgetExceeded`.
+- `ModelPolicy.job_reserve_usd` is the part of that cap the planner, scouts, and deep dives must leave for gap analysis, synthesis, verification, and salvage.
+- `ResearchConfig.salvage_exhausted_research` (off by default) lets a scout or deep dive that hits a usage limit make one tool-free salvage call that summarizes what it gathered. With nothing gathered or no budget left, the question continues with an empty, zero-confidence result instead of failing the run. Salvage tasks are marked `salvage: true`, and their stored prompt keeps hashes of the replayed tool output, not the text.
 
-This exists for regression/parity work, not because production should maintain two unrelated systems indefinitely. Once the graph implementation has accumulated real benchmark history, the legacy implementation can be retired.
+Provider-side spending caps remain the hard limit. Campaigns set all three from `campaign.toml`; benchmarks leave them off.
 
-## Benchmarking
+## Deliberately out of scope
 
-```bash
-research-bench examples/benchmark_suite.toml \
-  --policies quality breadth glm-heavy \
-  --paid --all-cases \
-  --max-concurrency 1 \
-  --export-reports benchmark_outputs
-```
+No durable workflow runtime (DBOS, Temporal, Prefect), no graph-state snapshots presented as crash recovery, no learned router, no additional agent roles, no event sourcing, and no second evidence store. The next step is measurement: small paid smoke runs and scout comparisons, with `ModelPolicy` changes derived from persisted telemetry rather than public leaderboards. [docs/architecture-review.md](docs/architecture-review.md) lists the integrity work to do first.
 
-Every benchmark report now carries `graph_version=research-graph-v1` in its experiment metadata. Model policies remain independently named.
+## Documentation
 
-Normalized attachment mode remains the default for fair cross-provider comparisons:
-
-```bash
-research-bench examples/benchmark_suite_full.example.toml \
-  --policies quality breadth glm-heavy \
-  --paid --all-cases \
-  --attachment-mode normalized
-```
-
-Use a separate multimodal lane when pixels/scanned documents are part of the capability being evaluated.
-
-## Database
-
-Apply the existing migrations:
-
-```text
-migrations/001_research.sql
-migrations/002_research_attachments.sql
-```
-
-No v5 schema migration is required. `graph_version` is stored in the existing JSON effective configuration, keeping topology versioning independent of schema evolution.
-
-## Tests
-
-```bash
-pytest -q
-```
-
-The parity test uses deterministic agent outputs and intentionally triggers:
-
-1. ordinary parallel scouts;
-2. a low-confidence initial deep dive;
-3. synthesis and verification;
-4. a verifier-requested second deep dive;
-5. re-synthesis and successful verification.
-
-It compares an order-insensitive semantic fingerprint of graph-backed and legacy outcomes.
-
-## What v5 deliberately does not add
-
-- DBOS, Temporal, Prefect, or another durable workflow runtime;
-- graph-state snapshots pretending to be crash-resumable execution;
-- a learned router;
-- additional agent roles;
-- event sourcing;
-- another evidence store.
-
-With the v6 lab bootstrap in place, the next milestone is measurement: run small paid smoke tests and scout tournaments, then derive `ModelPolicy` changes from persisted telemetry rather than public leaderboards.
-
-## Repository setup
-
-This repository includes:
-
-- `AGENTS.md` — stable repository-level coding constraints for Codex;
-- `LOCAL_SETUP.md` — local bootstrap instructions;
-- `.env.example` — credential/configuration template;
-- `compose.yaml` — optional local PostgreSQL 16 instance;
-- `Makefile` and `scripts/` — convenience commands.
-
-For further work, start from the repository root and follow `AGENTS.md` for architecture constraints.
-
-## Scholarly research and first campaign
-
-Install `pip install -e '.[all]'` for normalized web and scholarly PDF extraction. `research-diagnose --scholar-live` checks the public metadata endpoints without model calls. The provider-neutral adapters, cache modes, source-status rules, and optional local GROBID fallback are described in [SCHOLAR.md](SCHOLAR.md).
-
-The first long-horizon software-engineering research campaign is specified in [campaign.toml](campaigns/long_horizon_agentic_se/campaign.toml). Run `PYTHONPATH=src .venv/bin/python scripts/scholar_pilot.py` for a free metadata pilot. Validate the campaign with `research-campaign --dry-run`. After provider balances and spending caps are ready, `research-campaign --question q01 --paid --persist` runs a single question and exports its evidence. After questions complete, `research-campaign --synthesize --paid` writes the campaign report, catalogs, and hypotheses; each must cite claims from the aggregated evidence ledger. See the [campaign README](campaigns/long_horizon_agentic_se/README.md). The spec does not contain unverified research findings.
-
-Each question runs under `execution.question_cost_limit_usd`, which sets `ModelPolicy.job_cost_limit`. The cap is soft: it is checked before every agent call, each call's `cost_limit` is clamped to the remaining budget, and parallel calls already in flight can overshoot it. PydanticAI can only enforce cost limits for models with pricing data. The paid preflight marks unpriced routes `WARN`, which blocks the campaign. If a call still returns no price, the job stops before its next call with `JobBudgetExceeded`. The manifest records each question's cost and, on failure, the exception type. Keep provider-side spending caps as the hard limit.
-
-`execution.question_reserve_usd` is the part of each question's cap that the planner, scouts, and deep dives must leave unspent. It pays for gap analysis, synthesis, verification, and salvage calls. The campaign also enables `ResearchConfig.salvage_exhausted_research`. With it on, a scout or deep dive that hits a usage limit makes one tool-free "salvage" call that summarizes the evidence it already gathered. If nothing was gathered or no budget remains, the question continues with an empty, zero-confidence result for that subquestion instead of failing. Salvage calls are marked `salvage: true` in task config. Their stored prompt keeps hashes of the replayed tool output, not the text. Salvage is off by default, so benchmark behavior is unchanged.
+| Document | Covers |
+|---|---|
+| [docs/setup.md](docs/setup.md) | Installation, configuration, model routing, Postgres, diagnostics, Logfire |
+| [docs/graph.md](docs/graph.md) | Topology, state versus dependencies, concurrency, verification rounds, parity |
+| [docs/benchmarks.md](docs/benchmarks.md) | Benchmark lanes, suites, runs, manifests, metrics, anti-contamination rules |
+| [docs/acquisition.md](docs/acquisition.md) | Web and scholarly tools, fetch paging, caching, URL safety |
+| [docs/attachments.md](docs/attachments.md) | Attachment lanes, extractors, provenance, privacy |
+| [campaigns/long_horizon_agentic_se/README.md](campaigns/long_horizon_agentic_se/README.md) | The first research campaign: running questions, the calibration pilot, synthesis |
+| [campaigns/long_horizon_agentic_se/PROMPT_SIZES.md](campaigns/long_horizon_agentic_se/PROMPT_SIZES.md) | Measured prompt sizes and where they exceed limits |
+| [docs/architecture-review.md](docs/architecture-review.md) | Review findings and implementation roadmap |
+| [AGENTS.md](AGENTS.md) | Constraints for coding agents working in this repository |

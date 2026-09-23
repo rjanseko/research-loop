@@ -5,6 +5,9 @@ Status as of 2026-09-23. The measurements come from the successful calibration p
 in commits `5c62878` and `36ce94e`. The deeper research settings from `36ce94e` had not yet been
 used for a paid run. Numbers marked *estimate* are projections, not measurements.
 
+Since then, fetch version 2 added paging through long documents (option 5 below); the rest of
+this document still describes current behavior. The measurements are unchanged.
+
 ## Summary
 
 Every model call in this pipeline gets a prompt that code builds from JSON. Four problems stand
@@ -24,9 +27,10 @@ out, most serious first:
    square of the number of turns. A scout used about 243,000 input tokens in 12 turns. Two of the
    three scouts and the deep dive stopped on a request or tool-call limit; nothing stopped on
    dollars.
-4. **Some evidence never reaches any prompt.** Fetches return only the first 12,000 characters of
-   a document, salvage and campaign synthesis truncate further, and openai.com blocks the fetcher.
-   The pilot report lists missing primary-source details as caveats because of this.
+4. **Some evidence never reaches any prompt.** During the pilot, fetches returned only the first
+   12,000 characters of a document (paging has since landed); salvage and campaign synthesis
+   truncate further, and openai.com blocks the fetcher. The pilot report lists missing
+   primary-source details as caveats because of this.
 
 ## Background: prompts and limits in this pipeline
 
@@ -56,9 +60,9 @@ out, most serious first:
 
 | Role | Built in | What the prompt contains | Pilot limits (requests / tool calls / tokens / $) |
 |---|---|---|---|
-| Planner | `async_orchestrator.py` `run()`; graph planning node | objective, constraints, planning guidance | 6 / 4 / 70k / $2.50 |
+| Planner | `async_orchestrator.py` `_plan`, shared by graph and legacy | objective, constraints, planning guidance | 6 / 4 / 70k / $2.50 |
 | Scout | `_run_scout` | one subquestion and the constraints; tool history grows each turn | 12 / 24 / 400k / $0.80 |
-| Gap analysis | `graph.py` `analyze_gaps` (legacy copy in `async_orchestrator.py`) | objective, plan, **all results so far** | 6 / 4 / 70k / $1.25 |
+| Gap analysis | `async_orchestrator.py` `_analyze_gaps`, shared by graph and legacy | objective, plan, **all results so far** | 6 / 4 / 70k / $1.25 |
 | Deep dive | `_run_gap` | subquestion, gap, constraints; tool history grows each turn | 20 / 40 / 180k / $3.00 during the pilot (now $1.25; route default $5) |
 | Salvage | `_run_research` | the original prompt plus `gathered_evidence`: tool results cut to 4,000 characters each, 48,000 in total (`_SALVAGE_*`) | 2 requests / 80k / a quarter of the route's $ cap during the pilot ($0.20 scout, $0.75 deep dive); now half |
 | Synthesis | `_synthesize` | objective, **all results** (the full ledger), constraints | 8 / 4 / 120k / $3.50 |
@@ -206,9 +210,10 @@ Each of those still adds a call and a result to every later turn.
 
 ## Problem 4: evidence that never reaches a prompt
 
-- **Fetches stop at 12,000 characters, with no way to read further** (`web.py:50`,
-  `scholar.py:387`). This is why the deep dive never reached the dataset-construction section and
-  Table 1 of the SWE-bench paper. The pilot report's caveats say so directly.
+- **Fetches stopped at 12,000 characters, with no way to read further.** This is why the deep
+  dive never reached the dataset-construction section and Table 1 of the SWE-bench paper; the pilot
+  report's caveats say so directly. Fetch version 2 now pages through documents with `start` and
+  `next_start` (see `docs/acquisition.md`), which the pilot did not have.
 - **Salvage keeps 4,000 characters per tool result and 48,000 in total.** Anything longer or later
   is dropped before the wrap-up call.
 - **Campaign synthesis keeps 300 characters of each excerpt.**
@@ -224,7 +229,9 @@ Each of those still adds a call and a result to every later turn.
 | Scout and deep-dive loops | history grows with the square of the turns | budgets run out early; salvage replaces the final answer | two of three scouts and the deep dive in the pilot |
 | Truncation and blocking | evidence never collected | more caveats, weaker or secondary-source findings | long documents; vendor sites behind bot protection |
 
-## Options (none implemented), ranked by value against effort
+## Options, ranked by value against effort
+
+Only the fetch paging in option 5 has been implemented.
 
 1. **Compact evidence serialization for the ledger-carrying prompts.**
    - Drop null and empty fields (about −11%).
@@ -244,12 +251,14 @@ Each of those still adds a call and a result to every later turn.
    likely over it at the deeper settings. The alternative is to merge in two stages (groups of
    questions, then a final merge). Either way, the limits should be rechecked with a dry run.
 5. **Make the agent loops cheaper.**
-   - Add paging to the fetch tools (a `start_char` argument), so long documents can be read in
-     parts instead of lost.
+   - Add paging to the fetch tools, so long documents can be read in parts instead of lost.
+     **Done** as fetch version 2: a `start` argument, `next_start` in results, and a per-job
+     document memo.
    - Trim `scholar_search` results: shorter abstracts, fewer arXiv records.
    - Consider a history-compaction capability.
 
-   Paging and trimming change what benchmark runs see, so they need a `BENCHMARKS.md` note.
+   Paging and trimming change what benchmark runs see, so they need a `docs/benchmarks.md` note
+   and a new fetch version.
 6. **Steer the search more strongly.** Move the key search guidance from the campaign's research
    notes, which reach the model as constraints, into the scout instructions in `agents.py`.
 
