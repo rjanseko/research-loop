@@ -458,3 +458,34 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
                 json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))["evidence"]}
     assert [item.get("quote_check") for item in evidence["q01/q1/c2"]] == ["not_found", None]
     assert evidence["q01/q1/c1"][0]["quote_check"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_campaign_run_marks_its_manifest_failed(monkeypatch, tmp_path: Path) -> None:
+    import asyncio
+
+    from research_loop.campaign import run_campaign
+
+    started = asyncio.Event()
+
+    class HangingLoop:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _objective, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("research_loop.campaign.ResearchLoop", HangingLoop)
+    running = asyncio.create_task(run_campaign(
+        CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+        settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=15)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    (manifest_path,) = (tmp_path / "manifests").iterdir()
+    manifest = json.loads(manifest_path.read_text())
+    assert (manifest["status"], manifest["error"]) == ("failed", "CancelledError")
+    assert manifest["finished_at"]

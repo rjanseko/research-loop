@@ -231,3 +231,34 @@ async def test_unpriced_model_call_leaves_benchmark_cost_unknown(monkeypatch: py
         "synthetic", BenchmarkCaseSpec(benchmark_id="fixture", case_id="unpriced", objective="Fixture")
     )
     assert output.cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_benchmark_marks_its_runs_and_manifest_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from uuid import uuid4
+
+    import research_loop.benchmark as benchmark
+
+    started = asyncio.Event()
+
+    async def hanging(_policy_name, _case, *, on_job_created, **_kwargs):
+        on_job_created(uuid4(), uuid4())
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(benchmark, "_run_policy_case", hanging)
+    manifest_path = tmp_path / "manifest.json"
+    running = asyncio.create_task(run_benchmark(
+        _two_case_suite(tmp_path, ["slow"]), policies=["synthetic"], max_concurrency=1,
+        manifest_path=manifest_path, settings=ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)}),
+    ))
+    await asyncio.wait_for(started.wait(), timeout=15)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    manifest = json.loads(manifest_path.read_text())
+    assert (manifest["status"], manifest["error"]) == ("failed", "CancelledError")
+    assert [(run["status"], run["error"]) for run in manifest["runs"]] == [("failed", "CancelledError")]

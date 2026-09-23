@@ -4,6 +4,7 @@ version = "0.5.0"
 description = "Graph-backed, role-routed PydanticAI research loop with evidence provenance, benchmark adapters, and Postgres telemetry"
 requires-python = ">=3.12"
 dependencies = [
+  "anyio>=4",
   "pydantic>=2.8",
   "python-dotenv>=1.0",
   "pydantic-ai[duckduckgo,web-fetch,xai]>=2.47,<3",

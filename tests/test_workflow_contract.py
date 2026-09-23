@@ -46,6 +46,36 @@ def test_research_config_allows_disabling_deep_dives_and_verification_rounds() -
     assert (config.max_deep_dives_per_round, config.max_verification_rounds) == (0, 0)
 
 
+class YieldingRepository(InMemoryResearchRepository):
+    """Writes yield to the event loop, as database I/O does, so cancellation can interrupt them."""
+
+    async def record_tool_events(self, *args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+        await super().record_tool_events(*args, **kwargs)
+
+    async def finish_task(self, *args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+        await super().finish_task(*args, **kwargs)
+
+    async def finish_job(self, *args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+        await super().finish_job(*args, **kwargs)
+
+
+class FailingCleanupRepository(InMemoryResearchRepository):
+    """The database is down by the time a failure is recorded."""
+
+    async def finish_task(self, task_id: Any, **kwargs: Any) -> None:
+        if kwargs["status"] == "failed":
+            raise RuntimeError("database unavailable")
+        await super().finish_task(task_id, **kwargs)
+
+    async def finish_job(self, job_id: Any, **kwargs: Any) -> None:
+        if kwargs["status"] == "failed":
+            raise RuntimeError("database unavailable")
+        await super().finish_job(job_id, **kwargs)
+
+
 def gap(question_id: str = "q1", severity: int = 4) -> dict[str, Any]:
     return {"question_id": question_id, "reason": "missing_evidence",
             "followup": f"Independently check {question_id}", "severity": severity}
@@ -58,6 +88,10 @@ class Script:
         self.verification: dict[str, Any] = {"checks": []}
         self.confidence = 0.9
         self.fail_role: str | None = None
+        self.fail_question: str | None = None  # with fail_role: fail only this question's call
+        self.hang_role: str | None = None
+        self.hang_question: str | None = None
+        self.reached = asyncio.Event()  # set once a hanging call is in flight
         self.invalid_scout = False
         self.prompts: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -67,7 +101,13 @@ class Script:
                           if isinstance(part, UserPromptPart))
             payload = json.loads(prompt)
             self.prompts[role].append(payload)
-            if role == self.fail_role:
+            question_id = payload.get("question", {}).get("id")
+            if role == self.hang_role and self.hang_question in (None, question_id):
+                self.reached.set()
+                await asyncio.Event().wait()
+            if role == self.fail_role and self.fail_question in (None, question_id):
+                if self.hang_role:
+                    await self.reached.wait()  # fail only once the hanging call is in flight
                 raise ModelHTTPError(401, "fixture", {"error": "PRIVATE-PROVIDER-BODY"})
             if role == "planner":
                 output = {"objective": payload["objective"], "questions": self.questions}
@@ -346,3 +386,57 @@ async def test_research_agents_in_one_job_share_one_fetch_memo(workflow, monkeyp
     assert all(memo is first_job[0] for memo in first_job)
     assert all(memo is memos[0] for memo in memos) and memos[0] is not first_job[0]
     assert loop._fetch_memos == {}
+
+
+def _no_running_records(loop) -> None:
+    assert [job["status"] for job in loop.repository.jobs.values()] == ["failed"]
+    assert all(task["status"] != "running" for task in loop.repository.tasks.values())
+    assert loop._job_spend == loop._fetch_memos == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["scout", "synthesizer"])
+async def test_cancelled_run_leaves_no_running_records(workflow, role):
+    loop, script = workflow
+    loop.repository = YieldingRepository()
+    script.hang_role = role
+    running = asyncio.create_task(run(loop))
+    await asyncio.wait_for(script.reached.wait(), timeout=15)
+    running.cancel()  # what Ctrl-C does to asyncio.run's main task
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    _no_running_records(loop)
+    (job,) = loop.repository.jobs.values()
+    (hung,) = [task for task in loop.repository.tasks.values() if task["role"].value == role]
+    assert job["error"] == hung["error"] == {"type": "CancelledError"}
+
+
+@pytest.mark.asyncio
+async def test_failed_branch_records_the_siblings_it_cancels(workflow):
+    loop, script = workflow
+    if not isinstance(loop, ResearchLoop):
+        pytest.skip("the legacy loop's asyncio.gather leaves sibling scouts running (architecture review, finding 7)")
+    loop.repository = YieldingRepository()
+    script.questions.append({"id": "q2", "question": "How reliable is it?"})
+    script.hang_role, script.hang_question = "scout", "q2"
+    script.fail_role, script.fail_question = "scout", "q1"
+    with pytest.raises(ModelHTTPError):
+        await run(loop)
+
+    _no_running_records(loop)
+    errors = {task["question_id"]: task["error"] for task in loop.repository.tasks.values()
+              if task["role"] is ResearchRole.SCOUT}
+    assert errors == {"q1": {"type": "ModelHTTPError", "status_code": 401}, "q2": {"type": "CancelledError"}}
+
+
+@pytest.mark.asyncio
+async def test_failure_survives_a_failed_cleanup_write(workflow):
+    loop, script = workflow
+    loop.repository = FailingCleanupRepository()
+    script.fail_role = "synthesizer"
+    with pytest.raises(ModelHTTPError) as raised:
+        await run(loop)
+    # Both the task and the job write failed; the provider error still surfaces, with notes.
+    assert raised.value.__notes__ == ["Recording this failure also failed (RuntimeError)."] * 2
+    assert loop._job_spend == loop._fetch_memos == {}

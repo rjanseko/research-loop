@@ -6,6 +6,8 @@ Review date: 2026-09-23. Baseline: commit **cdf2de1**, plus the uncommitted clea
 
 Later the same day, the stale p01 pilot outputs were archived to `benchmark_outputs/archive/`, and the whole-file spec-hash fallback described under the quick fixes was removed: a run without an objective hash no longer counts, so the pilot needs p01 rerun before synthesis.
 
+Finding 7 is partly addressed: cancellation (including Ctrl-C) and graph-cancelled sibling branches now leave failed job, task, and manifest records with error type `CancelledError`; those writes are shielded and time-bounded, and a failed write no longer replaces the primary error. Runs still have no deadline, nothing reconciles records left by a killed process, and the legacy loop's `asyncio.gather` still leaves sibling scouts running after one fails. Interrupted pilot job `b8bff92d` was reconciled by hand.
+
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 
 **Recommendation.** Keep PydanticAI, Pydantic Graph, the evidence ledger, and Postgres. Make a focused internal restructure around run lifecycle, canonical evidence, and bounded prompts. The graph is a useful description of the research algorithm. The largest problems occur in the contracts around it: what counts as a successful run, whether citations resolve, whether campaign artifacts belong together, and how much evidence a model receives.

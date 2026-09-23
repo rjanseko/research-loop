@@ -21,7 +21,7 @@ Before paid runs, confirm routes and balances with `research-diagnose --smoke`, 
 
 Each question's objective is rendered from the campaign title, the question text, the publication window, and the source policy. The run uses normalized acquisition with the cache in `record` mode, so results never depend on earlier cached calls but later runs can replay them. The spec's research notes reach every role as constraints.
 
-A failed question is recorded and the run moves on. After `execution.max_failed_questions` failures (2 by default) it stops and lists the questions it did not run, because repeated failures usually share a cause such as credentials or a provider outage. The CLI exits non-zero unless every question completed, and names each failed question with its error type.
+A failed question is recorded and the run moves on. After `execution.max_failed_questions` failures (2 by default) it stops and lists the questions it did not run, because repeated failures usually share a cause such as credentials or a provider outage. The CLI exits non-zero unless every question completed, and names each failed question with its error type. Interrupting the run (Ctrl-C) stops it, and the manifest records `failed` with `CancelledError`, as does the question's job in Postgres.
 
 A completed question writes `outputs.question_files` to `<output>/<question id>/`:
 

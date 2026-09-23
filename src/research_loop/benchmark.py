@@ -353,7 +353,7 @@ async def run_benchmark(
                         if run_record:
                             run_record["status"] = "succeeded"
                         return output
-                    except Exception as exc:
+                    except (Exception, asyncio.CancelledError) as exc:
                         if run_record is None:  # failed before a job existed
                             run_record = {
                                 "policy": _policy,
@@ -402,8 +402,9 @@ async def run_benchmark(
             manifest["status"] = "failed"
         else:
             manifest["status"] = "completed_with_failures"
-    except Exception:
+    except (Exception, asyncio.CancelledError) as exc:  # Ctrl-C arrives as cancellation
         manifest["status"] = "failed"
+        manifest["error"] = type(exc).__name__
         raise
     finally:
         manifest["finished_at"] = datetime.now(UTC).isoformat()

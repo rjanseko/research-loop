@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+import anyio
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.exceptions import UsageLimitExceeded
@@ -78,6 +79,27 @@ class ResearchConfig:
                 raise ValueError(f"{name} must be at least {minimum}")
         if not 0.0 <= self.min_scout_confidence <= 1.0:
             raise ValueError("min_scout_confidence must be between 0 and 1")
+
+
+# How long recording a failed or cancelled task or job may take before the run gives up on it.
+_FAILURE_WRITE_SECONDS = 10.0
+
+
+@contextmanager
+def _recording_failure(exc: BaseException) -> Iterator[None]:
+    """Persist a failure even while the run is being cancelled, without hiding the failure.
+
+    Pydantic Graph cancels branches through anyio, which re-raises cancellation at every await,
+    so the writes run shielded, for at most _FAILURE_WRITE_SECONDS. If a write fails or times
+    out, the original exception is still the one raised, with a note saying so.
+    """
+    with anyio.move_on_after(_FAILURE_WRITE_SECONDS, shield=True) as scope:
+        try:
+            yield
+        except Exception as write_error:
+            exc.add_note(f"Recording this failure also failed ({type(write_error).__name__}).")
+    if scope.cancelled_caught:
+        exc.add_note("Recording this failure timed out.")
 
 
 # Bounds on tool output replayed to a salvage call.
@@ -183,19 +205,24 @@ class AsyncResearchLoop:
 
     @asynccontextmanager
     async def _job_scope(self, job_id: UUID) -> AsyncIterator[None]:
-        """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises."""
+        """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises.
+
+        Cancellation, which is how Ctrl-C reaches the run, is recorded too, so an interrupted
+        run does not stay "running".
+        """
         self._job_spend[job_id] = Decimal(0)
         self._fetch_memos[job_id] = FetchMemo()
         try:
             yield
-        except Exception as exc:
-            await self.repository.finish_job(
-                job_id,
-                status="failed",
-                final_report=None,
-                verification=None,
-                error=error_snapshot(exc),
-            )
+        except (Exception, asyncio.CancelledError) as exc:
+            with _recording_failure(exc):
+                await self.repository.finish_job(
+                    job_id,
+                    status="failed",
+                    final_report=None,
+                    verification=None,
+                    error=error_snapshot(exc),
+                )
             raise
         finally:
             self._job_spend.pop(job_id, None)
@@ -396,23 +423,26 @@ class AsyncResearchLoop:
                 conversation_id=result.conversation_id,
             )
             return output
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            # Cancelled tasks are recorded too: a cancelled run, or a sibling branch the graph
+            # cancelled because another failed.
             if captured is not None:
                 captured.extend(run_messages)
-            if run_messages:
-                try:
-                    await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
-                except Exception:
-                    pass  # keep the original failure; the task row still records it
-            await self.repository.finish_task(
-                task_id,
-                status="failed",
-                output=None,
-                usage=usage_snapshot(usage) if usage.requests else None,
-                agent_run_id=None,
-                conversation_id=None,
-                error=error_snapshot(exc),
-            )
+            with _recording_failure(exc):
+                if run_messages:
+                    try:
+                        await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
+                    except Exception:
+                        pass  # keep the original failure; the task row still records it
+                await self.repository.finish_task(
+                    task_id,
+                    status="failed",
+                    output=None,
+                    usage=usage_snapshot(usage) if usage.requests else None,
+                    agent_run_id=None,
+                    conversation_id=None,
+                    error=error_snapshot(exc),
+                )
             raise
 
     async def _run_research(self, question: ResearchQuestion, **kwargs: Any) -> ResearchResult:

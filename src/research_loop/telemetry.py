@@ -13,7 +13,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from .schemas import ToolEvent
 
 
-def error_snapshot(exc: Exception) -> dict[str, Any]:
+def error_snapshot(exc: BaseException) -> dict[str, Any]:
     """Persist a failure category without provider response bodies or prompt fragments."""
     snapshot: dict[str, Any] = {"type": type(exc).__name__}
     if isinstance(exc, ModelHTTPError):

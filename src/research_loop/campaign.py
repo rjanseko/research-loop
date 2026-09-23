@@ -296,7 +296,7 @@ async def run_campaign(
                     )
                 except Exception as exc:
                     # Questions are independent: record the failure and go on, unless failures
-                    # keep coming, which points to a shared cause.
+                    # keep coming, which points to a shared cause. Cancellation stops the run.
                     manifest["questions"].append({
                         "id": question_id, "status": "failed", "error": type(exc).__name__,
                     })
@@ -313,7 +313,7 @@ async def run_campaign(
         completed = len(manifest["questions"]) - failed
         manifest["status"] = ("completed" if not failed
                               else "completed_with_failures" if completed else "failed")
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:  # Ctrl-C arrives as cancellation
         manifest["status"] = "failed"
         manifest["error"] = type(exc).__name__
         raise
@@ -607,7 +607,7 @@ async def synthesize_campaign(
         manifest |= {"status": "completed", "job_id": str(outcome.job_id),
                      "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
                      "hypothesis_count": len(outcome.output.hypotheses)}
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:  # Ctrl-C arrives as cancellation
         manifest["status"] = "failed"
         manifest["error"] = type(exc).__name__
         raise

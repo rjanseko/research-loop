@@ -121,6 +121,8 @@ The graph is typed control flow, not durable execution, and not a crash-resumabl
 - attachment manifests
 - the final report and verification
 
+Every job and task ends in a terminal record when the process survives: a failure, a cancelled run (Ctrl-C reaches the run as cancellation), and a sibling branch the graph cancels because another failed are all recorded as `failed`, with the error type (`CancelledError` for cancellation). These writes are shielded from cancellation for up to ten seconds, and if one fails, the original error is still the one raised, with a note. A killed process still leaves `running` records, and runs have no deadline.
+
 If in-flight crash recovery becomes necessary, add a durable execution layer deliberately. Graph nodes plus Postgres records do not amount to durability.
 
 ## Parity
@@ -129,4 +131,4 @@ If in-flight crash recovery becomes necessary, add a durable execution layer del
 
 `tests/test_parity.py` runs both orchestrators with the same deterministic agent outputs. The scenario deliberately takes the long path: parallel scouts that finish out of order, a low-confidence initial deep dive, synthesis and verification, a verifier-requested second deep dive, and a passing re-verification. It compares an order-insensitive fingerprint of the plan, results, report, and verification, plus the role, question, and attempt of every call. The fingerprint does not yet cover claim statements, evidence, or contradictions.
 
-`tests/test_workflow_contract.py` runs every contract test (round limits, gap selection, failure recording, salvage, prompt contents, task lineage, and the shared fetch memo) against both orchestrators through the real agent runner, with only model responses scripted.
+`tests/test_workflow_contract.py` runs every contract test (round limits, gap selection, failure and cancellation recording, salvage, prompt contents, task lineage, and the shared fetch memo) against both orchestrators through the real agent runner, with only model responses scripted.
