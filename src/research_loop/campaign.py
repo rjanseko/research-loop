@@ -125,9 +125,9 @@ def render_question_report(report: FinalReport, verification: VerificationReport
         label = f"{check.severity}, {'supported' if check.supported else 'not supported'}"
         cited = f" (claims: {', '.join(check.claim_ids)})" if check.claim_ids else ""
         lines.append(f"- **[{label}]** {check.statement}{cited}: {check.explanation}")
-    for field, noun in (("quote_check", "quoted passages"), ("source_check", "cited sources")):
-        verdicts = [(claim.id, getattr(item, field)) for claim in (ledger.claims() if ledger else [])
-                    for item in claim.evidence if getattr(item, field)]
+    for check_field, noun in (("quote_check", "quoted passages"), ("source_check", "cited sources")):
+        verdicts = [(claim.id, getattr(item, check_field)) for claim in (ledger.claims() if ledger else [])
+                    for item in claim.evidence if getattr(item, check_field)]
         not_found = [claim_id for claim_id, verdict in verdicts if verdict == "not_found"]
         if not_found:
             lines += ["", f"{len(not_found)} of {len(verdicts)} {noun} {'was' if len(not_found) == 1 else 'were'} "

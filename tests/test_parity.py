@@ -7,8 +7,6 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("pydantic_graph")
-
 from research_loop.async_orchestrator import AsyncResearchLoop, ResearchConfig
 from research_loop.orchestrator import ResearchLoop
 from research_loop.parity import parity_differences
