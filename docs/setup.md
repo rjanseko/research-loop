@@ -5,6 +5,7 @@
 ```bash
 make setup      # python3 -m venv .venv && pip install -e '.[all]'
 make test       # pytest -q
+make lint       # ruff check .
 ```
 
 Or by hand:
@@ -26,7 +27,7 @@ Python 3.12 or later is required. The package tracks the PydanticAI and Pydantic
 | `eval` | Pydantic Evals, which `research-bench` needs |
 | `benchmark` | pandas and pyarrow for Parquet datasets such as GAIA |
 | `observability` | Logfire |
-| `test` | pytest, pytest-asyncio, and reportlab |
+| `test` | pytest, pytest-asyncio, reportlab, and ruff (pinned, with the lint rules set in `pyproject.toml`) |
 
 The test suite runs offline, and GitHub Actions runs `ruff check .` and `pytest -q` on every push to `master` and every pull request (`.github/workflows/ci.yml`). `tests/conftest.py` refuses model-provider requests and fails any test that resolves or connects to a non-loopback host.
 

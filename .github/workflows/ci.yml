@@ -20,7 +20,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install
-        run: pip install -e '.[all]' ruff
+        run: pip install -e '.[all]'
       - name: Lint
         run: ruff check .
       # Offline by design: tests/conftest.py refuses model-provider requests and non-loopback hosts,

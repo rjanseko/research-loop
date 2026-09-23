@@ -17,7 +17,7 @@ postgres = ["psycopg[binary,pool]>=3.2"]
 observability = ["logfire>=5,<6"]
 # fontTools lets pypdf read embedded CFF fonts instead of logging each one.
 scholarly = ["httpx>=0.27", "trafilatura>=2,<3", "pypdf>=5", "fonttools>=4"]
-test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17"]
 benchmark = ["pandas>=2.2", "pyarrow>=16"]
 attachments = [
   "pypdf>=5",
@@ -39,3 +39,8 @@ research-long-horizon = "research_loop.long_horizon:main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+
+[tool.ruff.lint]
+# The rules this codebase is held to. Newer ruff releases enable more by default (import order,
+# pyupgrade, blind except, ...); pinning the set keeps every ruff version checking the same thing.
+select = ["E4", "E7", "E9", "F"]
