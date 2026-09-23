@@ -120,7 +120,7 @@ Provider-side spending caps remain the hard limit. Campaigns set all three from 
 
 ## Deliberately out of scope
 
-No durable workflow runtime (DBOS, Temporal, Prefect), no graph-state snapshots presented as crash recovery, no learned router, no additional agent roles, no event sourcing, and no second evidence store. The next step is measurement: small paid smoke runs and scout comparisons, with `ModelPolicy` changes derived from persisted telemetry rather than public leaderboards. [docs/architecture-review.md](docs/architecture-review.md) lists the integrity work to do first.
+No durable workflow runtime (DBOS, Temporal, Prefect), no graph-state snapshots presented as crash recovery, no learned router, no additional agent roles, no event sourcing, and no second evidence store. The next step is measurement: small paid smoke runs and scout comparisons, with `ModelPolicy` changes derived from persisted telemetry rather than public leaderboards. Most of the integrity work in [docs/architecture-review.md](docs/architecture-review.md) has landed; its status table lists what remains.
 
 ## Documentation
 

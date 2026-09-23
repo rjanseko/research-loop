@@ -26,6 +26,26 @@ Finding 14 is addressed without changing the output layout: each question's file
 
 Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field of `campaign.toml` when it loads, rejects unknown keys, checks the planner range and reserve against their limits, and fills defaults, so `--dry-run` catches what a run would otherwise hit after the paid preflight. The spec's `scholarly_cache_mode` is now honored instead of hardcoded. Rendered objectives are unchanged.
 
+**Status by finding, as of commit `d85d2bf` (2026-09-23, 277 tests).** This table sums up the status notes above; the findings below keep their original text.
+
+| Finding | Status | Still open |
+|---|---|---|
+| 1. Benchmark failures shown as success; error bodies in output | Done | — |
+| 2. Evidence not an enforced grounding contract | Mostly done (`evidence_version` 3) | Held `max_deep_dives_per_round = 0` routing fix (changes `research-graph-v1`); acquisition-observation records and locator checks |
+| 3. Campaign synthesis drops verifier findings, accepts stale artifacts | Done | — |
+| 4. Metrics claim passes and complete costs they cannot support | Done | — |
+| 5. Source restrictions not enforced by tools | Done for normalized tools (`fetch_version` 3) | Provider-native tools in `adaptive` mode are only audited; acquisition events are not stored as records |
+| 6. Canonical evidence IDs not stored | Done (migration 003) | Task outputs keep worker-local IDs; the in-memory ledger is mutable |
+| 7. No persisted cancellation or deadline | Done: cancellation, `max_run_seconds`, `research-db reconcile`, legacy sibling cancellation | — |
+| 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, campaign synthesis is bounded ([PROMPT_SIZES.md](../campaigns/long_horizon_agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops still resend their whole history; salvage still truncates tool results |
+| 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
+| 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
+| 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, and `campaign.toml` | `ModelRoute` limits are not validated |
+| 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop | arXiv and Crossref year filters; cached search token statistics; one HTTP client per run; DNS check and connection resolve separately |
+| 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; lockfile, CI, and a wheel install smoke test |
+| 14. Campaign artifacts not published atomically | Done | — |
+| 15. Budget accounting separate from admission control | Open (P3) | Reserving budget before concurrent calls |
+
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 
 **Recommendation.** Keep PydanticAI, Pydantic Graph, the evidence ledger, and Postgres. Make a focused internal restructure around run lifecycle, canonical evidence, and bounded prompts. The graph is a useful description of the research algorithm. The largest problems occur in the contracts around it: what counts as a successful run, whether citations resolve, whether campaign artifacts belong together, and how much evidence a model receives.
