@@ -142,3 +142,5 @@ Postgres, not Logfire, is the durable record of jobs and evidence.
 ## Coding agents
 
 Run Codex or Claude Code from the repository root so they pick up [AGENTS.md](../AGENTS.md), which records the architectural boundaries and validation rules.
+
+Two agent skills that ship inside the `logfire` package are linked into the repository: `logfire-evals`, for the Pydantic Evals metrics in `evals.py`, and `logfire-instrumentation`, for the tracing in `observability.py`. The links live in `.agents/skills/` (read by Codex and other agents) and `.claude/skills/` (read by Claude Code) and point into `.venv`, so they resolve once `make setup` has installed the dependencies. `make setup` repairs them when [uv](https://docs.astral.sh/uv/) is installed; after upgrading `logfire`, run `make skills`. To add another bundled skill, run `VIRTUAL_ENV=$PWD/.venv uvx library-skills --claude --skill NAME`; `uvx library-skills list --claude` shows what the installed packages offer.
