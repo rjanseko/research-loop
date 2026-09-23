@@ -61,7 +61,8 @@ def _model_profile(model_id: str) -> dict[str, Any]:
     return dict(infer_model(model_id).profile)
 
 
-async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool) -> None:
+async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool) -> bool:
+    """Run a bounded live call; return whether PydanticAI could price it."""
     from pydantic_ai import Agent, BinaryContent, UsageLimits
 
     agent = Agent(output_type=SmokeOutput)
@@ -89,6 +90,7 @@ async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool) -> None:
     )
     if not result.output.ok or (tools and not called):
         raise RuntimeError("smoke result did not confirm required output or tool call")
+    return result.usage.cost is not None
 
 
 def _smoke_failure_detail(exc: Exception) -> str:
@@ -238,6 +240,7 @@ def run_diagnose(
         prior_tools, prior_image = smoke_requirements.get(route.model, (False, False))
         smoke_requirements[route.model] = (prior_tools or needs_tools, prior_image or needs_image)
     smoke_results: dict[str, str | None] = {}
+    unpriced: set[str] = set()
     for label, route, needs_tools, needs_image in routes:
         name = f"model:{label}"
         provider, separator, model = route.model.partition(":")
@@ -260,12 +263,19 @@ def run_diagnose(
             if route.model not in smoke_results:
                 required_tools, required_image = smoke_requirements[route.model]
                 try:
-                    asyncio.run(smoke_probe(route, tools=required_tools, image=required_image))
+                    priced = asyncio.run(smoke_probe(route, tools=required_tools, image=required_image))
                     smoke_results[route.model] = None
+                    if priced is False:
+                        unpriced.add(route.model)
                 except Exception as exc:
                     smoke_results[route.model] = _smoke_failure_detail(exc)
             failure = smoke_results[route.model]
-            checks.append(Check(name, "FAIL" if failure else "PASS", failure or "Structured output and requested capabilities passed live smoke"))
+            if failure:
+                checks.append(Check(name, "FAIL", failure))
+            elif route.model in unpriced:
+                checks.append(Check(name, "WARN", "Live smoke passed, but no pricing data; cost limits cannot be enforced"))
+            else:
+                checks.append(Check(name, "PASS", "Structured output and requested capabilities passed live smoke"))
         else:
             detail = "Profile supports required output/tools; run --smoke to verify model access"
             if needs_image:

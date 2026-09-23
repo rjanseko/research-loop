@@ -49,6 +49,7 @@ class ModelPolicy:
         multimodal_scout: ModelRoute | None = None,
         alternate_deep_dive: ModelRoute | None = None,
         planner_question_range: tuple[int, int] = (6, 10),
+        job_cost_limit: float | None = None,
     ) -> None:
         self.name = name
         self.routes = routes
@@ -56,6 +57,8 @@ class ModelPolicy:
         self.multimodal_scout = multimodal_scout
         self.alternate_deep_dive = alternate_deep_dive
         self.planner_question_range = planner_question_range
+        # Soft USD cap across all agent calls in one job; route cost_limit still applies per call.
+        self.job_cost_limit = job_cost_limit
 
     def for_role(self, role: ResearchRole) -> ModelRoute:
         return self.routes[role]
@@ -86,6 +89,7 @@ class ModelPolicy:
                 self.alternate_deep_dive.snapshot() if self.alternate_deep_dive else None
             ),
             "planner_question_range": list(self.planner_question_range),
+            "job_cost_limit": self.job_cost_limit,
         }
 
 

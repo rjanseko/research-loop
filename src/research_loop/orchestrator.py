@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from .async_orchestrator import AsyncResearchLoop, ResearchConfig, ResearchOutcome
@@ -75,6 +76,7 @@ class ResearchLoop(AsyncResearchLoop):
             },
         )
 
+        self._job_spend[job_id] = Decimal(0)
         try:
             attachments: AttachmentCorpus | None = None
             if constraints.attachment_paths:
@@ -122,6 +124,7 @@ class ResearchLoop(AsyncResearchLoop):
                 verification=graph_result.verification,
                 ledger=ledger,
                 attachments=attachments,
+                cost_usd=self._job_spend.get(job_id),
             )
         except Exception as exc:
             await self.repository.finish_job(
@@ -132,6 +135,8 @@ class ResearchLoop(AsyncResearchLoop):
                 error=error_snapshot(exc),
             )
             raise
+        finally:
+            self._job_spend.pop(job_id, None)
 
     @classmethod
     def render_graph(cls, *, direction: str = "LR") -> str:

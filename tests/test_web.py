@@ -32,3 +32,19 @@ async def test_web_fetch_extracts_and_caches_main_text(monkeypatch, tmp_path) ->
 async def test_web_fetch_rejects_local_url(tmp_path) -> None:
     result = await WebAcquisition(cache_root=tmp_path).fetch("https://127.0.0.1/secret")
     assert result["error"] == "UnsafeURL"
+
+
+@pytest.mark.asyncio
+async def test_web_replay_skips_dns_check(monkeypatch, tmp_path) -> None:
+    from research_loop.scholar import AcquisitionCache
+
+    AcquisitionCache(tmp_path, "record").put("web", "https://example.org/paper|max_chars=12000",
+                                             {"url": "https://example.org/paper", "text": "cached"})
+
+    async def offline(_: str) -> bool:
+        raise AssertionError("replay must not resolve DNS")
+
+    monkeypatch.setattr("research_loop.web._public_url", offline)
+    fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="replay")
+    assert (await fetcher.fetch("https://example.org/paper"))["text"] == "cached"
+    assert (await fetcher.fetch("https://example.org/other"))["error"] == "CacheMiss"

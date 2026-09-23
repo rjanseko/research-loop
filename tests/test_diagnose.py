@@ -104,3 +104,22 @@ def test_live_smoke_deduplicates_shared_model_routes() -> None:
     })
     assert any(check.name == "graph" and check.status == "PASS" for check in checks)
     assert any(check.name == "web_tools" and check.status == "PASS" for check in checks)
+
+
+def test_live_smoke_warns_when_model_has_no_pricing() -> None:
+    settings = ResearchSettings.from_env({"OPENAI_API_KEY": "private-key"})
+
+    async def smoke_probe(route, *, tools, image):
+        return False
+
+    checks = run_diagnose(
+        settings,
+        web_probe=lambda: None,
+        writable_probe=lambda _path: None,
+        profile_probe=lambda _model: {"supports_tools": True},
+        smoke_probe=smoke_probe,
+        smoke=True,
+    )
+    gap = next(check for check in checks if check.name == "model:gap_analyst")
+    assert gap.status == "WARN"
+    assert "pricing" in gap.detail

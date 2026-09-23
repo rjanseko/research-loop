@@ -18,15 +18,16 @@ class WebAcquisition:
         self.client = client
 
     async def fetch(self, url: str, max_chars: int = 12000) -> dict[str, Any]:
-        if not await _public_url(url):
-            return {"url": url, "error": "UnsafeURL"}
         max_chars = max(1000, min(max_chars, 12000))
+        # Cache first so replay works offline; entries exist only for URLs that passed the check.
         cache_key = f"{url}|max_chars={max_chars}"
         cached = self.cache.get("web", cache_key)
         if cached is not None:
             return {**cached, "cache_hit": True}
         if self.cache.mode == "replay":
             return {"url": url, "error": "CacheMiss", "cache_hit": False}
+        if not await _public_url(url):
+            return {"url": url, "error": "UnsafeURL"}
         try:
             if self.client:
                 response = await _bounded_public_get(self.client, url, 2_000_000)

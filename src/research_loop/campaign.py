@@ -37,6 +37,9 @@ def load_campaign(path: Path) -> dict[str, Any]:
     ids = [item.get("id") for item in questions]
     if not ids or any(not isinstance(item, str) or not item for item in ids) or len(ids) != len(set(ids)) or any(not item.get("text") for item in questions):
         raise ValueError("campaign needs unique question IDs and nonempty question text")
+    cap = (campaign.get("execution") or {}).get("question_cost_limit_usd")
+    if not isinstance(cap, (int, float)) or isinstance(cap, bool) or cap <= 0:
+        raise ValueError("campaign needs a positive execution.question_cost_limit_usd")
     return campaign
 
 
@@ -87,6 +90,7 @@ async def run_campaign(
         deep_route,
         cost_limit=min(deep_route.cost_limit or float("inf"), float(execution["deep_dive_cost_limit_usd"])),
     )
+    policy.job_cost_limit = float(execution["question_cost_limit_usd"])
     run_config = ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode="record",
@@ -113,6 +117,7 @@ async def run_campaign(
             "max_parallel_scouts": run_config.max_parallel_scouts,
             "max_deep_dives_per_round": run_config.max_deep_dives_per_round,
             "max_verification_rounds": run_config.max_verification_rounds,
+            "question_cost_limit_usd": policy.job_cost_limit,
         },
         "started_at": datetime.now(UTC).isoformat(), "finished_at": None,
         "status": "running", "questions": [],
@@ -135,13 +140,19 @@ async def run_campaign(
                     repository=backend,
                 )
                 question = questions[question_id]
-                outcome = await loop.run(
-                    render_objective(campaign, question),
-                    constraints=ResearchConstraints(notes=[
-                        "Use primary benchmark papers and official repositories for benchmark claims.",
-                        "Label publication status and include DOI/arXiv/OpenAlex/ACL IDs when available.",
-                    ]),
-                )
+                try:
+                    outcome = await loop.run(
+                        render_objective(campaign, question),
+                        constraints=ResearchConstraints(notes=[
+                            "Use primary benchmark papers and official repositories for benchmark claims.",
+                            "Label publication status and include DOI/arXiv/OpenAlex/ACL IDs when available.",
+                        ]),
+                    )
+                except Exception as exc:
+                    manifest["questions"].append({
+                        "id": question_id, "status": "failed", "error": type(exc).__name__,
+                    })
+                    raise
                 folder = output_dir / question_id
                 folder.mkdir(parents=True, exist_ok=True)
                 (folder / "report.md").write_text(outcome.report.answer + "\n", encoding="utf-8")
@@ -159,11 +170,13 @@ async def run_campaign(
                     "id": question_id, "job_id": str(outcome.job_id),
                     "claim_count": outcome.ledger.claim_count(),
                     "source_count": len(bibliography), "status": "completed",
+                    "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
                 })
                 write_manifest(manifest_path, manifest)
         manifest["status"] = "completed"
-    except Exception:
+    except Exception as exc:
         manifest["status"] = "failed"
+        manifest["error"] = type(exc).__name__
         raise
     finally:
         manifest["finished_at"] = datetime.now(UTC).isoformat()

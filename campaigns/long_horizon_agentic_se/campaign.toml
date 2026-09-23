@@ -17,6 +17,8 @@ planner_question_max = 3
 max_deep_dives_per_round = 1
 max_verification_rounds = 0
 deep_dive_cost_limit_usd = 3.0
+# Soft cap across all model calls for one question; checked before each call.
+question_cost_limit_usd = 5.0
 
 [source_policy]
 tier_a = "Peer-reviewed, accepted conference, or journal work"

@@ -375,10 +375,20 @@ class ScholarClient:
 
     async def fetch(self, url: str, max_chars: int = 12000) -> ScholarResponse:
         result = ScholarResponse(operation="fetch")
+        max_chars = max(1000, min(max_chars, 12000))
+        # Cache first: entries exist only for URLs that passed the public-URL check, and
+        # replay must work offline, where the DNS check would otherwise fail.
+        cache_key = f"{url}|max_chars={max_chars}"
+        cached = self.cache.get("fetch", cache_key)
+        if cached is not None:
+            self.cache_hits += 1
+            return ScholarResponse.model_validate({**cached, "cache_hits": 1})
+        if self.cache.mode == "replay":
+            result.provider_errors.append("fetch:CacheMiss")
+            return result
         if not await _public_url(url):
             result.provider_errors.append("fetch:UnsafeURL")
             return result
-        max_chars = max(1000, min(max_chars, 12000))
         try:
             async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
                 response = await _bounded_public_get(client, url, 5_000_000)
@@ -432,6 +442,8 @@ class ScholarClient:
                 result.provider_errors.append("fetch:EmptyExtraction")
         except Exception as exc:
             result.provider_errors.append(f"fetch:{type(exc).__name__}")
+        if not result.provider_errors:
+            self.cache.put("fetch", cache_key, result.model_dump(mode="json"))
         return result
 
 

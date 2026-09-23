@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits
+from pydantic_ai.usage import RunUsage
 
 from .agents import (
     deep_dive_agent,
@@ -68,6 +70,11 @@ class ResearchOutcome:
     verification: VerificationReport
     ledger: EvidenceLedger
     attachments: AttachmentCorpus | None = None
+    cost_usd: Decimal | None = None
+
+
+class JobBudgetExceeded(RuntimeError):
+    """The policy's per-job cost cap is spent, or spend could not be priced."""
 
 
 class AsyncResearchLoop:
@@ -86,15 +93,37 @@ class AsyncResearchLoop:
         # Exposed to the graph orchestrator so agent definitions remain centralized here.
         self._planner_agent = planner_agent
         self._gap_agent = gap_agent
+        # Per-job USD spend; None once any billed call could not be priced.
+        self._job_spend: dict[UUID, Decimal | None] = {}
 
     @staticmethod
-    def _limits(route: ModelRoute) -> UsageLimits:
+    def _limits(route: ModelRoute, remaining_budget: float | None = None) -> UsageLimits:
+        caps = [cap for cap in (route.cost_limit, remaining_budget) if cap is not None]
         return UsageLimits(
             request_limit=route.max_requests,
             tool_calls_limit=route.max_tool_calls,
             total_tokens_limit=route.total_tokens_limit,
-            cost_limit=route.cost_limit,
+            cost_limit=min(caps) if caps else None,
         )
+
+    def _remaining_budget(self, job_id: UUID) -> float | None:
+        """Spend left under the policy's job cap; raises before a call that cannot fit."""
+        limit = self.policy.job_cost_limit
+        if limit is None or job_id not in self._job_spend:
+            return None
+        spent = self._job_spend[job_id]
+        if spent is None:
+            raise JobBudgetExceeded("job cost cap cannot be enforced: a model call had no pricing data")
+        remaining = limit - float(spent)
+        if remaining <= 0:
+            raise JobBudgetExceeded(f"job cost cap of ${limit:.2f} reached")
+        return remaining
+
+    def _record_spend(self, job_id: UUID, usage: RunUsage) -> None:
+        spent = self._job_spend.get(job_id)
+        if spent is None or not usage.requests:
+            return
+        self._job_spend[job_id] = None if usage.cost is None else spent + usage.cost
 
     @staticmethod
     def _constraints_payload(
@@ -131,6 +160,7 @@ class AsyncResearchLoop:
             "attachment_count": len(attachment_corpus.records) if attachment_corpus else 0,
             "scholarly_cache_mode": self.config.scholarly_cache_mode,
         }
+        remaining_budget = self._remaining_budget(job_id)
         task_id = await self.repository.start_task(
             job_id=job_id,
             parent_task_id=parent_task_id,
@@ -142,6 +172,8 @@ class AsyncResearchLoop:
             attempt=attempt,
         )
 
+        # A caller-owned RunUsage keeps counting billed requests even when the run raises.
+        usage = RunUsage()
         try:
             capabilities = (
                 build_research_capabilities(self.config.tool_mode) if research_tools else None
@@ -174,14 +206,18 @@ class AsyncResearchLoop:
             ):
                 user_prompt = build_multimodal_prompt(prompt, attachment_corpus)
 
-            result = await agent.run(
-                user_prompt,
-                model=route.model,
-                model_settings=route.model_settings(),
-                usage_limits=self._limits(route),
-                capabilities=capabilities,
-                toolsets=toolsets or None,
-            )
+            try:
+                result = await agent.run(
+                    user_prompt,
+                    model=route.model,
+                    model_settings=route.model_settings(),
+                    usage_limits=self._limits(route, remaining_budget),
+                    usage=usage,
+                    capabilities=capabilities,
+                    toolsets=toolsets or None,
+                )
+            finally:
+                self._record_spend(job_id, usage)
             events = extract_tool_events(result.new_messages())
             await self.repository.record_tool_events(task_id, events)
             output = result.output
@@ -203,7 +239,7 @@ class AsyncResearchLoop:
                 task_id,
                 status="failed",
                 output=None,
-                usage=None,
+                usage=usage_snapshot(usage) if usage.requests else None,
                 agent_run_id=None,
                 conversation_id=None,
                 error=error_snapshot(exc),
@@ -438,6 +474,7 @@ class AsyncResearchLoop:
             },
         )
 
+        self._job_spend[job_id] = Decimal(0)
         try:
             attachments = None
             if constraints.attachment_paths:
@@ -534,7 +571,10 @@ class AsyncResearchLoop:
                 final_report=report.model_dump(mode="json"),
                 verification=verification.model_dump(mode="json"),
             )
-            return ResearchOutcome(job_id, plan, report, verification, ledger, attachments)
+            return ResearchOutcome(
+                job_id, plan, report, verification, ledger, attachments,
+                cost_usd=self._job_spend.get(job_id),
+            )
         except Exception as exc:
             await self.repository.finish_job(
                 job_id,
@@ -544,3 +584,5 @@ class AsyncResearchLoop:
                 error=error_snapshot(exc),
             )
             raise
+        finally:
+            self._job_spend.pop(job_id, None)
