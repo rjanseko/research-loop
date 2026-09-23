@@ -7,7 +7,8 @@ in commits `5c62878` and `36ce94e`. The deeper research settings from `36ce94e` 
 used for a paid run. Numbers marked *estimate* are projections, not measurements.
 
 Since then, fetch version 2 added paging through long documents (option 5 below); the rest of
-this document still describes current behavior. The measurements are unchanged.
+this document still describes current behavior. The measurements are unchanged; the
+[rerun](#rerun-under-evidence-version-3) below adds a second set under the deeper settings.
 
 ## Summary
 
@@ -262,6 +263,36 @@ Only the fetch paging in option 5 has been implemented.
    and a new fetch version.
 6. **Steer the search more strongly.** Move the key search guidance from the campaign's research
    notes, which reach the model as constraints, into the scout instructions in `agents.py`.
+
+## Rerun under evidence version 3
+
+p01 was rerun on 2026-09-23 (job `46044486`, commit `fd691fd`) with the deeper research settings,
+`evidence_version` 3, and `fetch_version` 3. It took 22 minutes and cost $2.94 (the first pilot:
+$2.66), and produced 56 claims, 108 evidence items, and 62 sources (45, 68, and 55 before).
+
+| Step | First pilot: prompt / tokens used of limit | Rerun: prompt / tokens used of limit |
+|---|---|---|
+| Gap analysis | 87,125 chars / 24.1k of 70k | 88,187 chars / 24.0k of 70k |
+| Synthesis | 99,254 chars / 50.8k of 120k | 148,387 chars / 69.7k of 120k |
+| Verifier | 127,067 chars / 41.6k of 100k | 177,808 chars / 54.5k of 100k |
+| Campaign synthesis prompt | 82,719 chars | 111,722 chars |
+
+What changed:
+
+- **Problem 2 has arrived.** At these sizes one retry of synthesis (about 2 x 58k input + 3 x 11k
+  output tokens) or of the verifier (about 2 x 46k + 3 x 9k) exceeds its token limit *(estimate)*.
+  Evidence version 3 retries an output that cites an unknown claim ID, so such a retry would now
+  end the question with `UsageLimitExceeded` rather than fix the citation. Neither retried in this run.
+- **Problem 1 is closer.** At about 112,000 characters per question, three questions fit the
+  360,000-character synthesis cap and four do not *(estimate)*.
+- **Research loops still end on limits.** Two of three scouts stopped at their 16-request limit,
+  and both deep dives stopped on their 180k-token limit (162k and 185k input tokens), now that
+  paging lets them read further; all four were salvaged. No research call stopped on dollars.
+- **The new checks.** Synthesis and verification each took one request (no citation retry); every
+  claim ID the report and verifier cite resolves in the ledger stored in Postgres; 84 of 92 quotes
+  and all 108 cited sources were found in the run's tool output; the verifier's three follow-ups
+  name planned questions. `review_reasons`: 13 of 42 verifier checks unsupported, 2 rated major,
+  and the verifier still asking for research (the first pilot: 11 of 45, 5 major).
 
 ## Appendix: how to reproduce these numbers
 
