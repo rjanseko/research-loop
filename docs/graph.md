@@ -125,7 +125,7 @@ The graph is typed control flow, not durable execution, and not a crash-resumabl
 - the evidence ledger, whose unique claim IDs the report and verification cite, including a failed job's partial ledger
 - `review_reasons`, what a finished job left unresolved
 
-Every job and task ends in a terminal record when the process survives: a failure, a cancelled run (Ctrl-C reaches the run as cancellation), and a sibling branch the graph cancels because another failed are all recorded as `failed`, with the error type (`CancelledError` for cancellation). These writes are shielded from cancellation for up to ten seconds, and if one fails, the original error is still the one raised, with a note. `ResearchConfig.max_run_seconds` sets an optional deadline: past it, the run is cancelled and recorded failed with `TimeoutError`. A killed process still leaves `running` records; `research-db reconcile` closes them out.
+Every job and task ends in a terminal record when the process survives: a failure, a cancelled run (Ctrl-C reaches the run as cancellation), and a sibling scout or deep dive cancelled because another failed (in both orchestrators) are all recorded as `failed`, with the error type (`CancelledError` for cancellation). These writes are shielded from cancellation for up to ten seconds, and if one fails, the original error is still the one raised, with a note. `ResearchConfig.max_run_seconds` sets an optional deadline: past it, the run is cancelled and recorded failed with `TimeoutError`. A killed process still leaves `running` records; `research-db reconcile` closes them out.
 
 If in-flight crash recovery becomes necessary, add a durable execution layer deliberately. Graph nodes plus Postgres records do not amount to durability.
 

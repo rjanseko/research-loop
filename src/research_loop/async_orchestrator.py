@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
@@ -107,6 +107,22 @@ def _recording_failure(exc: BaseException) -> Iterator[None]:
             exc.add_note(f"Recording this failure also failed ({type(write_error).__name__}).")
     if scope.cancelled_caught:
         exc.add_note("Recording this failure timed out.")
+
+
+async def _gather_or_cancel(awaitables: Iterable[Awaitable[Any]]) -> list[Any]:
+    """Like asyncio.gather, but a failure first cancels the other tasks and waits for them to end.
+
+    The failure that propagates is the original one, as with gather; the cancelled siblings get to
+    record themselves instead of running on after their job has failed.
+    """
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 # Bounds on tool output replayed to a salvage call.
@@ -775,8 +791,8 @@ class AsyncResearchLoop:
             return
 
         sem = asyncio.Semaphore(self.config.max_parallel_deep_dives)
-        deep_results = await asyncio.gather(
-            *(
+        deep_results = await _gather_or_cancel(
+            (
                 self._run_gap(
                     job_id,
                     g,
@@ -886,11 +902,8 @@ class AsyncResearchLoop:
             questions = {q.id: q for q in plan.questions}
 
             scout_sem = asyncio.Semaphore(self.config.max_parallel_scouts)
-            scout_results = await asyncio.gather(
-                *(
-                    self._run_scout(job_id, q, scout_sem, constraints, attachments)
-                    for q in plan.questions
-                )
+            scout_results = await _gather_or_cancel(
+                self._run_scout(job_id, q, scout_sem, constraints, attachments) for q in plan.questions
             )
             for result in scout_results:
                 ledger.add(result)

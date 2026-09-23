@@ -20,7 +20,7 @@ Finding 9 is mostly addressed: manifests (schema version 3) add `tree_sha256` fo
 
 Finding 12 is partly addressed: attachment extraction runs in a worker thread, multimodal bytes are checked against the ingestion hash before they are sent, and scholarly metadata responses stream with a 2 MB cap through the same helper as page fetches. Still open: year filters for arXiv and Crossref, which would change search results, cached search token statistics, and a shared HTTP client per run.
 
-Finding 7 is mostly addressed: `ResearchConfig.max_run_seconds` bounds a run (campaigns set an hour per question), and `research-db reconcile --older-than MINUTES [--apply]` closes out jobs and tasks a killed process left running. Still open: the legacy loop's `asyncio.gather` leaves sibling scouts running after one fails.
+Finding 7 is mostly addressed: `ResearchConfig.max_run_seconds` bounds a run (campaigns set an hour per question), and `research-db reconcile --older-than MINUTES [--apply]` closes out jobs and tasks a killed process left running. The legacy loop now cancels sibling scouts and deep dives when one fails, as the graph does, and waits for them to record themselves before the original error propagates.
 
 Finding 14 is addressed without changing the output layout: each question's files are written to a staging folder that replaces the published one in a single rename, a failed write removes the staging folder, `run.json` records every other file's hash, and aggregation rejects folders whose files no longer match. Question IDs were already validated.
 

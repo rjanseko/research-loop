@@ -474,8 +474,6 @@ async def test_cancelled_run_leaves_no_running_records(workflow, role):
 @pytest.mark.asyncio
 async def test_failed_branch_records_the_siblings_it_cancels(workflow):
     loop, script = workflow
-    if not isinstance(loop, ResearchLoop):
-        pytest.skip("the legacy loop's asyncio.gather leaves sibling scouts running (architecture review, finding 7)")
     loop.repository = YieldingRepository()
     script.questions.append({"id": "q2", "question": "How reliable is it?"})
     script.hang_role, script.hang_question = "scout", "q2"
