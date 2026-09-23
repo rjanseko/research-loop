@@ -37,7 +37,7 @@ from .attachments import (
 )
 from .ledger import EvidenceLedger
 from .policy import ModelPolicy, ModelRoute
-from .quotes import check_quotes, tool_texts
+from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
 from .scholar import ScholarClient, build_scholar_toolset
 from .settings import ResearchSettings
@@ -370,8 +370,8 @@ class AsyncResearchLoop:
         """Run one agent as a persisted task.
 
         `task_ids` receives the task's ID once it is persisted; on failure, `captured` receives
-        the run's messages. A ResearchResult's quotes are checked against this run's tool output
-        plus `quote_texts` (a salvage call passes the output of the run it summarizes).
+        the run's messages. A ResearchResult's quotes and cited sources are checked against this
+        run's tool output plus `quote_texts` (a salvage call passes the output of the run it summarizes).
         """
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
@@ -451,7 +451,8 @@ class AsyncResearchLoop:
             await self.repository.record_tool_events(task_id, events)
             output = result.output
             if isinstance(output, ResearchResult):
-                output = check_quotes(output, [*tool_texts(events), *(quote_texts or ())])
+                texts = [*tool_texts(events), *(quote_texts or ())]
+                output = check_sources(check_quotes(output, texts), texts)
             await self.repository.finish_task(
                 task_id,
                 status="succeeded",

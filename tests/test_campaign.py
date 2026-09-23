@@ -423,9 +423,11 @@ def _quoted_ledger() -> EvidenceLedger:
     ledger = EvidenceLedger()
     ledger.add(ResearchResult(question_id="q1", question="size", conclusion="c", confidence=0.8, claims=[
         Claim(id="c1", statement="Verified size", confidence=0.8, evidence=[
-            Evidence(source=source, excerpt="size", quote="2,294 tasks", quote_check="verified", confidence=0.8)]),
+            Evidence(source=source, excerpt="size", quote="2,294 tasks", quote_check="verified",
+                     source_check="observed", confidence=0.8)]),
         Claim(id="c2", statement="Invented size", confidence=0.8, evidence=[
-            Evidence(source=source, excerpt="size", quote="4,000 tasks", quote_check="not_found", confidence=0.8),
+            Evidence(source=source, excerpt="size", quote="4,000 tasks", quote_check="not_found",
+                     source_check="not_found", confidence=0.8),
             Evidence(source=source, excerpt="paraphrase only", confidence=0.8)]),
     ]))
     return ledger
@@ -436,6 +438,7 @@ def test_question_report_counts_quotes_not_found_in_tool_output() -> None:
 
     text = render_question_report(FinalReport(answer="Answer"), VerificationReport(), _quoted_ledger())
     assert "1 of 2 quoted passages was not found in any text the research tools returned (claims: q1/c2)." in text
+    assert "1 of 2 cited sources was not found in any text the research tools returned (claims: q1/c2)." in text
     assert "quoted passages" not in render_question_report(FinalReport(answer="Answer"), VerificationReport())
 
 
@@ -458,7 +461,9 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
     evidence = {item["ref"]: item["evidence"] for item in
                 json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))["evidence"]}
     assert [item.get("quote_check") for item in evidence["q01/q1/c2"]] == ["not_found", None]
+    assert [item.get("source_check") for item in evidence["q01/q1/c2"]] == ["not_found", None]
     assert evidence["q01/q1/c1"][0]["quote_check"] == "verified"
+    assert evidence["q01/q1/c1"][0]["source_check"] == "observed"
 
 
 @pytest.mark.asyncio

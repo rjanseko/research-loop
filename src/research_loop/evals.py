@@ -37,6 +37,9 @@ class BenchmarkOutput:
     # Evidence quotes, and those not found in text the research tools returned (quotes.py).
     quotes: int = 0
     quotes_not_found: int = 0
+    # URL-cited evidence, and that citing sources no research tool returned (quotes.check_sources).
+    sources: int = 0
+    sources_not_found: int = 0
     # What the finished run left unresolved (async_orchestrator.review_reasons).
     review_reasons: list[str] = field(default_factory=list)
 
@@ -140,6 +143,15 @@ class VerbatimQuoteRate(Evaluator[Any, BenchmarkOutput]):
         return 1.0 - ctx.output.quotes_not_found / ctx.output.quotes
 
 
+class ObservedSourceRate(Evaluator[Any, BenchmarkOutput]):
+    """Share of URL-cited evidence whose source appeared in text the research tools returned."""
+
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
+        if ctx.output.sources == 0:
+            return {}
+        return 1.0 - ctx.output.sources_not_found / ctx.output.sources
+
+
 class AttachmentCitationCoverage(Evaluator[Any, BenchmarkOutput]):
     def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
         if ctx.output.attachment_count <= 0:
@@ -163,5 +175,6 @@ def make_dataset(cases: list[Case]) -> Dataset:
             EvalIntegrity(),
             AttachmentCitationCoverage(),
             VerbatimQuoteRate(),
+            ObservedSourceRate(),
         ],
     )

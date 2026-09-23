@@ -10,7 +10,8 @@ from pydantic.json_schema import SkipJsonSchema
 # Recorded in manifests. 1: one `excerpt` field, excerpt or paraphrase.
 # 2: `excerpt` summarizes; a verbatim `quote` is checked against the research run's tool output.
 # 3: role outputs are checked against the run (agents.py): plans, question IDs, and claim and
-#    attachment citations; a mismatch gets one retry, then fails the run.
+#    attachment citations; a mismatch gets one retry, then fails the run. Cited sources are
+#    checked against the run's tool output (`source_check`).
 EVIDENCE_VERSION = 3
 
 
@@ -82,8 +83,10 @@ class Evidence(BaseModel):
     supports: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code after the research run (see quotes.py), never by the model: hidden from its schema,
-    # and overwritten if a model supplies it anyway.
+    # and overwritten if a model supplies it anyway. source_check says whether the cited URL, or its
+    # DOI or arXiv ID, appeared in the run's tool output; attachment sources are left unset.
     quote_check: SkipJsonSchema[Literal["verified", "not_found"] | None] = None
+    source_check: SkipJsonSchema[Literal["observed", "not_found"] | None] = None
 
 
 class Claim(BaseModel):

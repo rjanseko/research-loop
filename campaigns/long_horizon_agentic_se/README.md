@@ -27,7 +27,7 @@ A completed question writes `outputs.question_files` to `<output>/<question id>/
 
 | File | Contents |
 |---|---|
-| `report.md` | The answer, caveats, the verifier's unsupported or major findings, and how many quoted passages were not found in tool output |
+| `report.md` | The answer, caveats, the verifier's unsupported or major findings, and how many quoted passages and cited sources were not found in tool output |
 | `report.json`, `verification.json` | The final report and the verifier's checks |
 | `evidence_ledger.json` | Every research result, with unique claim IDs such as `q1/c3`; the report and verification cite only these IDs |
 | `bibliography.json` | Distinct sources; preprint and publication records stay separate |
@@ -74,7 +74,7 @@ A completed question counts only if its objective hash still matches the spec. E
 `--synthesize --paid` runs the same preflight, then one campaign-level synthesizer job under the `[synthesis]` limits, and writes `outputs.campaign_files`:
 
 - Every finding, catalog entry, and hypothesis must cite existing claim refs; an invented ref triggers a bounded retry.
-- The prompt carries each question's verifier findings (unsupported or major checks) and each evidence item's `quote_check`. The synthesizer is told not to present those statements, or findings resting on quotes not found in tool output, as well supported.
+- The prompt carries each question's verifier findings (unsupported or major checks) and each evidence item's `quote_check` and `source_check`. The synthesizer is told not to present those statements, or findings resting on quotes or sources not found in tool output, as well supported.
 - Synthesis requires every question to be complete unless `--allow-partial` is passed; a partial synthesis is labeled in the report and manifest.
 - `--synthesize --dry-run` reports the prompt size against `synthesis.max_prompt_chars`, which a full eleven-question campaign is projected to exceed; see [PROMPT_SIZES.md](PROMPT_SIZES.md).
 

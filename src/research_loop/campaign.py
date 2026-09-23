@@ -129,7 +129,7 @@ def _flagged_checks(verification: VerificationReport) -> list[ClaimCheck]:
 
 def render_question_report(report: FinalReport, verification: VerificationReport,
                            ledger: EvidenceLedger | None = None) -> str:
-    """The synthesized answer, its caveats, the verifier's unresolved findings, and quote checks."""
+    """The synthesized answer, its caveats, the verifier's unresolved findings, and quote and source checks."""
     lines = [report.answer.rstrip(), ""]
     if report.caveats:
         lines += ["## Caveats", "", *[f"- {caveat}" for caveat in report.caveats], ""]
@@ -148,15 +148,16 @@ def render_question_report(report: FinalReport, verification: VerificationReport
         label = f"{check.severity}, {'supported' if check.supported else 'not supported'}"
         cited = f" (claims: {', '.join(check.claim_ids)})" if check.claim_ids else ""
         lines.append(f"- **[{label}]** {check.statement}{cited}: {check.explanation}")
-    quoted = [(claim.id, item.quote_check) for claim in (ledger.claims() if ledger else [])
-              for item in claim.evidence if item.quote_check]
-    not_found = [claim_id for claim_id, check in quoted if check == "not_found"]
-    if not_found:
-        lines += ["", f"{len(not_found)} of {len(quoted)} quoted passages {'was' if len(not_found) == 1 else 'were'} "
-                      "not found in any text the research tools returned "
-                      f"(claims: {', '.join(dict.fromkeys(not_found))})."]
-    elif quoted:
-        lines += ["", f"All {len(quoted)} quoted passages were found in text the research tools returned."]
+    for field, noun in (("quote_check", "quoted passages"), ("source_check", "cited sources")):
+        verdicts = [(claim.id, getattr(item, field)) for claim in (ledger.claims() if ledger else [])
+                    for item in claim.evidence if getattr(item, field)]
+        not_found = [claim_id for claim_id, verdict in verdicts if verdict == "not_found"]
+        if not_found:
+            lines += ["", f"{len(not_found)} of {len(verdicts)} {noun} {'was' if len(not_found) == 1 else 'were'} "
+                          "not found in any text the research tools returned "
+                          f"(claims: {', '.join(dict.fromkeys(not_found))})."]
+        elif verdicts:
+            lines += ["", f"All {len(verdicts)} {noun} were found in text the research tools returned."]
     return "\n".join(lines) + "\n"
 
 
@@ -479,7 +480,7 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence, *, ex
                                    if key in _SOURCE_FIELDS and value is not None},
                         "excerpt": item["excerpt"][:excerpt_chars],
                         "supports": item["supports"],
-                        **({"quote_check": item["quote_check"]} if item.get("quote_check") else {}),
+                        **{check: item[check] for check in ("quote_check", "source_check") if item.get(check)},
                     }
                     for item in entry["claim"]["evidence"]
                 ],

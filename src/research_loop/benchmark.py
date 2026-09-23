@@ -190,8 +190,9 @@ async def _run_policy_case(
         if s.url is not None and s.source_type in {"primary", "official", "paper", "documentation"}
     ]
     attachment_ids_cited = sorted({s.attachment_id for s in sources if s.attachment_id})
-    quote_checks = [item.quote_check for claim in outcome.ledger.claims() for item in claim.evidence
-                    if item.quote_check]
+    evidence = [item for claim in outcome.ledger.claims() for item in claim.evidence]
+    quote_checks = [item.quote_check for item in evidence if item.quote_check]
+    source_checks = [item.source_check for item in evidence if item.source_check]
     checks = outcome.verification.checks
     unsupported = [c for c in checks if not c.supported]
     major = [c for c in unsupported if c.severity == "major"]
@@ -236,6 +237,8 @@ async def _run_policy_case(
         attachment_ids_cited=attachment_ids_cited,
         quotes=len(quote_checks),
         quotes_not_found=quote_checks.count("not_found"),
+        sources=len(source_checks),
+        sources_not_found=source_checks.count("not_found"),
         review_reasons=outcome.review_reasons,
     )
 

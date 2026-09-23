@@ -107,6 +107,7 @@ Local metrics, computed with Pydantic Evals:
 - blocked-source compliance and eval-integrity rate
 - exact-answer match when a short reference answer exists
 - verbatim-quote rate: the share of evidence quotes found in text the research tools returned
+- observed-source rate: the share of URL-cited evidence whose source appeared in text the research tools returned
 - attachment citation coverage
 
 A metric that does not apply to a case records no score, so averages cover only the cases it assessed: the claim rates need at least one verifier-checked claim, claims per dollar needs a known nonzero cost, blocked-source compliance needs blocked URLs, eval integrity needs a leakage-sensitive case, and attachment coverage needs attachments. A case's `cost_usd` is the job's own spend, and it is unknown (`null`) once any billed call has no pricing data.
@@ -116,6 +117,8 @@ The claim rates measure groundedness as judged by the run's own verifier, not fa
 Evidence version 2 splits each evidence item into an `excerpt` (the model's summary) and an optional verbatim `quote`. After each scout, deep dive, or salvage call, code checks every quote against all the text that run's tools returned: fetched pages and papers, search results, abstracts, and attachment chunks. Matching ignores case, whitespace, typographic quotes and dashes, and hyphenated line breaks, and accepts `...` and bracketed insertions when the remaining parts appear in order. The verdict is stored as `quote_check` (`verified` or `not_found`); it is hidden from the model's output schema and overwritten if a model sets it. The verbatim-quote rate needs no model judgment, but it shows only that the wording was in the tool output, not that the source supports the claim, and it does not check paraphrases.
 
 Evidence version 3 checks each role's output against the run, so every reference in a result resolves. Plans must have at least one question, unique IDs, and no more than the policy's maximum. Research results are filed under the question they were asked, and their evidence may cite only the run's attachments. Gaps and verifier follow-ups must name planned questions. The report and verifier checks may cite only the ledger's claim IDs. A mismatch gets one retry that names it; if the model repeats it, the case fails with `UnexpectedModelBehavior` instead of scoring a result that does not hold together.
+
+Version 3 also checks each URL-cited evidence item's source against the same tool output as its quote. It is `observed` when the URL appears there, ignoring scheme, `www.`, query, fragment, and trailing slash, or when its DOI or arXiv ID does, and `not_found` otherwise; attachment sources are covered by the ID check above. Like `quote_check`, `source_check` is set by code and hidden from the model's output schema. It shows that a tool returned the source, not that the source supports the claim, and it is separate from blocked-source auditing.
 
 Keep official scoring separate: use the official BrowseComp and GAIA semantic graders for published comparisons, and the official DRB-II evaluator for rubric scores.
 

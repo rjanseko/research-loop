@@ -15,6 +15,7 @@ from research_loop.evals import (
     CostEfficiency,
     EvalIntegrity,
     MajorErrorFreeRate,
+    ObservedSourceRate,
     ReferenceAnswerMatch,
     SupportedClaimRate,
     VerbatimQuoteRate,
@@ -66,16 +67,21 @@ def test_inapplicable_evaluators_return_no_score() -> None:
         inputs=SimpleNamespace(blocked_urls=[], leakage_sensitive=False),
         output=SimpleNamespace(total_claims=0, unsupported_claims=0, major_unsupported_claims=0,
                                cost_usd=None, blocked_source_accesses=[], integrity_flags=[],
-                               quotes=0, quotes_not_found=0),
+                               quotes=0, quotes_not_found=0, sources=0, sources_not_found=0),
     )
     for evaluator in (SupportedClaimRate(), MajorErrorFreeRate(), CostEfficiency(),
-                      BlockedSourceCompliance(), EvalIntegrity(), VerbatimQuoteRate()):
+                      BlockedSourceCompliance(), EvalIntegrity(), VerbatimQuoteRate(), ObservedSourceRate()):
         assert evaluator.evaluate(unassessed) == {}, type(evaluator).__name__
 
 
 def test_verbatim_quote_rate_counts_quotes_found_in_tool_output() -> None:
     ctx = SimpleNamespace(output=SimpleNamespace(quotes=4, quotes_not_found=1))
     assert VerbatimQuoteRate().evaluate(ctx) == pytest.approx(0.75)
+
+
+def test_observed_source_rate_counts_sources_found_in_tool_output() -> None:
+    ctx = SimpleNamespace(output=SimpleNamespace(sources=5, sources_not_found=2))
+    assert ObservedSourceRate().evaluate(ctx) == pytest.approx(0.6)
 
 
 @pytest.mark.asyncio

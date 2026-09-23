@@ -111,5 +111,57 @@ async def test_research_runs_check_quotes_against_their_own_tool_output() -> Non
     with agent.override(model=FunctionModel(respond)):
         result = await loop._run_agent(job_id=uuid4(), agent=agent, role=ResearchRole.SCOUT, route=route, prompt="p")
     assert [item.quote_check for item in result.claims[0].evidence] == ["verified", "not_found"]
+    assert [item.source_check for item in result.claims[0].evidence] == ["observed", "observed"]  # read_page returned the URL
     (task,) = loop.repository.tasks.values()  # Postgres history keeps the same verdicts
     assert [item["quote_check"] for item in task["output"]["claims"][0]["evidence"]] == ["verified", "not_found"]
+    assert [item["source_check"] for item in task["output"]["claims"][0]["evidence"]] == ["observed", "observed"]
+
+
+def _cited(url: str, **ids: str) -> ResearchResult:
+    source = SourceRef(url=url, title="Source", **ids)
+    return ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.9, claims=[
+        Claim(id="c1", statement="s", confidence=0.9, evidence=[Evidence(source=source, excerpt="e", confidence=0.9)])])
+
+
+def _source_check(result: ResearchResult) -> str | None:
+    return result.claims[0].evidence[0].source_check
+
+
+SEARCH_RESULTS = [
+    "https://www.swebench.com/",
+    "http://arxiv.org/abs/2310.06770v2",
+    '{"doi": "10.1234/Agents.2024", "title": "Long Horizon Agents"}',
+    "See https://openai.com/index/introducing-swe-bench-verified/#results for the audit.",
+]
+
+
+@pytest.mark.parametrize("url", [
+    "https://swebench.com",                                                    # www and trailing slash
+    "https://openai.com/index/introducing-swe-bench-verified",                # fragment, inside prose
+    "https://arxiv.org/pdf/2310.06770",                                       # same arXiv ID, other form
+    "https://doi.org/10.1234/agents.2024",                                    # DOI returned as a field
+])
+def test_sources_count_as_observed_when_tool_output_names_them(url: str) -> None:
+    from research_loop.quotes import check_sources
+
+    assert _source_check(check_sources(_cited(url), SEARCH_RESULTS)) == "observed"
+
+
+def test_sources_no_tool_returned_are_not_found() -> None:
+    from research_loop.quotes import check_sources
+
+    assert _source_check(check_sources(_cited("https://example.org/invented-report"), SEARCH_RESULTS)) == "not_found"
+    assert _source_check(check_sources(_cited("https://swebench.com/lite"), SEARCH_RESULTS)) == "not_found"
+    # A DOI field on the source counts, so does a missing one not.
+    assert _source_check(check_sources(_cited("https://publisher.example/a", doi="10.1234/agents.2024"),
+                                       SEARCH_RESULTS)) == "observed"
+
+
+def test_source_check_is_hidden_from_the_model_schema_and_skips_attachments() -> None:
+    from research_loop.quotes import check_sources
+
+    assert "source_check" not in ResearchResult.model_json_schema()["$defs"]["Evidence"]["properties"]
+    attachment = SourceRef(attachment_id="att-1-abc", locator="page 1", title="a.pdf", source_type="attachment")
+    result = ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.9, claims=[
+        Claim(id="c1", statement="s", confidence=0.9, evidence=[Evidence(source=attachment, excerpt="e", confidence=0.9)])])
+    assert _source_check(check_sources(result, SEARCH_RESULTS)) is None
