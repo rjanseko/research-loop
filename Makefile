@@ -1,4 +1,4 @@
-.PHONY: setup test graph diagnose postgres-up postgres-down db-status migrate
+.PHONY: setup test lint graph diagnose postgres-up postgres-down db-status migrate
 
 VENV := .venv/bin
 
@@ -7,6 +7,9 @@ setup:
 
 test:
 	$(VENV)/pytest -q
+
+lint:
+	$(VENV)/ruff check .
 
 graph:
 	$(VENV)/research-graph

@@ -42,7 +42,7 @@ Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field 
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, and `campaign.toml` | `ModelRoute` limits are not validated |
 | 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop | arXiv and Crossref year filters; cached search token statistics; one HTTP client per run; DNS check and connection resolve separately |
-| 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; lockfile, CI, and a wheel install smoke test |
+| 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile and a wheel install smoke test (CI now runs lint and the offline suite) |
 | 14. Campaign artifacts not published atomically | Done | — |
 | 15. Budget accounting separate from admission control | Open (P3) | Reserving budget before concurrent calls |
 

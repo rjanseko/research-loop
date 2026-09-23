@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e '.[all]'
+      - name: Lint
+        run: ruff check .
+      # Offline by design: tests/conftest.py refuses model-provider requests and non-loopback hosts,
+      # so no secrets or network access are needed.
+      - name: Test
+        run: pytest -q

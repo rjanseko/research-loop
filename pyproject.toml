@@ -1,5 +1,5 @@
 [project]
-name = "research-loop-v5"
+name = "research-loop"
 version = "0.5.0"
 description = "Graph-backed, role-routed PydanticAI research loop with evidence provenance, benchmark adapters, and Postgres telemetry"
 requires-python = ">=3.12"
@@ -15,17 +15,19 @@ dependencies = [
 eval = ["pydantic-evals>=1.0"]
 postgres = ["psycopg[binary,pool]>=3.2"]
 observability = ["logfire>=5,<6"]
-scholarly = ["httpx>=0.27", "trafilatura>=2,<3", "pypdf>=5"]
-test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4"]
+# fontTools lets pypdf read embedded CFF fonts instead of logging each one.
+scholarly = ["httpx>=0.27", "trafilatura>=2,<3", "pypdf>=5", "fonttools>=4"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17"]
 benchmark = ["pandas>=2.2", "pyarrow>=16"]
 attachments = [
   "pypdf>=5",
+  "fonttools>=4",
   "python-docx>=1.1",
   "openpyxl>=3.1",
   "beautifulsoup4>=4.12",
   "Pillow>=10",
 ]
-all = ["research-loop-v5[eval,postgres,observability,scholarly,test,benchmark,attachments]"]
+all = ["research-loop[eval,postgres,observability,scholarly,test,benchmark,attachments]"]
 
 [project.scripts]
 research-bench = "research_loop.benchmark:main"
@@ -37,3 +39,8 @@ research-long-horizon = "research_loop.long_horizon:main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+
+[tool.ruff.lint]
+# The rules this codebase is held to. Newer ruff releases enable more by default (import order,
+# pyupgrade, blind except, ...); pinning the set keeps every ruff version checking the same thing.
+select = ["E4", "E7", "E9", "F"]
