@@ -10,6 +10,8 @@ A cited source is `observed` when its URL appears in the tool output, ignoring s
 query, fragment, and trailing slash, or when its DOI or arXiv ID does. Otherwise it is
 `not_found`: the model cited a source none of its tools returned. This shows the source was
 seen, not that it supports the claim.
+
+`source_keys` reuses that normalization to tell whether two citations name the same work.
 """
 from __future__ import annotations
 
@@ -120,6 +122,24 @@ def _source_ids(source: SourceRef) -> list[str]:
         if match := _ARXIV_ID.search(text):
             ids.append(match.group(0))
     return [identifier.lower() for identifier in ids if identifier]
+
+
+def source_keys(source: SourceRef) -> frozenset[str]:
+    """Identifiers of the work a source cites; two citations of one work share at least one.
+
+    The URL (normalized as above, but keeping its query, which can name the work), DOI, arXiv
+    ID, catalog IDs, and attachment. Locator, title, provider, and fetch time are not
+    identity, so one paper cited at two pages or fetched through two providers matches. A
+    source with none of these falls back to its title.
+    """
+    keys = {f"id:{identifier}" for identifier in _source_ids(source)}
+    if source.url is not None:
+        query = urlparse(str(source.url)).query
+        keys.add(f"url:{_url_key(str(source.url))}" + (f"?{query}" if query else ""))
+    for name in ("openalex_id", "acl_id", "attachment_id"):
+        if value := getattr(source, name):
+            keys.add(f"{name}:{value.lower()}")
+    return frozenset(keys or {f"title:{' '.join(source.title.lower().split())}"})
 
 
 def check_sources(result: ResearchResult, texts: Iterable[str]) -> ResearchResult:

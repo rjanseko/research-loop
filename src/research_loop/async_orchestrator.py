@@ -36,7 +36,7 @@ from .attachments import (
     build_multimodal_prompt,
 )
 from .ledger import EvidenceLedger
-from .policy import ModelPolicy, ModelRoute
+from .policy import ModelPolicy, ModelRoute, retry_token_budget
 from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
 from .scholar import ScholarClient, build_scholar_toolset
@@ -203,6 +203,10 @@ class AgentJobOutcome:
 
 class JobBudgetExceeded(RuntimeError):
     """The policy's per-job cost cap is spent, or spend could not be priced."""
+
+
+class PromptExceedsRetryBudget(RuntimeError):
+    """A finishing prompt cannot fit one validation retry inside its token limit."""
 
 
 class AsyncResearchLoop:
@@ -403,12 +407,15 @@ class AsyncResearchLoop:
         captured: list[Any] | None = None,
         task_ids: list[UUID] | None = None,
         quote_texts: list[str] | None = None,
+        require_retry_room: bool = False,
     ) -> Any:
         """Run one agent as a persisted task.
 
         `task_ids` receives the task's ID once it is persisted; on failure, `captured` receives
         the run's messages. A ResearchResult's quotes and cited sources are checked against this
         run's tool output plus `quote_texts` (a salvage call passes the output of the run it summarizes).
+        `require_retry_room` refuses the call, before any model request, when one validation retry
+        would not fit the route's token limit.
         """
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
@@ -436,6 +443,13 @@ class AsyncResearchLoop:
         usage = RunUsage()
         run_messages: list[Any] = []
         try:
+            if require_retry_room:
+                needed = retry_token_budget(prompt, route, role)
+                if needed > route.total_tokens_limit:
+                    raise PromptExceedsRetryBudget(
+                        f"{role.value} needs about {needed} tokens for one retry, "
+                        f"above its {route.total_tokens_limit} token limit"
+                    )
             capabilities = (
                 build_research_capabilities(self.config.tool_mode) if research_tools else None
             )
@@ -698,13 +712,14 @@ class AsyncResearchLoop:
                 {
                     "objective": objective,
                     "plan": plan.model_dump(mode="json"),
-                    "results": [r.model_dump(mode="json") for r in ledger.all()],
+                    **ledger.prompt_view("results", include_search=True),
                     "constraints": self._constraints_payload(constraints, attachments),
                 },
                 ensure_ascii=False,
             ),
             task_ids=task_ids,
             deps=self._ledger_refs(ledger),
+            require_retry_room=True,
         )
         gaps = self._dedupe_gaps(analysis.gaps + self._confidence_gaps(plan, ledger))
         return gaps, (task_ids[0] if task_ids else None)
@@ -724,10 +739,11 @@ class AsyncResearchLoop:
             role=ResearchRole.SYNTHESIZER,
             route=route,
             deps=self._ledger_refs(ledger),
+            require_retry_room=True,
             prompt=json.dumps(
                 {
                     "objective": objective,
-                    "evidence": [r.model_dump(mode="json") for r in ledger.all()],
+                    **ledger.prompt_view("evidence"),
                     "constraints": self._constraints_payload(constraints, attachments),
                 },
                 ensure_ascii=False,
@@ -756,12 +772,13 @@ class AsyncResearchLoop:
                 {
                     "objective": objective,
                     "report": report.model_dump(mode="json"),
-                    "evidence": [r.model_dump(mode="json") for r in ledger.all()],
+                    **ledger.prompt_view("evidence", claim_ids=report.claim_ids_used),
                     "constraints": self._constraints_payload(constraints, attachments),
                 },
                 ensure_ascii=False,
             ),
             task_ids=task_ids,
+            require_retry_room=True,
         )
 
     def _select_gaps(

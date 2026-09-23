@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Mapping
@@ -48,6 +49,46 @@ class ModelRoute:
 
 # Steps after research that the job reserve pays for; salvage calls may also draw on it.
 _FINISHING_ROLES = frozenset({ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER})
+
+# Prompt JSON characters per billed input token, from the calibration pilot. The billed
+# input also includes instructions and the output schema. An unknown provider uses the
+# Anthropic ratio, which counts more tokens for the same text.
+_CHARS_PER_INPUT_TOKEN = {"anthropic": 2.5, "openai": 3.8}
+_DEFAULT_CHARS_PER_INPUT_TOKEN = 2.5
+
+# Output tokens one finishing attempt is assumed to write, so a validation retry can be
+# refused before the call. Rounded up from the larger calibration answer for that role
+# (PROMPT_SIZES.md). A route max_tokens below this is a tighter ceiling and replaces it.
+# A higher max_tokens only keeps long answers from being cut off.
+_RETRY_OUTPUT_ALLOWANCE = {
+    ResearchRole.GAP_ANALYST: 2_000,
+    ResearchRole.SYNTHESIZER: 12_000,
+    ResearchRole.VERIFIER: 9_000,
+}
+
+
+def retry_token_budget(
+    prompt: str,
+    route: ModelRoute,
+    role: ResearchRole,
+    *,
+    output_allowance: int | None = None,
+) -> int:
+    """Tokens one validation retry of this finishing prompt would consume.
+
+    About 2 × input + 3 × output: the first request, a retry that resends the prompt
+    and the first answer, and the second answer. ``output_allowance`` replaces the
+    role's calibrated allowance. A route ``max_tokens`` below the allowance is a
+    tighter ceiling and replaces it.
+    """
+    provider = _input_provider(route.model)
+    ratio = _CHARS_PER_INPUT_TOKEN.get(provider, _DEFAULT_CHARS_PER_INPUT_TOKEN)
+    prompt_tokens = math.ceil(len(prompt) / ratio)
+    output_tokens = _RETRY_OUTPUT_ALLOWANCE[role] if output_allowance is None else output_allowance
+    cap = route.settings.get("max_tokens")
+    if cap is not None:
+        output_tokens = min(output_tokens, int(cap))
+    return 2 * prompt_tokens + 3 * output_tokens
 
 
 class ModelPolicy:
@@ -115,6 +156,18 @@ class ModelPolicy:
         }
 
 
+def _input_provider(model: str) -> str:
+    """Author used for the calibrated characters-per-token ratio.
+
+    OpenRouter ids are `openrouter:<author>/<slug>`. The author is what the ratio table
+    knows (`openai`, `anthropic`); other authors use the default ratio.
+    """
+    provider, _, rest = model.partition(":")
+    if provider == "openrouter":
+        return rest.split("/", 1)[0]
+    return provider
+
+
 # Default model for each route override. `.env.example` lists the same values (a test keeps
 # them equal). Every id is an OpenRouter model. Confirm routes with `research-diagnose --smoke`
 # before paid runs; model IDs go stale.
@@ -161,11 +214,11 @@ def _quality_policy() -> ModelPolicy:
             ),
             ResearchRole.SYNTHESIZER: ModelRoute(
                 _model("RESEARCH_SYNTH_MODEL"),
-                8, 4, 120_000, 3.50, "high", {"max_tokens": 32_000},
+                8, 4, 180_000, 3.50, "high", {"max_tokens": 32_000},
             ),
             ResearchRole.VERIFIER: ModelRoute(
                 _model("RESEARCH_VERIFY_MODEL"),
-                8, 8, 100_000, 2.50, "high",
+                8, 8, 150_000, 2.50, "high",
             ),
         },
         cheap_scout=ModelRoute(

@@ -1,4 +1,4 @@
-from research_loop.policy import get_policy
+from research_loop.policy import ModelRoute, get_policy, retry_token_budget
 from research_loop.schemas import ResearchQuestion, ResearchRole
 from research_loop.settings import ResearchSettings
 
@@ -75,3 +75,49 @@ def test_routes_fall_back_to_default_models(monkeypatch) -> None:
         "RESEARCH_GLM_CHEAP_MODEL": glm.cheap_scout.model,
     }
     assert used == DEFAULT_MODELS
+
+
+def test_retry_budget_refuses_the_rerun_finishing_prompts_and_allows_the_first_pilot() -> None:
+    # Character counts are the stored prompts (PROMPT_SIZES.md), not their text.
+    synthesis = ModelRoute(
+        "anthropic:claude-opus-5", 8, 4, 120_000, settings={"max_tokens": 32_000},
+    )
+    verifier = ModelRoute("openai:gpt-5.6-sol", 8, 8, 100_000)
+    gap = ModelRoute("openai:gpt-5.6-sol", 6, 4, 70_000)
+    assert retry_token_budget("x" * 113_964, synthesis, ResearchRole.SYNTHESIZER) > 120_000
+    assert retry_token_budget("x" * 99_254, synthesis, ResearchRole.SYNTHESIZER) <= 120_000
+    routed = ModelRoute("openrouter:openai/gpt-5.6-sol", 8, 8, 100_000)
+    assert retry_token_budget("x" * 142_376, routed, ResearchRole.VERIFIER) == (
+        retry_token_budget("x" * 142_376, verifier, ResearchRole.VERIFIER)
+    )
+    assert retry_token_budget("x" * 142_376, verifier, ResearchRole.VERIFIER) > 100_000
+    assert retry_token_budget("x" * 127_067, verifier, ResearchRole.VERIFIER) <= 100_000
+    assert retry_token_budget("x" * 75_426, gap, ResearchRole.GAP_ANALYST) <= 70_000
+    # The trimmed projection of the same rerun (PROMPT_SIZES.md) fits one retry.
+    assert retry_token_budget("x" * 94_390, synthesis, ResearchRole.SYNTHESIZER) <= 120_000
+    assert retry_token_budget("x" * 123_055, verifier, ResearchRole.VERIFIER) <= 100_000
+    assert retry_token_budget("x" * 63_475, gap, ResearchRole.GAP_ANALYST) <= 70_000
+    # An unknown provider is counted at the Anthropic ratio, which charges more tokens.
+    unknown = ModelRoute("test", 8, 4, 120_000)
+    assert retry_token_budget("x" * 113_964, unknown, ResearchRole.SYNTHESIZER) == (
+        retry_token_budget("x" * 113_964, synthesis, ResearchRole.SYNTHESIZER)
+    )
+    # max_tokens below the allowance is the output the retry has to cover.
+    capped = ModelRoute("anthropic:claude-opus-5", 8, 4, 120_000, settings={"max_tokens": 4_000})
+    assert retry_token_budget("x" * 113_964, capped, ResearchRole.SYNTHESIZER) <= 120_000
+    # An explicit allowance replaces the role table. Campaign synthesis uses its output cap.
+    campaign = ModelRoute("anthropic:claude-opus-5", 3, 1, 400_000, settings={"max_tokens": 48_000})
+    assert retry_token_budget(
+        "x" * 360_000, campaign, ResearchRole.SYNTHESIZER, output_allowance=48_000,
+    ) > 400_000
+    assert retry_token_budget(
+        "x" * 360_000, campaign, ResearchRole.SYNTHESIZER, output_allowance=36_000,
+    ) <= 400_000
+
+
+def test_quality_finishing_routes_fit_a_retry_of_prompts_nearly_twice_p01() -> None:
+    # The trimmed p01 rerun prompts (PROMPT_SIZES.md) at 1.8x: a deeper question still gets its retry.
+    policy = get_policy("quality")
+    for role, chars in ((ResearchRole.SYNTHESIZER, 94_390), (ResearchRole.VERIFIER, 123_055)):
+        route = policy.for_role(role)
+        assert retry_token_budget("x" * int(chars * 1.8), route, role) <= route.total_tokens_limit

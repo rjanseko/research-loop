@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+
 SYNTHESIS_DIR = "campaign"
 # Question IDs name folders under the output directory, next to these.
 RESERVED_QUESTION_IDS = (".", "..", SYNTHESIS_DIR, "manifests")

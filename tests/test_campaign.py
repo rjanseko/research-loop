@@ -17,6 +17,7 @@ from research_loop.schemas import (
     Evidence,
     FinalReport,
     Hypothesis,
+    ReportClaim,
     ResearchResult,
     SourceRef,
     VerificationReport,
@@ -56,6 +57,13 @@ def test_campaign_rejects_question_ids_that_are_not_their_own_folder(tmp_path: P
         load_campaign(spec)
 
 
+def test_campaign_loads_synthesis_limits_that_cannot_fit_a_retry(tmp_path: Path) -> None:
+    # Only --synthesize checks a retry, against its actual prompt, so questions still run.
+    spec = tmp_path / "wide.toml"
+    spec.write_text(CAMPAIGN_FILE.read_text().replace("max_output_tokens = 36_000", "max_output_tokens = 480_000"))
+    assert load_campaign(spec)["synthesis"]["max_output_tokens"] == 480_000
+
+
 def test_campaign_requires_question_cost_cap(tmp_path: Path) -> None:
     spec = tmp_path / "uncapped.toml"
     spec.write_text('graph_version = "research-graph-v1"\n[execution]\nmax_parallel_scouts = 1\n[[questions]]\nid = "q1"\ntext = "first"\n')
@@ -86,7 +94,7 @@ def _ledger(question_id: str) -> EvidenceLedger:
 
 
 async def _complete_questions(monkeypatch, output: Path, question_ids: list[str],
-                              verification: VerificationReport | None = None) -> Path:
+                              verification: VerificationReport | None = None, report_for=None) -> Path:
     from research_loop.campaign import run_campaign
 
     class FakeLoop:
@@ -95,7 +103,9 @@ async def _complete_questions(monkeypatch, output: Path, question_ids: list[str]
 
         async def run(self, objective, **_kwargs):
             question_id = next(qid for qid in question_ids if f"Question {qid}:" in objective)
-            return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer=f"Draft report {question_id}", caveats=["Thin"]),
+            report = report_for(question_id) if report_for else FinalReport(
+                answer=f"Draft report {question_id}", caveats=["Thin"])
+            return SimpleNamespace(job_id=uuid4(), report=report,
                                    ledger=_ledger(question_id), verification=verification or VerificationReport(),
                                    cost_usd=Decimal("1.25"))
 
@@ -254,11 +264,18 @@ async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path:
     campaign = load_campaign(CAMPAIGN_FILE)
     payload = json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))
     # Only flagged checks reach the prompt, with ledger IDs mapped to campaign refs.
-    assert payload["questions"][0]["verification"] == {
+    question = payload["questions"][0]
+    assert question["verification"] == {
         "checked": 2, "not_supported": 1, "major": 1, "needs_research": True,
         "findings": [{"statement": "Deep-dive finding holds", "supported": False, "severity": "major",
                       "explanation": "excerpt does not say this", "claim_refs": ["q01/q1/c1~2"]}],
     }
+    assert question["caveats"] == ["Thin"]
+    assert question["contradictions"] == [{"description": "Sources disagree", "claim_refs": ["q01/q1/c1"]}]
+    assert "answer" not in question
+    # Each distinct unresolved question from the ledger, once.
+    assert question["unresolved_questions"] == ["What remains open"]
+    assert "report" not in question
 
 
 @pytest.mark.asyncio
@@ -291,9 +308,15 @@ async def test_synthesis_refuses_partial_campaign_and_oversized_prompt(monkeypat
     with pytest.raises(ValueError, match="--allow-partial"):
         prepare_synthesis(CAMPAIGN_FILE, tmp_path, allow_partial=False)
     tiny = tmp_path / "tiny.toml"
-    tiny.write_text(CAMPAIGN_FILE.read_text().replace("max_prompt_chars = 360_000", "max_prompt_chars = 100"))
+    tiny.write_text(CAMPAIGN_FILE.read_text().replace("max_prompt_chars = 600_000", "max_prompt_chars = 100"))
     with pytest.raises(ValueError, match="max_prompt_chars"):
         prepare_synthesis(tiny, tmp_path, allow_partial=True)
+    from research_loop.policy import ModelRoute
+
+    # A prompt under the character cap is still refused when the route cannot fit one retry.
+    tight = ModelRoute("anthropic:claude-opus-5", 3, 1, 1_000, settings={"max_tokens": 36_000})
+    with pytest.raises(ValueError, match="one retry"):
+        prepare_synthesis(CAMPAIGN_FILE, tmp_path, allow_partial=True, route=tight)
 
 
 def _synthesis_body(refs: list[str]) -> dict:
@@ -318,7 +341,16 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
     from research_loop.agents import campaign_synthesizer_agent
     from research_loop.campaign import SYNTHESIS_DIR, synthesize_campaign
 
-    await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
+    def report_for(question_id: str) -> FinalReport:
+        return FinalReport(
+            answer=f"Draft report {question_id}", caveats=["Thin"],
+            claims=[
+                ReportClaim(statement=f"{question_id} scout finding", claim_ids=["q1/c1"]),
+                ReportClaim(statement=f"{question_id} deep-dive finding", claim_ids=["q1/c1~2"]),
+            ],
+        )
+
+    await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"], report_for=report_for)
     monkeypatch.undo()  # the synthesis job uses the real ResearchLoop
     prompts: list[str] = []
 
@@ -334,7 +366,8 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
         )
 
     assert len(prompts) == 2
-    assert '"ref": "q02/q1/c1~2"' in prompts[0]
+    assert "q02/q1/c1~2" in prompts[0]
+    assert "excerpt" not in prompts[0]
     assert "q07/c9" in prompts[1]  # the retry names the invented ref
     campaign_dir = tmp_path / SYNTHESIS_DIR
     assert {item.name for item in campaign_dir.iterdir()} == set(load_campaign(CAMPAIGN_FILE)["outputs"]["campaign_files"])
@@ -350,7 +383,8 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
     assert manifest["partial"] is True
     assert [item["id"] for item in manifest["inputs"]] == ["q01", "q02"]
     assert manifest["mixed_question_configs"] is False
-    assert manifest["synthesis_route"]["settings"]["max_tokens"] == 48_000
+    assert manifest["uncited_question_ids"] == []
+    assert manifest["synthesis_route"]["settings"]["max_tokens"] == 36_000
     assert manifest["hypothesis_count"] == 1
 
 
@@ -454,19 +488,199 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
             pass
 
         async def run(self, _objective, **_kwargs):
-            return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Draft"), ledger=_quoted_ledger(),
-                                   verification=VerificationReport(), cost_usd=None)
+            return SimpleNamespace(
+                job_id=uuid4(),
+                report=FinalReport(answer="Draft", claims=[
+                    ReportClaim(statement="Verified size", claim_ids=["q1/c1"]),
+                    ReportClaim(statement="Invented size", claim_ids=["q1/c2"]),
+                ]),
+                ledger=_quoted_ledger(), verification=VerificationReport(), cost_usd=None,
+            )
 
     monkeypatch.setattr("research_loop.campaign.ResearchLoop", QuotingLoop)
     await run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
                        settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
     campaign = load_campaign(CAMPAIGN_FILE)
-    evidence = {item["ref"]: item["evidence"] for item in
-                json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))["evidence"]}
-    assert [item.get("quote_check") for item in evidence["q01/q1/c2"]] == ["not_found", None]
-    assert [item.get("source_check") for item in evidence["q01/q1/c2"]] == ["not_found", None]
-    assert evidence["q01/q1/c1"][0]["quote_check"] == "verified"
-    assert evidence["q01/q1/c1"][0]["source_check"] == "observed"
+    claims = json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))["questions"][0]["claims"]
+    by_ref = {ref: item for item in claims for ref in item["claim_refs"]}
+    assert by_ref["q01/q1/c2"]["quote_check"] == "not_found"
+    assert by_ref["q01/q1/c2"]["source_check"] == "not_found"
+    assert "quote_check" not in by_ref["q01/q1/c1"]
+    assert "source_check" not in by_ref["q01/q1/c1"]
+    assert "excerpt" not in json.dumps(claims)
+    assert by_ref["q01/q1/c1"]["source_count"] == 1
+    assert by_ref["q01/q1/c2"]["source_count"] == 1
+
+
+def test_prompt_claims_count_distinct_sources_and_flag_the_whole_claim() -> None:
+    from research_loop.campaign import _prompt_claims
+
+    paper = {"url": "https://example.org/a", "title": "A", "source_type": "paper", "publication_status": "preprint"}
+    same_type = {"url": "https://example.org/b", "title": "B", "source_type": "paper", "publication_status": "unknown"}
+    retracted = {
+        "url": "https://example.org/c", "title": "C", "source_type": "paper",
+        "publication_status": "journal", "is_retracted": True,
+    }
+    claims = [
+        {"question_id": "q01", "ref": "q01/q1/c1", "claim": {"id": "c1", "evidence": [
+            {"source": paper}, {"source": same_type},
+        ]}},
+        {"question_id": "q01", "ref": "q01/q1/c2", "claim": {"id": "c2", "evidence": [
+            {"source": paper, "quote_check": "verified"},
+            {"source": retracted, "quote_check": "not_found"},
+        ]}},
+    ]
+    report = FinalReport(answer="Report prose stays out of the prompt", claims=[
+        ReportClaim(statement="Two papers", claim_ids=["c1"]),
+        ReportClaim(statement="Mixed evidence", claim_ids=["c2"]),
+    ])
+    rows = _prompt_claims("q01", report, claims)
+    assert rows[0]["source_count"] == 2
+    assert rows[0]["source_types"] == ["paper"]
+    assert rows[0]["publication_statuses"] == ["preprint"]
+    assert "quote_check" not in rows[0]
+    assert "retracted" not in rows[0]
+    assert rows[1]["source_count"] == 2
+    assert rows[1]["quote_check"] == "not_found"
+    assert rows[1]["retracted"] is True
+    assert rows[1]["publication_statuses"] == ["journal", "preprint"]
+    assert "answer" not in rows[0]
+
+
+def test_prompt_claims_count_works_that_support_the_claim() -> None:
+    from research_loop.campaign import _prompt_claims
+
+    paper = {"url": "https://example.org/a", "title": "A", "source_type": "paper", "publication_status": "journal"}
+    claims = [{"question_id": "q01", "ref": "q01/q1/c1", "claim": {"id": "c1", "evidence": [
+        # One work: another page, another provider and fetch time, a DOI link, a reworded title.
+        {"source": paper | {"locator": "p. 3", "doi": "10.1/A", "provider": "openalex"}},
+        {"source": paper | {"locator": "p. 7", "accessed_at": "2026-09-02", "title": "A (journal)"}},
+        {"source": {"url": "https://doi.org/10.1/a", "title": "A", "provider": "crossref"}},
+        # The query names the work, so these are two more.
+        {"source": {"url": "https://openreview.net/forum?id=X", "title": "X", "publication_status": "preprint"},
+         "supports": False},
+        {"source": {"url": "https://openreview.net/forum?id=Y", "title": "Y", "source_type": "secondary"},
+         "supports": False},
+    ]}}]
+    report = FinalReport(answer="Report", claims=[ReportClaim(statement="Disputed", claim_ids=["c1"])])
+    (row,) = _prompt_claims("q01", report, claims)
+    assert row["source_count"] == 1
+    assert row["source_ids"] == ["s1"]
+    assert row["contradicting_source_count"] == 2
+    assert row["contradicting_source_ids"] == ["s2", "s3"]
+    # Types and statuses describe the supporting sources only.
+    assert row["source_types"] == ["paper", "unknown"]
+    assert row["publication_statuses"] == ["journal"]
+
+    supported = FinalReport(answer="Report", claims=[ReportClaim(statement="Clean", claim_ids=["c1"])])
+    clean = [{**claims[0], "claim": {"id": "c1", "evidence": claims[0]["claim"]["evidence"][:1]}}]
+    assert "contradicting_source_count" not in _prompt_claims("q01", supported, clean)[0]
+
+
+def test_prompt_source_table_lists_each_work_once_across_questions() -> None:
+    from research_loop.campaign import _prompt_claims, _Works
+
+    paper = {"url": "https://example.org/a", "title": "A", "published_at": "2026-03-01"}
+    claims = [
+        {"question_id": "q01", "ref": "q01/q1/c1", "claim": {"id": "c1", "confidence": 0.8, "evidence": [
+            {"source": paper | {"locator": "p. 3"}},
+        ]}},
+        {"question_id": "q01", "ref": "q01/q1/c2", "claim": {"id": "c2", "confidence": 0.4, "evidence": [
+            {"source": {"url": "https://arxiv.org/abs/2601.00001", "title": "A preprint"}},
+        ]}},
+        # A later question cites the same work by URL, and links it to the arXiv id above.
+        {"question_id": "q02", "ref": "q02/q1/c1", "claim": {"id": "c1", "confidence": 0.9, "evidence": [
+            {"source": paper | {"arxiv_id": "2601.00001"}},
+        ]}},
+    ]
+    works = _Works(claims)
+    (first,) = _prompt_claims("q01", FinalReport(answer="", claims=[
+        ReportClaim(statement="Both", claim_ids=["c1", "c2"])]), claims, works)
+    (second,) = _prompt_claims("q02", FinalReport(answer="", claims=[
+        ReportClaim(statement="Again", claim_ids=["c1"])]), claims, works)
+    assert first["source_ids"] == second["source_ids"] == ["s1"]
+    assert first["source_count"] == 1
+    assert first["min_confidence"] == 0.4
+    assert works.rows == [{"id": "s1", "title": "A", "url": "https://example.org/a", "published_at": "2026-03-01"}]
+
+
+@pytest.mark.asyncio
+async def test_a_report_citing_no_claims_is_named_in_the_synthesis_inputs(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.campaign import aggregate_campaign, render_campaign_report
+    from research_loop.schemas import CampaignSynthesis
+
+    def report_for(question_id: str) -> FinalReport:
+        claims = [] if question_id == "q02" else [ReportClaim(statement="cited", claim_ids=["q1/c1"])]
+        return FinalReport(answer=f"Draft report {question_id}", claims=claims)
+
+    await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"], report_for=report_for)
+    campaign = load_campaign(CAMPAIGN_FILE)
+    evidence = aggregate_campaign(campaign, tmp_path)
+    assert evidence.uncited == ["q02"]
+    synthesis = CampaignSynthesis(summary="s", findings=CampaignFindings())
+    assert "contributed none: q02." in render_campaign_report(campaign, evidence, synthesis)
+
+
+def test_campaign_instruction_omits_unknown_statuses_from_a_present_list() -> None:
+    from research_loop.agents import INSTRUCTIONS
+
+    text = INSTRUCTIONS["campaign_synthesizer"]
+    assert "Unknown statuses are left out of a list that is present" in text
+    assert "a listed status is not the status of every source" in text
+
+
+@pytest.mark.asyncio
+async def test_repeated_stored_claim_id_keeps_every_copy(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.campaign import aggregate_campaign, synthesis_prompt
+    from research_loop.experiment import file_sha256
+    from research_loop.schemas import ClaimCheck
+
+    await _complete_questions(monkeypatch, tmp_path, ["q01"])
+    folder = tmp_path / "q01"
+    tainted = SourceRef(url="https://example.org/tainted", title="Tainted", source_type="paper", publication_status="preprint")
+    clean = SourceRef(url="https://example.org/clean", title="Clean", source_type="paper", publication_status="unknown")
+    shared = "q1/c1"
+    ledger = {
+        "q1": [
+            ResearchResult(
+                question_id="q1", question="definitions", conclusion="tainted", confidence=0.4,
+                claims=[Claim(id=shared, statement="tainted copy", confidence=0.4, evidence=[
+                    Evidence(source=tainted, excerpt="bad", quote_check="not_found", confidence=0.4),
+                ])],
+                contradictions=[Contradiction(description="both copies", claim_ids=[shared])],
+            ).model_dump(mode="json"),
+            ResearchResult(
+                question_id="q1", question="definitions", conclusion="clean", confidence=0.8,
+                claims=[Claim(id=shared, statement="clean copy", confidence=0.8, evidence=[
+                    Evidence(source=clean, excerpt="ok", confidence=0.8),
+                ])],
+            ).model_dump(mode="json"),
+        ],
+    }
+    (folder / "evidence_ledger.json").write_text(json.dumps(ledger) + "\n", encoding="utf-8")
+    report = FinalReport(answer="Report prose stays in report.json", caveats=["Thin"], claims=[
+        ReportClaim(statement="Uses both copies", claim_ids=[shared]),
+    ])
+    (folder / "report.json").write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    verification = VerificationReport(checks=[
+        ClaimCheck(statement="The shared id is tainted", claim_ids=[shared], supported=False,
+                   severity="major", explanation="first copy was not found"),
+    ])
+    (folder / "verification.json").write_text(verification.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    run["files"] = {name: file_sha256(folder / name) for name in run["files"]}
+    (folder / "run.json").write_text(json.dumps(run) + "\n", encoding="utf-8")
+
+    campaign = load_campaign(CAMPAIGN_FILE)
+    evidence = aggregate_campaign(campaign, tmp_path)
+    both = ["q01/q1/c1", "q01/q1/c1~2"]
+    assert evidence.contradictions["q01"] == [{"description": "both copies", "claim_refs": both}]
+    assert evidence.verification["q01"]["findings"][0]["claim_refs"] == both
+    row = json.loads(synthesis_prompt(campaign, evidence))["questions"][0]["claims"][0]
+    assert row["claim_refs"] == both
+    assert row["source_count"] == 2
+    assert row["quote_check"] == "not_found"
+    assert row["publication_statuses"] == ["preprint"]
 
 
 @pytest.mark.asyncio

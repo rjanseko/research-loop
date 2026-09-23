@@ -71,7 +71,8 @@ class SyntheticResearchLoop(ResearchLoop):
                 output = GapAnalysis()
             elif role is ResearchRole.SYNTHESIZER:
                 # Cite the ledger's claim IDs as given in the prompt; the ledger renames claims.
-                claim_ids = [claim["id"] for result in payload["evidence"] for claim in result["claims"]]
+                # The prompt leaves out `claims` for a result that has none.
+                claim_ids = [claim["id"] for result in payload["evidence"] for claim in result.get("claims", [])]
                 output = FinalReport(
                     answer="Synthetic evidence is available.",
                     claims=[ReportClaim(statement="Synthetic evidence is available.", claim_ids=claim_ids)],

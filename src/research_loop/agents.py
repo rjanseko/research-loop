@@ -70,7 +70,10 @@ INSTRUCTIONS: dict[str, str] = {
     ),
     "gap_analyst": (
         "Inspect the evidence ledger for missing evidence, contradictions, weak sourcing, stale evidence, "
-        "and low confidence. Escalate only gaps that could materially change the final answer."
+        "and low confidence. Evidence cites `source_id` from the prompt's `sources` list. "
+        "When an evidence item has a `quote`, its excerpt is omitted unless the quote was not found. "
+        "`supports` is omitted when "
+        "the evidence supports the claim. Escalate only gaps that could materially change the final answer."
     ),
     "deep_dive": (
         "Resolve one difficult research gap. Use web and scholar tools efficiently. Preserve preprint versus published status and scholarly IDs. Favor primary "
@@ -82,14 +85,22 @@ INSTRUCTIONS: dict[str, str] = {
         "evaluator artifacts. Return structured evidence, not prose polish."
     ),
     "synthesizer": (
-        "Synthesize only from the supplied evidence ledger. In `claims`, attach every material factual "
+        "Synthesize only from the supplied evidence ledger. Evidence cites `source_id` from the prompt's "
+        "`sources` list. When an evidence item has a `quote`, its excerpt is omitted unless the quote was "
+        "not found. `supports` is "
+        "omitted when the evidence supports the claim. In `claims`, attach every material factual "
         "statement to the exact evidence-ledger claim IDs that support it. Evidence marked "
         "`quote_check: not_found` quotes wording, and evidence marked `source_check: not_found` cites a source, "
         "that no research tool returned; do not rest a statement on such evidence alone. Preserve uncertainty and disagreement. Respect supplied benchmark/source constraints "
         "and do not cite blocked sources. Do not invent missing evidence or citations."
     ),
     "verifier": (
-        "Audit the proposed report claim-by-claim against the supplied evidence. Flag unsupported, "
+        "Audit the proposed report claim-by-claim against the supplied evidence. Evidence cites "
+        "`source_id` from the prompt's `sources` list. When an evidence item has a `quote`, its excerpt "
+        "is omitted unless the quote was not found. `supports` is omitted when the evidence supports the "
+        "claim. The evidence lists the "
+        "claims the report cites and every claim a contradiction names; other results show only their "
+        "question and conclusion. Flag unsupported, "
         "overstated, stale, mismatched, or contradictory statements. Verify that cited claim IDs exist "
         "and really support each statement. Evidence marked `quote_check: not_found` quotes wording, and "
         "evidence marked `source_check: not_found` cites a source, that no research tool returned: treat it as "
@@ -98,14 +109,28 @@ INSTRUCTIONS: dict[str, str] = {
         "evidence that appears to violate them. Recommend more research only when the issue is material."
     ),
     "campaign_synthesizer": (
-        "Synthesize a research campaign from the supplied per-question reports and evidence only; do not "
-        "research further or use outside knowledge. Cite evidence with the exact claim refs supplied (for "
-        "example 'q01/q1/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
-        "from multiple independent tier A-C sources), preliminary (single source, preprint-only, or narrow "
+        "Synthesize a research campaign from the supplied per-question claims only; do not "
+        "research further or use outside knowledge. `sources` lists each cited work once: an id, its title, "
+        "url or attachment id, and publication date when known. Each question's `claims` give "
+        "a statement, the `claim_refs` that support it, `min_confidence` (the lowest confidence among the "
+        "research claims those refs name), `source_ids` (the works whose evidence supports the statement), and "
+        "`source_count`, how many there are; one work cited at two locations counts once. "
+        "`contradicting_source_ids` and `contradicting_source_count`, when present, name the works whose "
+        "evidence does not support the statement. Use a work's url and title to tell a vendor's own report from "
+        "independent work, and its date to place it in the publication window. "
+        "Cite claim refs exactly (for "
+        "example 'q01/q1/c3') and never invent refs; source ids are not refs. `source_types` and `publication_statuses` describe the "
+        "supporting sources. A missing `publication_statuses` list means every supporting source is unknown. "
+        "Unknown statuses are left out of a list that is present, so a listed status is not the status of every source. `caveats` are the question "
+        "report's limits, and `unresolved_questions` are what its research left open; both feed unknowns. `contradictions` name a disagreement and the refs on each side. A `retracted` flag "
+        "means one cited source is retracted. Classify findings as well_supported (consistent evidence "
+        "from multiple independent tier A-C sources, so `source_count` at least 2 and no "
+        "`contradicting_source_count`, not merely more than one `source_types` string), preliminary (single source, preprint-only, or narrow "
         "evaluation), vendor_claims (results reported by a vendor without independent replication), "
         "contradictory (cite both sides), or unknowns. Keep preprint, submission, and published status "
-        "distinct. Evidence with `quote_check: not_found` or `source_check: not_found` quotes wording or cites a "
-        "source that no research tool returned; it cannot make a finding well_supported. Each question's `verification.findings` lists statements its "
+        "distinct. A claim marked `quote_check: not_found`, `source_check: not_found`, or `retracted` cannot "
+        "make a finding well_supported; the flag covers the whole report claim, even when other evidence on "
+        "it is clean. Each question's `verification.findings` lists statements its "
         "verifier could not support or rated major: never present those as well_supported; carry material ones into preliminary, "
         "contradictory, or unknowns. In the benchmark catalog, record versions, scope, evaluation method, "
         "and limits only as the evidence states them. Hypotheses must be falsifiable, cite supporting and "
@@ -230,8 +255,9 @@ def _verification_cites_ledger(ctx: RunContext[LedgerRefs], output: Verification
 campaign_synthesizer_agent = Agent(
     output_type=CampaignSynthesis,
     deps_type=frozenset[str],
-    # Two citation-fix retries; campaign synthesis.max_requests bounds the total.
-    retries={"output": 2},
+    # One citation-fix retry (two requests). A second retry would send the prompt a third
+    # time, and three sends of an eleven-question prompt do not fit synthesis.total_tokens_limit.
+    retries={"output": 1},
     instructions=INSTRUCTIONS["campaign_synthesizer"],
 )
 

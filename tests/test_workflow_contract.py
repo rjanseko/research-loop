@@ -18,7 +18,7 @@ from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart, U
 from pydantic_ai.models.function import FunctionModel
 
 from research_loop import agents
-from research_loop.async_orchestrator import ResearchConfig
+from research_loop.async_orchestrator import PromptExceedsRetryBudget, ResearchConfig
 from research_loop.ledger import EvidenceLedger
 from research_loop.orchestrator import LegacyResearchLoop, ResearchLoop
 from research_loop.policy import ModelPolicy, ModelRoute
@@ -154,7 +154,7 @@ class Script:
                     gaps = [item for item in gaps if item["question_id"] in planned]
                 output = {"gaps": gaps}
             elif role == "synthesizer":
-                refs = [claim["id"] for result in payload["evidence"] for claim in result["claims"]]
+                refs = [claim["id"] for result in payload["evidence"] for claim in result.get("claims", [])]
                 refs += ["q9/c9"] if invent else []
                 output = {"answer": "The measurement is approximate.",
                           "claims": [{"statement": "The measurement is approximate.", "claim_ids": refs}]}
@@ -198,6 +198,26 @@ def workflow(request):
 async def run(loop, **kwargs):
     # Empty fan-outs and round-limit regressions should fail instead of hanging.
     return await asyncio.wait_for(loop.run("Assess the measurement", **kwargs), timeout=15)
+
+
+@pytest.mark.asyncio
+async def test_finishing_prompt_stops_before_the_call_when_a_retry_cannot_fit(workflow):
+    loop, script = workflow
+    loop.policy.routes[ResearchRole.SYNTHESIZER] = ModelRoute("test", 5, 5, 1_000)
+    with pytest.raises(PromptExceedsRetryBudget, match="synthesizer"):
+        await run(loop)
+
+    assert "synthesizer" not in script.prompts
+    assert "verifier" not in script.prompts
+    assert script.prompts["scout"]
+    (failed,) = [task for task in loop.repository.tasks.values() if task["status"] == "failed"]
+    assert failed["role"] is ResearchRole.SYNTHESIZER
+    assert failed["error"] == {"type": "PromptExceedsRetryBudget"}
+    assert failed["usage"] is None
+    job = next(iter(loop.repository.jobs.values()))
+    assert job["status"] == "failed"
+    assert job["error"] == {"type": "PromptExceedsRetryBudget"}
+    assert job["evidence_ledger"]
 
 
 @pytest.mark.asyncio
@@ -367,6 +387,7 @@ async def test_followup_prompts_keep_constraints_and_evidence_without_prior_task
     loop, script = workflow
     loop.config = replace(loop.config, max_verification_rounds=2)
     script.verification = {"needs_research": True, "followups": [gap()]}
+    script.cite_url = "https://example.org/allowed"
     constraints = ResearchConstraints(blocked_urls=["https://example.org/blocked"], notes=["Use primary evidence"])
     outcome = await run(loop, constraints=constraints)
 
@@ -388,8 +409,21 @@ async def test_followup_prompts_keep_constraints_and_evidence_without_prior_task
     assert [len(p["evidence"]) for p in script.prompts["synthesizer"]] == [1, 2, 3]
     for synthesis, verification in zip(script.prompts["synthesizer"], script.prompts["verifier"], strict=True):
         assert synthesis["evidence"] == verification["evidence"]
+        assert synthesis["sources"] == verification["sources"]
+        assert [row["id"] for row in synthesis["sources"]] == ["s1"]
+        assert "doi" not in synthesis["sources"][0]
         ids = [c["id"] for result in verification["evidence"] for c in result["claims"]]
         assert verification["report"]["claims"][0]["claim_ids"] == ids
+        for result in verification["evidence"]:
+            assert "search_queries_used" not in result
+            assert "suggested_followups" not in result
+            for claim in result["claims"]:
+                for item in claim["evidence"]:
+                    assert item["source_id"] == "s1"
+                    assert "source" not in item
+    gap_prompt = script.prompts["gap_analyst"][0]
+    assert gap_prompt["sources"] == script.prompts["synthesizer"][0]["sources"]
+    assert "source" not in gap_prompt["results"][0]["claims"][0]["evidence"][0]
     assert len(outcome.ledger.claim_ids()) == 3
 
 
