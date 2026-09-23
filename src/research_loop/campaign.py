@@ -5,9 +5,10 @@ import argparse
 import asyncio
 import hashlib
 import json
+import shutil
 import tomllib
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,7 +20,15 @@ from .acquisition import FETCH_VERSION
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
 from .agents import prompt_fingerprint
-from .experiment import MANIFEST_SCHEMA_VERSION, fingerprint, git_state, package_versions, safe_value, write_manifest
+from .experiment import (
+    MANIFEST_SCHEMA_VERSION,
+    file_sha256,
+    fingerprint,
+    git_state,
+    package_versions,
+    safe_value,
+    write_manifest,
+)
 from .ledger import EvidenceLedger
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
@@ -213,35 +222,72 @@ def campaign_run_config(campaign: dict[str, Any]) -> ResearchConfig:
 
 def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: str,
                             manifest: dict[str, Any]) -> dict[str, Any]:
-    """Export one completed question; returns its manifest record. run.json is written last."""
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification, outcome.ledger),
-                                      encoding="utf-8")
-    (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    _write_json(folder / "evidence_ledger.json", outcome.ledger.to_json())
-    bibliography = list({
-        json.dumps(source.model_dump(mode="json"), sort_keys=True): source.model_dump(mode="json")
-        for source in outcome.ledger.sources()
-    }.values())
-    _write_json(folder / "bibliography.json", bibliography)
-    (folder / "verification.json").write_text(outcome.verification.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    record = {
-        "id": folder.name, "job_id": str(outcome.job_id),
-        "claim_count": outcome.ledger.claim_count(),
-        "source_count": len(bibliography), "status": "completed",
-        "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
-        "review_reasons": review_reasons(outcome.report, outcome.verification, outcome.ledger),
-    }
-    # run.json marks the folder as a completed, attributable run.
-    _write_json(folder / "run.json", record | {
-        "experiment_id": manifest["experiment_id"],
-        "campaign_spec_sha256": manifest["campaign_spec_sha256"],
-        # What the evidence answers; budget-only spec edits leave it unchanged.
-        "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
-        "config_fingerprint": manifest["config_fingerprint"],
-        "finished_at": datetime.now(UTC).isoformat(),
-    })
+    """Export one completed question and publish it in one step; returns its manifest record.
+
+    Files are written to a hidden staging folder that then replaces `folder`, so a failed or
+    interrupted write leaves the previous outputs untouched. run.json, written last, records
+    every other file's hash; aggregation rejects a folder whose files no longer match.
+    """
+    staging = folder.with_name(f".{folder.name}.{uuid4().hex}.staging")
+    staging.mkdir(parents=True)
+    try:
+        (staging / "report.md").write_text(
+            render_question_report(outcome.report, outcome.verification, outcome.ledger), encoding="utf-8")
+        (staging / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        _write_json(staging / "evidence_ledger.json", outcome.ledger.to_json())
+        bibliography = list({
+            json.dumps(source.model_dump(mode="json"), sort_keys=True): source.model_dump(mode="json")
+            for source in outcome.ledger.sources()
+        }.values())
+        _write_json(staging / "bibliography.json", bibliography)
+        (staging / "verification.json").write_text(outcome.verification.model_dump_json(indent=2) + "\n",
+                                                   encoding="utf-8")
+        files = {path.name: file_sha256(path) for path in sorted(staging.iterdir())}
+        record = {
+            "id": folder.name, "job_id": str(outcome.job_id),
+            "claim_count": outcome.ledger.claim_count(),
+            "source_count": len(bibliography), "status": "completed",
+            "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
+            "review_reasons": review_reasons(outcome.report, outcome.verification, outcome.ledger),
+        }
+        # run.json marks the folder as a completed, attributable run.
+        _write_json(staging / "run.json", record | {
+            "experiment_id": manifest["experiment_id"],
+            "campaign_spec_sha256": manifest["campaign_spec_sha256"],
+            # What the evidence answers; budget-only spec edits leave it unchanged.
+            "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
+            "config_fingerprint": manifest["config_fingerprint"],
+            "finished_at": datetime.now(UTC).isoformat(),
+            "files": files,
+        })
+        _publish(staging, folder)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return record
+
+
+def _publish(staging: Path, folder: Path) -> None:
+    """Put `staging` in place of `folder`; the old folder is deleted only once the new one is in place."""
+    if not folder.exists():
+        staging.rename(folder)
+        return
+    retired = folder.with_name(f".{folder.name}.{uuid4().hex}.retired")
+    folder.rename(retired)
+    try:
+        staging.rename(folder)
+    except BaseException:
+        retired.rename(folder)
+        raise
+    shutil.rmtree(retired, ignore_errors=True)
+
+
+def _files_match(folder: Path, run: dict[str, Any]) -> bool:
+    """Whether every file run.json lists still has the hash recorded when it was published."""
+    files = run.get("files")
+    return (isinstance(files, dict) and bool(files)
+            and all(isinstance(name, str) and Path(name).name == name and file_sha256(folder / name) == digest
+                    for name, digest in files.items()))
 
 
 async def run_campaign(
@@ -352,6 +398,8 @@ class CampaignEvidence:
     verification: dict[str, dict[str, Any]]
     # Completed outputs whose recorded objective hash is missing or differs from the current spec's.
     stale: list[str]
+    # Completed outputs whose files no longer match the hashes run.json recorded.
+    invalid: list[str] = field(default_factory=list)
 
     @property
     def refs(self) -> frozenset[str]:
@@ -367,6 +415,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
     completed: list[CompletedQuestion] = []
     missing: list[str] = []
     stale: list[str] = []
+    invalid: list[str] = []
     for question in campaign["questions"]:
         folder = output_dir / question["id"]
         try:
@@ -379,6 +428,10 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
             continue
         if run.get("objective_sha256") != _objective_sha256(campaign, question):
             stale.append(question["id"])
+            missing.append(question["id"])
+            continue
+        if not _files_match(folder, run):
+            invalid.append(question["id"])
             missing.append(question["id"])
             continue
         raw_ledger = json.loads((folder / "evidence_ledger.json").read_text(encoding="utf-8"))
@@ -434,7 +487,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
             ],
         }
     return CampaignEvidence(completed, missing, claims, list(bibliography.values()), contradictions,
-                            verification=verification, stale=stale)
+                            verification=verification, stale=stale, invalid=invalid)
 
 
 def write_aggregate(campaign_dir: Path, evidence: CampaignEvidence) -> None:
@@ -541,6 +594,8 @@ def prepare_synthesis(path: Path, output_dir: Path, *, allow_partial: bool) -> t
     evidence = aggregate_campaign(campaign, output_dir)
     stale = (f" ({', '.join(evidence.stale)} cannot be matched to the current spec's objective; rerun them)"
              if evidence.stale else "")
+    if evidence.invalid:
+        stale += f" ({', '.join(evidence.invalid)} no longer match their recorded file hashes; rerun them)"
     if not evidence.completed:
         raise ValueError(f"no completed campaign questions to synthesize{stale}")
     if evidence.missing and not allow_partial:
@@ -591,6 +646,7 @@ async def synthesize_campaign(
     manifest |= {
         "synthesis_route": safe_value(route.snapshot()), "prompt_sha256": prompt_sha256, "prompt_chars": len(prompt),
         "inputs": inputs, "missing_question_ids": evidence.missing, "stale_question_ids": evidence.stale,
+        "invalid_question_ids": evidence.invalid,
         "partial": bool(evidence.missing),
         "mixed_question_configs": len({item["config_fingerprint"] for item in inputs}) > 1,
         "claim_count": len(evidence.claims), "source_count": len(evidence.bibliography),
@@ -671,7 +727,8 @@ def main() -> None:
                 write_aggregate(args.output / SYNTHESIS_DIR, evidence)
             print(f"Aggregated {len(evidence.completed)} questions, {len(evidence.claims)} claims, "
                   f"{len(evidence.bibliography)} sources; missing: {', '.join(evidence.missing) or 'none'}"
-                  + (f"; not matched to the current objective: {', '.join(evidence.stale)}" if evidence.stale else ""))
+                  + (f"; not matched to the current objective: {', '.join(evidence.stale)}" if evidence.stale else "")
+                  + (f"; files changed since publication: {', '.join(evidence.invalid)}" if evidence.invalid else ""))
             return
         if args.synthesize:
             campaign, evidence, prompt = prepare_synthesis(args.spec, args.output, allow_partial=args.allow_partial)

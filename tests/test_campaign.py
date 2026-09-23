@@ -498,3 +498,52 @@ async def test_cancelled_campaign_run_marks_its_manifest_failed(monkeypatch, tmp
     manifest = json.loads(manifest_path.read_text())
     assert (manifest["status"], manifest["error"]) == ("failed", "CancelledError")
     assert manifest["finished_at"]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch, tmp_path: Path) -> None:
+    import research_loop.campaign as campaign
+
+    await _complete_questions(monkeypatch, tmp_path, ["q01"])
+    folder = tmp_path / "q01"
+    before = {path.name: path.read_bytes() for path in folder.iterdir()}
+
+    real_write_json = campaign._write_json
+
+    def failing_write_json(path: Path, value) -> None:
+        if path.name == "bibliography.json":
+            raise OSError("disk full")
+        real_write_json(path, value)
+
+    class RerunLoop:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _objective, **_kwargs):
+            return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Rerun report q01"),
+                                   ledger=_ledger("q01"), verification=VerificationReport(), cost_usd=None)
+
+    monkeypatch.setattr(campaign, "ResearchLoop", RerunLoop)
+    monkeypatch.setattr(campaign, "_write_json", failing_write_json)
+    with pytest.raises(OSError, match="disk full"):  # after report.md and report.json were written
+        await campaign.run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+                                    settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
+
+    assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["manifests", "q01"]  # no staging left behind
+
+
+@pytest.mark.asyncio
+async def test_aggregate_rejects_outputs_changed_after_publication(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.campaign import aggregate_campaign
+
+    await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
+    run = json.loads((tmp_path / "q01" / "run.json").read_text())
+    assert set(run["files"]) == {"report.md", "report.json", "evidence_ledger.json", "bibliography.json", "verification.json"}
+    report = tmp_path / "q01" / "report.json"
+    report.write_text(report.read_text().replace("Draft report q01", "Edited by hand"))
+
+    evidence = aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path)
+    assert evidence.invalid == ["q01"]
+    assert "q01" in evidence.missing
+    assert [item.question["id"] for item in evidence.completed] == ["q02"]

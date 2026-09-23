@@ -31,7 +31,9 @@ A completed question writes `outputs.question_files` to `<output>/<question id>/
 | `report.json`, `verification.json` | The final report and the verifier's checks |
 | `evidence_ledger.json` | Every research result, with unique claim IDs such as `q1/c3`; the report and verification cite only these IDs |
 | `bibliography.json` | Distinct sources; preprint and publication records stay separate |
-| `run.json` | Written last: job ID, cost, config fingerprint, a hash of the rendered objective, and `review_reasons`. Its presence marks the question completed |
+| `run.json` | Written last: job ID, cost, config fingerprint, a hash of the rendered objective, `review_reasons`, and the SHA-256 of every other file. Its presence marks the question completed |
+
+The files are written to a hidden staging folder that then replaces the question's folder in one step, so a rerun that fails or is interrupted leaves the previous outputs whole.
 
 Each invocation also writes its own manifest under `<output>/manifests/`, with the redacted policy, run limits and full run configuration, the prompt fingerprint, acquisition, evidence version, git state including a hash of uncommitted changes, and each question's outcome and cost.
 
@@ -70,7 +72,7 @@ Per-task usage in Postgres then shows what each step cost, which is how the camp
 
 `--aggregate` merges the completed questions' ledgers and bibliographies into `<output>/campaign/`. Each claim gets a campaign ref, the question ID plus the ledger claim ID, such as `q01/q1/c3`; a repeated ID in an older ledger gets a `~2` suffix.
 
-A completed question counts only if its objective hash still matches the spec. Editing a question, the window, or the source policy therefore requires rerunning the affected questions, while budget-only edits keep earlier outputs usable. A run recorded without an objective hash never counts. Question IDs cannot be `.`, `..`, `campaign`, or `manifests`, which would collide with output folders.
+A completed question counts only if its objective hash still matches the spec and its files still match the hashes in its `run.json`; a folder edited after publication is reported and left out. Editing a question, the window, or the source policy therefore requires rerunning the affected questions, while budget-only edits keep earlier outputs usable. A run recorded without an objective hash never counts. Question IDs cannot be `.`, `..`, `campaign`, or `manifests`, which would collide with output folders.
 
 `--synthesize --paid` runs the same preflight, then one campaign-level synthesizer job under the `[synthesis]` limits, and writes `outputs.campaign_files`:
 
