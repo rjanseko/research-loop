@@ -58,12 +58,23 @@ BIBLIOGRAPHY = [
 ]
 
 
-def _api(papers: dict, calls: list[httpx.Request], *, throttle_first: bool = False, titles: dict | None = None):
-    """A fake Semantic Scholar: batch lookups from `papers`, title matches from `titles`."""
+def _api(papers: dict, calls: list[httpx.Request], *, throttle_first: bool = False, titles: dict | None = None,
+         citing: dict | None = None):
+    """A fake Semantic Scholar: batch lookups from `papers`, title matches from `titles`, and
+    citations from `citing` (paper ID -> citing works, newest first), paged by offset and limit."""
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         if throttle_first and len(calls) == 1:
             return httpx.Response(429, headers={"retry-after": "0"})
+        if request.url.path.endswith("/citations"):
+            paper_id = request.url.path.split("/")[-2]
+            works = (citing or {}).get(paper_id, [])
+            offset, size = int(request.url.params["offset"]), int(request.url.params["limit"])
+            page = works[offset:offset + size]
+            body = {"offset": offset, "data": [{"citingPaper": work} for work in page]}
+            if offset + size < len(works):
+                body["next"] = offset + size
+            return httpx.Response(200, json=body)
         if request.url.path.endswith("/search/match"):
             match = (titles or {}).get(request.url.params["query"])
             return httpx.Response(200, json={"data": [match]}) if match else httpx.Response(404, json={"error": "Title match not found"})
@@ -79,7 +90,7 @@ async def test_basis_papers_rank_works_by_how_many_seeds_cite_them(tmp_path: Pat
     calls: list[httpx.Request] = []
     async with _api(PAPERS, calls) as http:
         scholar = SemanticScholar(AcquisitionCache(tmp_path, mode="record"), api_key="k", client=http)
-        report = await discover_basis_papers(BIBLIOGRAPHY, scholar, min_seed_citations=2)
+        report = await discover_basis_papers(BIBLIOGRAPHY, scholar, min_seed_citations=2, forward_limit=0)
 
     assert [(p.title, p.cited_by_seeds, p.in_study) for p in report.papers] == [
         ("HumanEval", 3, False),   # cited by all three seeds; the study never cites it
@@ -100,7 +111,8 @@ async def test_one_paper_under_two_lookups_is_one_seed(tmp_path: Path) -> None:
     papers = {**PAPERS, "DOI:10.1/utboost-publication": PAPERS["DOI:10.1/utboost"]}
     bibliography = [*BIBLIOGRAPHY, {"title": "UTBoost (ACL)", "doi": "10.1/utboost-publication"}]
     async with _api(papers, []) as http:
-        report = await discover_basis_papers(bibliography, SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http))
+        report = await discover_basis_papers(bibliography, SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http),
+                                             forward_limit=0)
     assert report.resolved_seeds == 3
     assert report.papers[0].cited_by_seeds == 3
 
@@ -108,19 +120,22 @@ async def test_one_paper_under_two_lookups_is_one_seed(tmp_path: Path) -> None:
 async def test_lookups_are_cached_per_paper_and_replay_offline(tmp_path: Path) -> None:
     calls: list[httpx.Request] = []
     async with _api(PAPERS, calls) as http:
-        first = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="record"), client=http))
+        first = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="record"), client=http),
+                                            forward_limit=0)
     replay = SemanticScholar(AcquisitionCache(tmp_path, mode="replay"))
-    again = await discover_basis_papers(BIBLIOGRAPHY, replay)
+    again = await discover_basis_papers(BIBLIOGRAPHY, replay, forward_limit=0)
     assert again == first and replay.cache_hits == 5 and len(calls) == 2  # 4 lookups and 1 title match
 
     with pytest.raises(LookupError):
-        await discover_basis_papers([{"title": "new", "doi": "10.1/new"}], SemanticScholar(AcquisitionCache(tmp_path, mode="replay")))
+        await discover_basis_papers([{"title": "new", "doi": "10.1/new"}], SemanticScholar(AcquisitionCache(tmp_path, mode="replay")),
+                                    forward_limit=0)
 
 
 async def test_throttled_batches_are_retried(tmp_path: Path) -> None:
     calls: list[httpx.Request] = []
     async with _api(PAPERS, calls, throttle_first=True) as http:
-        report = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http))
+        report = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http),
+                                            forward_limit=0)
     assert len(calls) == 3 and report.resolved_seeds == 3  # throttled batch, batch, title match
 
 
@@ -163,7 +178,7 @@ async def test_a_seed_whose_id_is_not_indexed_is_found_by_its_exact_title(tmp_pa
     calls: list[httpx.Request] = []
     async with _api(papers, calls, titles=titles) as http:
         report = await discover_basis_papers(bibliography, SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http),
-                                             min_seed_citations=1)
+                                             min_seed_citations=1, forward_limit=0)
     assert (report.resolved_seeds, report.resolved_by_title) == (1, 1)
     assert report.unresolved == ["DOI:10.1/near-miss"]
     assert [p.title for p in report.papers] == ["HumanEval"]
@@ -172,5 +187,58 @@ async def test_a_seed_whose_id_is_not_indexed_is_found_by_its_exact_title(tmp_pa
 async def test_a_batch_of_only_unknown_ids_counts_as_not_found(tmp_path: Path) -> None:
     async with _api({}, []) as http:
         report = await discover_basis_papers([{"title": "x", "doi": "10.1/x"}],
-                                             SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http))
+                                             SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http),
+                                             forward_limit=0)
     assert report.unresolved == ["DOI:10.1/x"] and report.papers == []
+
+
+CITING = {
+    "swe": [_ref("agentless", "Agentless", citations=400, year=2024), _ref("survey", "A survey", citations=90, year=2025),
+            _ref("utboost", "UTBoost"), _ref("lone", "Cites one seed", year=2025)],
+    "plus": [_ref("survey", "A survey", citations=90, year=2025), _ref("utboost", "UTBoost"),
+             _ref("agentless", "Agentless", citations=400, year=2024)],
+    "utboost": [_ref("survey", "A survey", citations=90, year=2025)],
+}
+
+
+async def test_forward_snowballing_ranks_later_work_by_how_many_seeds_it_cites(tmp_path: Path) -> None:
+    async with _api(PAPERS, [], citing=CITING) as http:
+        report = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="record"), client=http))
+    assert [(w.title, w.cites_seeds, w.in_study) for w in report.citing_works] == [
+        ("A survey", 3, False),
+        ("Agentless", 2, False),
+        ("UTBoost", 2, True),      # a seed that cites other seeds
+    ]
+    assert report.citing_works[0].cited_seeds == ["SWE-Bench+", "SWE-bench", "UTBoost"]
+    assert (report.forward_limit, report.citations, report.seeds_with_more_citations) == (1000, 8, 0)
+    assert "## Later work citing the seeds" in render_basis_papers(report, "Study")
+
+    replayed = await discover_basis_papers(BIBLIOGRAPHY, SemanticScholar(AcquisitionCache(tmp_path, mode="replay")))
+    assert replayed == report
+
+
+async def test_forward_snowballing_pages_and_stops_at_its_limit(tmp_path: Path) -> None:
+    from research_loop.citations import SemanticScholar as Client
+
+    many = {"swe": [_ref(f"w{i}", f"Work {i}") for i in range(1_200)]}
+    calls: list[httpx.Request] = []
+    async with _api(PAPERS, calls, citing=many) as http:
+        works, more = await Client(AcquisitionCache(tmp_path, mode="off"), client=http).citations("swe", 1_000)
+        everything, rest = await Client(AcquisitionCache(tmp_path, mode="off"), client=http).citations("swe", 5_000)
+    assert (len(works), more) == (1_000, True)
+    assert (len(everything), rest) == (1_200, False)
+    assert [int(c.url.params["limit"]) for c in calls] == [500, 500, 500, 500, 500]
+
+
+async def test_forward_snowballing_skips_seeds_still_throttled(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/citations"):
+            return httpx.Response(429, headers={"retry-after": "0"})
+        ids = json.loads(request.content)["ids"]
+        return httpx.Response(200, json=[PAPERS.get(lookup) for lookup in ids])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        report = await discover_basis_papers(BIBLIOGRAPHY[:3], SemanticScholar(AcquisitionCache(tmp_path, mode="off"), client=http))
+    assert report.seeds_citations_unread == 3 and report.citing_works == []
+    assert report.papers  # the backward pass still stands
+    assert "could not be read" in render_basis_papers(report, "Study")

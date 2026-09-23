@@ -516,7 +516,7 @@ research-long-horizon --dry-run                        # validate the spec; no c
 research-long-horizon --question q01 --paid --persist  # one question
 research-long-horizon --all-questions --paid --persist # every question, one after another
 research-long-horizon --aggregate                      # merge completed evidence; no calls
-research-long-horizon --basis-papers                   # rank the works the sources cite; no model calls
+research-long-horizon --basis-papers                   # basis papers and later work; no model calls
 research-long-horizon --synthesize --paid --persist    # the study report, catalogs, and hypotheses
 ```
 
@@ -524,7 +524,7 @@ The first study, on long-horizon agentic software engineering, and its calibrati
 
 ## Next: literature reviews and basis papers
 
-> **Partly built.** Backward snowballing for basis papers works today (`research-long-horizon --basis-papers`). Forward snowballing, screening, and the literature-review output are planned; the dashed part of the diagram shows the whole design.
+> **Partly built.** Backward and forward snowballing work today (`research-long-horizon --basis-papers`). Screening and the literature-review output are planned; the dashed part of the diagram shows the rest of the design.
 
 A long-horizon study is already most of a systematic literature review: a protocol (the spec), research questions, a publication window, inclusion rules (source tiers), recorded search activity, and a synthesis. Two things were missing: finding the papers a field is built on, and reporting how the review got from everything found to what it included.
 
@@ -535,18 +535,19 @@ flowchart LR
     RES --> FWD["forward snowballing<br/>works citing the seeds"]
     BACK --> RANK["rank: seeds citing each work,<br/>then total citations"]
     FWD --> RANK
-    RANK --> BASIS["basis papers<br/>basis_papers.json / .md"]
+    RANK --> BASIS["basis papers and later work<br/>basis_papers.json / .md"]
     RANK --> SCREEN["screen against the spec's<br/>source tiers and window"]
     SCREEN --> REVIEW["literature review:<br/>themes, timeline, open questions,<br/>identified → screened → included counts"]
     BASIS --> REVIEW
     classDef planned stroke-dasharray: 5 4
-    class FWD,SCREEN,REVIEW planned
+    class SCREEN,REVIEW planned
 ```
 
 - **Basis papers** are the works a body of literature rests on: the ones many of the collected papers cite. `--basis-papers` resolves every arXiv ID and DOI in a study's bibliography through Semantic Scholar, collects each seed's references, and ranks the referenced works by how many seeds cite them, marking the ones the study never cites. It is deterministic code: no model call, no new agent role. Semantic Scholar is used because OpenAlex lists no references for arXiv preprints. Details: [docs/acquisition.md](docs/acquisition.md#citation-snowballing-basis-papers).
 - **On the p01 pilot**, 7 seeds with 419 references put the Codex paper that introduced HumanEval at the top, cited by 6 of the 7 seeds but never by the study, followed by SWE-bench, MBPP, AlphaCode, and EvalPlus. 29 of the top 30 were works the study had not cited.
 - **Literature-review output** adds a screening record to a study: how many works were identified, screened, and included, and why each exclusion happened. It also adds a review-shaped synthesis organized by theme and timeline, reusing the study synthesizer.
-- **Still planned:** forward snowballing (newer work citing the seeds), co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata, and year filters apply to OpenAlex only.
+- **Later work** comes from forward snowballing: works that cite several of the seeds, ranked by how many. On p01 that is 30 works, mostly from 2026, because citations are read newest first and capped at 1,000 per seed.
+- **Still planned:** screening against the spec's window and source tiers, co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata, and year filters apply to OpenAlex only.
 
 ## What a result depends on
 

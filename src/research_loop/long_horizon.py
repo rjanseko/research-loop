@@ -805,8 +805,11 @@ async def find_basis_papers(spec: dict[str, Any], evidence: LongHorizonEvidence,
                             *, client: Any = None) -> BasisPaperReport:
     """Backward snowballing over the completed questions' bibliography; no model calls."""
     key = settings.semantic_scholar_api_key
+    # A study records its research calls without reading the cache. Basis papers do not feed back into
+    # research, so they read recent entries: a rerun after throttling resumes instead of starting over.
+    mode = spec["execution"]["scholarly_cache_mode"]
     scholar = SemanticScholar(
-        AcquisitionCache(settings.benchmark_cache / "scholarly", mode=spec["execution"]["scholarly_cache_mode"]),
+        AcquisitionCache(settings.benchmark_cache / "scholarly", mode="live" if mode == "record" else mode),
         api_key=key.get_secret_value() if key else None,
         client=client,
     )
@@ -884,11 +887,14 @@ def main() -> None:
         try:
             report = asyncio.run(find_basis_papers(spec, evidence, ResearchSettings.from_env()))
         except (httpx.HTTPError, LookupError, ValueError) as exc:
-            parser.exit(1, f"Basis papers failed ({type(exc).__name__}); set SEMANTIC_SCHOLAR_API_KEY if throttled.\n")
+            status = f" HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else ""
+            hint = "; set SEMANTIC_SCHOLAR_API_KEY for a dedicated rate limit" if status == " HTTP 429" else ""
+            parser.exit(1, f"Basis papers failed ({type(exc).__name__}{status}){hint}.\n")
         write_basis_papers(args.output / SYNTHESIS_DIR, spec, report)
         new = sum(not paper.in_study for paper in report.papers)
         print(f"Basis papers: {len(report.papers)} works cited by at least {report.min_seed_citations} of "
               f"{report.resolved_seeds} resolved seeds ({new} not yet in the study); "
+              f"{len(report.citing_works)} later works citing at least {report.min_seed_citations} of them; "
               f"{len(report.unresolved)} seeds not found; wrote {args.output / SYNTHESIS_DIR / 'basis_papers.md'}")
         return
     try:

@@ -1,10 +1,11 @@
-"""Basis-paper discovery: backward citation snowballing over a study's bibliography.
+"""Basis-paper discovery: citation snowballing over a study's bibliography.
 
 The scholarly works a study cited are the seeds. Each seed's reference list comes from
 Semantic Scholar, whose records carry references for arXiv preprints; OpenAlex records for
 them list none, and most of this literature is on arXiv. A work that many seeds cite is a
-basis paper: something the literature builds on. Works the study did not cite itself are
-flagged, since those are what snowballing adds.
+basis paper: something the literature builds on (backward snowballing). A later work that
+cites many seeds is closely tied to the study's topic (forward snowballing). Works the study
+did not cite itself are flagged, since those are what snowballing adds.
 
 This is code, not an agent: no model is called, and research workers never see these
 results. Responses are cached per seed, so a `record` run can be replayed offline.
@@ -28,10 +29,15 @@ _FIELDS = ",".join(
     ["paperId", "title", "year", "externalIds", "citationCount", "venue"]
     + [f"references.{name}" for name in ("paperId", "title", "year", "externalIds", "citationCount", "venue")]
 )
+_CITING_FIELDS = "paperId,title,year,externalIds,citationCount,venue"
+# Citations per page: small enough that each page fits one cache entry (128 KB).
+_CITATION_PAGE = 500
 # Seeds per batch request; the API takes up to 500, and fewer keep each response well under the cap.
 _BATCH = 100
 _MAX_RESPONSE_BYTES = 8_000_000
-_ATTEMPTS = 4
+# The shared, unauthenticated pool throttles in bursts; this tool calls no model, so waiting is cheap.
+_ATTEMPTS = 6
+_MAX_BACKOFF_SECONDS = 30.0
 _ARXIV_ID = re.compile(r"(?<![\d.])(\d{4}\.\d{4,5})(?:v\d+)?")
 _NOT_ALNUM = re.compile(r"[\W_]+")
 
@@ -51,6 +57,21 @@ class BasisPaper(BaseModel):
     in_study: bool = Field(description="Whether the study already cites this work")
 
 
+class CitingWork(BaseModel):
+    """A work that cites the study's seeds, with how many of them it cites."""
+
+    paper_id: str = Field(description="Semantic Scholar paper ID")
+    title: str
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+    citation_count: int | None = Field(default=None, description="Citations across all of Semantic Scholar")
+    cites_seeds: int = Field(description="How many of the study's resolved seeds this work cites")
+    cited_seeds: list[str] = Field(default_factory=list, description="Titles of the seeds it cites")
+    in_study: bool = Field(description="Whether the study already cites this work")
+
+
 class BasisPaperReport(BaseModel):
     backend: str = "semantic_scholar"
     sources: int = Field(description="Bibliography entries examined")
@@ -64,6 +85,11 @@ class BasisPaperReport(BaseModel):
     unmatched_references: int = Field(description="References Semantic Scholar could not match to a paper")
     min_seed_citations: int
     papers: list[BasisPaper] = Field(default_factory=list)
+    forward_limit: int = Field(default=0, description="Citations read per seed; 0 skips forward snowballing")
+    citations: int = Field(default=0, description="Citing works seen across resolved seeds")
+    seeds_with_more_citations: int = Field(default=0, description="Seeds cited more often than forward_limit")
+    seeds_citations_unread: int = Field(default=0, description="Seeds whose citations could not be read (throttled or failing)")
+    citing_works: list[CitingWork] = Field(default_factory=list)
 
 
 def _arxiv_id(value: str | None) -> str | None:
@@ -134,6 +160,32 @@ class SemanticScholar:
         self.cache.put(PROVIDER, key, {"paper_id": paper_id})
         return paper_id
 
+    async def citations(self, paper_id: str, limit: int) -> tuple[list[dict[str, Any]], bool]:
+        """Up to `limit` works citing a paper, newest first, and whether more exist."""
+        citing: list[dict[str, Any]] = []
+        offset = 0
+        while offset < limit:
+            size = min(_CITATION_PAGE, limit - offset)
+            key = json.dumps({"citations": paper_id, "offset": offset, "limit": size, "fields": _CITING_FIELDS},
+                             sort_keys=True)
+            page = self.cache.get(PROVIDER, key)
+            if page is not None:
+                self.cache_hits += 1
+            elif self.cache.mode == "replay":
+                raise LookupError(f"{PROVIDER} cache miss in replay mode")
+            else:
+                response = await self._send("GET", f"/paper/{paper_id}/citations",
+                                            {"fields": _CITING_FIELDS, "limit": size, "offset": offset}, None)
+                response.raise_for_status()
+                raw = response.json()
+                page = {"data": [item.get("citingPaper") for item in raw.get("data") or []], "next": raw.get("next")}
+                self.cache.put(PROVIDER, key, page)
+            citing.extend(item for item in page["data"] if item)
+            if page.get("next") is None:
+                return citing, False
+            offset = int(page["next"])
+        return citing, True
+
     async def papers(self, lookups: Iterable[str]) -> dict[str, dict[str, Any] | None]:
         """Each lookup's paper record, or None when Semantic Scholar does not know it."""
         found: dict[str, dict[str, Any] | None] = {}
@@ -178,12 +230,11 @@ class SemanticScholar:
                 response = await self._stream(self.client, method, path, params, body, headers)
             if response.status_code not in (429, 500, 502, 503, 504) or attempt == _ATTEMPTS - 1:
                 return response
-            # The shared, unauthenticated pool throttles often; back off before trying again.
             try:
                 delay = float(response.headers.get("retry-after", ""))
             except ValueError:
                 delay = 2.0 ** (attempt + 1)
-            await asyncio.sleep(min(max(delay, 0.0), 20.0))
+            await asyncio.sleep(min(max(delay, 0.0), _MAX_BACKOFF_SECONDS))
         return response
 
     @staticmethod
@@ -209,10 +260,11 @@ async def discover_basis_papers(
     *,
     min_seed_citations: int = 2,
     limit: int = 30,
+    forward_limit: int = 1000,
 ) -> BasisPaperReport:
-    """Rank the works a study's bibliography cites by how many of its seeds cite them."""
-    if min_seed_citations < 1 or limit < 1:
-        raise ValueError("min_seed_citations and limit must be at least 1")
+    """Rank the works a study's seeds cite (backward) and the works citing its seeds (forward)."""
+    if min_seed_citations < 1 or limit < 1 or forward_limit < 0:
+        raise ValueError("min_seed_citations and limit must be at least 1, forward_limit at least 0")
     seeds, without = seeds_from_bibliography(bibliography)
     records = await scholar.papers(seeds)
 
@@ -269,6 +321,46 @@ async def discover_basis_papers(
             in_study=reference_id in resolved or bool({doi, arxiv} & study_ids),
         ))
     papers.sort(key=lambda p: (-p.cited_by_seeds, -(p.citation_count or 0), p.year or 9999, p.title.lower()))
+
+    # Forward: later works that cite several seeds. Sequential, so the rate slot paces requests.
+    cites: dict[str, set[str]] = {}
+    citing_details: dict[str, dict[str, Any]] = {}
+    seen_citations = more = unread = 0
+    for paper_id in resolved if forward_limit else ():
+        try:
+            works, truncated = await scholar.citations(paper_id, forward_limit)
+        except httpx.HTTPStatusError as exc:
+            # Forward snowballing is best effort: a seed still throttled after retries is counted, not fatal.
+            if exc.response.status_code not in (429, 500, 502, 503, 504):
+                raise
+            unread += 1
+            continue
+        more += truncated
+        for work in works:
+            seen_citations += 1
+            work_id = work.get("paperId")
+            if work_id:
+                cites.setdefault(work_id, set()).add(paper_id)
+                citing_details.setdefault(work_id, work)
+    citing_works = []
+    for work_id, seed_ids in cites.items():
+        if len(seed_ids) < min_seed_citations:
+            continue
+        work = citing_details[work_id]
+        doi, arxiv = _identifiers(work)
+        citing_works.append(CitingWork(
+            paper_id=work_id,
+            title=str(work.get("title") or work_id),
+            year=work.get("year"),
+            venue=work.get("venue") or None,
+            doi=doi,
+            arxiv_id=arxiv,
+            citation_count=work.get("citationCount"),
+            cites_seeds=len(seed_ids),
+            cited_seeds=sorted(resolved[seed_id][0] for seed_id in seed_ids),
+            in_study=work_id in resolved or bool({doi, arxiv} & study_ids),
+        ))
+    citing_works.sort(key=lambda w: (-w.cites_seeds, -(w.citation_count or 0), -(w.year or 0), w.title.lower()))
     return BasisPaperReport(
         sources=len(bibliography),
         sources_without_identifier=without,
@@ -281,6 +373,11 @@ async def discover_basis_papers(
         unmatched_references=unmatched,
         min_seed_citations=min_seed_citations,
         papers=papers[:limit],
+        forward_limit=forward_limit,
+        citations=seen_citations,
+        seeds_with_more_citations=more,
+        seeds_citations_unread=unread,
+        citing_works=citing_works[:limit],
     )
 
 
@@ -307,4 +404,28 @@ def render_basis_papers(report: BasisPaperReport, title: str) -> str:
         )
     if not report.papers:
         lines.append("| | No work reached the threshold. | | | | | |")
+    if report.forward_limit:
+        lines += [
+            "",
+            "## Later work citing the seeds",
+            "",
+            f"Works that cite at least {report.min_seed_citations} of the resolved seeds, ranked by how many they "
+            f"cite, then by total citations. Up to {report.forward_limit} citing works were read per seed "
+            f"({report.citations} in all); {report.seeds_with_more_citations} seeds are cited more often than that, "
+            "and their oldest citing works were not read."
+            + (f" The citations of {report.seeds_citations_unread} seeds could not be read (throttled); rerun to "
+               "fill them in." if report.seeds_citations_unread else ""),
+            "",
+            "| # | Work | Year | Seeds cited | Citations | In study | ID |",
+            "|---:|---|---:|---:|---:|:---:|---|",
+        ]
+        for rank, work in enumerate(report.citing_works, 1):
+            identifier = f"arXiv:{work.arxiv_id}" if work.arxiv_id else (f"DOI:{work.doi}" if work.doi else work.paper_id)
+            lines.append(
+                f"| {rank} | {work.title.replace('|', '/')} | {work.year or ''} | {work.cites_seeds} | "
+                f"{work.citation_count if work.citation_count is not None else ''} | "
+                f"{'yes' if work.in_study else '**no**'} | {identifier} |"
+            )
+        if not report.citing_works:
+            lines.append("| | No work reached the threshold. | | | | | |")
     return "\n".join(lines) + "\n"

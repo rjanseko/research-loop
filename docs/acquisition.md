@@ -91,14 +91,15 @@ Entries are versioned and capped at 128 KB. Fetch windows are keyed by URL, `max
 
 ## Citation snowballing (basis papers)
 
-`research-long-horizon --basis-papers` finds the works a study's literature builds on (`citations.py`). It is code, not a tool: no model is called, and research workers never see the result.
+`research-long-horizon --basis-papers` finds the works a study's literature builds on, and the later work built on it (`citations.py`). It is code, not a tool: no model is called, and research workers never see the result.
 
 1. **Seeds.** Every bibliography entry of the study's completed questions with an arXiv ID or DOI, from its fields or its URL, becomes a Semantic Scholar lookup. An arXiv DOI (`10.48550/arXiv.…`) is looked up by its arXiv ID. Web pages without either are counted and skipped.
 2. **Resolution.** Seeds are resolved in batches of 100 (`POST /graph/v1/paper/batch`) with their reference lists. A seed whose ID Semantic Scholar does not index, such as some ACL Anthology DOIs, is tried once by title and accepted only when the returned title is the same, ignoring case and punctuation. Two lookups for one paper, such as a preprint and its publication, count as one seed.
 3. **Ranking.** Each referenced work is counted once per seed that cites it. Works cited by at least two seeds are ranked by that count, then by total citations. Each is marked `in_study` or not, since works the study never cited are what snowballing adds.
-4. **Output.** `<output>/synthesis/basis_papers.json` and `basis_papers.md`, with the counts behind the ranking: seeds without identifiers, seeds not found, seeds found by title, seeds with no references, and references that matched no paper.
+4. **Forward snowballing.** Each resolved seed's citing works are read, newest first, 500 per request, up to 1,000 per seed. Works citing at least two seeds are ranked by how many they cite, then by total citations, and marked `in_study` the same way. A seed cited more than 1,000 times has only its newest citing works read, so the list leans toward recent work; the report counts those seeds. Forward snowballing is best effort: a seed whose citations are still throttled after retries is counted and skipped, and a rerun fills it in.
+5. **Output.** `<output>/synthesis/basis_papers.json` and `basis_papers.md`, with the counts behind the ranking: seeds without identifiers, seeds not found, seeds found by title, seeds with no references, and references that matched no paper.
 
-Semantic Scholar is used because its records carry references for arXiv preprints. OpenAlex lists none for them, and most of this literature is on arXiv. Without a key, requests share a public rate limit and are often throttled; the client waits and retries up to four times. A free `SEMANTIC_SCHOLAR_API_KEY` gives a dedicated limit. Responses are cached per paper under the study's cache mode, so a `record` run can be replayed. Forward snowballing (works citing the seeds) is not built yet.
+Semantic Scholar is used because its records carry references for arXiv preprints. OpenAlex lists none for them, and most of this literature is on arXiv. Without a key, requests share a public rate limit and are often throttled; the client backs off and retries up to five times, waiting as long as 30 seconds. A free `SEMANTIC_SCHOLAR_API_KEY` gives a dedicated limit. Responses are cached per paper and per citation page. A study in `record` mode reads recent entries for this step, so a rerun after throttling resumes instead of starting over; `replay` works offline.
 
 ## Telemetry and privacy
 
