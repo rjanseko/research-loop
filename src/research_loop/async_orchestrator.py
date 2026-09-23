@@ -198,7 +198,9 @@ class AsyncResearchLoop:
         deps: Any = None,
         salvage: bool = False,
         persisted_prompt: str | None = None,
+        captured: list[Any] | None = None,
     ) -> Any:
+        """Run one agent as a persisted task; on failure, `captured` receives the run's messages."""
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
             "attachment_mode": self.config.attachment_mode.value,
@@ -221,6 +223,7 @@ class AsyncResearchLoop:
 
         # A caller-owned RunUsage keeps counting billed requests even when the run raises.
         usage = RunUsage()
+        run_messages: list[Any] = []
         try:
             capabilities = (
                 build_research_capabilities(self.config.tool_mode) if research_tools else None
@@ -254,16 +257,17 @@ class AsyncResearchLoop:
                 user_prompt = build_multimodal_prompt(prompt, attachment_corpus)
 
             try:
-                result = await agent.run(
-                    user_prompt,
-                    model=route.model,
-                    model_settings=route.model_settings(),
-                    usage_limits=self._limits(route, remaining_budget),
-                    usage=usage,
-                    deps=deps,
-                    capabilities=capabilities,
-                    toolsets=toolsets or None,
-                )
+                with capture_run_messages() as run_messages:
+                    result = await agent.run(
+                        user_prompt,
+                        model=route.model,
+                        model_settings=route.model_settings(),
+                        usage_limits=self._limits(route, remaining_budget),
+                        usage=usage,
+                        deps=deps,
+                        capabilities=capabilities,
+                        toolsets=toolsets or None,
+                    )
             finally:
                 self._record_spend(job_id, usage)
             events = extract_tool_events(result.new_messages())
@@ -283,6 +287,13 @@ class AsyncResearchLoop:
             )
             return output
         except Exception as exc:
+            if captured is not None:
+                captured.extend(run_messages)
+            if run_messages:
+                try:
+                    await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
+                except Exception:
+                    pass  # keep the original failure; the task row still records it
             await self.repository.finish_task(
                 task_id,
                 status="failed",
@@ -298,13 +309,13 @@ class AsyncResearchLoop:
         """Run a scout or deep dive; with salvage enabled, budget exhaustion degrades, not fails."""
         if not self.config.salvage_exhausted_research:
             return await self._run_agent(**kwargs)
-        with capture_run_messages() as messages:
-            try:
-                return await self._run_agent(**kwargs)
-            except JobBudgetExceeded:
-                return _budget_exhausted_result(question)  # refused before any spend
-            except UsageLimitExceeded:
-                gathered = _gathered_evidence(messages)
+        messages: list[Any] = []
+        try:
+            return await self._run_agent(**kwargs, captured=messages)
+        except JobBudgetExceeded:
+            return _budget_exhausted_result(question)  # refused before any spend
+        except UsageLimitExceeded:
+            gathered = _gathered_evidence(messages)
         if not gathered:
             return _budget_exhausted_result(question)
         request = json.loads(kwargs["prompt"]) | {

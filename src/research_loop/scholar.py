@@ -99,7 +99,8 @@ class AcquisitionCache:
 
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "opencitations": 0.3, "acl": 0.3}
+_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "opencitations": 0.3, "acl": 0.3,
+                  "duckduckgo": 1.0}
 
 
 async def _wait_rate_slot(provider: str) -> None:
@@ -111,11 +112,16 @@ async def _wait_rate_slot(provider: str) -> None:
         await asyncio.sleep(reserved - now)
 
 
+# Sites such as Wikimedia reject the default library User-Agent; identify the fetcher instead.
+FETCH_USER_AGENT = "research-loop/0.5 (research agent page fetcher)"
+
+
 async def _bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int) -> httpx.Response:
     for _ in range(4):
         if not await _public_url(url):
             raise ValueError("unsafe URL")
-        async with client.stream("GET", url, follow_redirects=False, timeout=15) as response:
+        async with client.stream("GET", url, headers={"User-Agent": FETCH_USER_AGENT},
+                                 follow_redirects=False, timeout=15) as response:
             if response.is_redirect:
                 location = response.headers.get("location")
                 if not location:
@@ -124,12 +130,15 @@ async def _bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: in
                 continue
             chunks = []
             total = 0
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.aiter_bytes():  # decoded bytes, so the cap bounds decompression
                 total += len(chunk)
                 if total > max_bytes:
                     raise ValueError("response exceeded size limit")
                 chunks.append(chunk)
-            return httpx.Response(response.status_code, headers=response.headers,
+            # The body is already decoded: drop encoding headers or httpx would decode it again.
+            headers = [(key, value) for key, value in response.headers.multi_items()
+                       if key.lower() not in ("content-encoding", "content-length")]
+            return httpx.Response(response.status_code, headers=headers,
                                   content=b"".join(chunks), request=response.request)
     raise ValueError("too many redirects")
 

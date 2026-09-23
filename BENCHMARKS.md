@@ -128,4 +128,6 @@ Attachment-backed evidence is cited by stable `attachment_id` plus a locator suc
 
 Normalized benchmark runs now use DuckDuckGo search plus a common `web_fetch` tool (Trafilatura with a Beautiful Soup fallback). Scouts and deep dives also receive provider-neutral scholarly tools for OpenAlex, Crossref, arXiv, ACL Anthology, and OpenCitations. This changes retrieval conditions compared with earlier normalized runs. Compare models only within the same tool stack and manifest fingerprint.
 
+The `duckduckgo_search` tool keeps PydanticAI's name, description, and results. Searches share a process-wide rate slot of one per second. A failed search is retried once, then returned to the model as a `SearchUnavailable` error result instead of failing the case. Earlier runs failed the whole case on a DuckDuckGo error.
+
 Benchmarks force scholarly and web cache mode `off`. Experiment manifests record git commit/dirty state, package versions, policy snapshots, selected case IDs, acquisition backends, and a non-secret configuration fingerprint. The Postgres preflight checks migration state before any model call. Persisted tool arguments are hashed to avoid storing protected benchmark inputs; raw arguments stay in memory long enough to compute blocked-source and integrity checks. Persisted fetched content is represented by hashes and sizes.

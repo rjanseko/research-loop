@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -48,3 +50,86 @@ async def test_web_replay_skips_dns_check(monkeypatch, tmp_path) -> None:
     fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="replay")
     assert (await fetcher.fetch("https://example.org/paper"))["text"] == "cached"
     assert (await fetcher.fetch("https://example.org/other"))["error"] == "CacheMiss"
+
+
+@pytest.mark.asyncio
+async def test_duckduckgo_failures_become_tool_results(monkeypatch) -> None:
+    from research_loop.web import resilient_duckduckgo_tool
+
+    calls: list[str] = []
+
+    class FlakySearch:
+        name = "duckduckgo_search"
+        description = "Searches DuckDuckGo for the given query and returns the results."
+
+        def __init__(self, failures: int):
+            self.failures = failures
+
+        async def function(self, query: str):
+            calls.append(query)
+            if len(calls) <= self.failures:
+                raise RuntimeError("connection dropped")
+            return [{"title": "SWE-bench", "href": "https://www.swebench.com", "body": "Leaderboard"}]
+
+    async def no_wait(_provider: str) -> None:
+        return None
+
+    monkeypatch.setattr("research_loop.web._wait_rate_slot", no_wait)
+    monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: FlakySearch(1))
+    tool = resilient_duckduckgo_tool(retry_delay=0)
+    assert tool.name == "duckduckgo_search"
+    assert (await tool.function(query="SWE-bench"))[0]["title"] == "SWE-bench"
+
+    calls.clear()
+    monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: FlakySearch(2))
+    result = await resilient_duckduckgo_tool(retry_delay=0).function(query="SWE-bench")
+    assert result["error"] == "SearchUnavailable (RuntimeError)"
+    assert len(calls) == 2
+
+
+def test_research_capabilities_use_resilient_search() -> None:
+    from research_loop.tools import ResearchToolMode, build_research_capabilities
+
+    for mode in ResearchToolMode:
+        search = build_research_capabilities(mode)[0]
+        assert search.local.name == "duckduckgo_search"
+        assert "resilient_duckduckgo_tool" in search.local.function.__qualname__
+
+
+@pytest.mark.asyncio
+async def test_compressed_pages_are_decoded_once(monkeypatch) -> None:
+    import gzip
+
+    from research_loop.scholar import _bounded_public_get
+
+    async def safe(_: str) -> bool:
+        return True
+
+    monkeypatch.setattr("research_loop.scholar._public_url", safe)
+    page = b"<html><body><article><p>Compressed evidence page.</p></article></body></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["user-agent"].startswith("research-loop/")
+        return httpx.Response(200, headers={"content-type": "text/html", "content-encoding": "gzip"},
+                              content=gzip.compress(page))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        response = await _bounded_public_get(http, "https://example.org/page", 1_000_000)
+        assert response.text == page.decode()
+        assert "content-encoding" not in response.headers
+        monkeypatch.setattr("research_loop.web._public_url", safe)
+        result = await WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http).fetch("https://example.org/page")
+    assert "Compressed evidence page." in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_errors_tell_the_model_the_status(monkeypatch) -> None:
+    async def safe(_: str) -> bool:
+        return True
+
+    monkeypatch.setattr("research_loop.scholar._public_url", safe)
+    monkeypatch.setattr("research_loop.web._public_url", safe)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
+        result = await WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http).fetch("https://example.org/blocked")
+    assert result["error"] == "HTTPStatusError"
+    assert result["status"] == 403

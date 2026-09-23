@@ -164,6 +164,8 @@ async def test_exhausted_research_is_salvaged_without_persisting_tool_output() -
     assert "W42" in prompts[-1] and "PRIVATE-FULL-TEXT" in prompts[-1]  # the model sees what it gathered
     exhausted, salvaged = loop.repository.tasks.values()
     assert exhausted["status"] == "failed"
+    # The interrupted run's tool history is kept, not only successful runs'.
+    assert [event["tool_name"] for event in loop.repository.tool_events if event["task_id"] == exhausted["id"]] == ["scholar_search"]
     assert salvaged["status"] == "succeeded"
     assert salvaged["effective_config"]["salvage"] is True
     assert salvaged["effective_config"]["max_requests"] == 2
