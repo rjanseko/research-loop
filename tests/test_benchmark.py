@@ -46,7 +46,7 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     assert isinstance(manifest["git"]["dirty"], bool)
     assert manifest["policy_schema_version"] == 1
     assert manifest["acquisition"]["search_backend"] == "duckduckgo"
-    assert manifest["acquisition"]["fetch_version"] == 2
+    assert manifest["acquisition"]["fetch_version"] == 3
     assert manifest["evidence_version"] == 3
     assert manifest["python_version"]
     assert manifest["policies"]["synthetic"]["routes"]["scout"]["model"] == "synthetic:fake"
@@ -66,7 +66,7 @@ def test_inapplicable_evaluators_return_no_score() -> None:
     unassessed = SimpleNamespace(
         inputs=SimpleNamespace(blocked_urls=[], leakage_sensitive=False),
         output=SimpleNamespace(total_claims=0, unsupported_claims=0, major_unsupported_claims=0,
-                               cost_usd=None, blocked_source_accesses=[], integrity_flags=[],
+                               cost_usd=None, blocked_fetches_completed=[], blocked_sources_cited=[], integrity_flags=[],
                                quotes=0, quotes_not_found=0, sources=0, sources_not_found=0),
     )
     for evaluator in (SupportedClaimRate(), MajorErrorFreeRate(), CostEfficiency(),

@@ -29,7 +29,11 @@ class BenchmarkOutput:
     total_tokens: int
     cost_usd: float | None
     search_queries: list[str]
-    blocked_source_accesses: list[str] = field(default_factory=list)
+    # Blocked-source entries by kind of contact (benchmark._audit_blocked_sources).
+    blocked_fetches_refused: list[str] = field(default_factory=list)
+    blocked_fetches_completed: list[str] = field(default_factory=list)
+    blocked_sources_in_search: list[str] = field(default_factory=list)
+    blocked_sources_cited: list[str] = field(default_factory=list)
     integrity_flags: list[str] = field(default_factory=list)
     attachment_count: int = 0
     attachment_tool_calls: int = 0
@@ -121,10 +125,12 @@ class ReferenceAnswerMatch(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
 
 
 class BlockedSourceCompliance(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
+    """Fails when a blocked source was fetched or cited; refusals and search sightings do not count."""
+
     def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
         if not ctx.inputs.blocked_urls:
             return {}
-        return 1.0 if not ctx.output.blocked_source_accesses else 0.0
+        return 0.0 if ctx.output.blocked_fetches_completed or ctx.output.blocked_sources_cited else 1.0
 
 
 class EvalIntegrity(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):

@@ -21,7 +21,9 @@ from pydantic_ai import FunctionToolset
 from .acquisition import (
     MAX_FETCH_CHARS,
     AcquisitionCache,
+    BlockedSource,
     FetchMemo,
+    SourcePolicy,
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
@@ -69,6 +71,8 @@ class ScholarResponse(BaseModel):
     next_start: int | None = None
     # Set when extraction itself stopped early (PDF page limit), so total_chars is not the whole document.
     extraction_truncated: bool | None = None
+    # The task's blocked-source entry a refused fetch matched, directly or through a redirect.
+    blocked_source: str | None = None
 
 
 def _openalex_work(raw: dict[str, Any]) -> ScholarWork:
@@ -141,10 +145,12 @@ def _arxiv_works(xml: str) -> list[ScholarWork]:
 class ScholarClient:
     def __init__(self, *, cache: AcquisitionCache, api_key: str | None = None,
                  contact_email: str | None = None, client: httpx.AsyncClient | None = None,
-                 grobid_url: str | None = None, memo: FetchMemo | None = None) -> None:
+                 grobid_url: str | None = None, memo: FetchMemo | None = None,
+                 policy: SourcePolicy | None = None) -> None:
         self.cache, self.api_key, self.contact_email, self.client = cache, api_key, contact_email, client
         self.grobid_url = grobid_url
         self.memo = memo or FetchMemo()
+        self.policy = policy or SourcePolicy()
         self._semaphores = {name: asyncio.Semaphore(2) for name in ("openalex", "crossref", "arxiv", "opencitations", "acl")}
         self.cache_hits = 0
 
@@ -304,7 +310,12 @@ class ScholarClient:
         result = ScholarResponse(operation="fetch")
         max_chars = max(1000, min(max_chars, MAX_FETCH_CHARS))
         start = max(0, start)
-        # Cache first: entries exist only for URLs that passed the public-URL check, and
+        # Blocked sources are refused before the cache, the memo, DNS, or any request.
+        if entry := self.policy.blocks(url):
+            result.provider_errors.append("fetch:BlockedSource")
+            result.blocked_source = entry
+            return result
+        # Cache next: entries exist only for URLs that passed the public-URL check, and
         # replay must work offline, where the DNS check would otherwise fail.
         cache_key = fetch_cache_key(url, max_chars, start)
         cached = self.cache.get("fetch", cache_key)
@@ -321,6 +332,10 @@ class ScholarClient:
                 return result
             try:
                 document = await self._extract(url)
+            except BlockedSource as exc:  # redirected to a blocked source
+                result.provider_errors.append("fetch:BlockedSource")
+                result.blocked_source = exc.entry
+                return result
             except Exception as exc:
                 result.provider_errors.append(f"fetch:{type(exc).__name__}")
                 return result
@@ -343,8 +358,11 @@ class ScholarClient:
 
     async def _extract(self, url: str) -> dict[str, Any]:
         """Download a public page or PDF and extract its full text."""
-        async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
-            response = await bounded_public_get(client, url, 5_000_000)
+        if self.client:
+            response = await bounded_public_get(self.client, url, 5_000_000, self.policy)
+        else:
+            async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+                response = await bounded_public_get(client, url, 5_000_000, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
         extraction_truncated = False

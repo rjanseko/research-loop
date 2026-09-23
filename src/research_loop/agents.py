@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
+from .acquisition import SourcePolicy
 from .schemas import (
     CampaignSynthesis,
     FinalReport,
@@ -27,10 +28,11 @@ class PlanLimits:
 
 @dataclass(frozen=True)
 class ResearchAssignment:
-    """A scout's or deep dive's question, and the attachments its evidence may cite."""
+    """A scout's or deep dive's question, the attachments its evidence may cite, and the blocked sources it may not."""
 
     question: ResearchQuestion
     attachment_ids: frozenset[str] = frozenset()
+    source_policy: SourcePolicy = SourcePolicy()
 
 
 @dataclass(frozen=True)
@@ -157,13 +159,17 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
 
 
 def _result_fits_assignment(ctx: RunContext[ResearchAssignment], output: ResearchResult) -> ResearchResult:
-    """File the result under the question asked, and reject attachments the run does not have."""
+    """File the result under the question asked; reject unknown attachments and blocked sources."""
+    sources = [item.source for claim in output.claims for item in claim.evidence]
+    blocked = sorted({entry for source in sources
+                      if source.url and (entry := ctx.deps.source_policy.blocks(str(source.url)))})
     _retry_on(_unknown(
         "attachment IDs",
-        (item.source.attachment_id for claim in output.claims for item in claim.evidence if item.source.attachment_id),
+        (source.attachment_id for source in sources if source.attachment_id),
         ctx.deps.attachment_ids,
         "Cite attachments only by the IDs list_attachments returns, or drop that evidence.",
-    ))
+    ) + ([f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
+          "them, or support the claim from other sources."] if blocked else []))
     question = ctx.deps.question
     return output.model_copy(update={"question_id": question.id, "question": question.question})
 

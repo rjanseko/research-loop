@@ -16,7 +16,7 @@ from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
-from .acquisition import AcquisitionCache, FetchMemo
+from .acquisition import AcquisitionCache, FetchMemo, SourcePolicy
 from .agents import (
     LedgerRefs,
     PlanLimits,
@@ -202,6 +202,8 @@ class AsyncResearchLoop:
         self._job_spend: dict[UUID, Decimal | None] = {}
         # Per-job fetched documents, shared by the job's agents and dropped when it ends.
         self._fetch_memos: dict[UUID, FetchMemo] = {}
+        # Per-job blocked sources, enforced by the fetch tools and the research output check.
+        self._source_policies: dict[UUID, SourcePolicy] = {}
 
     async def _create_job(
         self,
@@ -235,7 +237,7 @@ class AsyncResearchLoop:
         )
 
     @asynccontextmanager
-    async def _job_scope(self, job_id: UUID) -> AsyncIterator[None]:
+    async def _job_scope(self, job_id: UUID, constraints: ResearchConstraints | None = None) -> AsyncIterator[None]:
         """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises.
 
         Cancellation, which is how Ctrl-C reaches the run, is recorded too, so an interrupted
@@ -243,6 +245,7 @@ class AsyncResearchLoop:
         """
         self._job_spend[job_id] = Decimal(0)
         self._fetch_memos[job_id] = FetchMemo()
+        self._source_policies[job_id] = SourcePolicy(tuple(constraints.blocked_urls) if constraints else ())
         try:
             yield
         except (Exception, asyncio.CancelledError) as exc:
@@ -258,6 +261,7 @@ class AsyncResearchLoop:
         finally:
             self._job_spend.pop(job_id, None)
             self._fetch_memos.pop(job_id, None)
+            self._source_policies.pop(job_id, None)
 
     async def _load_attachments(
         self, job_id: UUID, constraints: ResearchConstraints
@@ -334,11 +338,12 @@ class AsyncResearchLoop:
             "attachments": attachments.prompt_manifest() if attachments else [],
         }
 
-    @staticmethod
-    def _assignment(question: ResearchQuestion, attachments: AttachmentCorpus | None) -> ResearchAssignment:
+    def _assignment(self, job_id: UUID, question: ResearchQuestion,
+                    attachments: AttachmentCorpus | None) -> ResearchAssignment:
         return ResearchAssignment(
             question=question,
             attachment_ids=frozenset(record.attachment_id for record in attachments.records) if attachments else frozenset(),
+            source_policy=self._source_policies.get(job_id, SourcePolicy()),
         )
 
     @staticmethod
@@ -404,11 +409,13 @@ class AsyncResearchLoop:
             )
             toolsets = []
             memo = self._fetch_memos.get(job_id)
+            policy = self._source_policies.get(job_id)
             if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
                 toolsets.append(build_web_toolset(WebAcquisition(
                     cache_root=self.settings.benchmark_cache / "web",
                     cache_mode=self.config.scholarly_cache_mode,
                     memo=memo,
+                    policy=policy,
                 )))
             if research_tools and self.config.scholarly_tools:
                 scholar_client = ScholarClient(
@@ -420,6 +427,7 @@ class AsyncResearchLoop:
                     contact_email=self.settings.crossref_mailto,
                     grobid_url=self.settings.grobid_url,
                     memo=memo,
+                    policy=policy,
                 )
                 toolsets.append(build_scholar_toolset(scholar_client))
             if attachment_corpus and attachment_tools:
@@ -591,7 +599,7 @@ class AsyncResearchLoop:
                     ensure_ascii=False,
                 ),
                 question_id=q.id,
-                deps=self._assignment(q, attachments),
+                deps=self._assignment(job_id, q, attachments),
                 research_tools=True,
                 attachment_corpus=attachments,
                 attachment_tools=bool(attachments),
@@ -631,7 +639,7 @@ class AsyncResearchLoop:
                 question_id=question.id,
                 attempt=attempt,
                 parent_task_id=parent_task_id,
-                deps=self._assignment(question, attachments),
+                deps=self._assignment(job_id, question, attachments),
                 research_tools=True,
                 attachment_corpus=attachments,
                 attachment_tools=bool(attachments),
@@ -855,7 +863,7 @@ class AsyncResearchLoop:
         job_id = await self._create_job(
             objective, constraints, session_id=session_id, root_run_id=root_run_id, kind="async-legacy"
         )
-        async with self._job_scope(job_id):
+        async with self._job_scope(job_id, constraints):
             attachments = await self._load_attachments(job_id, constraints)
             plan = await self._plan(job_id, objective, constraints, attachments)
             questions = {q.id: q for q in plan.questions}

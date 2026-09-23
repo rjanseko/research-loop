@@ -65,7 +65,7 @@ def public_urls(monkeypatch: pytest.MonkeyPatch) -> None:
 def serve(monkeypatch: pytest.MonkeyPatch, public_urls: None) -> Callable[[Callable[[str], httpx.Response]], None]:
     """Answer guarded downloads with `respond(url)` instead of the network."""
     def install(respond: Callable[[str], httpx.Response]) -> None:
-        async def download(_client, url: str, _max_bytes: int) -> httpx.Response:
+        async def download(_client, url: str, _max_bytes: int, _policy: Any = None) -> httpx.Response:
             response = respond(url)
             response.request = httpx.Request("GET", url)
             return response

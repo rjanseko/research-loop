@@ -13,14 +13,25 @@ def test_error_snapshot_omits_provider_response_body() -> None:
 
 
 def test_benchmark_audit_uses_ephemeral_raw_arguments_before_storage_redaction() -> None:
-    from research_loop.benchmark import _blocked_accesses
+    from research_loop.acquisition import SourcePolicy
+    from research_loop.benchmark import _audit_blocked_sources
     from research_loop.telemetry import safe_tool_args, safe_tool_result
 
     url = "https://example.org/blocked-source"
     event = {"tool_name": "web_fetch", "args": {"url": url}, "result": {"text": "PRIVATE_PAPER_TEXT"}}
-    assert _blocked_accesses([event], [url]) == [url]
+    assert _audit_blocked_sources([event], [], SourcePolicy((url,)))["blocked_fetches_completed"] == [url]
     assert url not in str(safe_tool_args(event["args"]))
     assert "PRIVATE_PAPER_TEXT" not in str(safe_tool_result(event["tool_name"], event["result"]))
+
+
+def test_fetch_telemetry_keeps_error_codes_but_not_content() -> None:
+    from research_loop.telemetry import safe_tool_result
+
+    refused = {"url": "https://blocked.example/a", "error": "BlockedSource", "blocked": "https://blocked.example"}
+    stored = safe_tool_result("web_fetch", refused)
+    assert stored["error"] == "BlockedSource"
+    assert "blocked.example" not in str(stored)
+    assert "status" not in safe_tool_result("web_fetch", {"url": "https://a.example", "text": "PRIVATE"})
 
 
 def test_scholar_telemetry_omits_full_text_and_query() -> None:

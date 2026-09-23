@@ -1,8 +1,8 @@
 """Shared acquisition infrastructure for the web and scholarly research tools.
 
-Disk cache, per-job document memo, text windows, per-provider rate slots, and the guarded
-public-HTTPS download that every fetch goes through. Provider adapters live in scholar.py
-and web.py.
+Disk cache, per-job document memo, text windows, per-provider rate slots, the task's blocked
+sources, and the guarded public-HTTPS download that every fetch goes through. Provider adapters
+live in scholar.py and web.py.
 """
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
@@ -25,7 +27,8 @@ import httpx
 CACHE_VERSION = 1
 # Recorded in manifests. 1: fetch returned only the first 12,000 characters.
 # 2: fetch pages through a document with `start`, backed by a per-job memo.
-FETCH_VERSION = 2
+# 3: fetches refuse the task's blocked sources, including redirects to them.
+FETCH_VERSION = 3
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
 CacheMode = Literal["off", "live", "record", "replay"]
@@ -121,12 +124,78 @@ async def wait_rate_slot(provider: str) -> None:
         await asyncio.sleep(reserved - now)
 
 
+_ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
+
+
+def _location(url: str) -> tuple[str, str, str, str | None] | None:
+    """(host, path, query, arXiv ID) of a URL, normalized for blocked-source matching."""
+    url = url.strip()
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    host = (parsed.hostname or "").removeprefix("www.")
+    if "." not in host:
+        return None
+    host = "doi.org" if host == "dx.doi.org" else host
+    path = unquote(parsed.path).rstrip("/").lower()
+    arxiv = _ARXIV_ID.search(path) if host.endswith("arxiv.org") else None
+    return host, path, parsed.query.lower(), arxiv.group(0) if arxiv else None
+
+
+class BlockedSource(ValueError):
+    """A fetch named a source the task blocks, or was redirected to one."""
+
+    def __init__(self, url: str, entry: str) -> None:
+        super().__init__("source is blocked for this task")
+        self.url, self.entry = url, entry
+
+
+@dataclass(frozen=True)
+class SourcePolicy:
+    """Sources a task may not fetch or cite, such as a benchmark's blocked URLs.
+
+    A URL matches a blocked entry when, ignoring scheme, `www.`, letter case, fragment, and a
+    trailing slash, it has the entry's host and the entry's path or a path beneath it. An entry
+    with a query also needs that query, and an entry without a path blocks its whole host. An
+    arXiv entry matches every form of the paper (abs, pdf, html, any version), and doi.org
+    matches dx.doi.org. Matching errs toward blocking.
+    """
+
+    blocked: tuple[str, ...] = ()
+
+    def blocks(self, url: str) -> str | None:
+        """The blocked entry that `url` matches, if any."""
+        target = _location(url)
+        if target is None:
+            return None
+        for entry in self.blocked:
+            rule = _location(entry)
+            if rule and _covers(rule, target):
+                return entry
+        return None
+
+    def check(self, url: str) -> None:
+        if entry := self.blocks(url):
+            raise BlockedSource(url, entry)
+
+
+def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str, str | None]) -> bool:
+    host, path, query, arxiv = rule
+    if arxiv and target[3]:
+        return arxiv == target[3]
+    return (host == target[0]
+            and (not path or target[1] == path or target[1].startswith(path + "/"))
+            and (not query or query == target[2]))
+
+
 # Sites such as Wikimedia reject the default library User-Agent; identify the fetcher instead.
 FETCH_USER_AGENT = "research-loop/0.5 (research agent page fetcher)"
 
 
-async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int) -> httpx.Response:
+async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int,
+                             policy: SourcePolicy | None = None) -> httpx.Response:
+    """Download a public HTTPS URL, following at most three redirects, each checked like the first."""
     for _ in range(4):
+        if policy:
+            policy.check(url)  # before the DNS check, so a blocked host is never resolved
         if not await public_url(url):
             raise ValueError("unsafe URL")
         async with client.stream("GET", url, headers={"User-Agent": FETCH_USER_AGENT},

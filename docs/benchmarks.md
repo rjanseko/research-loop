@@ -17,7 +17,7 @@ Use it to measure search strategy, persistence, source discovery, cost per corre
 
 - 132 expert-grounded long-form tasks with 9,430 fine-grained rubrics across information recall, analysis, and presentation.
 - Tasks may block source URLs derived from the expert report behind the rubric. The adapter keeps the rubrics and blocked URLs, and the blocked URLs become hard run constraints for every role.
-- Tool traces are audited for blocked-source access.
+- The fetch tools refuse blocked sources, including redirects to them, and evidence citing one gets a retry; see [acquisition.md](acquisition.md#blocked-sources). The audit separates refused fetches, completed fetches, sightings in search results, and citations.
 - `--export-reports DIR` writes `idx-<n>.md` files for the official DRB-II evaluator. Other benchmarks get safe single-component file names derived from benchmark and case IDs.
 
 Use it to measure evidence coverage, synthesis, structure, citation behavior, and the value of a premium synthesizer.
@@ -82,7 +82,7 @@ research-bench examples/benchmark_suite.toml \
 
 Every run writes a sanitized experiment manifest to `RESEARCH_BENCHMARK_OUTPUT` (default `benchmark_outputs/`), or to `--manifest-output`. It records the git commit and dirty flag, package versions, redacted policy snapshots, graph version, evidence version, acquisition backends and fetch version, the suite file's hash and sources, the selected case IDs, and each run's job and root-run IDs. It never contains raw prompts, answers, credentials, or local paths.
 
-A failed case does not stop the suite. Its run record gets `status = "failed"` and the exception type only, because provider error messages can carry response bodies; for the same reason the console report omits errors. The manifest's `status` is `completed` when every case succeeded, `completed_with_failures` when some failed, and `failed` when all failed or the suite itself errored or was cancelled, in which case `error` holds the exception type; `failed_cases` counts failures across policies. Interrupting a run (Ctrl-C) marks its unfinished cases `failed` with `CancelledError`. A succeeded run also records `review_reasons`, what it left unresolved, which is empty for a clean result. The CLI exits non-zero unless the status is `completed`.
+A failed case does not stop the suite. Its run record gets `status = "failed"` and the exception type only, because provider error messages can carry response bodies; for the same reason the console report omits errors. The manifest's `status` is `completed` when every case succeeded, `completed_with_failures` when some failed, and `failed` when all failed or the suite itself errored or was cancelled, in which case `error` holds the exception type; `failed_cases` counts failures across policies. Interrupting a run (Ctrl-C) marks its unfinished cases `failed` with `CancelledError`. A succeeded run also records `review_reasons`, what it left unresolved, which is empty for a clean result, and, for a case with blocked URLs, `blocked_sources`: how many blocked sources its tools refused, fetched anyway, showed in search results, and saw cited. The manifest records counts only, never the blocked URLs. The CLI exits non-zero unless the status is `completed`.
 
 ## Comparability
 
@@ -90,7 +90,7 @@ Compare runs only when these match:
 
 - **Graph version.** Keep `research-graph-v1` fixed while comparing policies.
 - **Tool stack.** Benchmarks always use normalized acquisition: DuckDuckGo search, the shared `web_fetch`, and the scholarly tools, with web and scholarly caches off so no result depends on an earlier run. See [acquisition.md](acquisition.md).
-- **Fetch version.** Version 2 pages through long documents and shares fetches within a case. It is part of the configuration fingerprint.
+- **Fetch version.** Version 2 pages through long documents and shares fetches within a case; version 3 also refuses blocked sources. It is part of the configuration fingerprint.
 - **Evidence version.** Version 2 adds verbatim quotes checked against tool output; version 3 checks every role's output against the run (see [Metrics](#metrics)).
 - **Attachment mode.** Never merge normalized and multimodal results into one number.
 
@@ -104,7 +104,8 @@ Local metrics, computed with Pydantic Evals:
 - primary-source rate
 - supported claims per research tool call, and per dollar
 - unique-search rate
-- blocked-source compliance and eval-integrity rate
+- blocked-source compliance: fails when a blocked source was fetched or cited as evidence; refused fetches and sightings in search results are recorded but pass
+- eval-integrity rate
 - exact-answer match when a short reference answer exists
 - verbatim-quote rate: the share of evidence quotes found in text the research tools returned
 - observed-source rate: the share of URL-cited evidence whose source appeared in text the research tools returned

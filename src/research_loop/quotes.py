@@ -103,6 +103,10 @@ _URL = re.compile(r"https?://[^\s\"'<>\\]+", re.IGNORECASE)
 _ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
 
 
+def find_urls(text: str) -> list[str]:
+    return _URL.findall(text)
+
+
 def _url_key(url: str) -> str:
     parsed = urlparse(url.strip().rstrip(".,;:)]"))
     return (parsed.hostname or "").removeprefix("www.") + unquote(parsed.path).rstrip("/")
@@ -121,7 +125,7 @@ def _source_ids(source: SourceRef) -> list[str]:
 def check_sources(result: ResearchResult, texts: Iterable[str]) -> ResearchResult:
     """Set each URL-cited evidence item's source_check from `texts`, the tool output its run saw."""
     texts = list(texts)
-    seen = {_url_key(url) for text in texts for url in _URL.findall(text)}
+    seen = {_url_key(url) for text in texts for url in find_urls(text)}
     haystack = "\n".join(texts).lower()
 
     def check(source: SourceRef) -> Literal["observed", "not_found"] | None:

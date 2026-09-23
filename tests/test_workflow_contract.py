@@ -98,6 +98,7 @@ class Script:
         self.plans: list[list[dict[str, Any]]] = []  # planner answers to give before `questions`
         self.relabel_results = False  # research results name another question ID and text
         self.cite_attachment: str | None = None  # "listed", or "invented" until a retry asks to fix it
+        self.cite_url: str | None = None  # research evidence cites this URL until a retry asks to fix it
         self.prompts: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.retries: dict[str, list[str]] = defaultdict(list)  # retry prompts each role received
 
@@ -126,12 +127,16 @@ class Script:
             elif role in {"scout", "deep_dive"}:
                 question = payload["question"]
                 evidence = []
+                if self.cite_url:
+                    url = "https://example.org/allowed" if retried else self.cite_url
+                    evidence.append({"source": {"url": url, "title": "Source"},
+                                     "excerpt": "The measurement is approximate.", "confidence": 0.9})
                 if self.cite_attachment:
                     listed = payload["constraints"]["attachments"][0]["attachment_id"]
                     attachment_id = "att-9-invented" if self.cite_attachment == "invented" and not retried else listed
-                    evidence = [{"source": {"attachment_id": attachment_id, "locator": "document",
-                                            "title": "notes.txt", "source_type": "attachment"},
-                                 "excerpt": "The measurement is approximate.", "confidence": 0.9}]
+                    evidence.append({"source": {"attachment_id": attachment_id, "locator": "document",
+                                                "title": "notes.txt", "source_type": "attachment"},
+                                     "excerpt": "The measurement is approximate.", "confidence": 0.9})
                 output = {
                     "question_id": question["id"] + ("-relabelled" if self.relabel_results else ""),
                     "question": question["question"] + (" (paraphrased)" if self.relabel_results else ""),
@@ -205,7 +210,7 @@ async def test_happy_path_persists_report_and_releases_job_resources(workflow):
     assert job["verification"] == outcome.verification.model_dump(mode="json")
     assert outcome.report.claim_ids_used == ["q1/c1"]
     assert all(task["status"] == "succeeded" for task in loop.repository.tasks.values())
-    assert loop._job_spend == loop._fetch_memos == {}
+    assert loop._job_spend == loop._fetch_memos == loop._source_policies == {}
     # The run succeeded, but the scripted verifier checked nothing, so the report is unassessed.
     assert outcome.review_reasons == ["the verifier checked none of the report's statements"]
 
@@ -573,3 +578,15 @@ async def test_attachment_evidence_must_cite_a_run_attachment(workflow, tmp_path
         assert "att-9-invented" in retry
     else:
         assert script.retries["scout"] == []
+
+
+@pytest.mark.asyncio
+async def test_evidence_citing_a_blocked_source_gets_a_retry(workflow):
+    loop, script = workflow
+    script.cite_url = "https://blocked.example/leaked-report"
+    outcome = await run(loop, constraints=ResearchConstraints(blocked_urls=["https://blocked.example"]))
+
+    (retry,) = script.retries["scout"]
+    assert "https://blocked.example" in retry
+    cited = {str(item.source.url) for claim in outcome.ledger.claims() for item in claim.evidence}
+    assert cited == {"https://example.org/allowed"}

@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic_evals import Case
 
+from .acquisition import SourcePolicy
 from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
 from .evals import BenchmarkOutput, make_dataset
@@ -22,7 +23,8 @@ from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .observability import configure_logfire
 from .policy import POLICY_PRESETS, get_policy
 from .repository import CapturingResearchRepository, InMemoryResearchRepository, PostgresResearchRepository
-from .schemas import ResearchConstraints, is_research_tool
+from .quotes import find_urls
+from .schemas import ResearchConstraints, SourceRef, is_research_tool
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
 from .tools import ResearchToolMode
@@ -113,16 +115,43 @@ def _flatten_event(event: dict[str, Any]) -> str:
     ).casefold()
 
 
-def _blocked_accesses(events: list[dict[str, Any]], blocked_urls: list[str]) -> list[str]:
-    if not blocked_urls:
-        return []
-    flattened = [_flatten_event(event) for event in events]
-    hits: list[str] = []
-    for url in blocked_urls:
-        needle = url.casefold().rstrip("/")
-        if any(needle in value for value in flattened):
-            hits.append(url)
-    return hits
+def _refused_entry(result: Any) -> str | None:
+    """The blocked-source entry a fetch tool named when it refused a request, if it did."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    if not isinstance(result, dict):
+        return None
+    return result.get("blocked") if result.get("error") == "BlockedSource" else result.get("blocked_source")
+
+
+def _audit_blocked_sources(events: list[dict[str, Any]], sources: list[SourceRef],
+                           policy: SourcePolicy) -> dict[str, list[str]]:
+    """Sort a case's contact with blocked sources by kind, as blocked-source entries.
+
+    Refused fetches were stopped by the tools, and blocked sources in search or metadata results
+    were only seen; neither breaks compliance. Completed fetches (possible only with tools the
+    application does not control) and blocked sources cited as evidence do. Raw tool arguments
+    and results are read here, in memory; Postgres keeps only their hashes.
+    """
+    refused, completed, seen = set(), set(), set()
+    for event in events:
+        name = str(event.get("tool_name", "")).lower()
+        if entry := _refused_entry(event.get("result")):
+            refused.add(entry)
+        elif any(token in name for token in ("fetch", "page", "url")):
+            args = event.get("args")
+            url = args.get("url") if isinstance(args, dict) else None
+            if isinstance(url, str) and (entry := policy.blocks(url)):
+                completed.add(entry)
+        else:
+            text = json.dumps(event.get("result"), ensure_ascii=False, default=str)
+            seen.update(entry for url in find_urls(text) if (entry := policy.blocks(url)))
+    cited = {entry for source in sources if source.url and (entry := policy.blocks(str(source.url)))}
+    return {"blocked_fetches_refused": sorted(refused), "blocked_fetches_completed": sorted(completed),
+            "blocked_sources_in_search": sorted(seen), "blocked_sources_cited": sorted(cited)}
 
 
 def _integrity_flags(
@@ -230,7 +259,7 @@ async def _run_policy_case(
         # The job's own spend ledger: None once any billed call could not be priced.
         cost_usd=None if outcome.cost_usd is None else float(outcome.cost_usd),
         search_queries=search_queries,
-        blocked_source_accesses=_blocked_accesses(repo.tool_events, case.blocked_urls),
+        **_audit_blocked_sources(repo.tool_events, sources, SourcePolicy(tuple(case.blocked_urls))),
         integrity_flags=_integrity_flags(case, search_queries, repo.tool_events),
         attachment_count=len(outcome.attachments.records) if outcome.attachments else 0,
         attachment_tool_calls=attachment_tool_calls,
@@ -357,6 +386,11 @@ async def run_benchmark(
                         if run_record:
                             run_record["status"] = "succeeded"
                             run_record["review_reasons"] = output.review_reasons
+                            if case.blocked_urls:  # counts only: the entries are case inputs
+                                run_record["blocked_sources"] = {
+                                    kind: len(getattr(output, f"blocked_{kind}"))
+                                    for kind in ("fetches_refused", "fetches_completed", "sources_in_search", "sources_cited")
+                                }
                         return output
                     except (Exception, asyncio.CancelledError) as exc:
                         if run_record is None:  # failed before a job existed

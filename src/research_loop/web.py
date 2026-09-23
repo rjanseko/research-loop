@@ -12,8 +12,10 @@ from pydantic_ai import FunctionToolset, Tool
 from .acquisition import (
     MAX_FETCH_CHARS,
     AcquisitionCache,
+    BlockedSource,
     CacheMode,
     FetchMemo,
+    SourcePolicy,
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
@@ -52,15 +54,20 @@ def resilient_duckduckgo_tool(*, retry_delay: float = 2.0) -> Tool:
 
 class WebAcquisition:
     def __init__(self, *, cache_root: Path, cache_mode: CacheMode = "live",
-                 client: httpx.AsyncClient | None = None, memo: FetchMemo | None = None) -> None:
+                 client: httpx.AsyncClient | None = None, memo: FetchMemo | None = None,
+                 policy: SourcePolicy | None = None) -> None:
         self.cache = AcquisitionCache(cache_root, cache_mode, ttl_seconds=86400)
         self.client = client
         self.memo = memo or FetchMemo()
+        self.policy = policy or SourcePolicy()
 
     async def fetch(self, url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
         max_chars = max(1000, min(max_chars, MAX_FETCH_CHARS))
         start = max(0, start)
-        # Cache first so replay works offline; entries exist only for URLs that passed the check.
+        # Blocked sources are refused before the cache, the memo, DNS, or any request.
+        if entry := self.policy.blocks(url):
+            return {"url": url, "error": "BlockedSource", "blocked": entry}
+        # Cache next so replay works offline; entries exist only for URLs that passed the check.
         cache_key = fetch_cache_key(url, max_chars, start)
         cached = self.cache.get("web", cache_key)
         if cached is not None:
@@ -73,6 +80,8 @@ class WebAcquisition:
                 return {"url": url, "error": "UnsafeURL"}
             try:
                 document = await self._extract(url)
+            except BlockedSource as exc:  # redirected to a blocked source
+                return {"url": url, "error": "BlockedSource", "blocked": exc.entry}
             except (httpx.HTTPError, ValueError, ImportError, TypeError) as exc:
                 failure: dict[str, Any] = {"url": url, "error": type(exc).__name__, "cache_hit": False}
                 if isinstance(exc, httpx.HTTPStatusError):
@@ -92,10 +101,10 @@ class WebAcquisition:
     async def _extract(self, url: str) -> dict[str, Any]:
         """Download a public HTML page and extract its full main text."""
         if self.client:
-            response = await bounded_public_get(self.client, url, _MAX_PAGE_BYTES)
+            response = await bounded_public_get(self.client, url, _MAX_PAGE_BYTES, self.policy)
         else:
             async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-                response = await bounded_public_get(client, url, _MAX_PAGE_BYTES)
+                response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
         if media not in ("text/html", "application/xhtml+xml"):

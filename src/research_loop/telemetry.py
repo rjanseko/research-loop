@@ -86,7 +86,10 @@ def safe_tool_result(tool_name: str, value: Any) -> Any:
             "response_chars": len(encoded),
         }
     if len(encoded) > 2000 or any(word in tool_name.lower() for word in ("fetch", "page", "attachment")):
-        return {"response_sha256": hashlib.sha256(encoded.encode()).hexdigest(), "response_chars": len(encoded)}
+        summary = {"response_sha256": hashlib.sha256(encoded.encode()).hexdigest(), "response_chars": len(encoded)}
+        if isinstance(normalized, dict):  # the tool's own error code and HTTP status, not content
+            summary |= {key: normalized[key] for key in ("error", "status") if key in normalized}
+        return summary
     return normalized
 
 
