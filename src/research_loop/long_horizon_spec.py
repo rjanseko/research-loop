@@ -1,6 +1,6 @@
-"""The campaign specification (campaign.toml), validated in full when it is loaded.
+"""The long-horizon specification (spec.toml), validated in full when it is loaded.
 
-Every field a campaign run reads is checked here, so `research-campaign --dry-run` catches a
+Every field a long-horizon run reads is checked here, so `research-long-horizon --dry-run` catches a
 missing, mistyped, or unsupported setting before any paid call. Unknown keys are rejected: a
 misspelled setting would otherwise be silently ignored.
 """
@@ -23,7 +23,7 @@ from pydantic import (
 )
 
 
-SYNTHESIS_DIR = "campaign"
+SYNTHESIS_DIR = "synthesis"
 # Question IDs name folders under the output directory, next to these.
 RESERVED_QUESTION_IDS = (".", "..", SYNTHESIS_DIR, "manifests")
 
@@ -38,7 +38,7 @@ class Question(_Spec):
 
 
 class Execution(_Spec):
-    # Campaigns run the normalized tool stack only; these two record that in the spec.
+    # Long-horizon runs use the normalized tool stack only; these two record that in the spec.
     normalized_web: Literal[True] = True
     scholarly_cache_mode: Literal["off", "live", "record", "replay"] = "record"
     # Notes for the operator; nothing reads them.
@@ -87,12 +87,12 @@ class Synthesis(_Spec):
 
 class Outputs(_Spec):
     question_files: list[str]
-    campaign_files: list[str]
+    synthesis_files: list[str]
     findings_sections: list[str]
     hypothesis_fields: list[str]
 
 
-class CampaignSpec(_Spec):
+class LongHorizonSpec(_Spec):
     id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     status: str
@@ -112,13 +112,13 @@ class CampaignSpec(_Spec):
     def _questions_name_their_own_folders(cls, questions: list[Question]) -> list[Question]:
         ids = [question.id for question in questions]
         if len(ids) != len(set(ids)) or any("/" in question_id for question_id in ids):
-            raise ValueError("campaign needs unique question IDs without '/'")
+            raise ValueError("a long-horizon spec needs unique question IDs without '/'")
         if reserved := sorted(set(ids) & set(RESERVED_QUESTION_IDS)):
-            raise ValueError(f"campaign question IDs cannot be {', '.join(map(repr, RESERVED_QUESTION_IDS))}; "
+            raise ValueError(f"long-horizon question IDs cannot be {', '.join(map(repr, RESERVED_QUESTION_IDS))}; "
                              f"found {', '.join(map(repr, reserved))}")
         return questions
 
 
-def load_campaign(path: Path) -> dict[str, Any]:
-    """Load and validate a campaign spec; returns it as a plain dict, with defaults filled in."""
-    return CampaignSpec.model_validate(tomllib.loads(path.read_text(encoding="utf-8"))).model_dump()
+def load_spec(path: Path) -> dict[str, Any]:
+    """Load and validate a long-horizon spec; returns it as a plain dict, with defaults filled in."""
+    return LongHorizonSpec.model_validate(tomllib.loads(path.read_text(encoding="utf-8"))).model_dump()

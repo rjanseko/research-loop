@@ -13,7 +13,7 @@ Scouts and deep dives gather evidence with three tool groups: web search and fet
 
 `ResearchConfig.tool_mode` decides how web tools reach the model:
 
-- **`normalized`**: every model gets the same local DuckDuckGo search and `web_fetch`, and provider-native search is disabled. Benchmarks and campaigns always use this mode, so a policy comparison does not also compare search stacks.
+- **`normalized`**: every model gets the same local DuckDuckGo search and `web_fetch`, and provider-native search is disabled. Benchmarks and long-horizon runs always use this mode, so a policy comparison does not also compare search stacks.
 - **`adaptive`** (the library default): provider-native web search and fetch where the model supports them, with local fallbacks.
 
 Scholarly tools are added in both modes unless `ResearchConfig.scholarly_tools` is off.
@@ -72,7 +72,7 @@ The policy is enforced at three points:
 - **Evidence.** A scout or deep dive whose evidence cites a blocked source gets one retry asking it to drop that evidence, then fails the run.
 - **Prompts.** Every role also receives the blocked URLs as constraints, as before.
 
-Search results can still show blocked sources; seeing one is not a violation. The enforcement covers the normalized tool stack, which benchmarks and campaigns always use. In `adaptive` mode, provider-native search and fetch run outside the application and cannot be refused; the benchmark audit then reports any fetch of a blocked source they made as completed.
+Search results can still show blocked sources; seeing one is not a violation. The enforcement covers the normalized tool stack, which benchmarks and long-horizon runs always use. In `adaptive` mode, provider-native search and fetch run outside the application and cannot be refused; the benchmark audit then reports any fetch of a blocked source they made as completed.
 
 ## Caching
 
@@ -81,7 +81,7 @@ Search results can still show blocked sources; seeing one is not a violation. Th
 | Mode | Reads | Writes | Used by |
 |---|---|---|---|
 | `live` | Entries up to one day old | Yes | Library runs (the `RESEARCH_SCHOLAR_CACHE_MODE` default) |
-| `record` | No | Yes | Campaigns and the metadata pilot, so later runs can replay them |
+| `record` | No | Yes | Long-horizon runs and the metadata pilot, so later runs can replay them |
 | `replay` | Any age; a miss is an error | No | Offline reproduction |
 | `off` | No | No | Benchmarks, so no result depends on an earlier run |
 

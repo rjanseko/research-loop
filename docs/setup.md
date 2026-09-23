@@ -72,7 +72,7 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | `RESEARCH_GLM_GAP_MODEL` | Gap analyst (`glm-heavy`) |
 | `RESEARCH_DEEP_MODEL` | Deep dive |
 | `RESEARCH_ALT_DEEP_MODEL` | Deep dives in verification rounds |
-| `RESEARCH_SYNTH_MODEL` | Synthesizer, including campaign synthesis |
+| `RESEARCH_SYNTH_MODEL` | Synthesizer, including long-horizon synthesis |
 | `RESEARCH_VERIFY_MODEL` | Verifier |
 
 An override must be `provider:model` for one of the providers above; any other value, such as an `openrouter:` id, stops the CLIs when settings load, before any job starts. Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
@@ -88,7 +88,7 @@ research-db migrate
 research-db status
 ```
 
-Migrations live in `migrations/` and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-campaign --persist`) check for pending migrations before any model call.
+Migrations live in `migrations/` and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-long-horizon --persist`) check for pending migrations before any model call.
 
 The database keeps jobs, the plan, every role task with its prompt, effective configuration, output, usage, and parent task, tool events, and attachment manifests. Each finished job also keeps its evidence ledger, whose unique claim IDs are the ones its report and verification cite (task outputs keep each worker's own IDs), and its `review_reasons`; a failed job keeps the evidence gathered before it failed. Text in tool arguments is stored as hashes and lengths, and fetched content as hashes and sizes, so protected benchmark inputs and article text stay out of it. Graph and policy versions are recorded in each job's effective configuration, so topology changes need no migration.
 
@@ -127,13 +127,13 @@ Once `--smoke` passes, a first paid benchmark run is one case by default:
 research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
 ```
 
-See [benchmarks.md](benchmarks.md) for suites and manifests, and the [campaign README](../campaigns/long_horizon_agentic_se/README.md) for campaign runs.
+See [benchmarks.md](benchmarks.md) for suites and manifests, and the [long-horizon README](../long_horizon/agentic_se/README.md) for long-horizon runs.
 
 ## Logfire tracing
 
 Tracing is off by default. To enable it, install the `observability` extra, set `RESEARCH_LOGFIRE_ENABLED=true`, and either set `LOGFIRE_TOKEN` in `.env` or run `logfire auth` followed by `logfire projects use <project-name>`. Then restrict the saved credentials with `chmod 700 .logfire` and `chmod 600 .logfire/*.json`.
 
-Benchmark runs, campaign runs, `examples/run_research.py`, and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Each research job is one trace: a `research job` span carrying only the job ID and policy name, with every agent call of the job, parallel scouts and deep dives included, nested under it. Search Logfire by `job_id` to find the trace for a Postgres job row. Prompts, completions, tool arguments and results, and binary content are excluded from spans. The integration uses an isolated tracer, so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported. Without a token, nothing is sent to Logfire. Library callers opt in with `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
+Benchmark runs, long-horizon runs, `examples/run_research.py`, and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Each research job is one trace: a `research job` span carrying only the job ID and policy name, with every agent call of the job, parallel scouts and deep dives included, nested under it. Search Logfire by `job_id` to find the trace for a Postgres job row. Prompts, completions, tool arguments and results, and binary content are excluded from spans. The integration uses an isolated tracer, so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported. Without a token, nothing is sent to Logfire. Library callers opt in with `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
 
 Postgres, not Logfire, is the durable record of jobs and evidence.
 

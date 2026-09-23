@@ -1,4 +1,4 @@
-"""Free, bounded scholarly metadata probe for the first research campaign."""
+"""Free, bounded scholarly metadata probe for the first long-horizon run."""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,7 @@ from research_loop.acquisition import AcquisitionCache
 from research_loop.scholar import ScholarClient
 from research_loop.settings import ResearchSettings
 
-CAMPAIGN = "long-horizon-agentic-se-2024-2026"
+SPEC_ID = "long-horizon-agentic-se-2024-2026"
 QUERY = "long horizon software engineering agents"
 
 
@@ -26,7 +26,7 @@ async def main() -> None:
     citations = await client.citations(doi, limit=3) if doi else None
     responses = [response for response in (search, acl, citations) if response]
     output = {
-        "campaign": CAMPAIGN,
+        "long_horizon": SPEC_ID,
         "created_at": datetime.now(UTC).isoformat(),
         "query": QUERY,
         "records": [

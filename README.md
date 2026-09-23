@@ -1,6 +1,6 @@
 # Research Loop
 
-Evidence-first research orchestration on PydanticAI. A planner splits an objective into research questions. Scouts and deep dives answer them with web, scholarly, and attachment tools and return typed, sourced claims. A synthesizer writes a report that cites those claims, and a verifier audits it. The workflow is an explicit, versioned Pydantic Graph (`research-graph-v1`), model routing is configuration (`ModelPolicy`), and Postgres keeps durable history and telemetry. Benchmark adapters and a campaign launcher run the same loop under recorded, reproducible conditions.
+Evidence-first research orchestration on PydanticAI. A planner splits an objective into research questions. Scouts and deep dives answer them with web, scholarly, and attachment tools and return typed, sourced claims. A synthesizer writes a report that cites those claims, and a verifier audits it. The workflow is an explicit, versioned Pydantic Graph (`research-graph-v1`), model routing is configuration (`ModelPolicy`), and Postgres keeps durable history and telemetry. Benchmark adapters and a long-horizon launcher run the same loop under recorded, reproducible conditions.
 
 ## Quick start
 
@@ -21,7 +21,7 @@ None of these commands cost anything. The `synthetic` policy runs the real graph
 | `research-diagnose` | Check dependencies, graph, tools, directories, database, providers, and model routes | Only with `--smoke` |
 | `research-db status` / `migrate` / `reconcile` | Show or apply the SQL migrations; close out runs a killed process left running | No |
 | `research-bench SUITE` | Run benchmark cases under one or more policies and write a sanitized manifest | Only with `--paid` |
-| `research-campaign` | Run campaign questions, aggregate their evidence, and synthesize the campaign | Only with `--paid` |
+| `research-long-horizon` | Run long-horizon questions, aggregate their evidence, and synthesize the study | Only with `--paid` |
 | `research-graph` | Print the executable graph as Mermaid | No |
 
 `make` wraps the common ones: `setup`, `test`, `diagnose`, `graph`, `postgres-up`, `postgres-down`, `db-status`, `migrate`.
@@ -66,7 +66,7 @@ Results are compared only when these match. Manifests record them together with 
 | Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
 | Evidence schema | `evidence_version` 4: a summary `excerpt`, plus a verbatim `quote` and a cited source that code checks against tool output, the quote on its letters and digits; every role's output is checked against the run's plan, ledger, and attachments | `schemas.py`, `quotes.py`, `agents.py` |
 | Fetch behavior | `fetch_version` 3: paged fetches with a per-job document memo; the task's blocked sources are refused | `acquisition.py` |
-| Tool mode | `normalized` (benchmarks, campaigns) or `adaptive` (library default) | `tools.py` |
+| Tool mode | `normalized` (benchmarks, long-horizon runs) or `adaptive` (library default) | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |
 | Scoring | `evaluator_version` 1: the benchmark metrics' definitions | `evals.py` |
 
@@ -116,7 +116,7 @@ Every route in a policy caps each call's requests, tool calls, tokens, and cost.
 - `ResearchConfig.salvage_exhausted_research` (off by default) lets a scout or deep dive that hits a usage limit make one tool-free salvage call that summarizes what it gathered. With nothing gathered or no budget left, the question continues with an empty, zero-confidence result instead of failing the run. Salvage tasks are marked `salvage: true`, and their stored prompt keeps hashes of the replayed tool output, not the text.
 - Gap analysis, synthesis, and verification have no salvage path. Each is refused before the model call when one validation retry would not fit that role's token limit, and the run fails with `PromptExceedsRetryBudget`.
 
-Provider-side spending caps remain the hard limit. Campaigns set all three from `campaign.toml`; benchmarks leave them off.
+Provider-side spending caps remain the hard limit. Long-horizon runs set all three from `spec.toml`; benchmarks leave them off.
 
 ## Deliberately out of scope
 
@@ -131,7 +131,7 @@ No durable workflow runtime (DBOS, Temporal, Prefect), no graph-state snapshots 
 | [docs/benchmarks.md](docs/benchmarks.md) | Benchmark lanes, suites, runs, manifests, metrics, anti-contamination rules |
 | [docs/acquisition.md](docs/acquisition.md) | Web and scholarly tools, fetch paging, caching, URL safety |
 | [docs/attachments.md](docs/attachments.md) | Attachment lanes, extractors, provenance, privacy |
-| [campaigns/long_horizon_agentic_se/README.md](campaigns/long_horizon_agentic_se/README.md) | The first research campaign: running questions, the calibration pilot, synthesis |
-| [campaigns/long_horizon_agentic_se/PROMPT_SIZES.md](campaigns/long_horizon_agentic_se/PROMPT_SIZES.md) | Measured prompt sizes and where they exceed limits |
+| [long_horizon/agentic_se/README.md](long_horizon/agentic_se/README.md) | The first long-horizon study: running questions, the calibration pilot, synthesis |
+| [long_horizon/agentic_se/PROMPT_SIZES.md](long_horizon/agentic_se/PROMPT_SIZES.md) | Measured prompt sizes and where they exceed limits |
 | [docs/architecture-review.md](docs/architecture-review.md) | Review findings and implementation roadmap |
 | [AGENTS.md](AGENTS.md) | Constraints for coding agents working in this repository |

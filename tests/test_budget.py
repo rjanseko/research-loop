@@ -79,13 +79,13 @@ async def test_single_agent_job_persists_lifecycle_and_clears_spend() -> None:
     route = ModelRoute("test", 5, 5, 10_000)
     loop = _loop(route, job_cost_limit=None)
     outcome = await loop.run_agent_job(
-        "campaign synthesis", agent=Agent(output_type=str), role=ResearchRole.SYNTHESIZER,
-        route=route, prompt="synthesize", config={"campaign": {"id": "c1"}},
+        "long-horizon synthesis", agent=Agent(output_type=str), role=ResearchRole.SYNTHESIZER,
+        route=route, prompt="synthesize", config={"long_horizon": {"id": "c1"}},
     )
     job = loop.repository.jobs[outcome.job_id]
     assert job["status"] == "succeeded"
     assert job["config"]["orchestrator"]["kind"] == "single-agent"
-    assert job["config"]["campaign"] == {"id": "c1"}
+    assert job["config"]["long_horizon"] == {"id": "c1"}
     assert outcome.cost_usd is None  # TestModel has no pricing data
     assert loop._job_spend == {}
 

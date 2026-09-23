@@ -32,7 +32,7 @@ research-bench = "research_loop.benchmark:main"
 research-graph = "research_loop.graph_cli:main"
 research-db = "research_loop.db:main"
 research-diagnose = "research_loop.diagnose:main"
-research-campaign = "research_loop.campaign:main"
+research-long-horizon = "research_loop.long_horizon:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

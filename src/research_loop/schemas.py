@@ -219,30 +219,30 @@ class ToolEvent(BaseModel):
         return is_research_tool(self.tool_name)
 
 
-# Campaign-level synthesis over completed campaign questions. Claim refs such as
-# "q01/q1/c3" identify claims in the aggregated campaign evidence ledger.
-_CLAIM_REFS = "Campaign claim refs such as 'q01/q1/c3', copied exactly from the supplied evidence"
+# Long-horizon synthesis over completed long-horizon questions. Claim refs such as
+# "q01/q1/c3" identify claims in the aggregated long-horizon evidence ledger.
+_CLAIM_REFS = "Claim refs such as 'q01/q1/c3', copied exactly from the supplied evidence"
 
 
-class CampaignFinding(BaseModel):
+class LongHorizonFinding(BaseModel):
     statement: str
     claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
 
 
-class CampaignFindings(BaseModel):
-    well_supported: list[CampaignFinding] = Field(
+class LongHorizonFindings(BaseModel):
+    well_supported: list[LongHorizonFinding] = Field(
         default_factory=list, description="Consistent evidence from multiple independent tier A-C sources"
     )
-    preliminary: list[CampaignFinding] = Field(
+    preliminary: list[LongHorizonFinding] = Field(
         default_factory=list, description="Single-source, preprint-only, or narrowly evaluated results"
     )
-    vendor_claims: list[CampaignFinding] = Field(
+    vendor_claims: list[LongHorizonFinding] = Field(
         default_factory=list, description="Results reported by a model or product vendor without independent replication"
     )
-    contradictory: list[CampaignFinding] = Field(
+    contradictory: list[LongHorizonFinding] = Field(
         default_factory=list, description="Points where cited sources disagree; cite both sides"
     )
-    unknowns: list[CampaignFinding] = Field(
+    unknowns: list[LongHorizonFinding] = Field(
         default_factory=list, description="Questions the evidence could not settle; refs optional"
     )
 
@@ -289,9 +289,9 @@ class Hypothesis(BaseModel):
     estimated_cost: str = Field(description="Rough API, compute, and time cost of the experiment")
 
 
-class CampaignSynthesis(BaseModel):
-    summary: str = Field(description="Markdown overview of the campaign's conclusions")
-    findings: CampaignFindings
+class LongHorizonSynthesis(BaseModel):
+    summary: str = Field(description="Markdown overview of the study's conclusions")
+    findings: LongHorizonFindings
     benchmark_catalog: list[BenchmarkEntry] = Field(default_factory=list)
     architecture_patterns: list[ArchitecturePattern] = Field(default_factory=list)
     failure_modes: list[FailureMode] = Field(default_factory=list)
@@ -309,7 +309,7 @@ class CampaignSynthesis(BaseModel):
             elif required and not refs:
                 problems.append(f"{label} cites no evidence")
 
-        for section in CampaignFindings.model_fields:
+        for section in LongHorizonFindings.model_fields:
             for index, finding in enumerate(getattr(self.findings, section)):
                 check(f"findings.{section}[{index}]", finding.claim_refs, required=section != "unknowns")
         for field_name in ("benchmark_catalog", "architecture_patterns", "failure_modes"):

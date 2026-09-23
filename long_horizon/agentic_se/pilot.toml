@@ -1,6 +1,8 @@
-id = "long-horizon-agentic-se-2024-2026"
-title = "State of the Art in Long-Horizon Agentic Software Engineering, 2024–2026"
-status = "planned"
+# Calibration pilot: same execution, source policy, and outputs as spec.toml, with one
+# known-answer question so evidence quality and per-step cost can be checked before the full study.
+id = "long-horizon-agentic-se-pilot"
+title = "Pilot: SWE-bench family scope and versions"
+status = "pilot"
 graph_version = "research-graph-v1"
 period_start = "2024-01-01"
 period_end = "2026-09-23"
@@ -10,7 +12,7 @@ as_of = "2026-09-23"
 normalized_web = true
 scholarly_cache_mode = "record"
 model_budget_gate = "Do not start paid model runs until research-diagnose --smoke passes and provider spending caps are set."
-first_run = "One narrow pilot question, followed by evidence review before the full campaign."
+first_run = "One narrow pilot question, followed by evidence review before the full study."
 # Running several questions continues past a failed one, but stops after this many failures:
 # repeated failures more likely share a cause (credentials, a provider outage, a bug).
 max_failed_questions = 2
@@ -52,7 +54,7 @@ tier_e = "General web discussion, for leads rather than central claims"
 benchmark_claims = "Prefer benchmark paper, official repository, and official result tables; record version and evaluation conditions."
 version_rule = "Keep preprint, submission, accepted, and published records distinct; link versions by verified IDs."
 
-# research-campaign --synthesize: one campaign-level agent job over completed questions.
+# research-long-horizon --synthesize: one study-level agent job over completed questions.
 [synthesis]
 cost_limit_usd = 6.0
 total_tokens_limit = 600_000
@@ -68,41 +70,11 @@ max_prompt_chars = 600_000
 [outputs]
 # Written per question under <output>/<question id>/; run.json marks a completed run.
 question_files = ["report.md", "report.json", "evidence_ledger.json", "bibliography.json", "verification.json", "run.json"]
-# Written by --synthesize under <output>/campaign/ (--aggregate writes only the ledger and bibliography).
-campaign_files = ["report.md", "synthesis.json", "evidence_ledger.json", "bibliography.json", "benchmark_catalog.json", "architecture_patterns.json", "failure_modes.json", "open_questions.json", "hypotheses.json"]
+# Written by --synthesize under <output>/synthesis/ (--aggregate writes only the ledger and bibliography).
+synthesis_files = ["report.md", "synthesis.json", "evidence_ledger.json", "bibliography.json", "benchmark_catalog.json", "architecture_patterns.json", "failure_modes.json", "open_questions.json", "hypotheses.json"]
 findings_sections = ["well_supported", "preliminary", "vendor_claims", "contradictory", "unknowns"]
 hypothesis_fields = ["supporting_evidence", "contradicting_evidence", "confidence", "proposed_experiment", "expected_metric", "estimated_cost"]
 
 [[questions]]
-id = "q01"
-text = "How is long-horizon software-engineering agency defined and measured?"
-[[questions]]
-id = "q02"
-text = "What are the scope, versions, evaluation methods, and limits of SWE-bench variants, Terminal-Bench, DeepSWE, RoadmapBench, LongCLI-Bench, and NL2Repo-style benchmarks?"
-[[questions]]
-id = "q03"
-text = "Which planning and replanning methods have measured effects on long tasks?"
-[[questions]]
-id = "q04"
-text = "How do context compaction, external memory, repository maps, and retrieval affect long tasks?"
-[[questions]]
-id = "q05"
-text = "What evidence supports multi-agent, subagent, planner/coder/reviewer, and parallel-exploration architectures at equal cost?"
-[[questions]]
-id = "q06"
-text = "How do agents use tests, verification, hidden tests, and regression checks?"
-[[questions]]
-id = "q07"
-text = "What causes goal drift, premature stopping, repeated work, architecture degradation, and context loss?"
-[[questions]]
-id = "q08"
-text = "Which strategies recover from failed tests and incorrect intermediate plans?"
-[[questions]]
-id = "q09"
-text = "How do tool interfaces and permission boundaries change agent performance and safety?"
-[[questions]]
-id = "q10"
-text = "What fair, matched-condition evidence compares GPT, Claude, GLM, Grok, and Gemini families on long-horizon coding tasks?"
-[[questions]]
-id = "q11"
-text = "What open questions and falsifiable hypotheses should guide later coding-agent experiments?"
+id = "p01"
+text = "What are the task counts, source repositories, evaluation method, and version differences of SWE-bench, SWE-bench Lite, and SWE-bench Verified, and what limitations have been documented?"

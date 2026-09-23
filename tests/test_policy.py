@@ -101,13 +101,13 @@ def test_retry_budget_refuses_the_rerun_finishing_prompts_and_allows_the_first_p
     # max_tokens below the allowance is the output the retry has to cover.
     capped = ModelRoute("anthropic:claude-opus-5", 8, 4, 120_000, settings={"max_tokens": 4_000})
     assert retry_token_budget("x" * 113_964, capped, ResearchRole.SYNTHESIZER) <= 120_000
-    # An explicit allowance replaces the role table. Campaign synthesis uses its output cap.
-    campaign = ModelRoute("anthropic:claude-opus-5", 3, 1, 400_000, settings={"max_tokens": 48_000})
+    # An explicit allowance replaces the role table. Long-horizon synthesis uses its output cap.
+    spec = ModelRoute("anthropic:claude-opus-5", 3, 1, 400_000, settings={"max_tokens": 48_000})
     assert retry_token_budget(
-        "x" * 360_000, campaign, ResearchRole.SYNTHESIZER, output_allowance=48_000,
+        "x" * 360_000, spec, ResearchRole.SYNTHESIZER, output_allowance=48_000,
     ) > 400_000
     assert retry_token_budget(
-        "x" * 360_000, campaign, ResearchRole.SYNTHESIZER, output_allowance=36_000,
+        "x" * 360_000, spec, ResearchRole.SYNTHESIZER, output_allowance=36_000,
     ) <= 400_000
 
 

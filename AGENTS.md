@@ -33,4 +33,4 @@ Graph and legacy orchestrators share role calls, prompts, and job lifecycle thro
 
 ## Documentation
 
-`README.md` is the entry point. Update the matching document with a change: `docs/graph.md` for topology, `docs/acquisition.md` for web and scholarly tools, `docs/attachments.md` for file ingestion, `docs/benchmarks.md` for benchmark semantics and comparability, `docs/setup.md` for configuration and environment variables, and `campaigns/long_horizon_agentic_se/README.md` for campaign behavior. `docs/architecture-review.md` is a dated review; add status notes rather than rewriting its findings.
+`README.md` is the entry point. Update the matching document with a change: `docs/graph.md` for topology, `docs/acquisition.md` for web and scholarly tools, `docs/attachments.md` for file ingestion, `docs/benchmarks.md` for benchmark semantics and comparability, `docs/setup.md` for configuration and environment variables, and `long_horizon/agentic_se/README.md` for long-horizon behavior. `docs/architecture-review.md` is a dated review; add status notes rather than rewriting its findings.

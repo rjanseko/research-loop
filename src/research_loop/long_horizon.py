@@ -1,4 +1,4 @@
-"""Reproducible, bounded launcher for research campaign questions and campaign synthesis."""
+"""Reproducible, bounded launcher for long-horizon research questions and long-horizon synthesis."""
 from __future__ import annotations
 
 import argparse
@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .agents import campaign_synthesizer_agent
+from .agents import long_horizon_synthesizer_agent
 from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
-from .campaign_spec import SYNTHESIS_DIR, load_campaign
+from .long_horizon_spec import SYNTHESIS_DIR, load_spec
 from .acquisition import FETCH_VERSION
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
@@ -37,9 +37,9 @@ from .quotes import source_keys
 from .repository import InMemoryResearchRepository, PostgresResearchRepository
 from .schemas import (
     EVIDENCE_VERSION,
-    CampaignFindings,
+    LongHorizonFindings,
     ClaimCheck,
-    CampaignSynthesis,
+    LongHorizonSynthesis,
     FinalReport,
     ResearchConstraints,
     ResearchResult,
@@ -52,16 +52,16 @@ from .telemetry import jsonable
 from .tools import ResearchToolMode
 
 
-CAMPAIGN_FILE = Path(__file__).resolve().parents[2] / "campaigns" / "long_horizon_agentic_se" / "campaign.toml"
+SPEC_FILE = Path(__file__).resolve().parents[2] / "long_horizon" / "agentic_se" / "spec.toml"
 CATALOGS = ("benchmark_catalog", "architecture_patterns", "failure_modes", "open_questions", "hypotheses")
 
 
-def render_objective(campaign: dict[str, Any], question: dict[str, str]) -> str:
-    source_policy = campaign["source_policy"]
+def render_objective(spec: dict[str, Any], question: dict[str, str]) -> str:
+    source_policy = spec["source_policy"]
     return "\n".join([
-        campaign["title"],
+        spec["title"],
         f"Question {question['id']}: {question['text']}",
-        f"Publication window: {campaign['period_start']} to {campaign['period_end']}.",
+        f"Publication window: {spec['period_start']} to {spec['period_end']}.",
         "Source policy:",
         *[f"{key}: {value}" for key, value in source_policy.items()],
         "Keep preprints, submissions, reviews, and published versions distinct. Report uncertainty and contradictions.",
@@ -76,20 +76,20 @@ def _spec_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _objective_sha256(campaign: dict[str, Any], question: dict[str, str]) -> str:
-    return hashlib.sha256(render_objective(campaign, question).encode()).hexdigest()
+def _objective_sha256(spec: dict[str, Any], question: dict[str, str]) -> str:
+    return hashlib.sha256(render_objective(spec, question).encode()).hexdigest()
 
 
-def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_snapshot: dict[str, Any],
+def _manifest_base(spec: dict[str, Any], path: Path, *, kind: str, policy_snapshot: dict[str, Any],
                    fingerprint_extra: dict[str, Any], persist: bool) -> dict[str, Any]:
     spec_hash = _spec_sha256(path)
     prompts_sha256 = prompt_fingerprint()
     return {
-        "schema_version": MANIFEST_SCHEMA_VERSION, "kind": kind, "campaign_id": campaign["id"],
-        "experiment_id": str(uuid4()), "campaign_spec_sha256": spec_hash, "prompts_sha256": prompts_sha256,
+        "schema_version": MANIFEST_SCHEMA_VERSION, "kind": kind, "spec_id": spec["id"],
+        "experiment_id": str(uuid4()), "spec_sha256": spec_hash, "prompts_sha256": prompts_sha256,
         "config_fingerprint": fingerprint({"spec": spec_hash, "policy": policy_snapshot,
                                            "prompts_sha256": prompts_sha256, **fingerprint_extra}),
-        "git": git_state(), "graph_version": campaign["graph_version"],
+        "git": git_state(), "graph_version": spec["graph_version"],
         "policy": policy_snapshot, "packages": package_versions(), "persistent": persist,
         "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "status": "running",
     }
@@ -138,10 +138,10 @@ def render_question_report(report: FinalReport, verification: VerificationReport
     return "\n".join(lines) + "\n"
 
 
-def campaign_policy(campaign: dict[str, Any], policy_name: str, model_overrides: Mapping[str, str]) -> ModelPolicy:
-    """The named policy with the campaign's question budget, planner range, and route limits applied."""
+def long_horizon_policy(spec: dict[str, Any], policy_name: str, model_overrides: Mapping[str, str]) -> ModelPolicy:
+    """The named policy with the study's question budget, planner range, and route limits applied."""
     policy = get_policy(policy_name, model_overrides=model_overrides)
-    execution = campaign["execution"]
+    execution = spec["execution"]
     policy.planner_question_range = (
         int(execution["planner_question_min"]), int(execution["planner_question_max"])
     )
@@ -167,8 +167,8 @@ def campaign_policy(campaign: dict[str, Any], policy_name: str, model_overrides:
     return policy
 
 
-def campaign_run_config(campaign: dict[str, Any]) -> ResearchConfig:
-    execution = campaign["execution"]
+def long_horizon_run_config(spec: dict[str, Any]) -> ResearchConfig:
+    execution = spec["execution"]
     return ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode=execution["scholarly_cache_mode"],
@@ -214,7 +214,7 @@ def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: s
         # run.json marks the folder as a completed, attributable run.
         _write_json(staging / "run.json", record | {
             "experiment_id": manifest["experiment_id"],
-            "campaign_spec_sha256": manifest["campaign_spec_sha256"],
+            "spec_sha256": manifest["spec_sha256"],
             # What the evidence answers; budget-only spec edits leave it unchanged.
             "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
             "config_fingerprint": manifest["config_fingerprint"],
@@ -251,7 +251,7 @@ def _files_match(folder: Path, run: dict[str, Any]) -> bool:
                     for name, digest in files.items()))
 
 
-async def run_campaign(
+async def run_long_horizon(
     path: Path,
     *,
     question_ids: list[str],
@@ -260,22 +260,22 @@ async def run_campaign(
     output_dir: Path,
     persist: bool,
 ) -> Path:
-    campaign = load_campaign(path)
-    questions = {item["id"]: item for item in campaign["questions"]}
+    spec = load_spec(path)
+    questions = {item["id"]: item for item in spec["questions"]}
     unknown = set(question_ids) - set(questions)
     if unknown:
-        raise ValueError(f"unknown campaign question IDs: {', '.join(sorted(unknown))}")
+        raise ValueError(f"unknown long-horizon question IDs: {', '.join(sorted(unknown))}")
     if persist and not settings.database_dsn:
         raise ValueError("DATABASE_URL required for --persist")
     configure_logfire(settings)
-    execution = campaign["execution"]
-    policy = campaign_policy(campaign, policy_name, settings.model_overrides)
-    run_config = campaign_run_config(campaign)
+    execution = spec["execution"]
+    policy = long_horizon_policy(spec, policy_name, settings.model_overrides)
+    run_config = long_horizon_run_config(spec)
     policy_snapshot = safe_value(policy.snapshot())
     acquisition = {"search": "duckduckgo", "web_fetch": "trafilatura+bs4",
                    "scholar": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
                    "cache_mode": run_config.scholarly_cache_mode, "fetch_version": FETCH_VERSION}
-    manifest = _manifest_base(campaign, path, kind="questions", policy_snapshot=policy_snapshot,
+    manifest = _manifest_base(spec, path, kind="questions", policy_snapshot=policy_snapshot,
                               fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION,
                                                  "run_config": jsonable(asdict(run_config))},
                               persist=persist)
@@ -304,7 +304,7 @@ async def run_campaign(
             for index, question_id in enumerate(question_ids):
                 backend = PostgresResearchRepository(pool) if pool else InMemoryResearchRepository()
                 loop = ResearchLoop(policy, run_config, repository=backend, settings=settings)
-                objective = render_objective(campaign, questions[question_id])
+                objective = render_objective(spec, questions[question_id])
                 try:
                     outcome = await loop.run(
                         objective,
@@ -349,7 +349,7 @@ class CompletedQuestion:
 
 
 @dataclass
-class CampaignEvidence:
+class LongHorizonEvidence:
     completed: list[CompletedQuestion]
     # Every question left out of synthesis, including stale ones.
     missing: list[str]
@@ -374,7 +374,7 @@ class CampaignEvidence:
                 if not any((item.question["id"], claim_id) in cited for claim_id in item.report.claim_ids_used)]
 
 
-def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEvidence:
+def aggregate_long_horizon(spec: dict[str, Any], output_dir: Path) -> LongHorizonEvidence:
     """Merge completed question outputs; claim refs are '<question>/<claim id>' in ledger order.
 
     Only runs whose recorded objective hash matches the current spec count; budget-only spec
@@ -384,7 +384,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
     missing: list[str] = []
     stale: list[str] = []
     invalid: list[str] = []
-    for question in campaign["questions"]:
+    for question in spec["questions"]:
         folder = output_dir / question["id"]
         try:
             run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
@@ -394,7 +394,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
         if run.get("status") != "completed":
             missing.append(question["id"])
             continue
-        if run.get("objective_sha256") != _objective_sha256(campaign, question):
+        if run.get("objective_sha256") != _objective_sha256(spec, question):
             stale.append(question["id"])
             missing.append(question["id"])
             continue
@@ -454,13 +454,13 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
                 for check in _flagged_checks(item.verification)
             ],
         }
-    return CampaignEvidence(completed, missing, claims, list(bibliography.values()), contradictions,
+    return LongHorizonEvidence(completed, missing, claims, list(bibliography.values()), contradictions,
                             verification=verification, stale=stale, invalid=invalid)
 
 
-def write_aggregate(campaign_dir: Path, evidence: CampaignEvidence) -> None:
-    campaign_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(campaign_dir / "evidence_ledger.json", {
+def write_aggregate(long_horizon_dir: Path, evidence: LongHorizonEvidence) -> None:
+    long_horizon_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(long_horizon_dir / "evidence_ledger.json", {
         "questions": {
             item.question["id"]: {key: [result.model_dump(mode="json") for result in results]
                                   for key, results in item.ledger.items()}
@@ -468,11 +468,11 @@ def write_aggregate(campaign_dir: Path, evidence: CampaignEvidence) -> None:
         },
         "claims": evidence.claims,
     })
-    _write_json(campaign_dir / "bibliography.json", evidence.bibliography)
+    _write_json(long_horizon_dir / "bibliography.json", evidence.bibliography)
 
 
 def _cited_refs(claim_ids: list[str], refs_for: dict[str, list[str]]) -> list[str]:
-    """Every campaign ref for these claim ids, in ledger order, without duplicates."""
+    """Every long-horizon ref for these claim ids, in ledger order, without duplicates."""
     refs: list[str] = []
     for claim_id in claim_ids:
         for ref in refs_for.get(claim_id, []):
@@ -482,9 +482,9 @@ def _cited_refs(claim_ids: list[str], refs_for: dict[str, list[str]]) -> list[st
 
 
 class _Works:
-    """The campaign prompt's source table: one row per work, numbered in the order the prompt cites them.
+    """The long-horizon prompt's source table: one row per work, numbered in the order the prompt cites them.
 
-    Every source in the campaign ledger is grouped up front. Citations that share any
+    Every source in the long-horizon ledger is grouped up front. Citations that share any
     `source_keys` entry are one work, including when only a third citation links them, so
     one paper keeps one id across questions. A row shows the first citation's title, url (or
     attachment id), and publication date.
@@ -531,7 +531,7 @@ class _Works:
 
 def _prompt_claims(question_id: str, report: FinalReport, claims: list[dict[str, Any]],
                    works: _Works | None = None) -> list[dict[str, Any]]:
-    """Report claims with campaign refs and the source facts the synthesizer classifies on.
+    """Report claims with long-horizon refs and the source facts the synthesizer classifies on.
 
     Excerpts stay in the aggregated ledger. `source_ids` name the works in `works` whose
     evidence supports the claim, and `source_count` is how many there are; `source_types` and
@@ -540,7 +540,7 @@ def _prompt_claims(question_id: str, report: FinalReport, claims: list[dict[str,
     at two locators, or fetched through two providers, counts once. `min_confidence` is the
     lowest confidence among the ledger claims cited. A not-found quote or source is kept as a
     flag on the claim, which is enough to keep that claim from being treated as well supported.
-    Several stored claims can share one id; an older ledger suffixes the later campaign refs.
+    Several stored claims can share one id; an older ledger suffixes the later long-horizon refs.
     A citation of that id includes every copy. Without `works`, a table of `claims` is used.
     """
     works = works or _Works(claims)
@@ -600,8 +600,8 @@ def _prompt_claims(question_id: str, report: FinalReport, claims: list[dict[str,
     return rows
 
 
-def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence) -> str:
-    """Campaign prompt: a source table, then each question's report claims, caveats, unresolved
+def synthesis_prompt(spec: dict[str, Any], evidence: LongHorizonEvidence) -> str:
+    """Long-horizon prompt: a source table, then each question's report claims, caveats, unresolved
     questions, contradictions, and verifier findings.
 
     The full ledger is written beside the report for audit and is not repeated here.
@@ -622,12 +622,12 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence) -> st
         for item in evidence.completed
     ]
     payload = {
-        "campaign": {
-            "title": campaign["title"], "as_of": campaign["as_of"],
-            "publication_window": [campaign["period_start"], campaign["period_end"]],
-            "source_policy": campaign["source_policy"],
-            "findings_sections": campaign["outputs"]["findings_sections"],
-            "hypothesis_fields": campaign["outputs"]["hypothesis_fields"],
+        "study": {
+            "title": spec["title"], "as_of": spec["as_of"],
+            "publication_window": [spec["period_start"], spec["period_end"]],
+            "source_policy": spec["source_policy"],
+            "findings_sections": spec["outputs"]["findings_sections"],
+            "hypothesis_fields": spec["outputs"]["hypothesis_fields"],
         },
         "missing_question_ids": evidence.missing,
         "sources": works.rows,
@@ -636,16 +636,16 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence) -> st
     return json.dumps(payload, ensure_ascii=False)
 
 
-def render_campaign_report(campaign: dict[str, Any], evidence: CampaignEvidence, synthesis: CampaignSynthesis) -> str:
+def render_long_horizon_report(spec: dict[str, Any], evidence: LongHorizonEvidence, synthesis: LongHorizonSynthesis) -> str:
     done = [item.question["id"] for item in evidence.completed]
-    lines = [f"# {campaign['title']}", ""]
-    scope = f"As of {campaign['as_of']}. Synthesized from {len(done)} of {len(campaign['questions'])} questions: {', '.join(done)}."
+    lines = [f"# {spec['title']}", ""]
+    scope = f"As of {spec['as_of']}. Synthesized from {len(done)} of {len(spec['questions'])} questions: {', '.join(done)}."
     if evidence.missing:
         scope += f" **Partial synthesis**; missing: {', '.join(evidence.missing)}."
     if evidence.uncited:
         scope += f" Reports that cite no evidence claims, so contributed none: {', '.join(evidence.uncited)}."
     lines += [scope, "", "## Summary", "", synthesis.summary.strip(), "", "## Findings"]
-    for section in CampaignFindings.model_fields:
+    for section in LongHorizonFindings.model_fields:
         findings = getattr(synthesis.findings, section)
         lines += ["", f"### {section.replace('_', ' ').capitalize()}", ""]
         lines += [f"- {finding.statement} [{', '.join(finding.claim_refs)}]" if finding.claim_refs
@@ -667,16 +667,16 @@ def render_campaign_report(campaign: dict[str, Any], evidence: CampaignEvidence,
     return "\n".join(lines)
 
 
-def write_synthesis(campaign_dir: Path, campaign: dict[str, Any], evidence: CampaignEvidence,
-                    synthesis: CampaignSynthesis) -> None:
-    (campaign_dir / "synthesis.json").write_text(synthesis.model_dump_json(indent=2) + "\n", encoding="utf-8")
+def write_synthesis(long_horizon_dir: Path, spec: dict[str, Any], evidence: LongHorizonEvidence,
+                    synthesis: LongHorizonSynthesis) -> None:
+    (long_horizon_dir / "synthesis.json").write_text(synthesis.model_dump_json(indent=2) + "\n", encoding="utf-8")
     for name in CATALOGS:
-        _write_json(campaign_dir / f"{name}.json", [item.model_dump(mode="json") for item in getattr(synthesis, name)])
-    (campaign_dir / "report.md").write_text(render_campaign_report(campaign, evidence, synthesis), encoding="utf-8")
+        _write_json(long_horizon_dir / f"{name}.json", [item.model_dump(mode="json") for item in getattr(synthesis, name)])
+    (long_horizon_dir / "report.md").write_text(render_long_horizon_report(spec, evidence, synthesis), encoding="utf-8")
 
 
 def synthesis_route(policy: ModelPolicy, limits: Mapping[str, Any]) -> ModelRoute:
-    """Synthesizer route with this campaign's request, token, cost, and output caps."""
+    """Synthesizer route with this study's request, token, cost, and output caps."""
     base = policy.for_role(ResearchRole.SYNTHESIZER)
     return replace(
         base,
@@ -693,25 +693,25 @@ def prepare_synthesis(
     *,
     allow_partial: bool,
     route: ModelRoute | None = None,
-) -> tuple[dict[str, Any], CampaignEvidence, str]:
+) -> tuple[dict[str, Any], LongHorizonEvidence, str]:
     """Validate synthesis inputs without model calls; raise before any paid step.
 
-    ``route``, when given, is the campaign synthesizer route. The prompt is then also
+    ``route``, when given, is the long-horizon synthesizer route. The prompt is then also
     refused when one citation retry at that route's output cap would not fit its token limit.
     """
-    campaign = load_campaign(path)
-    evidence = aggregate_campaign(campaign, output_dir)
+    spec = load_spec(path)
+    evidence = aggregate_long_horizon(spec, output_dir)
     stale = (f" ({', '.join(evidence.stale)} cannot be matched to the current spec's objective; rerun them)"
              if evidence.stale else "")
     if evidence.invalid:
         stale += f" ({', '.join(evidence.invalid)} no longer match their recorded file hashes; rerun them)"
     if not evidence.completed:
-        raise ValueError(f"no completed campaign questions to synthesize{stale}")
+        raise ValueError(f"no completed long-horizon questions to synthesize{stale}")
     if evidence.missing and not allow_partial:
         raise ValueError(f"questions not completed: {', '.join(evidence.missing)}{stale}; "
                          "pass --allow-partial to synthesize anyway")
-    prompt = synthesis_prompt(campaign, evidence)
-    max_chars = int(campaign["synthesis"]["max_prompt_chars"])
+    prompt = synthesis_prompt(spec, evidence)
+    max_chars = int(spec["synthesis"]["max_prompt_chars"])
     if len(prompt) > max_chars:
         raise ValueError(f"synthesis prompt has {len(prompt)} chars, above synthesis.max_prompt_chars={max_chars}")
     if route is not None:
@@ -724,10 +724,10 @@ def prepare_synthesis(
                 f"synthesis prompt needs about {needed} tokens for one retry, "
                 f"above total_tokens_limit={route.total_tokens_limit}"
             )
-    return campaign, evidence, prompt
+    return spec, evidence, prompt
 
 
-async def synthesize_campaign(
+async def synthesize_long_horizon(
     path: Path,
     *,
     policy_name: str,
@@ -740,20 +740,20 @@ async def synthesize_campaign(
         raise ValueError("DATABASE_URL required for --persist")
     configure_logfire(settings)
     policy = get_policy(policy_name, model_overrides=settings.model_overrides)
-    route = synthesis_route(policy, load_campaign(path)["synthesis"])
-    campaign, evidence, prompt = prepare_synthesis(
+    route = synthesis_route(policy, load_spec(path)["synthesis"])
+    spec, evidence, prompt = prepare_synthesis(
         path, output_dir, allow_partial=allow_partial, route=route,
     )
-    policy.job_cost_limit = float(campaign["synthesis"]["cost_limit_usd"])
+    policy.job_cost_limit = float(spec["synthesis"]["cost_limit_usd"])
     prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
     inputs = [
         {"id": item.question["id"], "job_id": item.run.get("job_id"), "experiment_id": item.run.get("experiment_id"),
          "config_fingerprint": item.run.get("config_fingerprint"),
-         "campaign_spec_sha256": item.run.get("campaign_spec_sha256"),
+         "spec_sha256": item.run.get("spec_sha256"),
          "review_reasons": item.run.get("review_reasons")}
         for item in evidence.completed
     ]
-    manifest = _manifest_base(campaign, path, kind="synthesis", policy_snapshot=safe_value(policy.snapshot()),
+    manifest = _manifest_base(spec, path, kind="synthesis", policy_snapshot=safe_value(policy.snapshot()),
                               fingerprint_extra={"route": route.snapshot(), "prompt_sha256": prompt_sha256},
                               persist=persist)
     manifest |= {
@@ -766,8 +766,8 @@ async def synthesize_campaign(
         "claim_count": len(evidence.claims), "source_count": len(evidence.bibliography),
     }
     manifest_path = output_dir / "manifests" / f"{manifest['experiment_id']}.json"
-    campaign_dir = output_dir / SYNTHESIS_DIR
-    write_aggregate(campaign_dir, evidence)
+    long_horizon_dir = output_dir / SYNTHESIS_DIR
+    write_aggregate(long_horizon_dir, evidence)
     write_manifest(manifest_path, manifest)
     try:
         async with AsyncExitStack() as stack:
@@ -775,16 +775,16 @@ async def synthesize_campaign(
             loop = ResearchLoop(policy, repository=PostgresResearchRepository(pool) if pool else InMemoryResearchRepository(),
                                 settings=settings)
             outcome = await loop.run_agent_job(
-                f"{campaign['title']}: campaign synthesis",
-                agent=campaign_synthesizer_agent,
+                f"{spec['title']}: long-horizon synthesis",
+                agent=long_horizon_synthesizer_agent,
                 role=ResearchRole.SYNTHESIZER,
                 route=route,
                 prompt=prompt,
                 deps=evidence.refs,
-                config={"campaign": {"id": campaign["id"], "kind": "synthesis", "prompt_sha256": prompt_sha256,
+                config={"long_horizon": {"id": spec["id"], "kind": "synthesis", "prompt_sha256": prompt_sha256,
                                      "question_ids": [item["id"] for item in inputs]}},
             )
-        write_synthesis(campaign_dir, campaign, evidence, outcome.output)
+        write_synthesis(long_horizon_dir, spec, evidence, outcome.output)
         manifest |= {"status": "completed", "job_id": str(outcome.job_id),
                      "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
                      "hypothesis_count": len(outcome.output.hypotheses)}
@@ -811,18 +811,18 @@ def _paid_preflight(settings: ResearchSettings, policy_name: str, persist: bool)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run bounded research campaign questions or synthesize completed ones")
-    parser.add_argument("--spec", type=Path, default=CAMPAIGN_FILE)
+    parser = argparse.ArgumentParser(description="Run bounded long-horizon research questions or synthesize completed ones")
+    parser.add_argument("--spec", type=Path, default=SPEC_FILE)
     parser.add_argument("--question", default=None, help="Question ID; defaults to the first question")
     parser.add_argument("--all-questions", action="store_true", help="Run every question sequentially")
     parser.add_argument("--aggregate", action="store_true", help="Merge completed question outputs without model calls")
-    parser.add_argument("--synthesize", action="store_true", help="Write campaign catalogs and hypotheses from completed questions")
+    parser.add_argument("--synthesize", action="store_true", help="Write long-horizon catalogs and hypotheses from completed questions")
     parser.add_argument("--allow-partial", action="store_true", help="Synthesize even if some questions are not completed")
     parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy"), default="quality")
     parser.add_argument("--paid", action="store_true", help="Authorize model provider calls")
     parser.add_argument("--dry-run", action="store_true", help="Validate and report what would run, without calls or writes")
     parser.add_argument("--persist", action="store_true", help="Store runs in Postgres")
-    parser.add_argument("--output", type=Path, default=Path("benchmark_outputs/long_horizon_campaign"))
+    parser.add_argument("--output", type=Path, default=Path("benchmark_outputs/long_horizon"))
     args = parser.parse_args()
     if args.all_questions and args.question:
         parser.error("choose --question or --all-questions")
@@ -835,8 +835,8 @@ def main() -> None:
     # Local inputs only: these messages carry no provider responses, so they are shown in full.
     try:
         if args.aggregate:
-            campaign = load_campaign(args.spec)
-            evidence = aggregate_campaign(campaign, args.output)
+            spec = load_spec(args.spec)
+            evidence = aggregate_long_horizon(spec, args.output)
             if not args.dry_run:
                 write_aggregate(args.output / SYNTHESIS_DIR, evidence)
             print(f"Aggregated {len(evidence.completed)} questions, {len(evidence.claims)} claims, "
@@ -847,8 +847,8 @@ def main() -> None:
             return
         if args.synthesize:
             policy = get_policy(args.policy)
-            route = synthesis_route(policy, load_campaign(args.spec)["synthesis"])
-            campaign, evidence, prompt = prepare_synthesis(
+            route = synthesis_route(policy, load_spec(args.spec)["synthesis"])
+            spec, evidence, prompt = prepare_synthesis(
                 args.spec, args.output, allow_partial=args.allow_partial, route=route,
             )
             if args.dry_run:
@@ -860,38 +860,38 @@ def main() -> None:
                       f"missing: {', '.join(evidence.missing) or 'none'}; "
                       + (f"reports citing no claims: {', '.join(evidence.uncited)}; " if evidence.uncited else "")
                       + f"prompt {len(prompt)} of "
-                      f"{campaign['synthesis']['max_prompt_chars']} chars; one retry about {needed} of "
+                      f"{spec['synthesis']['max_prompt_chars']} chars; one retry about {needed} of "
                       f"{route.total_tokens_limit} tokens")
                 return
         else:
-            campaign = load_campaign(args.spec)
-            ids = [item["id"] for item in campaign["questions"]]
+            spec = load_spec(args.spec)
+            ids = [item["id"] for item in spec["questions"]]
             selected = ids if args.all_questions else [args.question or ids[0]]
             if set(selected) - set(ids):
-                raise ValueError("unknown campaign question ID")
+                raise ValueError("unknown long-horizon question ID")
             if args.dry_run:
-                print(f"Campaign {campaign['id']}: {', '.join(selected)}")
+                print(f"Long-horizon study {spec['id']}: {', '.join(selected)}")
                 return
     except (ValueError, OSError) as exc:
-        parser.exit(2, f"Campaign input invalid: {exc}\n")
+        parser.exit(2, f"Long-horizon input invalid: {exc}\n")
     if not args.paid:
         parser.error("model runs require --paid; use --dry-run to validate without calls")
     try:
         settings = ResearchSettings.from_env()
         _paid_preflight(settings, args.policy, args.persist)
         if args.synthesize:
-            manifest = asyncio.run(synthesize_campaign(
+            manifest = asyncio.run(synthesize_long_horizon(
                 args.spec, policy_name=args.policy, settings=settings, output_dir=args.output,
                 persist=args.persist, allow_partial=args.allow_partial,
             ))
         else:
-            manifest = asyncio.run(run_campaign(
+            manifest = asyncio.run(run_long_horizon(
                 args.spec, question_ids=selected, policy_name=args.policy,
                 settings=settings, output_dir=args.output, persist=args.persist,
             ))
     except Exception as exc:
-        parser.exit(1, f"Campaign failed ({type(exc).__name__}); check settings and run manifest.\n")
-    print(f"Campaign manifest: {manifest}")
+        parser.exit(1, f"Long-horizon run failed ({type(exc).__name__}); check settings and run manifest.\n")
+    print(f"Long-horizon manifest: {manifest}")
     record = json.loads(manifest.read_text(encoding="utf-8"))
     review = [f"{item['id']} ({'; '.join(item['review_reasons'])})"
               for item in record.get("questions", []) if item.get("review_reasons")]
@@ -901,7 +901,7 @@ def main() -> None:
         failures = ", ".join(f"{item['id']} ({item['error']})" for item in record.get("questions", [])
                              if item["status"] == "failed")
         not_run = f"; not run: {', '.join(record['not_run'])}" if record.get("not_run") else ""
-        parser.exit(1, f"Campaign finished with status {record['status']}; failed: {failures}{not_run}\n")
+        parser.exit(1, f"Long-horizon run finished with status {record['status']}; failed: {failures}{not_run}\n")
 
 
 if __name__ == "__main__":

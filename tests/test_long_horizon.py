@@ -8,10 +8,10 @@ from uuid import uuid4
 
 import pytest
 
-from research_loop.campaign import CAMPAIGN_FILE, load_campaign, render_objective
+from research_loop.long_horizon import SPEC_FILE, load_spec, render_objective
 from research_loop.ledger import EvidenceLedger
 from research_loop.schemas import (
-    CampaignFindings,
+    LongHorizonFindings,
     Claim,
     Contradiction,
     Evidence,
@@ -25,50 +25,50 @@ from research_loop.schemas import (
 from research_loop.settings import ResearchSettings
 
 
-def test_campaign_spec_has_unique_questions_and_reproducible_scope() -> None:
-    campaign = load_campaign(CAMPAIGN_FILE)
-    assert campaign["graph_version"] == "research-graph-v1"
-    assert len(campaign["questions"]) == 11
-    assert len({item["id"] for item in campaign["questions"]}) == 11
-    objective = render_objective(campaign, campaign["questions"][0])
+def test_long_horizon_spec_has_unique_questions_and_reproducible_scope() -> None:
+    spec = load_spec(SPEC_FILE)
+    assert spec["graph_version"] == "research-graph-v1"
+    assert len(spec["questions"]) == 11
+    assert len({item["id"] for item in spec["questions"]}) == 11
+    objective = render_objective(spec, spec["questions"][0])
     assert "preprints" in objective
     assert "Question q01" in objective
     assert "benchmark_claims" in objective
 
 
-def test_campaign_spec_matches_synthesis_schema() -> None:
-    outputs = load_campaign(CAMPAIGN_FILE)["outputs"]
-    assert outputs["findings_sections"] == list(CampaignFindings.model_fields)
+def test_long_horizon_spec_matches_synthesis_schema() -> None:
+    outputs = load_spec(SPEC_FILE)["outputs"]
+    assert outputs["findings_sections"] == list(LongHorizonFindings.model_fields)
     assert set(outputs["hypothesis_fields"]) <= set(Hypothesis.model_fields)
 
 
-def test_campaign_rejects_duplicate_question_ids(tmp_path: Path) -> None:
+def test_long_horizon_rejects_duplicate_question_ids(tmp_path: Path) -> None:
     spec = tmp_path / "bad.toml"
     spec.write_text('graph_version = "research-graph-v1"\n[[questions]]\nid = "q1"\ntext = "first"\n[[questions]]\nid = "q1"\ntext = "second"\n')
     with pytest.raises(ValueError, match="unique"):
-        load_campaign(spec)
+        load_spec(spec)
 
 
-@pytest.mark.parametrize("question_id", [".", "..", "campaign", "manifests"])
-def test_campaign_rejects_question_ids_that_are_not_their_own_folder(tmp_path: Path, question_id: str) -> None:
+@pytest.mark.parametrize("question_id", [".", "..", "synthesis", "manifests"])
+def test_long_horizon_rejects_question_ids_that_are_not_their_own_folder(tmp_path: Path, question_id: str) -> None:
     spec = tmp_path / "unsafe.toml"
     spec.write_text(f'graph_version = "research-graph-v1"\n[[questions]]\nid = "{question_id}"\ntext = "first"\n')
     with pytest.raises(ValueError, match="cannot be"):
-        load_campaign(spec)
+        load_spec(spec)
 
 
-def test_campaign_loads_synthesis_limits_that_cannot_fit_a_retry(tmp_path: Path) -> None:
+def test_long_horizon_loads_synthesis_limits_that_cannot_fit_a_retry(tmp_path: Path) -> None:
     # Only --synthesize checks a retry, against its actual prompt, so questions still run.
     spec = tmp_path / "wide.toml"
-    spec.write_text(CAMPAIGN_FILE.read_text().replace("max_output_tokens = 36_000", "max_output_tokens = 480_000"))
-    assert load_campaign(spec)["synthesis"]["max_output_tokens"] == 480_000
+    spec.write_text(SPEC_FILE.read_text().replace("max_output_tokens = 36_000", "max_output_tokens = 480_000"))
+    assert load_spec(spec)["synthesis"]["max_output_tokens"] == 480_000
 
 
-def test_campaign_requires_question_cost_cap(tmp_path: Path) -> None:
+def test_long_horizon_requires_question_cost_cap(tmp_path: Path) -> None:
     spec = tmp_path / "uncapped.toml"
     spec.write_text('graph_version = "research-graph-v1"\n[execution]\nmax_parallel_scouts = 1\n[[questions]]\nid = "q1"\ntext = "first"\n')
     with pytest.raises(ValueError, match="question_cost_limit_usd"):
-        load_campaign(spec)
+        load_spec(spec)
 
 
 def _ledger(question_id: str) -> EvidenceLedger:
@@ -83,7 +83,7 @@ def _ledger(question_id: str) -> EvidenceLedger:
         unresolved_questions=["What remains open"],
         confidence=0.8,
     ))
-    # A deep dive may reuse a claim ID; campaign refs must still be unique.
+    # A deep dive may reuse a claim ID; long-horizon refs must still be unique.
     ledger.add(ResearchResult(
         question_id="q1", question="definitions", conclusion="Deeper finding",
         claims=[Claim(id="c1", statement=f"{question_id} deep-dive finding",
@@ -95,7 +95,7 @@ def _ledger(question_id: str) -> EvidenceLedger:
 
 async def _complete_questions(monkeypatch, output: Path, question_ids: list[str],
                               verification: VerificationReport | None = None, report_for=None) -> Path:
-    from research_loop.campaign import run_campaign
+    from research_loop.long_horizon import run_long_horizon
 
     class FakeLoop:
         def __init__(self, *_args, **_kwargs):
@@ -109,18 +109,18 @@ async def _complete_questions(monkeypatch, output: Path, question_ids: list[str]
                                    ledger=_ledger(question_id), verification=verification or VerificationReport(),
                                    cost_usd=Decimal("1.25"))
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", FakeLoop)
-    return await run_campaign(
-        CAMPAIGN_FILE, question_ids=question_ids, policy_name="quality",
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", FakeLoop)
+    return await run_long_horizon(
+        SPEC_FILE, question_ids=question_ids, policy_name="quality",
         settings=ResearchSettings.from_env({}), output_dir=output, persist=False,
     )
 
 
 @pytest.mark.asyncio
-async def test_campaign_run_exports_spec_question_files(monkeypatch, tmp_path: Path) -> None:
+async def test_long_horizon_run_exports_spec_question_files(monkeypatch, tmp_path: Path) -> None:
     manifest_path = await _complete_questions(monkeypatch, tmp_path, ["q01"])
     folder = tmp_path / "q01"
-    assert {item.name for item in folder.iterdir()} == set(load_campaign(CAMPAIGN_FILE)["outputs"]["question_files"])
+    assert {item.name for item in folder.iterdir()} == set(load_spec(SPEC_FILE)["outputs"]["question_files"])
     assert "Draft report q01" in (folder / "report.md").read_text()
     assert json.loads((folder / "report.json").read_text())["caveats"] == ["Thin"]
     assert "preprint" in (folder / "bibliography.json").read_text()
@@ -139,9 +139,9 @@ async def test_campaign_run_exports_spec_question_files(monkeypatch, tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_campaign_manifest_records_failed_question(monkeypatch, tmp_path: Path) -> None:
+async def test_long_horizon_manifest_records_failed_question(monkeypatch, tmp_path: Path) -> None:
     from research_loop.async_orchestrator import JobBudgetExceeded
-    from research_loop.campaign import run_campaign
+    from research_loop.long_horizon import run_long_horizon
 
     class OverBudgetLoop:
         def __init__(self, *_args, **_kwargs):
@@ -150,9 +150,9 @@ async def test_campaign_manifest_records_failed_question(monkeypatch, tmp_path: 
         async def run(self, _objective, **_kwargs):
             raise JobBudgetExceeded("job cost cap reached")
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", OverBudgetLoop)
-    manifest_path = await run_campaign(
-        CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", OverBudgetLoop)
+    manifest_path = await run_long_horizon(
+        SPEC_FILE, question_ids=["q01"], policy_name="quality",
         settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False,
     )
     manifest = json.loads(manifest_path.read_text())
@@ -180,12 +180,12 @@ def _loop_failing_on(failing: set[str]):
 
 
 @pytest.mark.asyncio
-async def test_campaign_continues_past_a_failed_question(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import run_campaign
+async def test_long_horizon_continues_past_a_failed_question(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.long_horizon import run_long_horizon
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", _loop_failing_on({"q01"}))
-    manifest_path = await run_campaign(
-        CAMPAIGN_FILE, question_ids=["q01", "q02"], policy_name="quality",
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", _loop_failing_on({"q01"}))
+    manifest_path = await run_long_horizon(
+        SPEC_FILE, question_ids=["q01", "q02"], policy_name="quality",
         settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False,
     )
     manifest = json.loads(manifest_path.read_text())
@@ -196,13 +196,13 @@ async def test_campaign_continues_past_a_failed_question(monkeypatch, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_campaign_stops_once_failures_suggest_a_shared_cause(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import run_campaign
+async def test_long_horizon_stops_once_failures_suggest_a_shared_cause(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.long_horizon import run_long_horizon
 
-    assert load_campaign(CAMPAIGN_FILE)["execution"]["max_failed_questions"] == 2
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", _loop_failing_on({"q01", "q02", "q03"}))
-    manifest_path = await run_campaign(
-        CAMPAIGN_FILE, question_ids=["q01", "q02", "q03", "q04"], policy_name="quality",
+    assert load_spec(SPEC_FILE)["execution"]["max_failed_questions"] == 2
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", _loop_failing_on({"q01", "q02", "q03"}))
+    manifest_path = await run_long_horizon(
+        SPEC_FILE, question_ids=["q01", "q02", "q03", "q04"], policy_name="quality",
         settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False,
     )
     manifest = json.loads(manifest_path.read_text())
@@ -211,35 +211,35 @@ async def test_campaign_stops_once_failures_suggest_a_shared_cause(monkeypatch, 
     assert manifest["not_run"] == ["q03", "q04"]
 
 
-def test_campaign_cli_exits_nonzero_and_names_failed_questions(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_long_horizon_cli_exits_nonzero_and_names_failed_questions(monkeypatch, tmp_path: Path, capsys) -> None:
     import sys
 
-    import research_loop.campaign as campaign
+    import research_loop.long_horizon as long_horizon
 
     settings = ResearchSettings.from_env({})
-    monkeypatch.setattr(campaign, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
-    monkeypatch.setattr(campaign, "_paid_preflight", lambda *_args: None)
-    monkeypatch.setattr(campaign, "ResearchLoop", _loop_failing_on({"q01"}))
-    monkeypatch.setattr(sys, "argv", ["research-campaign", "--question", "q01", "--paid", "--output", str(tmp_path)])
+    monkeypatch.setattr(long_horizon, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
+    monkeypatch.setattr(long_horizon, "_paid_preflight", lambda *_args: None)
+    monkeypatch.setattr(long_horizon, "ResearchLoop", _loop_failing_on({"q01"}))
+    monkeypatch.setattr(sys, "argv", ["research-long-horizon", "--question", "q01", "--paid", "--output", str(tmp_path)])
     with pytest.raises(SystemExit) as exc:
-        campaign.main()
+        long_horizon.main()
     assert exc.value.code == 1
     assert "q01 (JobBudgetExceeded)" in capsys.readouterr().err
 
 
-def test_campaign_rejects_a_nonpositive_failure_limit(tmp_path: Path) -> None:
+def test_long_horizon_rejects_a_nonpositive_failure_limit(tmp_path: Path) -> None:
     spec = tmp_path / "limit.toml"
-    spec.write_text(CAMPAIGN_FILE.read_text().replace("max_failed_questions = 2", "max_failed_questions = 0"))
+    spec.write_text(SPEC_FILE.read_text().replace("max_failed_questions = 2", "max_failed_questions = 0"))
     with pytest.raises(ValueError, match="max_failed_questions"):
-        load_campaign(spec)
+        load_spec(spec)
 
 
 @pytest.mark.asyncio
 async def test_aggregate_assigns_unique_refs_and_keeps_source_versions(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign
+    from research_loop.long_horizon import aggregate_long_horizon
 
     await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
-    evidence = aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path)
+    evidence = aggregate_long_horizon(load_spec(SPEC_FILE), tmp_path)
     assert [item.question["id"] for item in evidence.completed] == ["q01", "q02"]
     assert evidence.missing == [f"q{index:02d}" for index in range(3, 12)]
     assert evidence.refs == {"q01/q1/c1", "q01/q1/c1~2", "q02/q1/c1", "q02/q1/c1~2"}
@@ -251,7 +251,7 @@ async def test_aggregate_assigns_unique_refs_and_keeps_source_versions(monkeypat
 
 @pytest.mark.asyncio
 async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign, synthesis_prompt
+    from research_loop.long_horizon import aggregate_long_horizon, synthesis_prompt
     from research_loop.schemas import ClaimCheck
 
     verification = VerificationReport(needs_research=True, checks=[
@@ -261,9 +261,9 @@ async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path:
                    severity="major", explanation="excerpt does not say this"),
     ])
     await _complete_questions(monkeypatch, tmp_path, ["q01"], verification)
-    campaign = load_campaign(CAMPAIGN_FILE)
-    payload = json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))
-    # Only flagged checks reach the prompt, with ledger IDs mapped to campaign refs.
+    spec = load_spec(SPEC_FILE)
+    payload = json.loads(synthesis_prompt(spec, aggregate_long_horizon(spec, tmp_path)))
+    # Only flagged checks reach the prompt, with ledger IDs mapped to long-horizon refs.
     question = payload["questions"][0]
     assert question["verification"] == {
         "checked": 2, "not_supported": 1, "major": 1, "needs_research": True,
@@ -280,12 +280,12 @@ async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path:
 
 @pytest.mark.asyncio
 async def test_aggregate_skips_outputs_that_answered_a_different_objective(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign
+    from research_loop.long_horizon import aggregate_long_horizon
 
     await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
-    campaign = load_campaign(CAMPAIGN_FILE)
-    campaign["questions"][1]["text"] = "A reworded question the stored evidence never answered"
-    evidence = aggregate_campaign(campaign, tmp_path)
+    spec = load_spec(SPEC_FILE)
+    spec["questions"][1]["text"] = "A reworded question the stored evidence never answered"
+    evidence = aggregate_long_horizon(spec, tmp_path)
     assert [item.question["id"] for item in evidence.completed] == ["q01"]
     assert evidence.stale == ["q02"]
     assert "q02" in evidence.missing
@@ -295,20 +295,20 @@ async def test_aggregate_skips_outputs_that_answered_a_different_objective(monke
     run = json.loads(run_path.read_text())
     del run["objective_sha256"]
     run_path.write_text(json.dumps(run))
-    assert aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path).stale == ["q01"]
+    assert aggregate_long_horizon(load_spec(SPEC_FILE), tmp_path).stale == ["q01"]
 
 
 @pytest.mark.asyncio
-async def test_synthesis_refuses_partial_campaign_and_oversized_prompt(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import prepare_synthesis
+async def test_synthesis_refuses_partial_long_horizon_and_oversized_prompt(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.long_horizon import prepare_synthesis
 
     with pytest.raises(ValueError, match="no completed"):
-        prepare_synthesis(CAMPAIGN_FILE, tmp_path, allow_partial=True)
+        prepare_synthesis(SPEC_FILE, tmp_path, allow_partial=True)
     await _complete_questions(monkeypatch, tmp_path, ["q01"])
     with pytest.raises(ValueError, match="--allow-partial"):
-        prepare_synthesis(CAMPAIGN_FILE, tmp_path, allow_partial=False)
+        prepare_synthesis(SPEC_FILE, tmp_path, allow_partial=False)
     tiny = tmp_path / "tiny.toml"
-    tiny.write_text(CAMPAIGN_FILE.read_text().replace("max_prompt_chars = 600_000", "max_prompt_chars = 100"))
+    tiny.write_text(SPEC_FILE.read_text().replace("max_prompt_chars = 600_000", "max_prompt_chars = 100"))
     with pytest.raises(ValueError, match="max_prompt_chars"):
         prepare_synthesis(tiny, tmp_path, allow_partial=True)
     from research_loop.policy import ModelRoute
@@ -316,7 +316,7 @@ async def test_synthesis_refuses_partial_campaign_and_oversized_prompt(monkeypat
     # A prompt under the character cap is still refused when the route cannot fit one retry.
     tight = ModelRoute("anthropic:claude-opus-5", 3, 1, 1_000, settings={"max_tokens": 36_000})
     with pytest.raises(ValueError, match="one retry"):
-        prepare_synthesis(CAMPAIGN_FILE, tmp_path, allow_partial=True, route=tight)
+        prepare_synthesis(SPEC_FILE, tmp_path, allow_partial=True, route=tight)
 
 
 def _synthesis_body(refs: list[str]) -> dict:
@@ -334,12 +334,12 @@ def _synthesis_body(refs: list[str]) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("ignore:A `cost_limit` is set but cannot be enforced")
-async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypatch, tmp_path: Path) -> None:
+async def test_synthesis_retries_unknown_refs_and_writes_synthesis_files(monkeypatch, tmp_path: Path) -> None:
     from pydantic_ai.messages import ModelResponse, ToolCallPart
     from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-    from research_loop.agents import campaign_synthesizer_agent
-    from research_loop.campaign import SYNTHESIS_DIR, synthesize_campaign
+    from research_loop.agents import long_horizon_synthesizer_agent
+    from research_loop.long_horizon import SYNTHESIS_DIR, synthesize_long_horizon
 
     def report_for(question_id: str) -> FinalReport:
         return FinalReport(
@@ -359,9 +359,9 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
         refs = ["q01/q1/c1", "q07/c9"] if len(prompts) == 1 else ["q01/q1/c1", "q02/q1/c1~2"]
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _synthesis_body(refs))])
 
-    with campaign_synthesizer_agent.override(model=FunctionModel(respond)):
-        manifest_path = await synthesize_campaign(
-            CAMPAIGN_FILE, policy_name="quality", settings=ResearchSettings.from_env({}),
+    with long_horizon_synthesizer_agent.override(model=FunctionModel(respond)):
+        manifest_path = await synthesize_long_horizon(
+            SPEC_FILE, policy_name="quality", settings=ResearchSettings.from_env({}),
             output_dir=tmp_path, persist=False, allow_partial=True,
         )
 
@@ -369,13 +369,13 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
     assert "q02/q1/c1~2" in prompts[0]
     assert "excerpt" not in prompts[0]
     assert "q07/c9" in prompts[1]  # the retry names the invented ref
-    campaign_dir = tmp_path / SYNTHESIS_DIR
-    assert {item.name for item in campaign_dir.iterdir()} == set(load_campaign(CAMPAIGN_FILE)["outputs"]["campaign_files"])
-    hypotheses = json.loads((campaign_dir / "hypotheses.json").read_text())
+    long_horizon_dir = tmp_path / SYNTHESIS_DIR
+    assert {item.name for item in long_horizon_dir.iterdir()} == set(load_spec(SPEC_FILE)["outputs"]["synthesis_files"])
+    hypotheses = json.loads((long_horizon_dir / "hypotheses.json").read_text())
     assert hypotheses[0]["supporting_evidence"] == ["q01/q1/c1", "q02/q1/c1~2"]
-    report = (campaign_dir / "report.md").read_text()
+    report = (long_horizon_dir / "report.md").read_text()
     assert "Partial synthesis" in report and "q01/q1/c1, q02/q1/c1~2" in report
-    ledger = json.loads((campaign_dir / "evidence_ledger.json").read_text())
+    ledger = json.loads((long_horizon_dir / "evidence_ledger.json").read_text())
     assert {item["ref"] for item in ledger["claims"]} == {"q01/q1/c1", "q01/q1/c1~2", "q02/q1/c1", "q02/q1/c1~2"}
     manifest = json.loads(manifest_path.read_text())
     assert manifest["kind"] == "synthesis"
@@ -388,19 +388,19 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
     assert manifest["hypothesis_count"] == 1
 
 
-def test_pilot_spec_matches_campaign_except_identity_and_questions() -> None:
-    campaign = load_campaign(CAMPAIGN_FILE)
-    pilot = load_campaign(CAMPAIGN_FILE.with_name("pilot.toml"))
+def test_pilot_spec_matches_long_horizon_except_identity_and_questions() -> None:
+    spec = load_spec(SPEC_FILE)
+    pilot = load_spec(SPEC_FILE.with_name("pilot.toml"))
     identity = {"id", "title", "status", "questions"}
     assert {key: value for key, value in pilot.items() if key not in identity} == {
-        key: value for key, value in campaign.items() if key not in identity
+        key: value for key, value in spec.items() if key not in identity
     }
     assert [item["id"] for item in pilot["questions"]] == ["p01"]
 
 
 @pytest.mark.asyncio
-async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import run_campaign
+async def test_long_horizon_applies_reserve_scout_tokens_salvage_and_notes(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.long_horizon import run_long_horizon
     from research_loop.schemas import ResearchRole
 
     seen = {}
@@ -414,12 +414,12 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
             return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Draft"), ledger=_ledger("q01"),
                                    verification=VerificationReport(), cost_usd=None)
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", RecordingLoop)
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", RecordingLoop)
     settings = ResearchSettings.from_env({})
-    await run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+    await run_long_horizon(SPEC_FILE, question_ids=["q01"], policy_name="quality",
                        settings=settings, output_dir=tmp_path, persist=False)
-    assert seen["settings"] is settings  # the loop uses the campaign's settings, not a fresh environment read
-    execution = load_campaign(CAMPAIGN_FILE)["execution"]
+    assert seen["settings"] is settings  # the loop uses the study's settings, not a fresh environment read
+    execution = load_spec(SPEC_FILE)["execution"]
     policy = seen["policy"]
     assert seen["config"].salvage_exhausted_research is True
     assert policy.job_reserve_usd == execution["question_reserve_usd"]
@@ -435,7 +435,7 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
 
 
 def test_question_report_carries_caveats_and_verifier_findings() -> None:
-    from research_loop.campaign import render_question_report
+    from research_loop.long_horizon import render_question_report
     from research_loop.schemas import ClaimCheck
 
     report = FinalReport(answer="## Summary\n\nSWE-bench has 2,294 tasks.", caveats=["Dataset card was not version-pinned."])
@@ -471,7 +471,7 @@ def _quoted_ledger() -> EvidenceLedger:
 
 
 def test_question_report_counts_quotes_not_found_in_tool_output() -> None:
-    from research_loop.campaign import render_question_report
+    from research_loop.long_horizon import render_question_report
 
     text = render_question_report(FinalReport(answer="Answer"), VerificationReport(), _quoted_ledger())
     assert "1 of 2 quoted passages was not found in any text the research tools returned (claims: q1/c2)." in text
@@ -481,7 +481,7 @@ def test_question_report_counts_quotes_not_found_in_tool_output() -> None:
 
 @pytest.mark.asyncio
 async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign, run_campaign, synthesis_prompt
+    from research_loop.long_horizon import aggregate_long_horizon, run_long_horizon, synthesis_prompt
 
     class QuotingLoop:
         def __init__(self, *_args, **_kwargs):
@@ -497,11 +497,11 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
                 ledger=_quoted_ledger(), verification=VerificationReport(), cost_usd=None,
             )
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", QuotingLoop)
-    await run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", QuotingLoop)
+    await run_long_horizon(SPEC_FILE, question_ids=["q01"], policy_name="quality",
                        settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
-    campaign = load_campaign(CAMPAIGN_FILE)
-    claims = json.loads(synthesis_prompt(campaign, aggregate_campaign(campaign, tmp_path)))["questions"][0]["claims"]
+    spec = load_spec(SPEC_FILE)
+    claims = json.loads(synthesis_prompt(spec, aggregate_long_horizon(spec, tmp_path)))["questions"][0]["claims"]
     by_ref = {ref: item for item in claims for ref in item["claim_refs"]}
     assert by_ref["q01/q1/c2"]["quote_check"] == "not_found"
     assert by_ref["q01/q1/c2"]["source_check"] == "not_found"
@@ -513,7 +513,7 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
 
 
 def test_prompt_claims_count_distinct_sources_and_flag_the_whole_claim() -> None:
-    from research_loop.campaign import _prompt_claims
+    from research_loop.long_horizon import _prompt_claims
 
     paper = {"url": "https://example.org/a", "title": "A", "source_type": "paper", "publication_status": "preprint"}
     same_type = {"url": "https://example.org/b", "title": "B", "source_type": "paper", "publication_status": "unknown"}
@@ -548,7 +548,7 @@ def test_prompt_claims_count_distinct_sources_and_flag_the_whole_claim() -> None
 
 
 def test_prompt_claims_count_works_that_support_the_claim() -> None:
-    from research_loop.campaign import _prompt_claims
+    from research_loop.long_horizon import _prompt_claims
 
     paper = {"url": "https://example.org/a", "title": "A", "source_type": "paper", "publication_status": "journal"}
     claims = [{"question_id": "q01", "ref": "q01/q1/c1", "claim": {"id": "c1", "evidence": [
@@ -578,7 +578,7 @@ def test_prompt_claims_count_works_that_support_the_claim() -> None:
 
 
 def test_prompt_source_table_lists_each_work_once_across_questions() -> None:
-    from research_loop.campaign import _prompt_claims, _Works
+    from research_loop.long_horizon import _prompt_claims, _Works
 
     paper = {"url": "https://example.org/a", "title": "A", "published_at": "2026-03-01"}
     claims = [
@@ -606,32 +606,32 @@ def test_prompt_source_table_lists_each_work_once_across_questions() -> None:
 
 @pytest.mark.asyncio
 async def test_a_report_citing_no_claims_is_named_in_the_synthesis_inputs(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign, render_campaign_report
-    from research_loop.schemas import CampaignSynthesis
+    from research_loop.long_horizon import aggregate_long_horizon, render_long_horizon_report
+    from research_loop.schemas import LongHorizonSynthesis
 
     def report_for(question_id: str) -> FinalReport:
         claims = [] if question_id == "q02" else [ReportClaim(statement="cited", claim_ids=["q1/c1"])]
         return FinalReport(answer=f"Draft report {question_id}", claims=claims)
 
     await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"], report_for=report_for)
-    campaign = load_campaign(CAMPAIGN_FILE)
-    evidence = aggregate_campaign(campaign, tmp_path)
+    spec = load_spec(SPEC_FILE)
+    evidence = aggregate_long_horizon(spec, tmp_path)
     assert evidence.uncited == ["q02"]
-    synthesis = CampaignSynthesis(summary="s", findings=CampaignFindings())
-    assert "contributed none: q02." in render_campaign_report(campaign, evidence, synthesis)
+    synthesis = LongHorizonSynthesis(summary="s", findings=LongHorizonFindings())
+    assert "contributed none: q02." in render_long_horizon_report(spec, evidence, synthesis)
 
 
-def test_campaign_instruction_omits_unknown_statuses_from_a_present_list() -> None:
+def test_long_horizon_instruction_omits_unknown_statuses_from_a_present_list() -> None:
     from research_loop.agents import INSTRUCTIONS
 
-    text = INSTRUCTIONS["campaign_synthesizer"]
+    text = INSTRUCTIONS["long_horizon_synthesizer"]
     assert "Unknown statuses are left out of a list that is present" in text
     assert "a listed status is not the status of every source" in text
 
 
 @pytest.mark.asyncio
 async def test_repeated_stored_claim_id_keeps_every_copy(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign, synthesis_prompt
+    from research_loop.long_horizon import aggregate_long_horizon, synthesis_prompt
     from research_loop.experiment import file_sha256
     from research_loop.schemas import ClaimCheck
 
@@ -671,12 +671,12 @@ async def test_repeated_stored_claim_id_keeps_every_copy(monkeypatch, tmp_path: 
     run["files"] = {name: file_sha256(folder / name) for name in run["files"]}
     (folder / "run.json").write_text(json.dumps(run) + "\n", encoding="utf-8")
 
-    campaign = load_campaign(CAMPAIGN_FILE)
-    evidence = aggregate_campaign(campaign, tmp_path)
+    spec = load_spec(SPEC_FILE)
+    evidence = aggregate_long_horizon(spec, tmp_path)
     both = ["q01/q1/c1", "q01/q1/c1~2"]
     assert evidence.contradictions["q01"] == [{"description": "both copies", "claim_refs": both}]
     assert evidence.verification["q01"]["findings"][0]["claim_refs"] == both
-    row = json.loads(synthesis_prompt(campaign, evidence))["questions"][0]["claims"][0]
+    row = json.loads(synthesis_prompt(spec, evidence))["questions"][0]["claims"][0]
     assert row["claim_refs"] == both
     assert row["source_count"] == 2
     assert row["quote_check"] == "not_found"
@@ -684,10 +684,10 @@ async def test_repeated_stored_claim_id_keeps_every_copy(monkeypatch, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_cancelled_campaign_run_marks_its_manifest_failed(monkeypatch, tmp_path: Path) -> None:
+async def test_cancelled_long_horizon_run_marks_its_manifest_failed(monkeypatch, tmp_path: Path) -> None:
     import asyncio
 
-    from research_loop.campaign import run_campaign
+    from research_loop.long_horizon import run_long_horizon
 
     started = asyncio.Event()
 
@@ -699,9 +699,9 @@ async def test_cancelled_campaign_run_marks_its_manifest_failed(monkeypatch, tmp
             started.set()
             await asyncio.Event().wait()
 
-    monkeypatch.setattr("research_loop.campaign.ResearchLoop", HangingLoop)
-    running = asyncio.create_task(run_campaign(
-        CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", HangingLoop)
+    running = asyncio.create_task(run_long_horizon(
+        SPEC_FILE, question_ids=["q01"], policy_name="quality",
         settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False,
     ))
     await asyncio.wait_for(started.wait(), timeout=15)
@@ -716,13 +716,13 @@ async def test_cancelled_campaign_run_marks_its_manifest_failed(monkeypatch, tmp
 
 @pytest.mark.asyncio
 async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch, tmp_path: Path) -> None:
-    import research_loop.campaign as campaign
+    import research_loop.long_horizon as long_horizon
 
     await _complete_questions(monkeypatch, tmp_path, ["q01"])
     folder = tmp_path / "q01"
     before = {path.name: path.read_bytes() for path in folder.iterdir()}
 
-    real_write_json = campaign._write_json
+    real_write_json = long_horizon._write_json
 
     def failing_write_json(path: Path, value) -> None:
         if path.name == "bibliography.json":
@@ -737,10 +737,10 @@ async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch,
             return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Rerun report q01"),
                                    ledger=_ledger("q01"), verification=VerificationReport(), cost_usd=None)
 
-    monkeypatch.setattr(campaign, "ResearchLoop", RerunLoop)
-    monkeypatch.setattr(campaign, "_write_json", failing_write_json)
+    monkeypatch.setattr(long_horizon, "ResearchLoop", RerunLoop)
+    monkeypatch.setattr(long_horizon, "_write_json", failing_write_json)
     with pytest.raises(OSError, match="disk full"):  # after report.md and report.json were written
-        await campaign.run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+        await long_horizon.run_long_horizon(SPEC_FILE, question_ids=["q01"], policy_name="quality",
                                     settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
 
     assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
@@ -749,7 +749,7 @@ async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_aggregate_rejects_outputs_changed_after_publication(monkeypatch, tmp_path: Path) -> None:
-    from research_loop.campaign import aggregate_campaign
+    from research_loop.long_horizon import aggregate_long_horizon
 
     await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
     run = json.loads((tmp_path / "q01" / "run.json").read_text())
@@ -757,7 +757,7 @@ async def test_aggregate_rejects_outputs_changed_after_publication(monkeypatch, 
     report = tmp_path / "q01" / "report.json"
     report.write_text(report.read_text().replace("Draft report q01", "Edited by hand"))
 
-    evidence = aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path)
+    evidence = aggregate_long_horizon(load_spec(SPEC_FILE), tmp_path)
     assert evidence.invalid == ["q01"]
     assert "q01" in evidence.missing
     assert [item.question["id"] for item in evidence.completed] == ["q02"]
@@ -769,11 +769,11 @@ async def test_aggregate_rejects_outputs_changed_after_publication(monkeypatch, 
     (("normalized_web = true\n", "normalized_web = false\n"), "normalized_web"),                    # unsupported
     (("planner_question_min = 1\n", "planner_question_min = 5\n"), "planner_question_min"),         # above the max
 ], ids=["missing-field", "unknown-key", "provider-native-web", "inverted-planner-range"])
-def test_campaign_spec_problems_fail_at_load_not_mid_run(tmp_path: Path, edit, problem) -> None:
+def test_long_horizon_spec_problems_fail_at_load_not_mid_run(tmp_path: Path, edit, problem) -> None:
     old, new = edit
-    text = CAMPAIGN_FILE.read_text()
+    text = SPEC_FILE.read_text()
     assert old in text
-    spec = tmp_path / "campaign.toml"
+    spec = tmp_path / "spec.toml"
     spec.write_text(text.replace(old, new, 1))
     with pytest.raises(ValueError, match=problem):
-        load_campaign(spec)
+        load_spec(spec)

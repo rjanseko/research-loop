@@ -11,9 +11,9 @@ synthesis, and verification now send a projection of the ledger instead of the f
 (options 1 and 2), and those three calls are refused before the model when one validation
 retry would not fit their token limit (option 3). The measurements through the rerun are what
 those runs sent. The [projection](#ledger-prompt-projection) section rebuilds the rerun prompts
-with the new view. Campaign synthesis sends a source table, report claims, caveats, unresolved
+with the new view. Long-horizon synthesis sends a source table, report claims, caveats, unresolved
 questions, contradictions, and verifier findings; the full ledger stays in the aggregated file
-(option 4). The finishing and campaign token limits were then raised so questions deeper than p01
+(option 4). The finishing and long-horizon token limits were then raised so questions deeper than p01
 still fit a retry; see [Headroom](#headroom).
 
 ## Summary
@@ -21,7 +21,7 @@ still fit a retry; see [Headroom](#headroom).
 Every model call in this pipeline gets a prompt that code builds from JSON. Four problems stand
 out, most serious first:
 
-1. **The old campaign synthesis prompt did not fit.** One pilot question produced 82,719 characters.
+1. **The old long-horizon synthesis prompt did not fit.** One pilot question produced 82,719 characters.
    All 11 questions on that prompt would have been about 910,000 characters, roughly 367,000 Opus
    tokens per request, over the `[synthesis]` limits. The current prompt (option 4) is 47,312
    characters for p01 at the rerun's depth. Eleven questions of that depth are 463,000 to 510,000
@@ -39,7 +39,7 @@ out, most serious first:
    dollars.
 4. **Some evidence never reached the pilot prompts.** Fetches returned only the first
    12,000 characters of a document; paging has since landed. Salvage still keeps 4,000 characters
-   per tool result and 48,000 in total. The campaign prompt no longer sends excerpts. openai.com
+   per tool result and 48,000 in total. The long-horizon prompt no longer sends excerpts. openai.com
    blocks the fetcher. The pilot report lists missing primary-source details as caveats because of this.
 
 ## Background: prompts and limits in this pipeline
@@ -49,8 +49,8 @@ out, most serious first:
 - **A tool loop** (scouts, deep dives) is one agent run with many requests. After each tool call,
   the next request resends the instructions, the schemas, the prompt, and every earlier call and
   result.
-- **Limits per call** come from each role's `ModelRoute` in `policy.py`. The campaign adjusts some
-  of them in `campaign.toml`. There are four:
+- **Limits per call** come from each role's `ModelRoute` in `policy.py`. The spec adjusts some
+  of them in `spec.toml`. There are four:
   - `max_requests`;
   - `max_tool_calls`;
   - `total_tokens_limit`, which counts input plus output added up across all requests in the run;
@@ -61,7 +61,7 @@ out, most serious first:
 - **Characters versus tokens.** Tokens are what providers bill for and what the limits count.
   On the same JSON, OpenAI models measured about **3.8 characters per token** and Opus about
   **2.5**. The same prompt therefore costs roughly 1.5 times as many tokens on Opus, which runs the
-  per-question synthesis and the campaign synthesis. These ratios come from pilot tasks (gap
+  per-question synthesis and the long-horizon synthesis. These ratios come from pilot tasks (gap
   analysis 87,125 characters to 22,829 input tokens, and the verifier 127,067 to 32,950, both on
   OpenAI; synthesis 99,254 to 39,986 on Opus). They are approximate, because the input also
   includes the instructions and the output schema.
@@ -77,7 +77,7 @@ out, most serious first:
 | Salvage | `_run_research` | the original prompt plus `gathered_evidence`: tool results cut to 4,000 characters each, 48,000 in total (`_SALVAGE_*`) | 2 requests / 80k / a quarter of the route's $ cap during the pilot ($0.20 scout, $0.75 deep dive); now half |
 | Synthesis | `_synthesize` | objective, projected ledger (one source table; search fields omitted), constraints | 8 / 4 / 120k (now 180k) / $3.50 |
 | Verifier | `_verify` | objective, the report, projected ledger limited to claims the report cites or a contradiction names, constraints | 8 / 8 / 100k (now 150k) / $2.50 |
-| Campaign synthesis | `campaign.py` `synthesis_prompt` | one source table (title, url, date per work); for each question: report claims (statement, claim refs, lowest cited confidence, supporting and contradicting works, source type, publication status, not-found and retracted flags), caveats, unresolved questions, contradictions, verifier findings. The full ledger stays in the aggregated file | `[synthesis]`: 2 requests / 400k tokens (now 600k) / 36k output tokens / $6, prompt at most 360,000 characters (now 600,000) |
+| Long-horizon synthesis | `long_horizon.py` `synthesis_prompt` | one source table (title, url, date per work); for each question: report claims (statement, claim refs, lowest cited confidence, supporting and contradicting works, source type, publication status, not-found and retracted flags), caveats, unresolved questions, contradictions, verifier findings. The full ledger stays in the aggregated file | `[synthesis]`: 2 requests / 400k tokens (now 600k) / 36k output tokens / $6, prompt at most 360,000 characters (now 600,000) |
 
 ## Measured in the pilot
 
@@ -101,7 +101,7 @@ The run cost $2.66 in total. Synthesis wrote 10,844 output tokens, which would h
 at Anthropic's default of 4,096. That confirms the `max_tokens` setting added to the planner and
 synthesis routes in `b22fe28` was needed.
 
-## Problem 1: the campaign synthesis prompt
+## Problem 1: the long-horizon synthesis prompt
 
 These figures are the pilot prompt, before option 4. The current prompt is the claim list in the summary: report claims, caveats, contradictions, and verifier findings, with no report prose and no excerpts. The 48,000-token output cap in the list below is the old one; it is 36,000 now, so one retry of a 360,000-character prompt fits the 400,000 token limit.
 
@@ -109,11 +109,11 @@ For the pilot question the old prompt was **82,719 characters**:
 
 | Part | Characters | Contents |
 |---|---:|---|
-| Campaign header | 1,010 | title, dates, source policy, output fields |
+| Long-horizon header | 1,010 | title, dates, source policy, output fields |
 | Question block | 23,728 | report text 11,480; caveats 3,419; contradictions 2,842; unresolved questions 5,703 |
 | Evidence | 57,910 | 45 claims and 68 evidence items: statements 18,305; excerpts (at most 300 each) 15,245; source metadata 16,957; the rest is JSON structure |
 
-**Projection for the full campaign on that old prompt** *(estimate)*: 11 questions × about 82,700 characters ≈ **910,000
+**Projection for the full study on that old prompt** *(estimate)*: 11 questions × about 82,700 characters ≈ **910,000
 characters**. At Opus's ~2.5 characters per token, that is **≈367,000 input tokens per request**.
 Compared with the `[synthesis]` limits as they stood then:
 
@@ -195,7 +195,7 @@ dive hit its 40-tool-call limit; the third scout finished on its own after 9 req
 17–24% of their dollar caps ($0.80 per scout; $3.00 for the deep dive during the pilot). After a
 limit, salvage replays up to 48,000 characters of what the run gathered.
 
-**The search guidance was followed only partly.** The campaign's research notes tell scouts to
+**The search guidance was followed only partly.** The study's research notes tell scouts to
 start with scholarly search. Their actual tool use:
 
 | Task | web_fetch | scholar_search | scholar_fetch | scholar_get | duckduckgo |
@@ -223,7 +223,7 @@ Each of those still adds a call and a result to every later turn.
   `next_start` (see `docs/acquisition.md`).
 - **Salvage keeps 4,000 characters per tool result and 48,000 in total.** Anything longer or later
   is dropped before the wrap-up call.
-- **The pilot's campaign synthesis kept 300 characters of each excerpt.** The current campaign prompt does not send excerpts. Per-question prompts still cut an excerpt at 300 characters when the evidence has no quote.
+- **The pilot's long-horizon synthesis kept 300 characters of each excerpt.** The current long-horizon prompt does not send excerpts. Per-question prompts still cut an excerpt at 300 characters when the evidence has no quote.
 - **openai.com returns HTTP 403** (bot protection), so OpenAI's own posts never enter a prompt. The
   report's OpenAI figures came from secondary sources, and the verifier flagged them as major issues.
 
@@ -231,7 +231,7 @@ Each of those still adds a call and a result to every later turn.
 
 | Prompt | Risk | Consequence | When it bites |
 |---|---|---|---|
-| Campaign synthesis | over the character cap, or a retry over the token limit | `--synthesize` refuses (dry run) or fails before a paid call | a prompt above 360,000 characters, or limits whose output cap cannot fit one retry of that cap |
+| Long-horizon synthesis | over the character cap, or a retry over the token limit | `--synthesize` refuses (dry run) or fails before a paid call | a prompt above 360,000 characters, or limits whose output cap cannot fit one retry of that cap |
 | Gap analysis, synthesis, verifier | one retry goes over the token limit | the question fails after most of its budget is spent | more likely under the deeper settings |
 | Scout and deep-dive loops | history grows with the square of the turns | budgets run out early; salvage replaces the final answer | two of three scouts and the deep dive in the pilot |
 | Truncation and blocking | evidence never collected | more caveats, weaker or secondary-source findings | long documents; vendor sites behind bot protection |
@@ -267,7 +267,7 @@ leaves room for one retry of synthesis and verification.
    limits were later raised to 180k and 150k tokens; see [Headroom](#headroom). The question fails with `PromptExceedsRetryBudget`, the task is stored with no
    model request, and the ledger gathered so far is kept. On the trimmed rerun prompts, all three
    finishing steps fit one retry; see [Ledger prompt projection](#ledger-prompt-projection).
-4. **Slim the campaign synthesis prompt.** **Done.** Each question contributes its report claims
+4. **Slim the long-horizon synthesis prompt.** **Done.** Each question contributes its report claims
    (statement, claim refs, lowest cited confidence, supporting and contradicting work ids and counts, source type, publication status, and a not-found quote, source, or retracted flag),
    caveats, unresolved questions, contradictions, and verifier findings. One source table lists each
    cited work once, with its title, url, and date, so the synthesizer can tell a vendor's report
@@ -290,7 +290,7 @@ leaves room for one retry of synthesis and verification.
 
    Paging and trimming change what benchmark runs see, so they need a `docs/benchmarks.md` note
    and a new fetch version.
-6. **Steer the search more strongly.** Move the key search guidance from the campaign's research
+6. **Steer the search more strongly.** Move the key search guidance from the study's research
    notes, which reach the model as constraints, into the scout instructions in `agents.py`.
 
 ## Rerun under evidence version 3
@@ -304,16 +304,16 @@ $2.66), and produced 56 claims, 108 evidence items, and 62 sources (45, 68, and 
 | Gap analysis | 87,125 chars / 24.1k of 70k | 88,187 chars / 24.0k of 70k |
 | Synthesis | 99,254 chars / 50.8k of 120k | 148,387 chars / 69.7k of 120k |
 | Verifier | 127,067 chars / 41.6k of 100k | 177,808 chars / 54.5k of 100k |
-| Campaign synthesis prompt | 82,719 chars | 111,722 chars |
+| Long-horizon synthesis prompt | 82,719 chars | 111,722 chars |
 
-What changed on that rerun. It still sent the full ledger. The [projection](#ledger-prompt-projection) rebuilds these prompts: one retry of each finishing step fits, and eleven questions fit the campaign character cap with room for one retry.
+What changed on that rerun. It still sent the full ledger. The [projection](#ledger-prompt-projection) rebuilds these prompts: one retry of each finishing step fits, and eleven questions fit the long-horizon character cap with room for one retry.
 
 - **Problem 2 had arrived for the unprojected ledger.** At these sizes one retry of synthesis (about 2 x 58k input + 3 x 11k
   output tokens) or of the verifier (about 2 x 46k + 3 x 9k) exceeds its token limit *(estimate)*.
   Evidence version 3 retries an output that cites an unknown claim ID, so such a retry would have
   ended the question with `UsageLimitExceeded` rather than fix the citation. Neither retried in this run.
   The pre-call check now refuses that case before the model, and the trimmed prompts fit.
-- **Problem 1 was closer on the old campaign prompt.** At about 112,000 characters per question, three questions fit the
+- **Problem 1 was closer on the old long-horizon prompt.** At about 112,000 characters per question, three questions fit the
   360,000-character synthesis cap and four do not *(estimate)*. Option 4 brings eleven questions of the rerun's depth under that cap.
 - **Research loops still end on limits.** Two of three scouts stopped at their 16-request limit,
   and both deep dives stopped on their 180k-token limit (162k and 185k input tokens), now that
@@ -382,7 +382,7 @@ field share one row. Keeping the claims contradictions name and every result's q
 p01 verifier view unchanged (91,685 characters): the report cited 55 of 56 claims, and all 21
 claims named in contradictions were among them.
 
-Campaign synthesis counts distinct works whose evidence supports a report claim. Citations that
+Long-horizon synthesis counts distinct works whose evidence supports a report claim. Citations that
 share a URL, DOI, arXiv ID, or catalog ID are one work, whatever their locator, provider, fetch
 time, or title. Of p01's 41 report claims, 13 now have a lower `source_count` than when every
 distinct source JSON counted. Three of them fall below 2, leaving 27 claims instead of 30 with
@@ -392,7 +392,7 @@ now reported as `contradicting_source_count` instead of adding to `source_count`
 ## Headroom
 
 Status as of 2026-09-23. The retry check above let p01 through with about 10% to spare, and eleven
-p01-sized questions filled the old campaign cap to within 400 characters. A question refused at
+p01-sized questions filled the old long-horizon cap to within 400 characters. A question refused at
 synthesis or verification loses its research: the p01 rerun cost $2.94. The finishing calls are
 cheap by comparison, and the token limits bound them well below their dollar caps, so the token
 limits were raised and the dollar caps kept. Prices are list prices on that date, read from
@@ -403,11 +403,11 @@ million input / output tokens. Direct provider prices can differ.
 |---|---:|---:|---|---:|---:|---:|
 | Synthesis | 94,390 | 105,000 | 120k → 180k tokens | 180,000 | $1.62 | $3.50 |
 | Verifier | 124,220 *(estimate)* | 138,700 | 100k → 150k tokens | 233,700 | $0.52 | $2.50 |
-| Campaign synthesis | 462,812–509,632 for eleven | 360,000 (the character cap) | 360,000 chars and 400k tokens → 600,000 and 600k | 600,000 (the character cap) | $5.10 | $6.00 |
+| Long-horizon synthesis | 462,812–509,632 for eleven | 360,000 (the character cap) | 360,000 chars and 400k tokens → 600,000 and 600k | 600,000 (the character cap) | $5.10 | $6.00 |
 
 A retry is billed only when one happens; none of the five finishing calls on record needed one.
 Checking only that one attempt fits was rejected, because a retry that then does not fit is still
-billed before the run fails. The campaign prompt's source table, confidence, and unresolved
+billed before the run fails. The long-horizon prompt's source table, confidence, and unresolved
 questions add about $0.29 per attempt for eleven questions of p01's depth. Excerpts were left out:
 they would add about 32,000 characters per question, about 858,000 characters for eleven, and a
 worst-case retry of about $6.13, above the $6 cap.
@@ -441,20 +441,20 @@ select t.role, t.question_id, e.tool_name, count(*) as calls,
 The composition of the ledger-carrying prompts comes from parsing `research_tasks.prompt` for the
 gap-analysis, synthesis, and verifier tasks as JSON and measuring each key's serialized length.
 
-Campaign synthesis prompt, rebuilt without any model call. The archived p01 outputs predate
+Long-horizon synthesis prompt, rebuilt without any model call. The archived p01 outputs predate
 objective hashes, so the aggregator no longer accepts them; rerun p01 into
 `benchmark_outputs/long_horizon_pilot` first, and expect a different size from a new run:
 
 ```python
 from pathlib import Path
-from research_loop.campaign import aggregate_campaign, load_campaign, synthesis_prompt
+from research_loop.long_horizon import aggregate_long_horizon, load_spec, synthesis_prompt
 
-campaign = load_campaign(Path("campaigns/long_horizon_agentic_se/pilot.toml"))
-evidence = aggregate_campaign(campaign, Path("benchmark_outputs/long_horizon_pilot"))
-print(len(synthesis_prompt(campaign, evidence)))  # the archived p01 measured 82,719
+spec = load_spec(Path("long_horizon/agentic_se/pilot.toml"))
+evidence = aggregate_long_horizon(spec, Path("benchmark_outputs/long_horizon_pilot"))
+print(len(synthesis_prompt(spec, evidence)))  # the archived p01 measured 82,719
 ```
 
-`research-campaign --spec campaigns/long_horizon_agentic_se/pilot.toml --output
+`research-long-horizon --spec long_horizon/agentic_se/pilot.toml --output
 benchmark_outputs/long_horizon_pilot --synthesize --dry-run` reports the same size against
 `max_prompt_chars`.
 

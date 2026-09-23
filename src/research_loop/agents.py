@@ -9,7 +9,7 @@ from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .acquisition import SourcePolicy
 from .schemas import (
-    CampaignSynthesis,
+    LongHorizonSynthesis,
     FinalReport,
     GapAnalysis,
     ResearchPlan,
@@ -108,8 +108,8 @@ INSTRUCTIONS: dict[str, str] = {
         "follow-up gap must reference an existing question_id from the supplied evidence ledger. Treat supplied constraints as hard requirements and flag any "
         "evidence that appears to violate them. Recommend more research only when the issue is material."
     ),
-    "campaign_synthesizer": (
-        "Synthesize a research campaign from the supplied per-question claims only; do not "
+    "long_horizon_synthesizer": (
+        "Synthesize a multi-question research study from the supplied per-question claims only; do not "
         "research further or use outside knowledge. `sources` lists each cited work once: an id, its title, "
         "url or attachment id, and publication date when known. Each question's `claims` give "
         "a statement, the `claim_refs` that support it, `min_confidence` (the lowest confidence among the "
@@ -251,19 +251,19 @@ def _verification_cites_ledger(ctx: RunContext[LedgerRefs], output: Verification
     return output
 
 
-# Campaign-level only: runs once over completed campaign questions, outside research-graph-v1.
-campaign_synthesizer_agent = Agent(
-    output_type=CampaignSynthesis,
+# Study-level only: runs once over completed long-horizon questions, outside research-graph-v1.
+long_horizon_synthesizer_agent = Agent(
+    output_type=LongHorizonSynthesis,
     deps_type=frozenset[str],
     # One citation-fix retry (two requests). A second retry would send the prompt a third
     # time, and three sends of an eleven-question prompt do not fit synthesis.total_tokens_limit.
     retries={"output": 1},
-    instructions=INSTRUCTIONS["campaign_synthesizer"],
+    instructions=INSTRUCTIONS["long_horizon_synthesizer"],
 )
 
 
-@campaign_synthesizer_agent.output_validator
-def _campaign_refs_exist(ctx: RunContext[frozenset[str]], output: CampaignSynthesis) -> CampaignSynthesis:
+@long_horizon_synthesizer_agent.output_validator
+def _long_horizon_refs_exist(ctx: RunContext[frozenset[str]], output: LongHorizonSynthesis) -> LongHorizonSynthesis:
     problems = output.citation_problems(ctx.deps)
     if problems:
         raise ModelRetry("Fix these citation problems using only supplied claim refs: " + "; ".join(problems[:25]))
@@ -277,7 +277,7 @@ AGENTS: dict[str, Agent] = {
     "deep_dive": deep_dive_agent,
     "synthesizer": synthesizer_agent,
     "verifier": verifier_agent,
-    "campaign_synthesizer": campaign_synthesizer_agent,
+    "long_horizon_synthesizer": long_horizon_synthesizer_agent,
 }
 
 
