@@ -15,6 +15,7 @@ import socket
 import threading
 import time
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urljoin, urlparse
@@ -26,6 +27,12 @@ from pydantic_ai import FunctionToolset
 
 
 ADAPTER_VERSION = 1
+# Recorded in manifests. 1: fetch returned only the first 12,000 characters.
+# 2: fetch pages through a document with `start`, backed by a per-job memo.
+FETCH_VERSION = 2
+# Longest text window one fetch returns; `start` pages through the rest.
+MAX_FETCH_CHARS = 12_000
+_PDF_PAGE_LIMIT = 30
 CacheMode = Literal["off", "live", "record", "replay"]
 Status = Literal["preprint", "journal", "accepted_conference", "conference_submission", "unknown"]
 
@@ -60,6 +67,11 @@ class ScholarResponse(BaseModel):
     text: str | None = None
     content_sha256: str | None = None
     extraction_method: str | None = None
+    start: int | None = None
+    total_chars: int | None = None
+    next_start: int | None = None
+    # Set when extraction itself stopped early (PDF page limit), so total_chars is not the whole document.
+    extraction_truncated: bool | None = None
 
 
 class AcquisitionCache:
@@ -95,6 +107,46 @@ class AcquisitionCache:
         tmp = path.with_name(path.name + f".{uuid4().hex}.tmp")
         tmp.write_text(encoded)
         tmp.replace(path)
+
+
+class FetchMemo:
+    """Full extracted documents fetched during one research job, shared by all of its agents.
+
+    Agents page through a memoized document instead of downloading it again, and a second
+    agent reuses the first one's fetch, whatever the disk cache mode. Each job gets its own
+    memo, so benchmark cases stay independent.
+    """
+
+    def __init__(self, max_documents: int = 64) -> None:
+        self.max_documents = max_documents
+        self._documents: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def get(self, kind: str, url: str) -> dict[str, Any] | None:
+        document = self._documents.get(f"{kind}|{url}")
+        if document is not None:
+            self._documents.move_to_end(f"{kind}|{url}")
+        return document
+
+    def put(self, kind: str, url: str, document: dict[str, Any]) -> None:
+        self._documents[f"{kind}|{url}"] = document
+        self._documents.move_to_end(f"{kind}|{url}")
+        while len(self._documents) > self.max_documents:
+            self._documents.popitem(last=False)
+
+
+def fetch_window(text: str, start: int, max_chars: int) -> dict[str, Any] | None:
+    """The `max_chars` characters of `text` from `start`, or None when `start` is past the end."""
+    if start and start >= len(text):
+        return None
+    end = start + max_chars
+    more = end < len(text)
+    return {"text": text[start:end], "start": start, "total_chars": len(text), "truncated": more,
+            "next_start": end if more else None}
+
+
+def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
+    # Windows from the start keep the version-1 key, so earlier recordings still replay.
+    return f"{url}|max_chars={max_chars}" + (f"|start={start}" if start else "")
 
 
 _rate_lock = threading.Lock()
@@ -224,9 +276,10 @@ def _arxiv_works(xml: str) -> list[ScholarWork]:
 class ScholarClient:
     def __init__(self, *, cache: AcquisitionCache, api_key: str | None = None,
                  contact_email: str | None = None, client: httpx.AsyncClient | None = None,
-                 grobid_url: str | None = None) -> None:
+                 grobid_url: str | None = None, memo: FetchMemo | None = None) -> None:
         self.cache, self.api_key, self.contact_email, self.client = cache, api_key, contact_email, client
         self.grobid_url = grobid_url
+        self.memo = memo or FetchMemo()
         self._semaphores = {name: asyncio.Semaphore(2) for name in ("openalex", "crossref", "arxiv", "opencitations", "acl")}
         self.cache_hits = 0
 
@@ -382,12 +435,13 @@ class ScholarClient:
     async def citations(self, identifier: str, limit: int = 10) -> ScholarResponse:
         return await self._relations(identifier, "citations", limit)
 
-    async def fetch(self, url: str, max_chars: int = 12000) -> ScholarResponse:
+    async def fetch(self, url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> ScholarResponse:
         result = ScholarResponse(operation="fetch")
-        max_chars = max(1000, min(max_chars, 12000))
+        max_chars = max(1000, min(max_chars, MAX_FETCH_CHARS))
+        start = max(0, start)
         # Cache first: entries exist only for URLs that passed the public-URL check, and
         # replay must work offline, where the DNS check would otherwise fail.
-        cache_key = f"{url}|max_chars={max_chars}"
+        cache_key = fetch_cache_key(url, max_chars, start)
         cached = self.cache.get("fetch", cache_key)
         if cached is not None:
             self.cache_hits += 1
@@ -395,65 +449,84 @@ class ScholarClient:
         if self.cache.mode == "replay":
             result.provider_errors.append("fetch:CacheMiss")
             return result
-        if not await _public_url(url):
-            result.provider_errors.append("fetch:UnsafeURL")
-            return result
-        try:
-            async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
-                response = await _bounded_public_get(client, url, 5_000_000)
-            response.raise_for_status()
-            media = response.headers.get("content-type", "").split(";")[0].lower()
-            if media == "application/pdf":
-                extracted = ""
-                if self.grobid_url:
-                    try:
-                        parsed = urlparse(self.grobid_url)
-                        if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
-                            raise ValueError("GROBID_URL must use local HTTP")
-                        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as grobid:
-                            processed = await grobid.post(
-                                self.grobid_url.rstrip("/") + "/api/processFulltextDocument",
-                                files={"input": ("paper.pdf", response.content, "application/pdf")},
-                            )
-                        processed.raise_for_status()
-                        if len(processed.content) > 2_000_000:
-                            raise ValueError("GROBID response exceeded size limit")
-                        tei = ET.fromstring(processed.content)
-                        body = tei.find(".//{http://www.tei-c.org/ns/1.0}body")
-                        if body is not None:
-                            extracted = " ".join(" ".join(body.itertext()).split())
-                            result.extraction_method = "grobid-tei"
-                    except (httpx.HTTPError, ValueError, ET.ParseError):
-                        pass
-                if not extracted:
-                    import io
-                    from pypdf import PdfReader
-                    pages = PdfReader(io.BytesIO(response.content)).pages[:30]
-                    extracted = "\n\n".join(page.extract_text() or "" for page in pages)
-                    result.extraction_method = "pypdf"
-            elif media in ("text/html", "application/xhtml+xml"):
-                import trafilatura
-                extracted = trafilatura.extract(response.text, include_comments=False, include_tables=True) or ""
-                result.extraction_method = "trafilatura"
-                if not extracted.strip():
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    for item in soup(["script", "style", "nav", "footer", "header"]):
-                        item.decompose()
-                    extracted = soup.get_text(" ", strip=True)
-                    result.extraction_method = "beautifulsoup-fallback"
-            else:
-                raise ValueError("unsupported content type")
-            result.text = extracted[:max_chars]
-            result.content_sha256 = hashlib.sha256(response.content).hexdigest()
-            result.truncated = len(extracted) > max_chars
-            if not result.text.strip():
+        document = self.memo.get("fetch", url)
+        if document is None:
+            if not await _public_url(url):
+                result.provider_errors.append("fetch:UnsafeURL")
+                return result
+            try:
+                document = await self._extract(url)
+            except Exception as exc:
+                result.provider_errors.append(f"fetch:{type(exc).__name__}")
+                return result
+            if not document["text"].strip():
                 result.provider_errors.append("fetch:EmptyExtraction")
-        except Exception as exc:
-            result.provider_errors.append(f"fetch:{type(exc).__name__}")
-        if not result.provider_errors:
-            self.cache.put("fetch", cache_key, result.model_dump(mode="json"))
+                return result
+            self.memo.put("fetch", url, document)
+        result.content_sha256 = document["content_sha256"]
+        result.extraction_method = document["extraction_method"]
+        result.extraction_truncated = document["extraction_truncated"] or None
+        window = fetch_window(document["text"], start, max_chars)
+        if window is None:
+            result.total_chars = len(document["text"])
+            result.provider_errors.append("fetch:StartBeyondEnd")
+            return result
+        result.text, result.start, result.total_chars = window["text"], window["start"], window["total_chars"]
+        result.truncated, result.next_start = window["truncated"], window["next_start"]
+        self.cache.put("fetch", cache_key, result.model_dump(mode="json"))
         return result
+
+    async def _extract(self, url: str) -> dict[str, Any]:
+        """Download a public page or PDF and extract its full text."""
+        async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+            response = await _bounded_public_get(client, url, 5_000_000)
+        response.raise_for_status()
+        media = response.headers.get("content-type", "").split(";")[0].lower()
+        extraction_truncated = False
+        if media == "application/pdf":
+            extracted, method = "", None
+            if self.grobid_url:
+                try:
+                    parsed = urlparse(self.grobid_url)
+                    if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+                        raise ValueError("GROBID_URL must use local HTTP")
+                    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as grobid:
+                        processed = await grobid.post(
+                            self.grobid_url.rstrip("/") + "/api/processFulltextDocument",
+                            files={"input": ("paper.pdf", response.content, "application/pdf")},
+                        )
+                    processed.raise_for_status()
+                    if len(processed.content) > 2_000_000:
+                        raise ValueError("GROBID response exceeded size limit")
+                    tei = ET.fromstring(processed.content)
+                    body = tei.find(".//{http://www.tei-c.org/ns/1.0}body")
+                    if body is not None:
+                        extracted = " ".join(" ".join(body.itertext()).split())
+                        method = "grobid-tei"
+                except (httpx.HTTPError, ValueError, ET.ParseError):
+                    pass
+            if not extracted:
+                import io
+                from pypdf import PdfReader
+                pages = PdfReader(io.BytesIO(response.content)).pages
+                extracted = "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT])
+                extraction_truncated = len(pages) > _PDF_PAGE_LIMIT
+                method = "pypdf"
+        elif media in ("text/html", "application/xhtml+xml"):
+            import trafilatura
+            extracted = trafilatura.extract(response.text, include_comments=False, include_tables=True) or ""
+            method = "trafilatura"
+            if not extracted.strip():
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, "html.parser")
+                for item in soup(["script", "style", "nav", "footer", "header"]):
+                    item.decompose()
+                extracted = soup.get_text(" ", strip=True)
+                method = "beautifulsoup-fallback"
+        else:
+            raise ValueError("unsupported content type")
+        return {"text": extracted, "extraction_method": method, "extraction_truncated": extraction_truncated,
+                "content_sha256": hashlib.sha256(response.content).hexdigest()}
 
 
 def build_scholar_toolset(client: ScholarClient) -> FunctionToolset:
@@ -474,8 +547,11 @@ def build_scholar_toolset(client: ScholarClient) -> FunctionToolset:
         """Find works citing a DOI or OpenAlex W ID."""
         return (await client.citations(identifier, limit)).model_dump(exclude_none=True)
 
-    async def scholar_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
-        """Extract bounded text from a public HTTPS scholarly HTML page or PDF."""
-        return (await client.fetch(url, max_chars)).model_dump(exclude_none=True)
+    async def scholar_fetch(url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
+        """Extract text from a public HTTPS scholarly HTML page or PDF, up to max_chars characters from `start`.
+
+        When the result has `next_start`, call again with start=next_start to read further.
+        """
+        return (await client.fetch(url, max_chars, start)).model_dump(exclude_none=True)
 
     return FunctionToolset(tools=[scholar_search, scholar_get, scholar_references, scholar_citations, scholar_fetch])

@@ -38,6 +38,8 @@ class SyntheticResearchLoop(ResearchLoop):
             effective_config={**route.snapshot(), "synthetic": True},
             attempt=kwargs.get("attempt", 0),
         )
+        if kwargs.get("task_ids") is not None:
+            kwargs["task_ids"].append(task_id)
         try:
             if role is ResearchRole.PLANNER:
                 output = ResearchPlan(

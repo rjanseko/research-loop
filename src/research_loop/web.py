@@ -9,7 +9,17 @@ from typing import Any
 import httpx
 from pydantic_ai import FunctionToolset, Tool
 
-from .scholar import AcquisitionCache, CacheMode, _public_url, _bounded_public_get, _wait_rate_slot
+from .scholar import (
+    MAX_FETCH_CHARS,
+    AcquisitionCache,
+    CacheMode,
+    FetchMemo,
+    _bounded_public_get,
+    _public_url,
+    _wait_rate_slot,
+    fetch_cache_key,
+    fetch_window,
+)
 
 # Decoded HTML bytes read per page; some leaderboard pages embed a few MB of data.
 _MAX_PAGE_BYTES = 5_000_000
@@ -42,66 +52,80 @@ def resilient_duckduckgo_tool(*, retry_delay: float = 2.0) -> Tool:
 
 class WebAcquisition:
     def __init__(self, *, cache_root: Path, cache_mode: CacheMode = "live",
-                 client: httpx.AsyncClient | None = None) -> None:
+                 client: httpx.AsyncClient | None = None, memo: FetchMemo | None = None) -> None:
         self.cache = AcquisitionCache(cache_root, cache_mode, ttl_seconds=86400)
         self.client = client
+        self.memo = memo or FetchMemo()
 
-    async def fetch(self, url: str, max_chars: int = 12000) -> dict[str, Any]:
-        max_chars = max(1000, min(max_chars, 12000))
+    async def fetch(self, url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
+        max_chars = max(1000, min(max_chars, MAX_FETCH_CHARS))
+        start = max(0, start)
         # Cache first so replay works offline; entries exist only for URLs that passed the check.
-        cache_key = f"{url}|max_chars={max_chars}"
+        cache_key = fetch_cache_key(url, max_chars, start)
         cached = self.cache.get("web", cache_key)
         if cached is not None:
             return {**cached, "cache_hit": True}
         if self.cache.mode == "replay":
             return {"url": url, "error": "CacheMiss", "cache_hit": False}
-        if not await _public_url(url):
-            return {"url": url, "error": "UnsafeURL"}
-        try:
-            if self.client:
-                response = await _bounded_public_get(self.client, url, _MAX_PAGE_BYTES)
-            else:
-                async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-                    response = await _bounded_public_get(client, url, _MAX_PAGE_BYTES)
-            response.raise_for_status()
-            media = response.headers.get("content-type", "").split(";")[0].lower()
-            if media not in ("text/html", "application/xhtml+xml"):
-                raise ValueError("unsupported content type")
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, "html.parser")
-            for item in soup(["script", "style", "nav", "footer", "header"]):
-                item.decompose()
-            clean_html = str(soup)
+        document = self.memo.get("web", url)
+        if document is None:
+            if not await _public_url(url):
+                return {"url": url, "error": "UnsafeURL"}
             try:
-                import trafilatura
-                extracted = trafilatura.extract(clean_html, include_comments=False, include_tables=True) or ""
-            except Exception:
-                extracted = ""
-            method = "trafilatura"
-            if not extracted.strip():
-                extracted = soup.get_text(" ", strip=True)
-                method = "beautifulsoup-fallback"
-            if not extracted.strip():
-                raise ValueError("empty extraction")
-            document = {
-                "url": url, "text": extracted[:max_chars], "extraction": method,
-                "content_sha256": hashlib.sha256(response.content).hexdigest(),
-                "truncated": len(extracted) > max_chars, "cache_hit": False,
-            }
-            self.cache.put("web", cache_key, document)
-            return document
-        except (httpx.HTTPError, ValueError, ImportError, TypeError) as exc:
-            failure: dict[str, Any] = {"url": url, "error": type(exc).__name__, "cache_hit": False}
-            if isinstance(exc, httpx.HTTPStatusError):
-                failure["status"] = exc.response.status_code
-            elif type(exc) is ValueError:
-                failure["detail"] = str(exc)  # this module's own messages, e.g. "unsupported content type"
-            return failure
+                document = await self._extract(url)
+            except (httpx.HTTPError, ValueError, ImportError, TypeError) as exc:
+                failure: dict[str, Any] = {"url": url, "error": type(exc).__name__, "cache_hit": False}
+                if isinstance(exc, httpx.HTTPStatusError):
+                    failure["status"] = exc.response.status_code
+                elif type(exc) is ValueError:
+                    failure["detail"] = str(exc)  # this module's own messages, e.g. "unsupported content type"
+                return failure
+            self.memo.put("web", url, document)
+        window = fetch_window(document["text"], start, max_chars)
+        if window is None:
+            return {"url": url, "error": "StartBeyondEnd", "total_chars": len(document["text"]), "cache_hit": False}
+        result = {"url": url, **window, "extraction": document["extraction"],
+                  "content_sha256": document["content_sha256"], "cache_hit": False}
+        self.cache.put("web", cache_key, result)
+        return result
+
+    async def _extract(self, url: str) -> dict[str, Any]:
+        """Download a public HTML page and extract its full main text."""
+        if self.client:
+            response = await _bounded_public_get(self.client, url, _MAX_PAGE_BYTES)
+        else:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+                response = await _bounded_public_get(client, url, _MAX_PAGE_BYTES)
+        response.raise_for_status()
+        media = response.headers.get("content-type", "").split(";")[0].lower()
+        if media not in ("text/html", "application/xhtml+xml"):
+            raise ValueError("unsupported content type")
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, "html.parser")
+        for item in soup(["script", "style", "nav", "footer", "header"]):
+            item.decompose()
+        clean_html = str(soup)
+        try:
+            import trafilatura
+            extracted = trafilatura.extract(clean_html, include_comments=False, include_tables=True) or ""
+        except Exception:
+            extracted = ""
+        method = "trafilatura"
+        if not extracted.strip():
+            extracted = soup.get_text(" ", strip=True)
+            method = "beautifulsoup-fallback"
+        if not extracted.strip():
+            raise ValueError("empty extraction")
+        return {"text": extracted, "extraction": method,
+                "content_sha256": hashlib.sha256(response.content).hexdigest()}
 
 
 def build_web_toolset(acquisition: WebAcquisition) -> FunctionToolset:
-    async def web_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
-        """Fetch a public HTTPS HTML page and return bounded main-content text."""
-        return await acquisition.fetch(url, max_chars)
+    async def web_fetch(url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
+        """Fetch a public HTTPS HTML page and return up to max_chars characters of main text from `start`.
+
+        When the result has `next_start`, call again with start=next_start to read further.
+        """
+        return await acquisition.fetch(url, max_chars, start)
 
     return FunctionToolset(tools=[web_fetch])

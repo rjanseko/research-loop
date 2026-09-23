@@ -133,3 +133,67 @@ async def test_fetch_errors_tell_the_model_the_status(monkeypatch) -> None:
         result = await WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http).fetch("https://example.org/blocked")
     assert result["error"] == "HTTPStatusError"
     assert result["status"] == 403
+
+
+def _long_page_handler(counter: list[int]):
+    paragraphs = "".join(f"<p>Paragraph {index:04d} of the evidence body.</p>" for index in range(400))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter.append(1)
+        return httpx.Response(200, headers={"content-type": "text/html"},
+                              text=f"<html><body><article><h1>Long report</h1>{paragraphs}</article></body></html>")
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_pages_through_a_long_document_with_one_download(monkeypatch, tmp_path) -> None:
+    async def safe(_: str) -> bool:
+        return True
+    monkeypatch.setattr("research_loop.web._public_url", safe)
+    calls: list[int] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_long_page_handler(calls))) as http:
+        fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="off", client=http)
+        first = await fetcher.fetch("https://example.org/report", max_chars=1000)
+        second = await fetcher.fetch("https://example.org/report", max_chars=1000, start=first["next_start"])
+        past_end = await fetcher.fetch("https://example.org/report", start=first["total_chars"])
+    assert calls == [1]  # later pages come from the job's memo, even with the disk cache off
+    assert first["start"] == 0 and first["truncated"] is True and first["next_start"] == 1000
+    assert first["total_chars"] > 12_000  # longer than one full-size window
+    assert second["start"] == 1000
+    assert second["text"] and second["text"] not in first["text"]
+    assert past_end["error"] == "StartBeyondEnd"
+    assert past_end["total_chars"] == first["total_chars"]
+
+
+@pytest.mark.asyncio
+async def test_agents_in_one_job_share_fetches(monkeypatch, tmp_path) -> None:
+    from research_loop.scholar import FetchMemo
+
+    async def safe(_: str) -> bool:
+        return True
+    monkeypatch.setattr("research_loop.web._public_url", safe)
+    calls: list[int] = []
+    memo = FetchMemo()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_long_page_handler(calls))) as http:
+        # Each agent run builds its own acquisition object; the job hands them one memo.
+        for _ in range(2):
+            fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="record", client=http, memo=memo)
+            result = await fetcher.fetch("https://example.org/report")
+    assert calls == [1]
+    assert result["text"].startswith("Long report")
+    other_job = WebAcquisition(cache_root=tmp_path, cache_mode="off", client=None, memo=FetchMemo())
+    monkeypatch.setattr("research_loop.web._bounded_public_get", _long_page_client(calls))
+    await other_job.fetch("https://example.org/report")
+    assert calls == [1, 1]  # another job's memo starts empty
+
+
+def _long_page_client(counter: list[int]):
+    handler = _long_page_handler(counter)
+
+    async def bounded(_client, url, _limit):
+        response = handler(httpx.Request("GET", url))
+        response.request = httpx.Request("GET", url)
+        return response
+
+    return bounded

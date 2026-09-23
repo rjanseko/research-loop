@@ -4,7 +4,7 @@
 
 Run Codex from the repository root so it automatically receives `AGENTS.md` instructions.
 
-The v5 graph remains frozen; the v6 local lab commands are available. See `CODEX_TASK.md` for the bootstrap acceptance criteria.
+The v5 graph remains frozen; the v6 local lab commands are available.
 
 ## 2. Bootstrap Python
 

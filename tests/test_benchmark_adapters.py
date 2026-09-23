@@ -3,12 +3,16 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import io
 import json
 from pathlib import Path
+
+import pytest
 
 from research_loop.benchmarks.browsecomp import BrowseCompAdapter
 from research_loop.benchmarks.deepresearch2 import DeepResearchBench2Adapter
 from research_loop.benchmarks.gaia import GaiaAdapter
+from research_loop.benchmarks.io import download_if_missing
 from research_loop.benchmarks.manifest import load_suite
 from research_loop.benchmarks.models import BenchmarkKind, BenchmarkSourceSpec
 
@@ -106,3 +110,35 @@ limit = 1
     assert suite.name == "smoke"
     assert len(cases) == 1
     assert cases[0].benchmark_id == "custom"
+
+
+def test_benchmark_download_does_not_cache_partial_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class InterruptedResponse(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"partial")
+            self.reads = 0
+
+        def read(self, size: int = -1) -> bytes:
+            self.reads += 1
+            if self.reads > 1:
+                raise OSError("download interrupted")
+            return super().read(size)
+
+    destination = tmp_path / "dataset.jsonl"
+    monkeypatch.setattr(
+        "research_loop.benchmarks.io.urllib.request.urlopen",
+        lambda *_args, **_kwargs: InterruptedResponse(),
+    )
+    with pytest.raises(OSError, match="download interrupted"):
+        download_if_missing("https://example.org/dataset.jsonl", destination)
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setattr(
+        "research_loop.benchmarks.io.urllib.request.urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(b'{"id": "complete"}\n'),
+    )
+    assert download_if_missing("https://example.org/dataset.jsonl", destination) == destination
+    assert destination.read_bytes() == b'{"id": "complete"}\n'

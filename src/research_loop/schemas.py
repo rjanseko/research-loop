@@ -5,6 +5,11 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic.json_schema import SkipJsonSchema
+
+# Recorded in manifests. 1: one `excerpt` field, excerpt or paraphrase.
+# 2: `excerpt` summarizes; a verbatim `quote` is checked against the research run's tool output.
+EVIDENCE_VERSION = 2
 
 
 class ResearchRole(StrEnum):
@@ -62,9 +67,21 @@ class SourceRef(BaseModel):
 
 class Evidence(BaseModel):
     source: SourceRef
-    excerpt: str = Field(description="Short evidence excerpt or faithful paraphrase")
+    excerpt: str = Field(description="Short summary or paraphrase of what the source says")
+    quote: str | None = Field(
+        default=None,
+        description=(
+            "Exact words copied from text one of your tools returned (a fetched page or paper, a search "
+            "result, an abstract, or an attachment) when the claim rests on specific wording. Mark omissions "
+            "with '...'. Quotes are checked against the tool output; leave this empty rather than reconstruct "
+            "wording from memory."
+        ),
+    )
     supports: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
+    # Set by code after the research run (see quotes.py), never by the model: hidden from its schema,
+    # and overwritten if a model supplies it anyway.
+    quote_check: SkipJsonSchema[Literal["verified", "not_found"] | None] = None
 
 
 class Claim(BaseModel):

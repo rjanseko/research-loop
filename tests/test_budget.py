@@ -140,9 +140,14 @@ def _scripted_scout(prompts: list[str]):
         content = str(getattr(messages[-1].parts[-1], "content", ""))
         prompts.append(content)
         if "budget_exhausted" in content:
+            source = {"url": "https://example.org/w42", "title": "SWE-bench"}
             return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
                 "question_id": "p01", "question": "What is SWE-bench?", "conclusion": "Salvaged from W42",
                 "confidence": 0.4,
+                "claims": [{"id": "c1", "statement": "W42 is SWE-bench", "confidence": 0.4, "evidence": [
+                    {"source": source, "excerpt": "abstract", "quote": "PRIVATE-FULL-TEXT", "confidence": 0.4},
+                    {"source": source, "excerpt": "abstract", "quote": "never returned by a tool", "confidence": 0.4},
+                ]}],
             })])
         return ModelResponse(parts=[ToolCallPart("scholar_search", {"query": "SWE-bench"})])
 
@@ -167,6 +172,9 @@ async def test_exhausted_research_is_salvaged_without_persisting_tool_output() -
     # The interrupted run's tool history is kept, not only successful runs'.
     assert [event["tool_name"] for event in loop.repository.tool_events if event["task_id"] == exhausted["id"]] == ["scholar_search"]
     assert salvaged["status"] == "succeeded"
+    assert salvaged["parent_task_id"] == exhausted["id"]  # the salvage call points at the run it wraps up
+    # The salvage call has no tools; its quotes are checked against the exhausted run's tool output.
+    assert [item.quote_check for item in result.claims[0].evidence] == ["verified", "not_found"]
     assert salvaged["effective_config"]["salvage"] is True
     assert salvaged["effective_config"]["max_requests"] == 2
     assert salvaged["effective_config"]["cost_limit"] == pytest.approx(0.4)  # half the route cap

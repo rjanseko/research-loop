@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,16 @@ import sys
 import pytest
 
 from research_loop.benchmark import main, run_benchmark
-from research_loop.evals import AttachmentCitationCoverage, ReferenceAnswerMatch
+from research_loop.evals import (
+    AttachmentCitationCoverage,
+    BlockedSourceCompliance,
+    CostEfficiency,
+    EvalIntegrity,
+    MajorErrorFreeRate,
+    ReferenceAnswerMatch,
+    SupportedClaimRate,
+    VerbatimQuoteRate,
+)
 from research_loop.settings import ResearchSettings
 
 
@@ -35,6 +45,8 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     assert isinstance(manifest["git"]["dirty"], bool)
     assert manifest["policy_schema_version"] == 1
     assert manifest["acquisition"]["search_backend"] == "duckduckgo"
+    assert manifest["acquisition"]["fetch_version"] == 2
+    assert manifest["evidence_version"] == 2
     assert manifest["python_version"]
     assert manifest["policies"]["synthetic"]["routes"]["scout"]["model"] == "synthetic:fake"
     assert manifest["runs"][0]["status"] == "succeeded"
@@ -48,6 +60,21 @@ def test_inapplicable_evaluators_return_no_score() -> None:
     attachment_ctx = SimpleNamespace(output=SimpleNamespace(attachment_count=0))
     assert ReferenceAnswerMatch().evaluate(reference_ctx) == {}
     assert AttachmentCitationCoverage().evaluate(attachment_ctx) == {}
+    # No checked claims, no priced spend, no blocked URLs, not leakage-sensitive: nothing to score.
+    unassessed = SimpleNamespace(
+        inputs=SimpleNamespace(blocked_urls=[], leakage_sensitive=False),
+        output=SimpleNamespace(total_claims=0, unsupported_claims=0, major_unsupported_claims=0,
+                               cost_usd=None, blocked_source_accesses=[], integrity_flags=[],
+                               quotes=0, quotes_not_found=0),
+    )
+    for evaluator in (SupportedClaimRate(), MajorErrorFreeRate(), CostEfficiency(),
+                      BlockedSourceCompliance(), EvalIntegrity(), VerbatimQuoteRate()):
+        assert evaluator.evaluate(unassessed) == {}, type(evaluator).__name__
+
+
+def test_verbatim_quote_rate_counts_quotes_found_in_tool_output() -> None:
+    ctx = SimpleNamespace(output=SimpleNamespace(quotes=4, quotes_not_found=1))
+    assert VerbatimQuoteRate().evaluate(ctx) == pytest.approx(0.75)
 
 
 @pytest.mark.asyncio
@@ -77,3 +104,130 @@ def test_real_policy_requires_paid_flag(monkeypatch: pytest.MonkeyPatch, capsys:
         main()
     assert exc.value.code == 2
     assert "require --paid" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_report_export_contains_untrusted_case_ids(tmp_path: Path) -> None:
+    suite = tmp_path / "cases.json"
+    suite.write_text(
+        json.dumps(
+            [
+                {
+                    "benchmark_id": "../../outside",
+                    "name": "../../escaped",
+                    "objective": "First fixture",
+                },
+                {
+                    "benchmark_id": "../../outside",
+                    "name": "zero",
+                    "objective": "Second fixture",
+                    "metadata": {"idx": 0},
+                },
+            ]
+        )
+    )
+    export_dir = tmp_path / "reports"
+    await run_benchmark(
+        suite,
+        policies=["synthetic"],
+        max_concurrency=1,
+        export_dir=export_dir,
+        manifest_path=tmp_path / "manifest.json",
+        settings=ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)}),
+    )
+    reports = list(export_dir.rglob("*.md"))
+    assert len(reports) == 2
+    escaped_stem = "escaped-" + hashlib.sha256(b"../../escaped").hexdigest()[:8]
+    assert {path.stem for path in reports} == {"idx-0", escaped_stem}
+    assert all(path.is_relative_to(export_dir) for path in reports)
+    assert not (tmp_path / "outside").exists()
+    assert not (tmp_path / "escaped.md").exists()
+
+
+def _two_case_suite(tmp_path: Path, names: list[str]) -> Path:
+    suite = tmp_path / f"{'-'.join(names)}.json"
+    suite.write_text(json.dumps([{"name": name, "objective": f"Fixture {name}"} for name in names]))
+    return suite
+
+
+@pytest.fixture
+def broken_case(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Make the case named 'broken' fail with a provider-style error body."""
+    import research_loop.benchmark as benchmark
+
+    marker = "PRIVATE-PROVIDER-BODY"
+    real_case = benchmark._run_policy_case
+
+    async def flaky(policy_name, case, **kwargs):
+        if case.case_id == "broken":
+            raise RuntimeError(f"HTTP 400: {marker}")
+        return await real_case(policy_name, case, **kwargs)
+
+    monkeypatch.setattr(benchmark, "_run_policy_case", flaky)
+    return marker
+
+
+@pytest.mark.asyncio
+async def test_failed_cases_set_manifest_status_without_printing_errors(
+    tmp_path: Path, broken_case: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)})
+    partial = await run_benchmark(
+        _two_case_suite(tmp_path, ["working", "broken"]), policies=["synthetic"], max_concurrency=1,
+        manifest_path=tmp_path / "partial.json", settings=settings,
+    )
+    manifest = json.loads(partial.read_text())
+    assert manifest["status"] == "completed_with_failures"
+    assert manifest["failed_cases"] == 1
+    runs = {run["case_id"]: run for run in manifest["runs"]}
+    assert runs["working"]["status"] == "succeeded"
+    # The case failed before a job existed; it still gets a terminal record, with only the error type.
+    assert runs["broken"]["status"] == "failed"
+    assert runs["broken"]["error"] == "RuntimeError"
+    assert runs["broken"]["job_id"] is None
+
+    failed = await run_benchmark(
+        _two_case_suite(tmp_path, ["broken"]), policies=["synthetic"], max_concurrency=1,
+        manifest_path=tmp_path / "failed.json", settings=settings,
+    )
+    assert json.loads(failed.read_text())["status"] == "failed"
+    captured = capsys.readouterr()
+    assert broken_case not in captured.out + captured.err
+    assert broken_case not in partial.read_text() + failed.read_text()
+
+
+def test_cli_exits_nonzero_when_a_case_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, broken_case: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import research_loop.benchmark as benchmark
+
+    settings = ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)})
+    monkeypatch.setattr(benchmark, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
+    suite = _two_case_suite(tmp_path, ["working", "broken"])
+    monkeypatch.setattr(sys, "argv", ["research-benchmark", str(suite), "--all-cases",
+                                      "--manifest-output", str(tmp_path / "manifest.json")])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "completed_with_failures" in captured.err
+    assert broken_case not in captured.out + captured.err
+
+
+@pytest.mark.asyncio
+async def test_unpriced_model_call_leaves_benchmark_cost_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    import research_loop.benchmark as benchmark
+    from research_loop.benchmarks import BenchmarkCaseSpec
+    from research_loop.synthetic import SyntheticResearchLoop
+
+    class UnpricedLoop(SyntheticResearchLoop):
+        async def _run_agent(self, **kwargs):
+            output = await super()._run_agent(**kwargs)
+            self._job_spend[kwargs["job_id"]] = None  # what a billed call without pricing data leaves
+            return output
+
+    monkeypatch.setattr(benchmark, "SyntheticResearchLoop", UnpricedLoop)
+    output = await benchmark._run_policy_case(
+        "synthetic", BenchmarkCaseSpec(benchmark_id="fixture", case_id="unpriced", objective="Fixture")
+    )
+    assert output.cost_usd is None

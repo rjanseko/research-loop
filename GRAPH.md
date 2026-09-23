@@ -127,7 +127,7 @@ Pydantic Graph Builder is used for typed control flow, not durable execution. Th
 Postgres continues to persist:
 
 - job/run identity;
-- task attempts;
+- task attempts, with lineage: a deep dive's `parent_task_id` is the gap-analysis or verifier task that requested it, and a salvage call's is the research task that ran out of budget;
 - effective model configuration;
 - structured outputs;
 - usage/cost;

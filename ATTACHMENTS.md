@@ -55,7 +55,7 @@ SourceRef(
 
 Web evidence continues to use `url=...`.
 
-This allows the evidence ledger and verifier to distinguish web sources from local materials and preserve page/sheet/row-level provenance.
+This allows the evidence ledger and verifier to distinguish web sources from local materials and preserve page/sheet/row-level provenance. A verbatim `quote` from an attachment is checked against the chunk text that `read_attachment` or `search_attachments` returned in the same research run. Text visible only in images sent in the multimodal lane cannot be matched, so such quotes are marked `not_found`.
 
 ## Privacy / reproducibility
 

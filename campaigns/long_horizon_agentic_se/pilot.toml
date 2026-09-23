@@ -13,6 +13,9 @@ normalized_web = true
 scholarly_cache_mode = "record"
 model_budget_gate = "Do not start paid model runs until research-diagnose --live passes and provider spending caps are set."
 first_run = "One narrow pilot question, followed by evidence review before the full campaign."
+# Running several questions continues past a failed one, but stops after this many failures:
+# repeated failures more likely share a cause (credentials, a provider outage, a bug).
+max_failed_questions = 2
 max_parallel_scouts = 2
 planner_question_min = 1
 planner_question_max = 3

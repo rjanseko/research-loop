@@ -62,6 +62,7 @@ class ResearchGraphDeps:
 @dataclass(frozen=True)
 class InitialResearchNeeded:
     gaps: list[Gap]
+    parent_task_id: UUID | None = None  # the gap-analysis task
 
 
 @dataclass(frozen=True)
@@ -87,17 +88,20 @@ class DeepDiveWork:
     gap: Gap
     question: ResearchQuestion
     attempt: int
+    parent_task_id: UUID | None = None  # the task that asked for this deep dive
 
 
 @dataclass(frozen=True)
 class VerificationBundle:
     report: FinalReport
     verification: VerificationReport
+    task_id: UUID | None = None  # the verifier task
 
 
 @dataclass(frozen=True)
 class VerificationResearchNeeded:
     followups: list[Gap]
+    parent_task_id: UUID | None = None  # the verifier task
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,7 @@ def build_research_graph():
         if ctx.state.plan is None:
             raise RuntimeError("gap analysis requires a research plan")
         route = ctx.deps.loop.policy.for_role(ResearchRole.GAP_ANALYST)
+        gap_task_ids: list[UUID] = []
         gap_analysis: GapAnalysis = await ctx.deps.loop._run_agent(
             job_id=ctx.deps.job_id,
             agent=ctx.deps.loop._gap_agent,
@@ -221,6 +226,7 @@ def build_research_graph():
                 },
                 ensure_ascii=False,
             ),
+            task_ids=gap_task_ids,
         )
         gaps = ctx.deps.loop._dedupe_gaps(
             gap_analysis.gaps
@@ -228,7 +234,7 @@ def build_research_graph():
         )
         selected = ctx.deps.loop._select_gaps(gaps, _questions(ctx.state))
         if selected:
-            return InitialResearchNeeded(selected)
+            return InitialResearchNeeded(selected, parent_task_id=gap_task_ids[0] if gap_task_ids else None)
         return ReadyForSynthesis()
 
     @g.step(label="Prepare initial deep dives")
@@ -238,7 +244,8 @@ def build_research_graph():
         ctx.state.phase = "initial_deep_dive"
         questions = _questions(ctx.state)
         return [
-            DeepDiveWork(order=i, gap=gap, question=questions[gap.question_id], attempt=0)
+            DeepDiveWork(order=i, gap=gap, question=questions[gap.question_id], attempt=0,
+                         parent_task_id=ctx.inputs.parent_task_id)
             for i, gap in enumerate(ctx.inputs.gaps)
             if gap.question_id in questions
         ]
@@ -256,6 +263,7 @@ def build_research_graph():
             ctx.deps.constraints,
             ctx.deps.attachments,
             attempt=work.attempt,
+            parent_task_id=work.parent_task_id,
         )
         return OrderedResearchResult(order=work.order, result=result)
 
@@ -289,6 +297,7 @@ def build_research_graph():
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, FinalReport],
     ) -> VerificationBundle:
         ctx.state.phase = "verification"
+        verify_task_ids: list[UUID] = []
         verification = await ctx.deps.loop._verify(
             ctx.deps.job_id,
             ctx.state.objective,
@@ -296,8 +305,10 @@ def build_research_graph():
             ctx.deps.ledger,
             ctx.deps.constraints,
             ctx.deps.attachments,
+            task_ids=verify_task_ids,
         )
-        return VerificationBundle(report=ctx.inputs, verification=verification)
+        return VerificationBundle(report=ctx.inputs, verification=verification,
+                                  task_id=verify_task_ids[0] if verify_task_ids else None)
 
     @g.step(label="Route verification result")
     async def route_verification(
@@ -310,7 +321,7 @@ def build_research_graph():
             or ctx.state.verification_round >= ctx.state.max_verification_rounds
         ):
             return VerificationComplete(bundle.report, bundle.verification)
-        return VerificationResearchNeeded(bundle.verification.followups)
+        return VerificationResearchNeeded(bundle.verification.followups, parent_task_id=bundle.task_id)
 
     @g.step(label="Prepare verification deep dives")
     async def prepare_verification_deep_dives(
@@ -329,6 +340,7 @@ def build_research_graph():
                 gap=gap,
                 question=questions[gap.question_id],
                 attempt=ctx.state.verification_round,
+                parent_task_id=ctx.inputs.parent_task_id,
             )
             for i, gap in enumerate(selected)
             if gap.question_id in questions
@@ -347,6 +359,7 @@ def build_research_graph():
             ctx.deps.constraints,
             ctx.deps.attachments,
             attempt=work.attempt,
+            parent_task_id=work.parent_task_id,
         )
         return OrderedResearchResult(order=work.order, result=result)
 

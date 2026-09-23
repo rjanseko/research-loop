@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 from contextlib import AsyncExitStack
@@ -73,23 +74,23 @@ def _load_cases(path: Path) -> tuple[str, list[BenchmarkCaseSpec]]:
     return path.stem, _load_legacy_cases(path)
 
 
-def _sum_usage(repo: CapturingResearchRepository) -> tuple[int, int, float]:
+def _sum_usage(repo: CapturingResearchRepository) -> tuple[int, int]:
     tool_calls = 0
     total_tokens = 0
-    cost = 0.0
     for task in repo.tasks.values():
         usage = task.get("usage") or {}
         tool_calls += int(usage.get("tool_calls") or 0)
         total_tokens += int(usage.get("total_tokens") or 0)
-        raw_cost = usage.get("cost")
-        if isinstance(raw_cost, (int, float)):
-            cost += float(raw_cost)
-        elif isinstance(raw_cost, dict):
-            for key in ("total_price", "price", "cost"):
-                if isinstance(raw_cost.get(key), (int, float)):
-                    cost += float(raw_cost[key])
-                    break
-    return tool_calls, total_tokens, cost
+    return tool_calls, total_tokens
+
+
+def _export_component(value: str) -> str:
+    """Use benchmark identifiers as one safe path component."""
+    if len(value) <= 80 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value):
+        return value
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")[:80] or "item"
+    suffix = hashlib.sha256(value.encode()).hexdigest()[:8]
+    return f"{cleaned}-{suffix}"
 
 
 def _extract_exact_answer(answer: str, mode: BenchmarkOutputMode) -> str | None:
@@ -189,19 +190,24 @@ async def _run_policy_case(
         if s.url is not None and s.source_type in {"primary", "official", "paper", "documentation"}
     ]
     attachment_ids_cited = sorted({s.attachment_id for s in sources if s.attachment_id})
+    quote_checks = [item.quote_check for claim in outcome.ledger.claims() for item in claim.evidence
+                    if item.quote_check]
     checks = outcome.verification.checks
     unsupported = [c for c in checks if not c.supported]
     major = [c for c in unsupported if c.severity == "major"]
-    tool_calls, total_tokens, cost = _sum_usage(repo)
+    tool_calls, total_tokens = _sum_usage(repo)
     research_tool_calls = sum(1 for event in repo.tool_events if _is_research_event(event))
     attachment_tool_calls = sum(1 for event in repo.tool_events if _is_attachment_event(event))
     search_queries = _extract_search_queries(repo.tool_events)
 
     if export_dir is not None:
-        policy_dir = export_dir / policy_name / case.benchmark_id
+        policy_dir = (
+            export_dir / _export_component(policy_name) / _export_component(case.benchmark_id)
+        )
         policy_dir.mkdir(parents=True, exist_ok=True)
         idx = case.metadata.get("idx")
-        filename = f"idx-{idx}.md" if idx else f"{case.case_id}.md"
+        stem = f"idx-{idx}" if idx is not None else case.case_id
+        filename = f"{_export_component(str(stem))}.md"
         (policy_dir / filename).write_text(outcome.report.answer, encoding="utf-8")
 
     return BenchmarkOutput(
@@ -220,13 +226,16 @@ async def _run_policy_case(
         tool_calls=tool_calls,
         research_tool_calls=research_tool_calls,
         total_tokens=total_tokens,
-        cost_usd=cost,
+        # The job's own spend ledger: None once any billed call could not be priced.
+        cost_usd=None if outcome.cost_usd is None else float(outcome.cost_usd),
         search_queries=search_queries,
         blocked_source_accesses=_blocked_accesses(repo.tool_events, case.blocked_urls),
         integrity_flags=_integrity_flags(case, search_queries, repo.tool_events),
         attachment_count=len(outcome.attachments.records) if outcome.attachments else 0,
         attachment_tool_calls=attachment_tool_calls,
         attachment_ids_cited=attachment_ids_cited,
+        quotes=len(quote_checks),
+        quotes_not_found=quote_checks.count("not_found"),
     )
 
 
@@ -322,6 +331,7 @@ async def run_benchmark(
     ]
     dataset = make_dataset(cases)
     baseline = None
+    failed_cases = 0
 
     try:
         async with AsyncExitStack() as stack:
@@ -363,9 +373,18 @@ async def run_benchmark(
                         if run_record:
                             run_record["status"] = "succeeded"
                         return output
-                    except Exception:
-                        if run_record:
-                            run_record["status"] = "failed"
+                    except Exception as exc:
+                        if run_record is None:  # failed before a job existed
+                            run_record = {
+                                "policy": _policy,
+                                "benchmark_id": case.benchmark_id,
+                                "case_id": case.case_id,
+                                "job_id": None,
+                                "root_run_id": None,
+                            }
+                            manifest["runs"].append(run_record)
+                        run_record["status"] = "failed"
+                        run_record["error"] = type(exc).__name__
                         raise
                     finally:
                         write_manifest(manifest_path, manifest)
@@ -382,16 +401,27 @@ async def run_benchmark(
                         "attachment_mode": attachment_mode.value,
                     },
                 )
+                # Failure messages can carry provider response bodies; the manifest keeps the error type.
                 report.print(
                     baseline=baseline,
                     include_output=False,
                     include_input=False,
                     include_durations=True,
                     include_averages=True,
+                    include_errors=False,
                 )
+                if report.failures:
+                    print(f"{len(report.failures)} of {len(specs)} cases failed for policy {policy_name}.")
+                failed_cases += len(report.failures)
                 if baseline is None:
                     baseline = report
-        manifest["status"] = "completed"
+        manifest["failed_cases"] = failed_cases
+        if not failed_cases:
+            manifest["status"] = "completed"
+        elif failed_cases == len(specs) * len(policies):
+            manifest["status"] = "failed"
+        else:
+            manifest["status"] = "completed_with_failures"
     except Exception:
         manifest["status"] = "failed"
         raise
@@ -467,6 +497,9 @@ def main() -> None:
     except Exception as exc:
         parser.exit(1, f"Benchmark failed ({type(exc).__name__}). Check configuration and the experiment manifest.\n")
     print(f"Experiment manifest: {manifest_path}")
+    status = json.loads(manifest_path.read_text(encoding="utf-8"))["status"]
+    if status != "completed":
+        parser.exit(1, f"Benchmark finished with status {status}; failed cases are listed in the manifest.\n")
 
 
 if __name__ == "__main__":

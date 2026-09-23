@@ -153,12 +153,3 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
                 event.provider_name = getattr(part, "provider_name", None)
 
     return [calls[call_id] for call_id in order]
-
-
-def compact_tool_result(value: Any, *, max_chars: int = 8_000) -> Any:
-    """Bound persisted tool-return volume while retaining useful provenance."""
-    normalized = jsonable(value)
-    encoded = json.dumps(normalized, ensure_ascii=False, default=str)
-    if len(encoded) <= max_chars:
-        return normalized
-    return {"truncated": True, "response_sha256": hashlib.sha256(encoded.encode()).hexdigest(), "original_chars": len(encoded)}

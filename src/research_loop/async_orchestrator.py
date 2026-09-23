@@ -30,8 +30,9 @@ from .attachments import (
 )
 from .ledger import EvidenceLedger
 from .policy import ModelPolicy, ModelRoute
+from .quotes import check_quotes, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
-from .scholar import AcquisitionCache, ScholarClient, build_scholar_toolset
+from .scholar import AcquisitionCache, FetchMemo, ScholarClient, build_scholar_toolset
 from .settings import ResearchSettings
 from .schemas import (
     FinalReport,
@@ -65,6 +66,15 @@ class ResearchConfig:
     # When a scout or deep dive exhausts its budget, summarize what it gathered in one
     # tool-free call (or return an empty result) instead of failing the job.
     salvage_exhausted_research: bool = False
+
+    def __post_init__(self) -> None:
+        # Zero deep dives or verification rounds disables that step; zero parallel slots would hang.
+        for name, minimum in (("max_parallel_scouts", 1), ("max_parallel_deep_dives", 1),
+                              ("max_deep_dives_per_round", 0), ("max_verification_rounds", 0)):
+            if getattr(self, name) < minimum:
+                raise ValueError(f"{name} must be at least {minimum}")
+        if not 0.0 <= self.min_scout_confidence <= 1.0:
+            raise ValueError("min_scout_confidence must be between 0 and 1")
 
 
 # Bounds on tool output replayed to a salvage call.
@@ -137,6 +147,8 @@ class AsyncResearchLoop:
         self._gap_agent = gap_agent
         # Per-job USD spend; None once any billed call could not be priced.
         self._job_spend: dict[UUID, Decimal | None] = {}
+        # Per-job fetched documents, shared by the job's agents and dropped when it ends.
+        self._fetch_memos: dict[UUID, FetchMemo] = {}
 
     @staticmethod
     def _limits(route: ModelRoute, remaining_budget: float | None = None) -> UsageLimits:
@@ -199,8 +211,15 @@ class AsyncResearchLoop:
         salvage: bool = False,
         persisted_prompt: str | None = None,
         captured: list[Any] | None = None,
+        task_ids: list[UUID] | None = None,
+        quote_texts: list[str] | None = None,
     ) -> Any:
-        """Run one agent as a persisted task; on failure, `captured` receives the run's messages."""
+        """Run one agent as a persisted task.
+
+        `task_ids` receives the task's ID once it is persisted; on failure, `captured` receives
+        the run's messages. A ResearchResult's quotes are checked against this run's tool output
+        plus `quote_texts` (a salvage call passes the output of the run it summarizes).
+        """
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
             "attachment_mode": self.config.attachment_mode.value,
@@ -220,6 +239,8 @@ class AsyncResearchLoop:
             effective_config=effective_config,
             attempt=attempt,
         )
+        if task_ids is not None:
+            task_ids.append(task_id)
 
         # A caller-owned RunUsage keeps counting billed requests even when the run raises.
         usage = RunUsage()
@@ -229,10 +250,12 @@ class AsyncResearchLoop:
                 build_research_capabilities(self.config.tool_mode) if research_tools else None
             )
             toolsets = []
+            memo = self._fetch_memos.get(job_id)
             if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
                 toolsets.append(build_web_toolset(WebAcquisition(
                     cache_root=self.settings.benchmark_cache / "web",
                     cache_mode=self.config.scholarly_cache_mode,
+                    memo=memo,
                 )))
             if research_tools and self.config.scholarly_tools:
                 scholar_client = ScholarClient(
@@ -243,6 +266,7 @@ class AsyncResearchLoop:
                     api_key=self.settings.openalex_api_key.get_secret_value() if self.settings.openalex_api_key else None,
                     contact_email=self.settings.crossref_mailto,
                     grobid_url=self.settings.grobid_url,
+                    memo=memo,
                 )
                 toolsets.append(build_scholar_toolset(scholar_client))
             if attachment_corpus and attachment_tools:
@@ -273,6 +297,8 @@ class AsyncResearchLoop:
             events = extract_tool_events(result.new_messages())
             await self.repository.record_tool_events(task_id, events)
             output = result.output
+            if isinstance(output, ResearchResult):
+                output = check_quotes(output, [*tool_texts(events), *(quote_texts or ())])
             await self.repository.finish_task(
                 task_id,
                 status="succeeded",
@@ -310,8 +336,9 @@ class AsyncResearchLoop:
         if not self.config.salvage_exhausted_research:
             return await self._run_agent(**kwargs)
         messages: list[Any] = []
+        exhausted_ids: list[UUID] = []
         try:
-            return await self._run_agent(**kwargs, captured=messages)
+            return await self._run_agent(**kwargs, captured=messages, task_ids=exhausted_ids)
         except JobBudgetExceeded:
             return _budget_exhausted_result(question)  # refused before any spend
         except UsageLimitExceeded:
@@ -343,7 +370,9 @@ class AsyncResearchLoop:
                 persisted_prompt=json.dumps(request | {"gathered_evidence": stored}, ensure_ascii=False),
                 question_id=question.id,
                 attempt=kwargs.get("attempt", 0),
+                parent_task_id=exhausted_ids[0] if exhausted_ids else None,
                 salvage=True,
+                quote_texts=tool_texts(extract_tool_events(messages)),
             )
         except (JobBudgetExceeded, UsageLimitExceeded):
             return _budget_exhausted_result(question)
@@ -388,7 +417,9 @@ class AsyncResearchLoop:
         attachments: AttachmentCorpus | None,
         *,
         attempt: int,
+        parent_task_id: UUID | None = None,
     ) -> ResearchResult:
+        """Deep-dive one gap; `parent_task_id` is the gap-analysis or verifier task that asked for it."""
         route = self.policy.escalation_for(question, attempt=attempt)
         prompt = json.dumps(
             {
@@ -408,6 +439,7 @@ class AsyncResearchLoop:
                 prompt=prompt,
                 question_id=question.id,
                 attempt=attempt,
+                parent_task_id=parent_task_id,
                 research_tools=True,
                 attachment_corpus=attachments,
                 attachment_tools=bool(attachments),
@@ -446,6 +478,8 @@ class AsyncResearchLoop:
         ledger: EvidenceLedger,
         constraints: ResearchConstraints,
         attachments: AttachmentCorpus | None,
+        *,
+        task_ids: list[UUID] | None = None,
     ) -> VerificationReport:
         route = self.policy.for_role(ResearchRole.VERIFIER)
         return await self._run_agent(
@@ -462,6 +496,7 @@ class AsyncResearchLoop:
                 },
                 ensure_ascii=False,
             ),
+            task_ids=task_ids,
         )
 
     def _select_gaps(
@@ -484,6 +519,7 @@ class AsyncResearchLoop:
         attachments: AttachmentCorpus | None,
         *,
         attempt: int,
+        parent_task_id: UUID | None = None,
     ) -> None:
         valid = self._select_gaps(gaps, questions)
         if not valid:
@@ -500,6 +536,7 @@ class AsyncResearchLoop:
                     constraints,
                     attachments,
                     attempt=attempt,
+                    parent_task_id=parent_task_id,
                 )
                 for g in valid
             )
@@ -570,6 +607,7 @@ class AsyncResearchLoop:
             },
         )
         self._job_spend[job_id] = Decimal(0)
+        self._fetch_memos[job_id] = FetchMemo()
         try:
             output = await self._run_agent(
                 job_id=job_id, agent=agent, role=role, route=route, prompt=prompt, deps=deps
@@ -592,6 +630,7 @@ class AsyncResearchLoop:
             raise
         finally:
             self._job_spend.pop(job_id, None)
+            self._fetch_memos.pop(job_id, None)
 
     async def run(
         self,
@@ -626,6 +665,7 @@ class AsyncResearchLoop:
         )
 
         self._job_spend[job_id] = Decimal(0)
+        self._fetch_memos[job_id] = FetchMemo()
         try:
             attachments = None
             if constraints.attachment_paths:
@@ -674,6 +714,7 @@ class AsyncResearchLoop:
                 ledger.add(result)
 
             gap_route = self.policy.for_role(ResearchRole.GAP_ANALYST)
+            gap_task_ids: list[UUID] = []
             gap_analysis: GapAnalysis = await self._run_agent(
                 job_id=job_id,
                 agent=gap_agent,
@@ -688,15 +729,18 @@ class AsyncResearchLoop:
                     },
                     ensure_ascii=False,
                 ),
+                task_ids=gap_task_ids,
             )
             gaps = self._dedupe_gaps(gap_analysis.gaps + self._confidence_gaps(plan, ledger))
             await self._resolve_gaps(
-                job_id, gaps, questions, ledger, constraints, attachments, attempt=0
+                job_id, gaps, questions, ledger, constraints, attachments, attempt=0,
+                parent_task_id=gap_task_ids[0] if gap_task_ids else None,
             )
 
             report = await self._synthesize(job_id, objective, ledger, constraints, attachments)
+            verify_task_ids: list[UUID] = []
             verification = await self._verify(
-                job_id, objective, report, ledger, constraints, attachments
+                job_id, objective, report, ledger, constraints, attachments, task_ids=verify_task_ids
             )
 
             for round_index in range(self.config.max_verification_rounds):
@@ -710,10 +754,11 @@ class AsyncResearchLoop:
                     constraints,
                     attachments,
                     attempt=round_index + 1,
+                    parent_task_id=verify_task_ids[-1] if verify_task_ids else None,
                 )
                 report = await self._synthesize(job_id, objective, ledger, constraints, attachments)
                 verification = await self._verify(
-                    job_id, objective, report, ledger, constraints, attachments
+                    job_id, objective, report, ledger, constraints, attachments, task_ids=verify_task_ids
                 )
 
             await self.repository.finish_job(
@@ -737,3 +782,4 @@ class AsyncResearchLoop:
             raise
         finally:
             self._job_spend.pop(job_id, None)
+            self._fetch_memos.pop(job_id, None)

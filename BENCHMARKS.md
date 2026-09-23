@@ -23,7 +23,7 @@ Use this lane to measure search strategy, persistence, source discovery, cost/co
 - The adapter preserves the rubrics and blocked URLs.
 - Blocked URLs are propagated as hard run constraints to planner, scouts, deep dives, synthesis, and verification.
 - Tool traces are audited for blocked-source access.
-- `--export-reports` writes `idx-<n>.md` files that can be passed to the official DRB-II evaluator.
+- `--export-reports` writes `idx-<n>.md` files that can be passed to the official DRB-II evaluator. Other report paths use safe single-component names derived from benchmark and case IDs.
 
 Use this lane to measure evidence coverage, synthesis, structure, citation behavior, and the value of a premium final synthesizer.
 
@@ -31,7 +31,7 @@ Use this lane to measure evidence coverage, synthesis, structure, citation behav
 
 GAIA is gated upstream and may include local attachments. The adapter therefore accepts an authorized local snapshot and never redistributes the dataset.
 
-For v3, attachment metadata is preserved but the generic research loop does not yet ingest arbitrary local PDFs/media into every provider. For comparable model runs, start with `include_attachments = false`. The next attachment increment should normalize local document/media extraction before comparing providers.
+Attachment cases can use normalized local extraction or the explicit multimodal mode. Keep those modes separate when comparing policies; use `include_attachments = false` only for a text-only GAIA lane.
 
 ### Original USTC DeepResearch Bench
 
@@ -64,7 +64,7 @@ seed = 17
 languages = ["en"]
 ```
 
-Sampling is deterministic by `seed`. Source-specific adapters normalize all cases into `BenchmarkCaseSpec`.
+Sampling is deterministic by `seed`. Source-specific adapters normalize all cases into `BenchmarkCaseSpec`. Public datasets downloaded automatically are cached through a temporary file, so interrupted downloads do not leave a partial cache entry. The experiment manifest hashes the suite file, not the downloaded dataset bytes; pin and record a dataset checksum separately for reproducible comparisons.
 
 ## Run
 
@@ -88,6 +88,8 @@ research-bench examples/benchmark_cases.json --policies synthetic --repository p
 
 The `synthetic` policy runs the graph with deterministic fake role outputs and makes no provider or web calls. Use it to verify local wiring before paid experiments. Every run writes a sanitized experiment manifest under `RESEARCH_BENCHMARK_OUTPUT` by default; `--manifest-output` sets an explicit location. The manifest includes selected case IDs and run IDs, never raw protected prompts or answers.
 
+A failed case does not stop the suite. Its run record gets `status = "failed"` and the exception type only; provider error messages can contain response bodies, so they are neither printed nor stored. The manifest `status` is `completed` when every case succeeded, `completed_with_failures` when some failed, and `failed` when all failed or the suite itself errored; `failed_cases` counts failed cases across policies. The CLI exits non-zero unless the status is `completed`.
+
 ## Metrics
 
 Shared local metrics:
@@ -101,8 +103,13 @@ Shared local metrics:
 - blocked-source compliance
 - eval-integrity rate
 - deterministic exact-answer match when a short reference answer exists
+- verbatim-quote rate: the share of evidence quotes found in text the research tools returned
 
-Keep official benchmark scoring separate. In particular, use the official BrowseComp/GAIA semantic grading for published comparisons and the official DRB-II evaluator for rubric scores.
+A metric that does not apply to a case records no score for it, so averages cover only the cases it assessed: the claim rates need at least one verifier-checked claim, supported claims per dollar needs a known nonzero cost, blocked-source compliance needs blocked URLs, and eval integrity needs a leakage-sensitive case. A case's `cost_usd` is the job's own spend and is unknown (`null`) once any billed call has no pricing data.
+
+The claim rates measure groundedness as judged by the run's own verifier, not factual correctness.
+
+Evidence version 2 splits each evidence item into an `excerpt` (the model's summary) and an optional verbatim `quote`. After each scout, deep-dive, or salvage run, code checks every quote against all text that run's tools returned: fetched pages and papers, search results, abstracts, and attachment chunks. It normalizes case, whitespace, typographic quotes and dashes, and hyphenated line breaks, and accepts `...` and bracketed insertions when the remaining parts appear in order. The result is stored as `quote_check` (`verified` or `not_found`), which is hidden from the model's output schema and overwritten if a model sets it. The verbatim-quote rate needs no model judgment, but it shows only that the wording was in the tool output, not that the source supports the claim, and it does not check paraphrases. Manifests record `evidence_version`; compare runs within one version. Keep official benchmark scoring separate. In particular, use the official BrowseComp/GAIA semantic grading for published comparisons and the official DRB-II evaluator for rubric scores.
 
 ## Anti-contamination rules
 
@@ -127,6 +134,8 @@ Attachment-backed evidence is cited by stable `attachment_id` plus a locator suc
 ## Normalized acquisition (v6)
 
 Normalized benchmark runs now use DuckDuckGo search plus a common `web_fetch` tool (Trafilatura with a Beautiful Soup fallback). Scouts and deep dives also receive provider-neutral scholarly tools for OpenAlex, Crossref, arXiv, ACL Anthology, and OpenCitations. This changes retrieval conditions compared with earlier normalized runs. Compare models only within the same tool stack and manifest fingerprint.
+
+Fetch version 2 lets agents page past the first 12,000 characters of a document and shares fetched documents among the agents of one case, never across cases. Manifests record it as `acquisition.fetch_version`, which is part of the configuration fingerprint; do not compare runs across fetch versions.
 
 The `duckduckgo_search` tool keeps PydanticAI's name, description, and results. Searches share a process-wide rate slot of one per second. A failed search is retried once, then returned to the model as a `SearchUnavailable` error result instead of failing the case. Earlier runs failed the whole case on a DuckDuckGo error.
 

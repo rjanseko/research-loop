@@ -14,6 +14,8 @@ from .benchmarks.manifest import load_manifest
 from .benchmarks.models import BenchmarkCaseSpec
 from .graph import RESEARCH_GRAPH_VERSION
 from .policy import get_policy
+from .scholar import FETCH_VERSION
+from .schemas import EVIDENCE_VERSION
 
 
 PACKAGE_NAMES = ("research-loop-v5", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg")
@@ -101,6 +103,7 @@ def build_manifest(
         "fetch_backend": "trafilatura+bs4" if tool_mode == "normalized" else "adaptive/provider-specific",
         "scholarly_backends": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
         "scholarly_cache_mode": "off",
+        "fetch_version": FETCH_VERSION,
     }
     config_fingerprint = _fingerprint({
         "policy_schema_version": 1,
@@ -109,6 +112,7 @@ def build_manifest(
         "tool_mode": tool_mode,
         "repository_mode": repository_mode,
         "acquisition": acquisition,
+        "evidence_version": EVIDENCE_VERSION,
     })
     return {
         "schema_version": 2,
@@ -117,6 +121,7 @@ def build_manifest(
         "config_fingerprint": config_fingerprint,
         "policy_schema_version": 1,
         "acquisition": acquisition,
+        "evidence_version": EVIDENCE_VERSION,
         "python_version": platform.python_version(),
         "status": "running",
         "graph_version": RESEARCH_GRAPH_VERSION,

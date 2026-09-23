@@ -18,12 +18,16 @@ from .async_orchestrator import ResearchConfig
 from .db import migration_files, migration_status
 from .diagnose import run_diagnose
 from .experiment import _fingerprint, _git_state, _packages, _safe_value, write_manifest
+from .ledger import EvidenceLedger
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
 from .policy import get_policy
 from .repository import InMemoryResearchRepository, PostgresResearchRepository
+from .scholar import FETCH_VERSION
 from .schemas import (
+    EVIDENCE_VERSION,
     CampaignFindings,
+    ClaimCheck,
     CampaignSynthesis,
     FinalReport,
     ResearchConstraints,
@@ -37,6 +41,9 @@ from .tools import ResearchToolMode
 
 CAMPAIGN_FILE = Path(__file__).resolve().parents[2] / "campaigns" / "long_horizon_agentic_se" / "campaign.toml"
 SYNTHESIS_DIR = "campaign"
+# Question IDs name folders under the output directory, next to these.
+_RESERVED_QUESTION_IDS = (".", "..", SYNTHESIS_DIR, "manifests")
+_DEFAULT_MAX_FAILED_QUESTIONS = 2
 CATALOGS = ("benchmark_catalog", "architecture_patterns", "failure_modes", "open_questions", "hypotheses")
 _SYNTHESIS_LIMITS = ("cost_limit_usd", "total_tokens_limit", "max_requests", "max_output_tokens", "max_prompt_chars")
 
@@ -53,12 +60,18 @@ def load_campaign(path: Path) -> dict[str, Any]:
     ids = [item.get("id") for item in questions]
     if not ids or any(not isinstance(item, str) or not item or "/" in item for item in ids) or len(ids) != len(set(ids)) or any(not item.get("text") for item in questions):
         raise ValueError("campaign needs unique question IDs without '/' and nonempty question text")
+    if reserved := sorted(set(ids) & set(_RESERVED_QUESTION_IDS)):
+        raise ValueError(f"campaign question IDs cannot be {', '.join(map(repr, _RESERVED_QUESTION_IDS))}; "
+                         f"found {', '.join(map(repr, reserved))}")
     execution = campaign.get("execution") or {}
     if not _positive_number(execution.get("question_cost_limit_usd")):
         raise ValueError("campaign needs a positive execution.question_cost_limit_usd")
     reserve = execution.get("question_reserve_usd", 0.0)
     if not isinstance(reserve, (int, float)) or isinstance(reserve, bool) or not 0 <= reserve < execution["question_cost_limit_usd"]:
         raise ValueError("execution.question_reserve_usd must be at least 0 and below question_cost_limit_usd")
+    max_failed = execution.get("max_failed_questions", _DEFAULT_MAX_FAILED_QUESTIONS)
+    if not isinstance(max_failed, int) or isinstance(max_failed, bool) or max_failed < 1:
+        raise ValueError("execution.max_failed_questions must be a positive integer")
     notes = execution.get("research_notes", [])
     if not isinstance(notes, list) or not all(isinstance(note, str) and note for note in notes):
         raise ValueError("execution.research_notes must be a list of nonempty strings")
@@ -100,9 +113,17 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _spec_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _objective_sha256(campaign: dict[str, Any], question: dict[str, str]) -> str:
+    return hashlib.sha256(render_objective(campaign, question).encode()).hexdigest()
+
+
 def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_snapshot: dict[str, Any],
                    fingerprint_extra: dict[str, Any], persist: bool) -> dict[str, Any]:
-    spec_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    spec_hash = _spec_sha256(path)
     return {
         "schema_version": 2, "kind": kind, "campaign_id": campaign["id"], "experiment_id": str(uuid4()),
         "campaign_spec_sha256": spec_hash,
@@ -116,8 +137,15 @@ def _manifest_base(campaign: dict[str, Any], path: Path, *, kind: str, policy_sn
 _SEVERITY_ORDER = {"major": 0, "minor": 1, "none": 2}
 
 
-def render_question_report(report: FinalReport, verification: VerificationReport) -> str:
-    """The synthesized answer, its caveats, and the verifier's unresolved findings."""
+def _flagged_checks(verification: VerificationReport) -> list[ClaimCheck]:
+    """Checks the verifier could not support or rated major, most severe first."""
+    return sorted((check for check in verification.checks if not check.supported or check.severity == "major"),
+                  key=lambda check: (_SEVERITY_ORDER[check.severity], check.supported))
+
+
+def render_question_report(report: FinalReport, verification: VerificationReport,
+                           ledger: EvidenceLedger | None = None) -> str:
+    """The synthesized answer, its caveats, the verifier's unresolved findings, and quote checks."""
     lines = [report.answer.rstrip(), ""]
     if report.caveats:
         lines += ["## Caveats", "", *[f"- {caveat}" for caveat in report.caveats], ""]
@@ -129,14 +157,22 @@ def render_question_report(report: FinalReport, verification: VerificationReport
               f"{len(unsupported)} not supported ({major} major)."]
     if verification.needs_research:
         lines.append("It asked for more research, which this run did not do, so the issues below are unresolved.")
-    flagged = sorted((check for check in checks if not check.supported or check.severity == "major"),
-                     key=lambda check: (_SEVERITY_ORDER[check.severity], check.supported))
+    flagged = _flagged_checks(verification)
     if flagged:
         lines.append("")
     for check in flagged:
         label = f"{check.severity}, {'supported' if check.supported else 'not supported'}"
         cited = f" (claims: {', '.join(check.claim_ids)})" if check.claim_ids else ""
         lines.append(f"- **[{label}]** {check.statement}{cited}: {check.explanation}")
+    quoted = [(claim.id, item.quote_check) for claim in (ledger.claims() if ledger else [])
+              for item in claim.evidence if item.quote_check]
+    not_found = [claim_id for claim_id, check in quoted if check == "not_found"]
+    if not_found:
+        lines += ["", f"{len(not_found)} of {len(quoted)} quoted passages {'was' if len(not_found) == 1 else 'were'} "
+                      "not found in any text the research tools returned "
+                      f"(claims: {', '.join(dict.fromkeys(not_found))})."]
+    elif quoted:
+        lines += ["", f"All {len(quoted)} quoted passages were found in text the research tools returned."]
     return "\n".join(lines) + "\n"
 
 
@@ -193,10 +229,12 @@ async def run_campaign(
     policy_snapshot = _safe_value(policy.snapshot())
     acquisition = {"search": "duckduckgo", "web_fetch": "trafilatura+bs4",
                    "scholar": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
-                   "cache_mode": "record"}
+                   "cache_mode": "record", "fetch_version": FETCH_VERSION}
     manifest = _manifest_base(campaign, path, kind="questions", policy_snapshot=policy_snapshot,
-                              fingerprint_extra={"acquisition": acquisition}, persist=persist)
+                              fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION},
+                              persist=persist)
     manifest |= {
+        "evidence_version": EVIDENCE_VERSION,
         "tool_mode": "normalized", "acquisition": acquisition, "cache_mode": "record",
         "run_limits": {
             "max_parallel_scouts": run_config.max_parallel_scouts,
@@ -211,10 +249,12 @@ async def run_campaign(
     }
     manifest_path = output_dir / "manifests" / f"{manifest['experiment_id']}.json"
     write_manifest(manifest_path, manifest)
+    max_failed = int(execution.get("max_failed_questions", _DEFAULT_MAX_FAILED_QUESTIONS))
+    failed = 0
     try:
         async with AsyncExitStack() as stack:
             pool = await _open_pool(stack, settings, persist)
-            for question_id in question_ids:
+            for index, question_id in enumerate(question_ids):
                 backend = PostgresResearchRepository(pool) if pool else InMemoryResearchRepository()
                 loop = ResearchLoop(
                     policy,
@@ -222,19 +262,29 @@ async def run_campaign(
                     repository=backend,
                 )
                 question = questions[question_id]
+                objective = render_objective(campaign, question)
                 try:
                     outcome = await loop.run(
-                        render_objective(campaign, question),
+                        objective,
                         constraints=ResearchConstraints(notes=list(execution.get("research_notes", []))),
                     )
                 except Exception as exc:
+                    # Questions are independent: record the failure and go on, unless failures
+                    # keep coming, which points to a shared cause.
                     manifest["questions"].append({
                         "id": question_id, "status": "failed", "error": type(exc).__name__,
                     })
-                    raise
+                    write_manifest(manifest_path, manifest)
+                    failed += 1
+                    if failed >= max_failed:
+                        if question_ids[index + 1:]:
+                            manifest["not_run"] = question_ids[index + 1:]
+                        break
+                    continue
                 folder = output_dir / question_id
                 folder.mkdir(parents=True, exist_ok=True)
-                (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification), encoding="utf-8")
+                (folder / "report.md").write_text(render_question_report(outcome.report, outcome.verification, outcome.ledger),
+                                                  encoding="utf-8")
                 (folder / "report.json").write_text(outcome.report.model_dump_json(indent=2) + "\n", encoding="utf-8")
                 _write_json(folder / "evidence_ledger.json", {
                     key: [item.model_dump(mode="json") for item in values]
@@ -256,12 +306,16 @@ async def run_campaign(
                 _write_json(folder / "run.json", record | {
                     "experiment_id": manifest["experiment_id"],
                     "campaign_spec_sha256": manifest["campaign_spec_sha256"],
+                    # What the evidence answers; budget-only spec edits leave it unchanged.
+                    "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
                     "config_fingerprint": manifest["config_fingerprint"],
                     "finished_at": datetime.now(UTC).isoformat(),
                 })
                 manifest["questions"].append(record)
                 write_manifest(manifest_path, manifest)
-        manifest["status"] = "completed"
+        completed = len(manifest["questions"]) - failed
+        manifest["status"] = ("completed" if not failed
+                              else "completed_with_failures" if completed else "failed")
     except Exception as exc:
         manifest["status"] = "failed"
         manifest["error"] = type(exc).__name__
@@ -278,25 +332,44 @@ class CompletedQuestion:
     run: dict[str, Any]
     report: FinalReport
     ledger: dict[str, list[ResearchResult]]
+    verification: VerificationReport
 
 
 @dataclass
 class CampaignEvidence:
     completed: list[CompletedQuestion]
+    # Every question left out of synthesis, including stale ones.
     missing: list[str]
     claims: list[dict[str, Any]]
     bibliography: list[dict[str, Any]]
     contradictions: dict[str, list[dict[str, Any]]]
+    verification: dict[str, dict[str, Any]]
+    # Completed outputs not matched to the current spec's objective: it changed, or the run
+    # predates objective hashes and the spec file changed since.
+    stale: list[str]
 
     @property
     def refs(self) -> frozenset[str]:
         return frozenset(item["ref"] for item in self.claims)
 
 
-def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEvidence:
-    """Merge completed question outputs; claim refs are '<question>/<claim id>' in ledger order."""
+def _answers_current_objective(campaign: dict[str, Any], question: dict[str, str], run: dict[str, Any],
+                               spec_sha256: str | None) -> bool:
+    if "objective_sha256" in run:
+        return run["objective_sha256"] == _objective_sha256(campaign, question)
+    # Runs recorded before objective hashes: only an unchanged spec file shows the objective is the same.
+    return spec_sha256 is not None and run.get("campaign_spec_sha256") == spec_sha256
+
+
+def aggregate_campaign(campaign: dict[str, Any], output_dir: Path, *,
+                       spec_sha256: str | None = None) -> CampaignEvidence:
+    """Merge completed question outputs; claim refs are '<question>/<claim id>' in ledger order.
+
+    `spec_sha256` is the current spec file's hash, used only for runs recorded without an objective hash.
+    """
     completed: list[CompletedQuestion] = []
     missing: list[str] = []
+    stale: list[str] = []
     for question in campaign["questions"]:
         folder = output_dir / question["id"]
         try:
@@ -307,16 +380,24 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
         if run.get("status") != "completed":
             missing.append(question["id"])
             continue
+        if not _answers_current_objective(campaign, question, run, spec_sha256):
+            stale.append(question["id"])
+            missing.append(question["id"])
+            continue
         raw_ledger = json.loads((folder / "evidence_ledger.json").read_text(encoding="utf-8"))
         completed.append(CompletedQuestion(
             question=question,
             run=run,
             report=FinalReport.model_validate_json((folder / "report.json").read_text(encoding="utf-8")),
             ledger={key: [ResearchResult.model_validate(item) for item in items] for key, items in raw_ledger.items()},
+            verification=VerificationReport.model_validate_json(
+                (folder / "verification.json").read_text(encoding="utf-8")
+            ),
         ))
 
     claims: list[dict[str, Any]] = []
     contradictions: dict[str, list[dict[str, Any]]] = {}
+    verification: dict[str, dict[str, Any]] = {}
     bibliography: dict[str, dict[str, Any]] = {}
     for item in completed:
         question_id = item.question["id"]
@@ -342,7 +423,21 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
              "claim_refs": [first_ref[claim_id] for claim_id in contradiction.claim_ids if claim_id in first_ref]}
             for results in item.ledger.values() for result in results for contradiction in result.contradictions
         ]
-    return CampaignEvidence(completed, missing, claims, list(bibliography.values()), contradictions)
+        checks = item.verification.checks
+        verification[question_id] = {
+            "checked": len(checks),
+            "not_supported": sum(1 for check in checks if not check.supported),
+            "major": sum(1 for check in checks if not check.supported and check.severity == "major"),
+            "needs_research": item.verification.needs_research,
+            "findings": [
+                {"statement": check.statement, "supported": check.supported, "severity": check.severity,
+                 "explanation": check.explanation,
+                 "claim_refs": [first_ref[claim_id] for claim_id in check.claim_ids if claim_id in first_ref]}
+                for check in _flagged_checks(item.verification)
+            ],
+        }
+    return CampaignEvidence(completed, missing, claims, list(bibliography.values()), contradictions,
+                            verification=verification, stale=stale)
 
 
 def write_aggregate(campaign_dir: Path, evidence: CampaignEvidence) -> None:
@@ -377,6 +472,7 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence, *, ex
                 "id": item.question["id"], "text": item.question["text"],
                 "report": item.report.answer, "caveats": item.report.caveats,
                 "contradictions": evidence.contradictions[item.question["id"]],
+                "verification": evidence.verification[item.question["id"]],
                 "unresolved_questions": [
                     text for results in item.ledger.values() for result in results
                     for text in result.unresolved_questions
@@ -394,6 +490,7 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence, *, ex
                                    if key in _SOURCE_FIELDS and value is not None},
                         "excerpt": item["excerpt"][:excerpt_chars],
                         "supports": item["supports"],
+                        **({"quote_check": item["quote_check"]} if item.get("quote_check") else {}),
                     }
                     for item in entry["claim"]["evidence"]
                 ],
@@ -444,11 +541,14 @@ def write_synthesis(campaign_dir: Path, campaign: dict[str, Any], evidence: Camp
 def prepare_synthesis(path: Path, output_dir: Path, *, allow_partial: bool) -> tuple[dict[str, Any], CampaignEvidence, str]:
     """Validate synthesis inputs without model calls; raise before any paid step."""
     campaign = load_campaign(path)
-    evidence = aggregate_campaign(campaign, output_dir)
+    evidence = aggregate_campaign(campaign, output_dir, spec_sha256=_spec_sha256(path))
+    stale = (f" ({', '.join(evidence.stale)} cannot be matched to the current spec's objective; rerun them)"
+             if evidence.stale else "")
     if not evidence.completed:
-        raise ValueError("no completed campaign questions to synthesize")
+        raise ValueError(f"no completed campaign questions to synthesize{stale}")
     if evidence.missing and not allow_partial:
-        raise ValueError(f"questions not completed: {', '.join(evidence.missing)}; pass --allow-partial to synthesize anyway")
+        raise ValueError(f"questions not completed: {', '.join(evidence.missing)}{stale}; "
+                         "pass --allow-partial to synthesize anyway")
     prompt = synthesis_prompt(campaign, evidence)
     max_chars = int(campaign["synthesis"]["max_prompt_chars"])
     if len(prompt) > max_chars:
@@ -492,7 +592,8 @@ async def synthesize_campaign(
                               persist=persist)
     manifest |= {
         "synthesis_route": _safe_value(route.snapshot()), "prompt_sha256": prompt_sha256, "prompt_chars": len(prompt),
-        "inputs": inputs, "missing_question_ids": evidence.missing, "partial": bool(evidence.missing),
+        "inputs": inputs, "missing_question_ids": evidence.missing, "stale_question_ids": evidence.stale,
+        "partial": bool(evidence.missing),
         "mixed_question_configs": len({item["config_fingerprint"] for item in inputs}) > 1,
         "claim_count": len(evidence.claims), "source_count": len(evidence.bibliography),
     }
@@ -566,11 +667,12 @@ def main() -> None:
     try:
         if args.aggregate:
             campaign = load_campaign(args.spec)
-            evidence = aggregate_campaign(campaign, args.output)
+            evidence = aggregate_campaign(campaign, args.output, spec_sha256=_spec_sha256(args.spec))
             if not args.dry_run:
                 write_aggregate(args.output / SYNTHESIS_DIR, evidence)
             print(f"Aggregated {len(evidence.completed)} questions, {len(evidence.claims)} claims, "
-                  f"{len(evidence.bibliography)} sources; missing: {', '.join(evidence.missing) or 'none'}")
+                  f"{len(evidence.bibliography)} sources; missing: {', '.join(evidence.missing) or 'none'}"
+                  + (f"; not matched to the current objective: {', '.join(evidence.stale)}" if evidence.stale else ""))
             return
         if args.synthesize:
             campaign, evidence, prompt = prepare_synthesis(args.spec, args.output, allow_partial=args.allow_partial)
@@ -608,6 +710,12 @@ def main() -> None:
     except Exception as exc:
         parser.exit(1, f"Campaign failed ({type(exc).__name__}); check settings and run manifest.\n")
     print(f"Campaign manifest: {manifest}")
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    if record["status"] != "completed":
+        failures = ", ".join(f"{item['id']} ({item['error']})" for item in record.get("questions", [])
+                             if item["status"] == "failed")
+        not_run = f"; not run: {', '.join(record['not_run'])}" if record.get("not_run") else ""
+        parser.exit(1, f"Campaign finished with status {record['status']}; failed: {failures}{not_run}\n")
 
 
 if __name__ == "__main__":

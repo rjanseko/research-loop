@@ -18,6 +18,7 @@ from .graph import (
 from .ledger import EvidenceLedger
 from .policy import ModelPolicy
 from .repository import NullResearchRepository, ResearchRepository
+from .scholar import FetchMemo
 from .schemas import ResearchConstraints
 from .telemetry import error_snapshot, jsonable
 
@@ -77,6 +78,7 @@ class ResearchLoop(AsyncResearchLoop):
         )
 
         self._job_spend[job_id] = Decimal(0)
+        self._fetch_memos[job_id] = FetchMemo()
         try:
             attachments: AttachmentCorpus | None = None
             if constraints.attachment_paths:
@@ -137,6 +139,7 @@ class ResearchLoop(AsyncResearchLoop):
             raise
         finally:
             self._job_spend.pop(job_id, None)
+            self._fetch_memos.pop(job_id, None)
 
     @classmethod
     def render_graph(cls, *, direction: str = "LR") -> str:

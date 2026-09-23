@@ -124,3 +124,73 @@ async def test_fetch_records_then_replays_without_network(monkeypatch, tmp_path)
     assert replayed.cache_hits == 1
     missing = await replay.fetch("https://example.org/other")
     assert missing.provider_errors == ["fetch:CacheMiss"]
+
+
+def _pdf(pages: int) -> bytes:
+    import io
+    from reportlab.pdfgen import canvas
+
+    stream = io.BytesIO()
+    pdf = canvas.Canvas(stream)
+    for page in range(pages):
+        for line in range(40):
+            pdf.drawString(72, 760 - line * 18, f"Page {page + 1} line {line + 1} carries scholarly evidence text.")
+        pdf.showPage()
+    pdf.save()
+    return stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_scholar_fetch_pages_through_a_paper_and_flags_unextracted_pages(monkeypatch, tmp_path) -> None:
+    from research_loop.scholar import FetchMemo
+
+    downloads: list[str] = []
+    body = _pdf(31)
+
+    async def safe(_: str) -> bool:
+        return True
+
+    async def bounded(_client, url, _limit):
+        downloads.append(url)
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=body,
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("research_loop.scholar._public_url", safe)
+    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
+    client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), memo=FetchMemo())
+    first = await client.fetch("https://arxiv.org/pdf/2601.01234")
+    assert first.start == 0 and first.truncated is True
+    assert "Page 1 line 1" in first.text
+    last_start = first.total_chars - 500
+    last = await client.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=last_start)
+    assert downloads == ["https://arxiv.org/pdf/2601.01234"]
+    assert last.truncated is False and last.next_start is None
+    assert "Page 30" in last.text
+    # pypdf reads 30 pages; the last window says the document goes on past them.
+    assert first.extraction_truncated is True and last.extraction_truncated is True
+    beyond = await client.fetch("https://arxiv.org/pdf/2601.01234", start=first.total_chars)
+    assert beyond.provider_errors == ["fetch:StartBeyondEnd"]
+
+
+@pytest.mark.asyncio
+async def test_scholar_fetch_pages_replay_from_recorded_windows(monkeypatch, tmp_path) -> None:
+    async def safe(_: str) -> bool:
+        return True
+
+    async def bounded(_client, url, _limit):
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=_pdf(3),
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("research_loop.scholar._public_url", safe)
+    monkeypatch.setattr("research_loop.scholar._bounded_public_get", bounded)
+    recorder = ScholarClient(cache=AcquisitionCache(tmp_path, "record"))
+    page_two = await recorder.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=1000)
+
+    async def offline(*_args, **_kwargs):
+        raise AssertionError("replay must not touch DNS or network")
+
+    monkeypatch.setattr("research_loop.scholar._public_url", offline)
+    monkeypatch.setattr("research_loop.scholar._bounded_public_get", offline)
+    replay = ScholarClient(cache=AcquisitionCache(tmp_path, "replay"))
+    replayed = await replay.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=1000)
+    assert replayed.text == page_two.text and replayed.start == 1000

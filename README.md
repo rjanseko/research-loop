@@ -305,18 +305,17 @@ It compares an order-insensitive semantic fingerprint of graph-backed and legacy
 
 With the v6 lab bootstrap in place, the next milestone is measurement: run small paid smoke tests and scout tournaments, then derive `ModelPolicy` changes from persisted telemetry rather than public leaderboards.
 
-## Codex handoff
+## Repository setup
 
-This repository export includes:
+This repository includes:
 
 - `AGENTS.md` — stable repository-level coding constraints for Codex;
-- `CODEX_TASK.md` — the v6 Research Lab Bootstrap specification;
 - `LOCAL_SETUP.md` — local bootstrap instructions;
 - `.env.example` — credential/configuration template;
 - `compose.yaml` — optional local PostgreSQL 16 instance;
 - `Makefile` and `scripts/` — convenience commands.
 
-For further work, start from the repository root and keep `AGENTS.md` and `CODEX_TASK.md` as the architecture and acceptance references.
+For further work, start from the repository root and follow `AGENTS.md` for architecture constraints.
 
 ## Scholarly research and first campaign
 

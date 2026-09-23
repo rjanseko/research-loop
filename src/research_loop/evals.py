@@ -27,13 +27,16 @@ class BenchmarkOutput:
     tool_calls: int
     research_tool_calls: int
     total_tokens: int
-    cost_usd: float
+    cost_usd: float | None
     search_queries: list[str]
     blocked_source_accesses: list[str] = field(default_factory=list)
     integrity_flags: list[str] = field(default_factory=list)
     attachment_count: int = 0
     attachment_tool_calls: int = 0
     attachment_ids_cited: list[str] = field(default_factory=list)
+    # Evidence quotes, and those not found in text the research tools returned (quotes.py).
+    quotes: int = 0
+    quotes_not_found: int = 0
 
 
 def normalize_answer(value: str) -> str:
@@ -43,16 +46,22 @@ def normalize_answer(value: str) -> str:
     return value
 
 
+# Evaluators return {} (no score) when their check does not apply to a case, so an
+# unassessed case is never averaged in as a pass or a failure.
+
+
 class SupportedClaimRate(Evaluator[Any, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
         total = ctx.output.total_claims
         if total == 0:
-            return 0.0
+            return {}
         return 1.0 - (ctx.output.unsupported_claims / total)
 
 
 class MajorErrorFreeRate(Evaluator[Any, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
+        if ctx.output.total_claims == 0:
+            return {}
         return 1.0 if ctx.output.major_unsupported_claims == 0 else 0.0
 
 
@@ -71,10 +80,10 @@ class ToolEfficiency(Evaluator[Any, BenchmarkOutput]):
 
 
 class CostEfficiency(Evaluator[Any, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
+        if ctx.output.cost_usd is None or ctx.output.cost_usd <= 0:
+            return {}  # unpriced or free: claims per dollar is undefined
         supported = max(ctx.output.total_claims - ctx.output.unsupported_claims, 0)
-        if ctx.output.cost_usd <= 0:
-            return 0.0
         return supported / ctx.output.cost_usd
 
 
@@ -107,13 +116,26 @@ class ReferenceAnswerMatch(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
 
 
 class BlockedSourceCompliance(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
+        if not ctx.inputs.blocked_urls:
+            return {}
         return 1.0 if not ctx.output.blocked_source_accesses else 0.0
 
 
 class EvalIntegrity(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
+        if not ctx.inputs.leakage_sensitive:
+            return {}
         return 1.0 if not ctx.output.integrity_flags else 0.0
+
+
+class VerbatimQuoteRate(Evaluator[Any, BenchmarkOutput]):
+    """Share of evidence quotes found in text the research tools returned; code checks it, not a model."""
+
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
+        if ctx.output.quotes == 0:
+            return {}
+        return 1.0 - ctx.output.quotes_not_found / ctx.output.quotes
 
 
 class AttachmentCitationCoverage(Evaluator[Any, BenchmarkOutput]):
@@ -138,5 +160,6 @@ def make_dataset(cases: list[Case]) -> Dataset:
             BlockedSourceCompliance(),
             EvalIntegrity(),
             AttachmentCitationCoverage(),
+            VerbatimQuoteRate(),
         ],
     )
