@@ -11,7 +11,7 @@ v5 architecture (frozen)
         ↓
 v6 operational readiness
         ├── configuration / secrets bootstrap
-        ├── research-doctor
+        ├── research-diagnose
         ├── Postgres-backed benchmark CLI
         ├── migration/status CLI
         ├── model capability smoke tests
@@ -36,7 +36,7 @@ Add one typed settings layer for:
 
 `.env.example` exists as a template. Loading a local `.env` is acceptable for development, but environment variables must remain the source of truth and secrets must never be logged.
 
-### 2. `research-doctor`
+### 2. `research-diagnose`
 
 Add a CLI command that reports actionable pass/fail/warn checks for:
 
@@ -53,9 +53,9 @@ Add a CLI command that reports actionable pass/fail/warn checks for:
 - tool-calling capability when the role requires tools
 - attachment/multimodal capability when configured
 
-Doctor should be useful with zero credentials: unavailable providers should be reported as skipped/warned, not crash the command.
+Diagnosis should be useful with zero credentials: unavailable providers should be reported as skipped/warned, not crash the command.
 
-Do not perform expensive benchmark calls from doctor.
+Do not perform expensive benchmark calls from diagnosis.
 
 ### 3. Persistent benchmark execution
 
@@ -117,8 +117,8 @@ Do not add:
 
 1. `pytest -q` passes.
 2. Existing graph/legacy parity remains green.
-3. `research-doctor` runs successfully with no API keys and reports skipped providers.
-4. `research-doctor` can validate a configured provider/model without exposing credentials.
+3. `research-diagnose` runs successfully with no API keys and reports skipped providers.
+4. `research-diagnose` can validate a configured provider/model without exposing credentials.
 5. `research-db migrate` initializes an empty Postgres database from the existing migrations.
 6. `research-bench` can run in both in-memory and Postgres-backed modes.
 7. A persisted synthetic/fake-model experiment can be inspected after process exit.
@@ -130,10 +130,10 @@ Do not add:
 1. Read `README.md` and `GRAPH.md` for boundaries relevant to this task.
 2. Run the existing tests before editing.
 3. Implement settings + database bootstrap.
-4. Implement `research-doctor` with injectable checks so it is testable without network/provider credentials.
+4. Implement `research-diagnose` with injectable checks so it is testable without network/provider credentials.
 5. Wire Postgres persistence into `research-bench`.
 6. Add experiment manifest capture.
 7. Add/extend tests.
-8. Update README with the shortest path from clone → setup → doctor → database → synthetic run → paid smoke run.
+8. Update README with the shortest path from clone → setup → diagnosis → database → synthetic run → paid smoke run.
 
 Prefer small, reviewable changes. Preserve the existing architecture rather than introducing a new framework.

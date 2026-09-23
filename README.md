@@ -1,8 +1,44 @@
-# Research Loop v5
+# Research Loop (v5 graph, v6 lab)
 
 Evidence-first, role-routed PydanticAI research orchestration with a typed Pydantic Graph control plane, normalized attachments, reproducible benchmark adapters, and Postgres telemetry.
 
-## v5 milestone
+## Local research lab quick start
+
+```bash
+make setup
+source .venv/bin/activate
+pytest -q
+research-diagnose                         # safe with no API keys
+```
+
+For the local Postgres database, copy `.env.example` to an ignored `.env`; the CLI reads it automatically and exported variables take precedence. Then:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+docker compose up -d postgres
+research-db status
+research-db migrate
+research-db status
+research-bench examples/benchmark_cases.json --policies synthetic --repository postgres
+```
+
+The synthetic policy exercises the real graph and Postgres writes without model or web calls. A sanitized experiment manifest is written under `RESEARCH_BENCHMARK_OUTPUT` (default `benchmark_outputs/`). The manifest records policy/model settings, package versions, benchmark selection, graph version, timestamps, and job/root-run IDs; it omits raw benchmark prompts, answers, credentials, and local paths.
+
+Before a paid run, set the provider keys and verified `RESEARCH_*_MODEL` overrides in the environment. Then validate the configured routes and run a small benchmark:
+
+```bash
+research-diagnose --policy quality --attachments --smoke
+research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
+```
+
+`--smoke` makes bounded provider calls; without it, diagnosis checks local configuration and model profiles only. `research-bench` defaults to synthetic runs and disposable in-memory mode. Real policies require `--paid` and run one suite case unless `--max-cases N` or `--all-cases` is specified. `--repository postgres` persists runs. Keep `research-graph-v1` fixed while comparing policies. See [`LOCAL_SETUP.md`](LOCAL_SETUP.md) for environment details.
+
+### Optional Logfire traces
+
+Install `pip install -e ".[observability]"`, then set `RESEARCH_LOGFIRE_ENABLED=true` and `LOGFIRE_TOKEN` in your ignored `.env` (or run `logfire auth` followed by `logfire projects use <project-name>`). Benchmark runs and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Tracing is off by default. The integration excludes prompts, completions, tool arguments/results, and binary content from exported spans. It uses an isolated tracer so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported by this setup. It sends to Logfire only when a token is available; Postgres remains the durable record of jobs and research evidence. Library callers can opt in by calling `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
+
+## v5 architecture
 
 v5 changes **workflow topology**, not agent semantics. The public `ResearchLoop.run(...)` interface remains compatible with v4, while the internal research algorithm is now an explicit `pydantic-graph` `GraphBuilder` workflow.
 
@@ -213,6 +249,7 @@ This exists for regression/parity work, not because production should maintain t
 ```bash
 research-bench examples/benchmark_suite.toml \
   --policies quality breadth glm-heavy \
+  --paid --all-cases \
   --max-concurrency 1 \
   --export-reports benchmark_outputs
 ```
@@ -224,6 +261,7 @@ Normalized attachment mode remains the default for fair cross-provider compariso
 ```bash
 research-bench examples/benchmark_suite_full.example.toml \
   --policies quality breadth glm-heavy \
+  --paid --all-cases \
   --attachment-mode normalized
 ```
 
@@ -265,17 +303,23 @@ It compares an order-insensitive semantic fingerprint of graph-backed and legacy
 - event sourcing;
 - another evidence store.
 
-The next milestone is measurement: freeze `research-graph-v1`, run the scout and full-policy tournaments, and derive `ModelPolicy` changes from telemetry rather than public leaderboards.
+With the v6 lab bootstrap in place, the next milestone is measurement: run small paid smoke tests and scout tournaments, then derive `ModelPolicy` changes from persisted telemetry rather than public leaderboards.
 
 ## Codex handoff
 
 This repository export includes:
 
 - `AGENTS.md` — stable repository-level coding constraints for Codex;
-- `CODEX_TASK.md` — the next scoped milestone (v6 Research Lab Bootstrap);
+- `CODEX_TASK.md` — the v6 Research Lab Bootstrap specification;
 - `LOCAL_SETUP.md` — local bootstrap instructions;
 - `.env.example` — credential/configuration template;
 - `compose.yaml` — optional local PostgreSQL 16 instance;
 - `Makefile` and `scripts/` — convenience commands.
 
-For a local Codex continuation, start from the repository root and ask Codex to read `AGENTS.md` and `CODEX_TASK.md` before implementing v6.
+For further work, start from the repository root and keep `AGENTS.md` and `CODEX_TASK.md` as the architecture and acceptance references.
+
+## Scholarly research and first campaign
+
+Install `pip install -e '.[all]'` for normalized web and scholarly PDF extraction. `research-diagnose --scholar-live` checks the public metadata endpoints without model calls. The provider-neutral adapters, cache modes, source-status rules, and optional local GROBID fallback are described in [SCHOLAR.md](SCHOLAR.md).
+
+The first long-horizon software-engineering research campaign is specified in [campaign.toml](campaigns/long_horizon_agentic_se/campaign.toml). Run `PYTHONPATH=src .venv/bin/python scripts/scholar_pilot.py` for a free metadata pilot. Validate the campaign with `research-campaign --dry-run`. After provider balances and spending caps are ready, `research-campaign --question q01 --paid --persist` runs a single question and exports its evidence. The spec does not contain unverified research findings.

@@ -33,6 +33,19 @@ class SourceRef(BaseModel):
     ] = "unknown"
     published_at: str | None = None
     accessed_at: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+    openalex_id: str | None = None
+    acl_id: str | None = None
+    publication_status: Literal[
+        "peer_reviewed", "accepted_conference", "journal", "preprint",
+        "conference_submission", "review", "official_documentation",
+        "benchmark_repository", "vendor_technical_report", "blog",
+        "general_web", "dataset", "unknown",
+    ] = "unknown"
+    provider: str | None = None
+    full_text_url: HttpUrl | None = None
+    is_retracted: bool | None = None
 
     @model_validator(mode="after")
     def validate_source_identity(self) -> "SourceRef":
@@ -73,11 +86,16 @@ class ResearchConstraints(BaseModel):
     blocked_urls: list[str] = Field(default_factory=list)
     attachment_paths: list[str] = Field(default_factory=list)
     benchmark_id: str | None = None
+    benchmark_case_id: str | None = None
+    benchmark_suite: str | None = None
     notes: list[str] = Field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not (self.blocked_urls or self.attachment_paths or self.benchmark_id or self.notes)
+        return not (
+            self.blocked_urls or self.attachment_paths or self.benchmark_id
+            or self.benchmark_case_id or self.benchmark_suite or self.notes
+        )
 
 
 class ResearchQuestion(BaseModel):

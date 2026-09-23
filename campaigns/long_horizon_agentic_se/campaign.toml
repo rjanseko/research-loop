@@ -1,0 +1,67 @@
+id = "long-horizon-agentic-se-2024-2026"
+title = "State of the Art in Long-Horizon Agentic Software Engineering, 2024–2026"
+status = "planned"
+graph_version = "research-graph-v1"
+period_start = "2024-01-01"
+period_end = "2026-09-23"
+as_of = "2026-09-23"
+
+[execution]
+normalized_web = true
+scholarly_cache_mode = "record"
+model_budget_gate = "Do not start paid model runs until research-diagnose --live passes and provider spending caps are set."
+first_run = "One narrow pilot question, followed by evidence review before the full campaign."
+max_parallel_scouts = 2
+planner_question_min = 1
+planner_question_max = 3
+max_deep_dives_per_round = 1
+max_verification_rounds = 0
+deep_dive_cost_limit_usd = 3.0
+
+[source_policy]
+tier_a = "Peer-reviewed, accepted conference, or journal work"
+tier_b = "High-quality preprints, labeled as preprints"
+tier_c = "Official benchmark papers, repositories, and technical reports"
+tier_d = "Credible engineering reports and blogs, attributed to their publisher"
+tier_e = "General web discussion, for leads rather than central claims"
+benchmark_claims = "Prefer benchmark paper, official repository, and official result tables; record version and evaluation conditions."
+version_rule = "Keep preprint, submission, accepted, and published records distinct; link versions by verified IDs."
+
+[outputs]
+files = ["report.md", "evidence_ledger.json", "bibliography.json", "benchmark_catalog.json", "architecture_patterns.json", "failure_modes.json", "open_questions.json", "hypotheses.json"]
+findings_sections = ["well_supported", "preliminary", "vendor_claims", "contradictory", "unknowns"]
+hypothesis_fields = ["supporting_evidence", "contradicting_evidence", "confidence", "proposed_experiment", "expected_metric", "estimated_cost"]
+
+[[questions]]
+id = "q01"
+text = "How is long-horizon software-engineering agency defined and measured?"
+[[questions]]
+id = "q02"
+text = "What are the scope, versions, evaluation methods, and limits of SWE-bench variants, Terminal-Bench, DeepSWE, RoadmapBench, LongCLI-Bench, and NL2Repo-style benchmarks?"
+[[questions]]
+id = "q03"
+text = "Which planning and replanning methods have measured effects on long tasks?"
+[[questions]]
+id = "q04"
+text = "How do context compaction, external memory, repository maps, and retrieval affect long tasks?"
+[[questions]]
+id = "q05"
+text = "What evidence supports multi-agent, subagent, planner/coder/reviewer, and parallel-exploration architectures at equal cost?"
+[[questions]]
+id = "q06"
+text = "How do agents use tests, verification, hidden tests, and regression checks?"
+[[questions]]
+id = "q07"
+text = "What causes goal drift, premature stopping, repeated work, architecture degradation, and context loss?"
+[[questions]]
+id = "q08"
+text = "Which strategies recover from failed tests and incorrect intermediate plans?"
+[[questions]]
+id = "q09"
+text = "How do tool interfaces and permission boundaries change agent performance and safety?"
+[[questions]]
+id = "q10"
+text = "What fair, matched-condition evidence compares GPT, Claude, GLM, Grok, and Gemini families on long-horizon coding tasks?"
+[[questions]]
+id = "q11"
+text = "What open questions and falsifiable hypotheses should guide later coding-agent experiments?"

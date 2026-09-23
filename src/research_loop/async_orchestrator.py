@@ -27,6 +27,8 @@ from .attachments import (
 from .ledger import EvidenceLedger
 from .policy import ModelPolicy, ModelRoute
 from .repository import NullResearchRepository, ResearchRepository
+from .scholar import AcquisitionCache, ScholarClient, build_scholar_toolset
+from .settings import ResearchSettings
 from .schemas import (
     FinalReport,
     Gap,
@@ -38,8 +40,9 @@ from .schemas import (
     ResearchRole,
     VerificationReport,
 )
-from .telemetry import extract_tool_events, jsonable, usage_snapshot
+from .telemetry import error_snapshot, extract_tool_events, jsonable, usage_snapshot
 from .tools import ResearchToolMode, build_research_capabilities
+from .web import WebAcquisition, build_web_toolset
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class ResearchConfig:
     attachment_mode: AttachmentMode = AttachmentMode.NORMALIZED
     attachment_limits: AttachmentLimits = field(default_factory=AttachmentLimits)
     attachment_strict: bool = True
+    scholarly_tools: bool = True
+    scholarly_cache_mode: str = "live"
 
 
 @dataclass
@@ -75,7 +80,8 @@ class AsyncResearchLoop:
         repository: ResearchRepository | None = None,
     ) -> None:
         self.policy = policy
-        self.config = config or ResearchConfig()
+        self.settings = ResearchSettings.from_env()
+        self.config = config or ResearchConfig(scholarly_cache_mode=self.settings.scholarly_cache_mode)
         self.repository: ResearchRepository = repository or NullResearchRepository()
         # Exposed to the graph orchestrator so agent definitions remain centralized here.
         self._planner_agent = planner_agent
@@ -123,6 +129,7 @@ class AsyncResearchLoop:
             "tool_mode": self.config.tool_mode.value,
             "attachment_mode": self.config.attachment_mode.value,
             "attachment_count": len(attachment_corpus.records) if attachment_corpus else 0,
+            "scholarly_cache_mode": self.config.scholarly_cache_mode,
         }
         task_id = await self.repository.start_task(
             job_id=job_id,
@@ -139,9 +146,25 @@ class AsyncResearchLoop:
             capabilities = (
                 build_research_capabilities(self.config.tool_mode) if research_tools else None
             )
-            toolsets = None
+            toolsets = []
+            if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
+                toolsets.append(build_web_toolset(WebAcquisition(
+                    cache_root=self.settings.benchmark_cache / "web",
+                    cache_mode=self.config.scholarly_cache_mode,
+                )))
+            if research_tools and self.config.scholarly_tools:
+                scholar_client = ScholarClient(
+                    cache=AcquisitionCache(
+                        self.settings.benchmark_cache / "scholarly",
+                        mode=self.config.scholarly_cache_mode,
+                    ),
+                    api_key=self.settings.openalex_api_key.get_secret_value() if self.settings.openalex_api_key else None,
+                    contact_email=self.settings.crossref_mailto,
+                    grobid_url=self.settings.grobid_url,
+                )
+                toolsets.append(build_scholar_toolset(scholar_client))
             if attachment_corpus and attachment_tools:
-                toolsets = [build_attachment_toolset(attachment_corpus)]
+                toolsets.append(build_attachment_toolset(attachment_corpus))
 
             user_prompt: Any = prompt
             if (
@@ -157,7 +180,7 @@ class AsyncResearchLoop:
                 model_settings=route.model_settings(),
                 usage_limits=self._limits(route),
                 capabilities=capabilities,
-                toolsets=toolsets,
+                toolsets=toolsets or None,
             )
             events = extract_tool_events(result.new_messages())
             await self.repository.record_tool_events(task_id, events)
@@ -183,7 +206,7 @@ class AsyncResearchLoop:
                 usage=None,
                 agent_run_id=None,
                 conversation_id=None,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                error=error_snapshot(exc),
             )
             raise
 
@@ -407,6 +430,8 @@ class AsyncResearchLoop:
                 "constraints": {
                     "blocked_urls": constraints.blocked_urls,
                     "benchmark_id": constraints.benchmark_id,
+                    "benchmark_case_id": constraints.benchmark_case_id,
+                    "benchmark_suite": constraints.benchmark_suite,
                     "notes": constraints.notes,
                     "attachment_count": len(constraints.attachment_paths),
                 },
@@ -516,6 +541,6 @@ class AsyncResearchLoop:
                 status="failed",
                 final_report=None,
                 verification=None,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                error=error_snapshot(exc),
             )
             raise

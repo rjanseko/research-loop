@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal, Mapping
 
 from .schemas import ResearchQuestion, ResearchRole
 
@@ -90,7 +90,7 @@ class ModelPolicy:
 
 
 def _env(name: str, default: str) -> str:
-    return os.getenv(name, default)
+    return os.getenv(name, "").strip() or default
 
 
 def _quality_policy() -> ModelPolicy:
@@ -174,15 +174,53 @@ def _glm_heavy_policy() -> ModelPolicy:
     )
 
 
+def _synthetic_policy() -> ModelPolicy:
+    route = ModelRoute("synthetic:fake", 5, 5, 5_000)
+    return ModelPolicy("synthetic", {role: route for role in ResearchRole}, planner_question_range=(1, 1))
+
+
 POLICY_PRESETS: dict[str, ModelPolicy] = {
     "quality": _quality_policy(),
     "breadth": _breadth_policy(),
     "glm-heavy": _glm_heavy_policy(),
+    "synthetic": _synthetic_policy(),
 }
 
 
-def get_policy(name: str) -> ModelPolicy:
+def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -> ModelPolicy:
+    """Build fresh routes, optionally applying validated settings overrides."""
+    factories = {
+        "quality": _quality_policy,
+        "breadth": _breadth_policy,
+        "glm-heavy": _glm_heavy_policy,
+        "synthetic": _synthetic_policy,
+    }
     try:
-        return POLICY_PRESETS[name]
+        policy = factories[name]()
     except KeyError as exc:
-        raise ValueError(f"unknown policy {name!r}; choose from {sorted(POLICY_PRESETS)}") from exc
+        raise ValueError(f"unknown policy {name!r}; choose from {sorted(factories)}") from exc
+    if not model_overrides or name == "synthetic":
+        return policy
+
+    route_names = {
+        ResearchRole.PLANNER: "RESEARCH_PLANNER_MODEL",
+        ResearchRole.SCOUT: "RESEARCH_BREADTH_SCOUT_MODEL" if name == "breadth" else "RESEARCH_SCOUT_MODEL",
+        ResearchRole.GAP_ANALYST: "RESEARCH_GLM_GAP_MODEL" if name == "glm-heavy" else "RESEARCH_GAP_MODEL",
+        ResearchRole.DEEP_DIVE: "RESEARCH_DEEP_MODEL",
+        ResearchRole.SYNTHESIZER: "RESEARCH_SYNTH_MODEL",
+        ResearchRole.VERIFIER: "RESEARCH_VERIFY_MODEL",
+    }
+    for role, env_name in route_names.items():
+        if model := model_overrides.get(env_name):
+            policy.routes[role] = replace(policy.routes[role], model=model)
+    if name == "breadth":
+        policy.cheap_scout = policy.routes[ResearchRole.SCOUT]
+    elif policy.cheap_scout:
+        env_name = "RESEARCH_GLM_CHEAP_MODEL" if name == "glm-heavy" else "RESEARCH_CHEAP_SCOUT_MODEL"
+        if model := model_overrides.get(env_name):
+            policy.cheap_scout = replace(policy.cheap_scout, model=model)
+    if policy.multimodal_scout and (model := model_overrides.get("RESEARCH_MULTIMODAL_MODEL")):
+        policy.multimodal_scout = replace(policy.multimodal_scout, model=model)
+    if policy.alternate_deep_dive and (model := model_overrides.get("RESEARCH_ALT_DEEP_MODEL")):
+        policy.alternate_deep_dive = replace(policy.alternate_deep_dive, model=model)
+    return policy

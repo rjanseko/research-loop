@@ -71,11 +71,22 @@ Sampling is deterministic by `seed`. Source-specific adapters normalize all case
 ```bash
 research-bench examples/benchmark_suite.toml \
   --policies quality breadth glm-heavy \
+  --paid --all-cases \
   --max-concurrency 1 \
   --export-reports benchmark_outputs
 ```
 
-A benchmark case already fans out several subagents internally, so start with outer concurrency `1`.
+A benchmark case already fans out several subagents internally, so start with outer concurrency `1`. The CLI defaults to the synthetic policy. Real policies require `--paid`; with that flag, the default is one selected suite case. Use `--max-cases N` to increase the pilot size or `--all-cases` for the full suite. These controls limit case count, not aggregate spend: each graph run may make several parallel model calls, and provider billing limits remain the hard backstop. Optional Logfire tracing can expose agent timing, retries, and token usage: install the `observability` extra, set `RESEARCH_LOGFIRE_ENABLED=true`, and provide a Logfire token. Prompt and tool content are excluded from telemetry by default.
+
+## Persistent and synthetic runs
+
+`research-bench` defaults to in-memory execution. Set `DATABASE_URL` and pass `--repository postgres` (or `--persist`) to persist jobs, role tasks, tool events, and effective configuration. Run `research-db migrate` first.
+
+```bash
+research-bench examples/benchmark_cases.json --policies synthetic --repository postgres --max-concurrency 1
+```
+
+The `synthetic` policy runs the graph with deterministic fake role outputs and makes no provider or web calls. Use it to verify local wiring before paid experiments. Every run writes a sanitized experiment manifest under `RESEARCH_BENCHMARK_OUTPUT` by default; `--manifest-output` sets an explicit location. The manifest includes selected case IDs and run IDs, never raw protected prompts or answers.
 
 ## Metrics
 
@@ -112,3 +123,9 @@ File-backed tasks now have two explicit modes:
 Do not merge normalized and multimodal results into one leaderboard number. They test different systems.
 
 Attachment-backed evidence is cited by stable `attachment_id` plus a locator such as `page 7`, `sheet 'Results', rows 42-81`, or `entire image`. Benchmark output now includes attachment-tool calls and attachment citation coverage.
+
+## Normalized acquisition (v6)
+
+Normalized benchmark runs now use DuckDuckGo search plus a common `web_fetch` tool (Trafilatura with a Beautiful Soup fallback). Scouts and deep dives also receive provider-neutral scholarly tools for OpenAlex, Crossref, arXiv, ACL Anthology, and OpenCitations. This changes retrieval conditions compared with earlier normalized runs. Compare models only within the same tool stack and manifest fingerprint.
+
+Benchmarks force scholarly and web cache mode `off`. Experiment manifests record git commit/dirty state, package versions, policy snapshots, selected case IDs, acquisition backends, and a non-secret configuration fingerprint. The Postgres preflight checks migration state before any model call. Persisted tool arguments are hashed to avoid storing protected benchmark inputs; raw arguments stay in memory long enough to compute blocked-source and integrity checks. Persisted fetched content is represented by hashes and sizes.

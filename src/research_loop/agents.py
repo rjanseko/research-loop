@@ -19,9 +19,9 @@ planner_agent = Agent(
 scout_agent = Agent(
     output_type=ResearchResult,
     instructions=(
-        "Investigate exactly one research question. Use the web tools when evidence is needed. "
+        "Investigate exactly one research question. Use web and scholar tools when evidence is needed. "
         "Return atomic claims with source-backed evidence. Prefer primary, official, paper, or "
-        "documentation sources over summaries. Keep excerpts short and faithful. Explicitly record "
+        "documentation sources over summaries. Keep excerpts short and faithful. For papers preserve DOI/arXiv/OpenAlex/ACL IDs, provider, publication status, and locator; never infer peer review from an arXiv DOI hint, and flag retracted records. Explicitly record "
         "contradictions and unresolved questions. When local attachments are available, use list_attachments, "
         "search_attachments, and read_attachment rather than guessing file contents. For attachment evidence, "
         "set source.attachment_id to the stable attachment ID, source.locator to the page/sheet/row/chunk location, "
@@ -42,7 +42,7 @@ gap_agent = Agent(
 deep_dive_agent = Agent(
     output_type=ResearchResult,
     instructions=(
-        "Resolve one difficult research gap. Use web tools persistently but efficiently. Favor primary "
+        "Resolve one difficult research gap. Use web and scholar tools efficiently. Preserve preprint versus published status and scholarly IDs. Favor primary "
         "or authoritative sources, look for disconfirming evidence, and explicitly state when the evidence "
         "remains inconclusive. Use normalized attachment tools when local materials are supplied; cite attachment "
         "evidence with attachment_id + locator and never invent local URLs. Treat supplied constraints as hard "

@@ -4,6 +4,7 @@ import base64
 import hashlib
 from pathlib import Path
 
+from ..settings import ResearchSettings
 from .base import BenchmarkAdapter, deterministic_select
 from .io import download_if_missing, read_csv
 from .models import BenchmarkCaseSpec, BenchmarkOutputMode, BenchmarkSourceSpec
@@ -32,7 +33,7 @@ class BrowseCompAdapter(BenchmarkAdapter):
     def load(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> list[BenchmarkCaseSpec]:
         source = spec.resolved_path(base_dir)
         if source is None:
-            source = Path.home() / ".cache" / "research-loop" / "browse_comp_test_set.csv"
+            source = ResearchSettings.from_env().benchmark_cache / "browse_comp_test_set.csv"
             source = download_if_missing(OFFICIAL_URL, source)
 
         rows = read_csv(source)

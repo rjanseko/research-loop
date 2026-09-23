@@ -4,18 +4,26 @@ import argparse
 import asyncio
 import json
 import re
+from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
+from uuid import UUID, uuid4
 
 from pydantic_evals import Case
 
 from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
 from .evals import BenchmarkOutput, make_dataset
+from .experiment import build_manifest, write_manifest
+from .db import migration_files, migration_status
 from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
+from .observability import configure_logfire
 from .policy import POLICY_PRESETS, get_policy
-from .repository import InMemoryResearchRepository
+from .repository import CapturingResearchRepository, InMemoryResearchRepository, PostgresResearchRepository
 from .schemas import ResearchConstraints
+from .settings import ResearchSettings
+from .synthetic import SyntheticResearchLoop
 from .tools import ResearchToolMode
 
 
@@ -65,7 +73,7 @@ def _load_cases(path: Path) -> tuple[str, list[BenchmarkCaseSpec]]:
     return path.stem, _load_legacy_cases(path)
 
 
-def _sum_usage(repo: InMemoryResearchRepository) -> tuple[int, int, float]:
+def _sum_usage(repo: CapturingResearchRepository) -> tuple[int, int, float]:
     tool_calls = 0
     total_tokens = 0
     cost = 0.0
@@ -138,19 +146,35 @@ async def _run_policy_case(
     *,
     export_dir: Path | None = None,
     attachment_mode: AttachmentMode = AttachmentMode.NORMALIZED,
+    repository_mode: str = "memory",
+    pool: Any | None = None,
+    suite_name: str | None = None,
+    on_job_created: Callable[[UUID, UUID], None] | None = None,
+    model_overrides: Mapping[str, str] | None = None,
 ) -> BenchmarkOutput:
-    repo = InMemoryResearchRepository()
-    loop = ResearchLoop(
-        get_policy(policy_name),
-        ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode),
+    if repository_mode == "postgres" and pool is None:
+        raise ValueError("Postgres benchmark mode requires a connection pool")
+    backend = PostgresResearchRepository(pool) if repository_mode == "postgres" else InMemoryResearchRepository()
+    root_run_id = uuid4()
+    repo = CapturingResearchRepository(
+        backend,
+        on_job_created=(lambda job_id: on_job_created(job_id, root_run_id)) if on_job_created else None,
+    )
+    loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
+    loop = loop_class(
+        get_policy(policy_name, model_overrides=model_overrides),
+        ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode, scholarly_cache_mode="off"),
         repository=repo,
     )
     outcome = await loop.run(
         case.render_objective(),
+        root_run_id=root_run_id,
         constraints=ResearchConstraints(
             blocked_urls=case.blocked_urls,
             attachment_paths=case.attachments,
             benchmark_id=case.benchmark_id,
+            benchmark_case_id=case.case_id,
+            benchmark_suite=suite_name,
             notes=[
                 "Do not use benchmark-answer datasets, evaluator artifacts, or decrypted benchmark mirrors as research sources."
             ] if case.leakage_sensitive else [],
@@ -184,6 +208,8 @@ async def _run_policy_case(
         benchmark_id=case.benchmark_id,
         case_id=case.case_id,
         graph_version=RESEARCH_GRAPH_VERSION,
+        job_id=str(outcome.job_id),
+        root_run_id=str(root_run_id),
         answer=outcome.report.answer,
         extracted_answer=_extract_exact_answer(outcome.report.answer, case.output_mode),
         source_urls=source_urls,
@@ -232,6 +258,16 @@ def _is_research_event(event: dict[str, Any]) -> bool:
     return any(token in name for token in ("search", "fetch", "page", "url", "attachment"))
 
 
+def _verify_database_schema(dsn: str) -> None:
+    """Fail before any paid model call when durable benchmark storage is not ready."""
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
+        pending = [m.name for m, state in migration_status(conn, migration_files()) if state != "applied"]
+    if pending:
+        raise RuntimeError("database migrations are pending or changed; run research-db migrate")
+
+
 async def run_benchmark(
     suite_path: Path,
     *,
@@ -239,10 +275,41 @@ async def run_benchmark(
     max_concurrency: int,
     export_dir: Path | None = None,
     attachment_mode: AttachmentMode = AttachmentMode.NORMALIZED,
-) -> None:
+    repository_mode: str = "memory",
+    manifest_path: Path | None = None,
+    settings: ResearchSettings | None = None,
+    max_cases: int | None = None,
+) -> Path:
+    settings = settings or ResearchSettings.from_env()
+    configure_logfire(settings)
     suite_name, specs = _load_cases(suite_path)
     if not specs:
         raise ValueError(f"suite {suite_name!r} contains no cases")
+    if max_cases is not None:
+        if max_cases < 1:
+            raise ValueError("max_cases must be at least 1")
+        specs = specs[:max_cases]
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be at least 1")
+    if "synthetic" in policies and len(policies) > 1:
+        raise ValueError("run synthetic separately from real model policies")
+    if repository_mode not in {"memory", "postgres"}:
+        raise ValueError("repository_mode must be memory or postgres")
+    if repository_mode == "postgres" and not settings.database_dsn:
+        raise ValueError("DATABASE_URL is required for Postgres benchmark mode")
+
+    if manifest_path is None:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", suite_name)
+        manifest_path = settings.benchmark_output / f"{safe_name}-{timestamp}.json"
+    manifest = build_manifest(
+        suite_path, suite_name, specs, policies,
+        attachment_mode=attachment_mode.value,
+        tool_mode=ResearchToolMode.NORMALIZED.value,
+        repository_mode=repository_mode,
+        model_overrides=settings.model_overrides,
+    )
+    write_manifest(manifest_path, manifest)
 
     cases = [
         Case(
@@ -256,32 +323,82 @@ async def run_benchmark(
     dataset = make_dataset(cases)
     baseline = None
 
-    for policy_name in policies:
-        async def task(case: BenchmarkCaseSpec, _policy: str = policy_name) -> BenchmarkOutput:
-            return await _run_policy_case(_policy, case, export_dir=export_dir, attachment_mode=attachment_mode)
+    try:
+        async with AsyncExitStack() as stack:
+            pool = None
+            if repository_mode == "postgres":
+                await asyncio.to_thread(_verify_database_schema, settings.database_dsn)
+                from psycopg_pool import AsyncConnectionPool
 
-        report = await dataset.evaluate(
-            task,
-            name=f"{suite_name}-{policy_name}",
-            max_concurrency=max_concurrency,
-            metadata={
-                "suite": suite_name,
-                "policy": policy_name,
-                "graph_version": RESEARCH_GRAPH_VERSION,
-                "tool_mode": ResearchToolMode.NORMALIZED.value,
-                "attachment_mode": attachment_mode.value,
-            },
-        )
-        # Inputs may contain anti-contamination benchmark material; never print them by default.
-        report.print(
-            baseline=baseline,
-            include_output=False,
-            include_input=False,
-            include_durations=True,
-            include_averages=True,
-        )
-        if baseline is None:
-            baseline = report
+                pool = await stack.enter_async_context(
+                    AsyncConnectionPool(conninfo=settings.database_dsn, open=False)
+                )
+            for policy_name in policies:
+                async def task(case: BenchmarkCaseSpec, _policy: str = policy_name) -> BenchmarkOutput:
+                    run_record: dict[str, str] | None = None
+
+                    def record_job(job_id: UUID, root_run_id: UUID) -> None:
+                        nonlocal run_record
+                        run_record = {
+                            "policy": _policy,
+                            "benchmark_id": case.benchmark_id,
+                            "case_id": case.case_id,
+                            "job_id": str(job_id),
+                            "root_run_id": str(root_run_id),
+                            "status": "running",
+                        }
+                        manifest["runs"].append(run_record)
+                        write_manifest(manifest_path, manifest)
+
+                    try:
+                        output = await _run_policy_case(
+                            _policy, case, export_dir=export_dir,
+                            attachment_mode=attachment_mode,
+                            repository_mode=repository_mode,
+                            pool=pool,
+                            suite_name=suite_name,
+                            on_job_created=record_job,
+                            model_overrides=settings.model_overrides,
+                        )
+                        if run_record:
+                            run_record["status"] = "succeeded"
+                        return output
+                    except Exception:
+                        if run_record:
+                            run_record["status"] = "failed"
+                        raise
+                    finally:
+                        write_manifest(manifest_path, manifest)
+
+                report = await dataset.evaluate(
+                    task,
+                    name=f"{suite_name}-{policy_name}",
+                    max_concurrency=max_concurrency,
+                    metadata={
+                        "suite": suite_name,
+                        "policy": policy_name,
+                        "graph_version": RESEARCH_GRAPH_VERSION,
+                        "tool_mode": ResearchToolMode.NORMALIZED.value,
+                        "attachment_mode": attachment_mode.value,
+                    },
+                )
+                report.print(
+                    baseline=baseline,
+                    include_output=False,
+                    include_input=False,
+                    include_durations=True,
+                    include_averages=True,
+                )
+                if baseline is None:
+                    baseline = report
+        manifest["status"] = "completed"
+    except Exception:
+        manifest["status"] = "failed"
+        raise
+    finally:
+        manifest["finished_at"] = datetime.now(UTC).isoformat()
+        write_manifest(manifest_path, manifest)
+    return manifest_path
 
 
 def main() -> None:
@@ -294,10 +411,19 @@ def main() -> None:
     parser.add_argument(
         "--policies",
         nargs="+",
-        default=["quality", "breadth", "glm-heavy"],
+        default=["synthetic"],
         choices=sorted(POLICY_PRESETS),
     )
-    parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--max-concurrency", type=int, default=None)
+    parser.add_argument("--paid", action="store_true", help="Allow policies that call paid model providers")
+    parser.add_argument("--max-cases", type=int, default=None, help="Limit selected suite cases")
+    parser.add_argument("--all-cases", action="store_true", help="Run the entire selected suite")
+    parser.add_argument(
+        "--repository", choices=("memory", "postgres"), default="memory",
+        help="Persist jobs and task telemetry to Postgres or keep disposable in-memory runs",
+    )
+    parser.add_argument("--manifest-output", type=Path, default=None)
+    parser.add_argument("--persist", action="store_true", help="Alias for --repository postgres")
     parser.add_argument(
         "--attachment-mode",
         choices=[mode.value for mode in AttachmentMode],
@@ -311,15 +437,36 @@ def main() -> None:
         help="Write model reports by policy/benchmark for official external evaluators",
     )
     args = parser.parse_args()
-    asyncio.run(
-        run_benchmark(
-            args.suite,
-            policies=args.policies,
-            max_concurrency=args.max_concurrency,
-            export_dir=args.export_reports,
-            attachment_mode=AttachmentMode(args.attachment_mode),
+    if any(policy != "synthetic" for policy in args.policies) and not args.paid:
+        parser.error("real model policies require --paid")
+    if args.persist:
+        args.repository = "postgres"
+    if args.max_cases is not None and args.max_cases < 1:
+        parser.error("--max-cases must be at least 1")
+    if args.all_cases and args.max_cases is not None:
+        parser.error("--all-cases and --max-cases cannot be combined")
+    max_cases = None if args.all_cases else args.max_cases
+    if max_cases is None and not args.all_cases and args.paid:
+        max_cases = 1
+    try:
+        settings = ResearchSettings.from_env()
+        concurrency = args.max_concurrency if args.max_concurrency is not None else settings.benchmark_concurrency
+        manifest_path = asyncio.run(
+            run_benchmark(
+                args.suite,
+                policies=args.policies,
+                max_concurrency=concurrency,
+                export_dir=args.export_reports,
+                attachment_mode=AttachmentMode(args.attachment_mode),
+                repository_mode=args.repository,
+                manifest_path=args.manifest_output,
+                settings=settings,
+                max_cases=max_cases,
+            )
         )
-    )
+    except Exception as exc:
+        parser.exit(1, f"Benchmark failed ({type(exc).__name__}). Check configuration and the experiment manifest.\n")
+    print(f"Experiment manifest: {manifest_path}")
 
 
 if __name__ == "__main__":

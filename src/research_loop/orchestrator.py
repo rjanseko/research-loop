@@ -18,7 +18,7 @@ from .ledger import EvidenceLedger
 from .policy import ModelPolicy
 from .repository import NullResearchRepository, ResearchRepository
 from .schemas import ResearchConstraints
-from .telemetry import jsonable
+from .telemetry import error_snapshot, jsonable
 
 
 class ResearchLoop(AsyncResearchLoop):
@@ -67,6 +67,8 @@ class ResearchLoop(AsyncResearchLoop):
                 "constraints": {
                     "blocked_urls": constraints.blocked_urls,
                     "benchmark_id": constraints.benchmark_id,
+                    "benchmark_case_id": constraints.benchmark_case_id,
+                    "benchmark_suite": constraints.benchmark_suite,
                     "notes": constraints.notes,
                     "attachment_count": len(constraints.attachment_paths),
                 },
@@ -127,7 +129,7 @@ class ResearchLoop(AsyncResearchLoop):
                 status="failed",
                 final_report=None,
                 verification=None,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                error=error_snapshot(exc),
             )
             raise
 

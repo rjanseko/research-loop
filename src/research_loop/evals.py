@@ -15,6 +15,8 @@ class BenchmarkOutput:
     benchmark_id: str
     case_id: str
     graph_version: str
+    job_id: str
+    root_run_id: str
     answer: str
     extracted_answer: str | None
     source_urls: list[str]
@@ -92,10 +94,10 @@ class ReferenceAnswerMatch(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
     normalized matches without introducing another judge model into every smoke run.
     """
 
-    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | None:
+    def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
         expected = ctx.expected_output
         if expected is None:
-            return None
+            return {}
         candidates = expected if isinstance(expected, list) else [expected]
         actual = ctx.output.extracted_answer
         if not actual:
@@ -115,9 +117,9 @@ class EvalIntegrity(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
 
 
 class AttachmentCitationCoverage(Evaluator[Any, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | None:
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
         if ctx.output.attachment_count <= 0:
-            return None
+            return {}
         return min(len(set(ctx.output.attachment_ids_cited)) / ctx.output.attachment_count, 1.0)
 
 

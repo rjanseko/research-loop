@@ -20,10 +20,7 @@ class ResearchToolMode(StrEnum):
 
 def build_research_capabilities(mode: ResearchToolMode) -> list[Any]:
     if mode is ResearchToolMode.NORMALIZED:
-        return [
-            WebSearch(native=False, local="duckduckgo"),
-            WebFetch(native=False, local=True),
-        ]
+        return [WebSearch(native=False, local="duckduckgo")]
 
     return [
         WebSearch(local="duckduckgo"),

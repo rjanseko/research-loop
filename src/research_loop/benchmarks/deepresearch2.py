@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..settings import ResearchSettings
 from .base import BenchmarkAdapter, deterministic_select
 from .io import download_if_missing, read_jsonl
 from .models import BenchmarkCaseSpec, BenchmarkOutputMode, BenchmarkSourceSpec
@@ -16,7 +17,7 @@ class DeepResearchBench2Adapter(BenchmarkAdapter):
     def load(self, spec: BenchmarkSourceSpec, *, base_dir: Path) -> list[BenchmarkCaseSpec]:
         source = spec.resolved_path(base_dir)
         if source is None:
-            source = Path.home() / ".cache" / "research-loop" / "drb2_tasks_and_rubrics.jsonl"
+            source = ResearchSettings.from_env().benchmark_cache / "drb2_tasks_and_rubrics.jsonl"
             source = download_if_missing(OFFICIAL_TASKS_URL, source)
 
         cases: list[BenchmarkCaseSpec] = []
