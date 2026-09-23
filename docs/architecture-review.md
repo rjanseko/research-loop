@@ -24,6 +24,8 @@ Finding 7 is mostly addressed: `ResearchConfig.max_run_seconds` bounds a run (ca
 
 Finding 14 is addressed without changing the output layout: each question's files are written to a staging folder that replaces the published one in a single rename, a failed write removes the staging folder, `run.json` records every other file's hash, and aggregation rejects folders whose files no longer match. Question IDs were already validated.
 
+Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field of `campaign.toml` when it loads, rejects unknown keys, checks the planner range and reserve against their limits, and fills defaults, so `--dry-run` catches what a run would otherwise hit after the paid preflight. The spec's `scholarly_cache_mode` is now honored instead of hardcoded. Rendered objectives are unchanged.
+
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 
 **Recommendation.** Keep PydanticAI, Pydantic Graph, the evidence ledger, and Postgres. Make a focused internal restructure around run lifecycle, canonical evidence, and bounded prompts. The graph is a useful description of the research algorithm. The largest problems occur in the contracts around it: what counts as a successful run, whether citations resolve, whether campaign artifacts belong together, and how much evidence a model receives.

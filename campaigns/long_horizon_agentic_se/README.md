@@ -13,7 +13,7 @@ research-campaign --synthesize --dry-run           # check synthesis inputs and 
 research-campaign --synthesize --paid --persist    # write the campaign report, catalogs, and hypotheses
 ```
 
-`--spec PATH` selects another spec (default: this campaign), `--output DIR` another output folder (default `benchmark_outputs/long_horizon_campaign`, which git ignores), and `--policy` another model policy. `--persist` stores jobs in Postgres; see [setup](../../docs/setup.md#postgres).
+The spec is validated in full when it loads (`campaign_spec.py`): a missing or mistyped setting, an unknown key, or inconsistent limits fail `--dry-run` rather than a paid run. `--spec PATH` selects another spec (default: this campaign), `--output DIR` another output folder (default `benchmark_outputs/long_horizon_campaign`, which git ignores), and `--policy` another model policy. `--persist` stores jobs in Postgres; see [setup](../../docs/setup.md#postgres).
 
 Before paid runs, confirm routes and balances with `research-diagnose --smoke`, set provider spending caps, and review the scope. Every paid invocation repeats that preflight, local checks first and then small live calls to each model; a failed or unpriced route stops it before any research call.
 

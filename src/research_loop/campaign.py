@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import shutil
-import tomllib
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from uuid import uuid4
 
 from .agents import campaign_synthesizer_agent
 from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
+from .campaign_spec import SYNTHESIS_DIR, load_campaign
 from .acquisition import FETCH_VERSION
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
@@ -51,48 +51,7 @@ from .tools import ResearchToolMode
 
 
 CAMPAIGN_FILE = Path(__file__).resolve().parents[2] / "campaigns" / "long_horizon_agentic_se" / "campaign.toml"
-SYNTHESIS_DIR = "campaign"
-# Question IDs name folders under the output directory, next to these.
-_RESERVED_QUESTION_IDS = (".", "..", SYNTHESIS_DIR, "manifests")
-_DEFAULT_MAX_FAILED_QUESTIONS = 2
 CATALOGS = ("benchmark_catalog", "architecture_patterns", "failure_modes", "open_questions", "hypotheses")
-_SYNTHESIS_LIMITS = ("cost_limit_usd", "total_tokens_limit", "max_requests", "max_output_tokens", "max_prompt_chars")
-
-
-def _positive_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
-
-
-def load_campaign(path: Path) -> dict[str, Any]:
-    campaign = tomllib.loads(path.read_text(encoding="utf-8"))
-    if campaign.get("graph_version") != "research-graph-v1":
-        raise ValueError("campaign requires research-graph-v1")
-    questions = campaign.get("questions") or []
-    ids = [item.get("id") for item in questions]
-    if not ids or any(not isinstance(item, str) or not item or "/" in item for item in ids) or len(ids) != len(set(ids)) or any(not item.get("text") for item in questions):
-        raise ValueError("campaign needs unique question IDs without '/' and nonempty question text")
-    if reserved := sorted(set(ids) & set(_RESERVED_QUESTION_IDS)):
-        raise ValueError(f"campaign question IDs cannot be {', '.join(map(repr, _RESERVED_QUESTION_IDS))}; "
-                         f"found {', '.join(map(repr, reserved))}")
-    execution = campaign.get("execution") or {}
-    if not _positive_number(execution.get("question_cost_limit_usd")):
-        raise ValueError("campaign needs a positive execution.question_cost_limit_usd")
-    reserve = execution.get("question_reserve_usd", 0.0)
-    if not isinstance(reserve, (int, float)) or isinstance(reserve, bool) or not 0 <= reserve < execution["question_cost_limit_usd"]:
-        raise ValueError("execution.question_reserve_usd must be at least 0 and below question_cost_limit_usd")
-    max_failed = execution.get("max_failed_questions", _DEFAULT_MAX_FAILED_QUESTIONS)
-    if not isinstance(max_failed, int) or isinstance(max_failed, bool) or max_failed < 1:
-        raise ValueError("execution.max_failed_questions must be a positive integer")
-    timeout = execution.get("question_timeout_seconds")
-    if timeout is not None and not _positive_number(timeout):
-        raise ValueError("execution.question_timeout_seconds must be positive when set")
-    notes = execution.get("research_notes", [])
-    if not isinstance(notes, list) or not all(isinstance(note, str) and note for note in notes):
-        raise ValueError("execution.research_notes must be a list of nonempty strings")
-    synthesis = campaign.get("synthesis") or {}
-    if not all(_positive_number(synthesis.get(key)) for key in _SYNTHESIS_LIMITS):
-        raise ValueError(f"campaign needs positive synthesis limits: {', '.join(_SYNTHESIS_LIMITS)}")
-    return campaign
 
 
 def render_objective(campaign: dict[str, Any], question: dict[str, str]) -> str:
@@ -190,12 +149,12 @@ def campaign_policy(campaign: dict[str, Any], policy_name: str, model_overrides:
         cost_limit=min(deep_route.cost_limit or float("inf"), float(execution["deep_dive_cost_limit_usd"])),
     )
     policy.job_cost_limit = float(execution["question_cost_limit_usd"])
-    policy.job_reserve_usd = float(execution.get("question_reserve_usd", 0.0))
+    policy.job_reserve_usd = float(execution["question_reserve_usd"])
     scout_limits = {
         route_field: int(execution[key])
         for key, route_field in (("scout_max_requests", "max_requests"), ("scout_max_tool_calls", "max_tool_calls"),
                                  ("scout_total_tokens_limit", "total_tokens_limit"))
-        if key in execution
+        if execution[key] is not None
     }
     if scout_limits:
         policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], **scout_limits)
@@ -210,13 +169,13 @@ def campaign_run_config(campaign: dict[str, Any]) -> ResearchConfig:
     execution = campaign["execution"]
     return ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
-        scholarly_cache_mode="record",
+        scholarly_cache_mode=execution["scholarly_cache_mode"],
         max_parallel_scouts=int(execution["max_parallel_scouts"]),
-        max_parallel_deep_dives=int(execution.get("max_parallel_deep_dives", ResearchConfig.max_parallel_deep_dives)),
+        max_parallel_deep_dives=int(execution["max_parallel_deep_dives"]),
         max_deep_dives_per_round=int(execution["max_deep_dives_per_round"]),
         max_verification_rounds=int(execution["max_verification_rounds"]),
         salvage_exhausted_research=True,
-        max_run_seconds=execution.get("question_timeout_seconds"),
+        max_run_seconds=execution["question_timeout_seconds"],
     )
 
 
@@ -313,14 +272,14 @@ async def run_campaign(
     policy_snapshot = safe_value(policy.snapshot())
     acquisition = {"search": "duckduckgo", "web_fetch": "trafilatura+bs4",
                    "scholar": ["openalex", "crossref", "arxiv", "acl", "opencitations"],
-                   "cache_mode": "record", "fetch_version": FETCH_VERSION}
+                   "cache_mode": run_config.scholarly_cache_mode, "fetch_version": FETCH_VERSION}
     manifest = _manifest_base(campaign, path, kind="questions", policy_snapshot=policy_snapshot,
                               fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION,
                                                  "run_config": jsonable(asdict(run_config))},
                               persist=persist)
     manifest |= {
         "evidence_version": EVIDENCE_VERSION,
-        "tool_mode": "normalized", "acquisition": acquisition, "cache_mode": "record",
+        "tool_mode": "normalized", "acquisition": acquisition, "cache_mode": run_config.scholarly_cache_mode,
         "run_config": jsonable(asdict(run_config)),
         "run_limits": {
             "max_parallel_scouts": run_config.max_parallel_scouts,
@@ -335,7 +294,7 @@ async def run_campaign(
     }
     manifest_path = output_dir / "manifests" / f"{manifest['experiment_id']}.json"
     write_manifest(manifest_path, manifest)
-    max_failed = int(execution.get("max_failed_questions", _DEFAULT_MAX_FAILED_QUESTIONS))
+    max_failed = int(execution["max_failed_questions"])
     failed = 0
     try:
         async with AsyncExitStack() as stack:
@@ -347,7 +306,7 @@ async def run_campaign(
                 try:
                     outcome = await loop.run(
                         objective,
-                        constraints=ResearchConstraints(notes=list(execution.get("research_notes", []))),
+                        constraints=ResearchConstraints(notes=list(execution["research_notes"])),
                     )
                 except Exception as exc:
                     # Questions are independent: record the failure and go on, unless failures

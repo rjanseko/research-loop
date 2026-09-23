@@ -547,3 +547,19 @@ async def test_aggregate_rejects_outputs_changed_after_publication(monkeypatch, 
     assert evidence.invalid == ["q01"]
     assert "q01" in evidence.missing
     assert [item.question["id"] for item in evidence.completed] == ["q02"]
+
+
+@pytest.mark.parametrize(("edit", "problem"), [
+    (("planner_question_max = 3\n", ""), "planner_question_max"),                                    # missing
+    (("max_parallel_scouts = 2\n", "max_paralel_scouts = 2\n"), "max_paralel_scouts"),               # a typo
+    (("normalized_web = true\n", "normalized_web = false\n"), "normalized_web"),                    # unsupported
+    (("planner_question_min = 1\n", "planner_question_min = 5\n"), "planner_question_min"),         # above the max
+], ids=["missing-field", "unknown-key", "provider-native-web", "inverted-planner-range"])
+def test_campaign_spec_problems_fail_at_load_not_mid_run(tmp_path: Path, edit, problem) -> None:
+    old, new = edit
+    text = CAMPAIGN_FILE.read_text()
+    assert old in text
+    spec = tmp_path / "campaign.toml"
+    spec.write_text(text.replace(old, new, 1))
+    with pytest.raises(ValueError, match=problem):
+        load_campaign(spec)
