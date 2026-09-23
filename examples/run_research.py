@@ -9,6 +9,7 @@ import argparse
 import asyncio
 
 from research_loop import POLICY_PRESETS, ResearchConfig, ResearchLoop, ResearchToolMode, get_policy
+from research_loop.observability import configure_logfire
 from research_loop.repository import InMemoryResearchRepository
 from research_loop.settings import ResearchSettings
 from research_loop.synthetic import SyntheticResearchLoop
@@ -17,6 +18,7 @@ from research_loop.synthetic import SyntheticResearchLoop
 async def run(objective: str, policy_name: str, tool_mode: str) -> None:
     # Resolve settings first: it loads .env, which carries the model overrides.
     settings = ResearchSettings.from_env()
+    configure_logfire(settings)
     repo = InMemoryResearchRepository()
     loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
     loop = loop_class(

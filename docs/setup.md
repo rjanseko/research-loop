@@ -133,7 +133,7 @@ See [benchmarks.md](benchmarks.md) for suites and manifests, and the [campaign R
 
 Tracing is off by default. To enable it, install the `observability` extra, set `RESEARCH_LOGFIRE_ENABLED=true`, and either set `LOGFIRE_TOKEN` in `.env` or run `logfire auth` followed by `logfire projects use <project-name>`. Then restrict the saved credentials with `chmod 700 .logfire` and `chmod 600 .logfire/*.json`.
 
-Benchmark runs, campaign runs, and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Prompts, completions, tool arguments and results, and binary content are excluded from spans. The integration uses an isolated tracer, so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported. Without a token, nothing is sent to Logfire. Library callers opt in with `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
+Benchmark runs, campaign runs, `examples/run_research.py`, and `research-diagnose --smoke` then trace PydanticAI model calls, tools, retries, and usage. Each research job is one trace: a `research job` span carrying only the job ID and policy name, with every agent call of the job, parallel scouts and deep dives included, nested under it. Search Logfire by `job_id` to find the trace for a Postgres job row. Prompts, completions, tool arguments and results, and binary content are excluded from spans. The integration uses an isolated tracer, so Pydantic Evals case spans, which contain protected benchmark inputs, are not exported. Without a token, nothing is sent to Logfire. Library callers opt in with `configure_logfire(ResearchSettings.from_env())` before `ResearchLoop.run(...)`.
 
 Postgres, not Logfire, is the durable record of jobs and evidence.
 

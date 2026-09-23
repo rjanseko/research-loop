@@ -36,6 +36,7 @@ from .attachments import (
     build_multimodal_prompt,
 )
 from .ledger import EvidenceLedger
+from .observability import job_span
 from .policy import ModelPolicy, ModelRoute, retry_token_budget
 from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
@@ -276,8 +277,9 @@ class AsyncResearchLoop:
         self._fetch_memos[job_id] = FetchMemo()
         self._source_policies[job_id] = SourcePolicy(tuple(constraints.blocked_urls) if constraints else ())
         try:
-            async with asyncio.timeout(self.config.max_run_seconds):
-                yield
+            with job_span(job_id, self.policy.name):
+                async with asyncio.timeout(self.config.max_run_seconds):
+                    yield
         except (Exception, asyncio.CancelledError) as exc:
             with _recording_failure(exc):
                 await self.repository.finish_job(
