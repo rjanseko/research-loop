@@ -72,4 +72,6 @@ The `research_attachments` table comes from `migrations/002_research_attachments
 
 `AttachmentLimits` bounds file size, extracted text, chunks, CSV rows, workbook rows, and sheet count. Benchmark runs default to strict ingestion: a missing/oversized required attachment fails the run instead of silently changing the task.
 
+Extraction runs in a worker thread, so parsing a large document does not stall the run's other work. In the multimodal lane, the bytes sent to the model are checked against the hash recorded at ingestion; if the file changed since, the call fails instead of sending content the manifest does not describe.
+
 Images are **not OCRed** in normalized mode. That is deliberate: OCR quality would become another uncontrolled dependency. Use the multimodal lane when pixels matter.

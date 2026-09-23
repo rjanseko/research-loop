@@ -54,7 +54,7 @@ Provider records stay separate. OpenAlex and Crossref may describe the same work
 
 Pages are extracted with Trafilatura, falling back to Beautiful Soup. `scholar_fetch` extracts PDFs with pypdf; set `GROBID_URL` (for example `http://127.0.0.1:8070`, local HTTP only) to try a GROBID `/api/processFulltextDocument` service first, falling back to pypdf if it fails.
 
-Fetches send a `research-loop` User-Agent, because sites such as Wikimedia reject default library agents, and read at most 5 MB of decoded content. Errors report the HTTP status, so the model can tell a block (403) from a missing page (404). Some sites, openai.com among them, answer 403 from bot protection; the fetcher reports it and does not work around it.
+Fetches send a `research-loop` User-Agent, because sites such as Wikimedia reject default library agents, and read at most 5 MB of decoded content. Scholarly metadata responses are streamed too and refused past 2 MB, so an oversized response is never read whole. Errors report the HTTP status, so the model can tell a block (403) from a missing page (404). Some sites, openai.com among them, answer 403 from bot protection; the fetcher reports it and does not work around it.
 
 ## URL safety
 

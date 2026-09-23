@@ -273,7 +273,9 @@ class AsyncResearchLoop:
     ) -> AttachmentCorpus | None:
         if not constraints.attachment_paths:
             return None
-        attachments = AttachmentCorpus.from_paths(
+        # Extraction parses whole documents; a worker thread keeps it from stalling other tasks.
+        attachments = await asyncio.to_thread(
+            AttachmentCorpus.from_paths,
             constraints.attachment_paths,
             limits=self.config.attachment_limits,
             strict=self.config.attachment_strict,

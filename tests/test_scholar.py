@@ -138,3 +138,23 @@ async def test_scholar_fetch_pages_replay_from_recorded_windows(serve, go_offlin
     replay = ScholarClient(cache=AcquisitionCache(tmp_path, "replay"))
     replayed = await replay.fetch("https://arxiv.org/pdf/2601.01234", max_chars=1000, start=1000)
     assert replayed.text == page_two.text and replayed.start == 1000
+
+
+@pytest.mark.asyncio
+async def test_oversized_metadata_response_is_refused(tmp_path) -> None:
+    streamed: list[int] = []
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(40):  # 40 x 100 KB, well past the 2 MB cap
+                streamed.append(1)
+                yield b"x" * 100_000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/json"}, stream=Chunks())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=http)
+        result = await client.search("agents", include_arxiv=False)
+    assert result.provider_errors == ["openalex:ValueError"]
+    assert len(streamed) < 40  # reading stopped at the cap instead of buffering the whole body

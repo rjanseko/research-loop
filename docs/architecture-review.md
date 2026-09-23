@@ -18,6 +18,8 @@ Finding 6 is addressed: migration `003_research_evidence.sql` adds `evidence_led
 
 Finding 9 is mostly addressed: manifests (schema version 3) add `tree_sha256` for uncommitted changes, extraction-library versions, the effective run configuration, a fingerprint of every agent's instructions and output schema, and per-source dataset hashes, and the configuration fingerprint covers all but the tree hash. Paired cases, repeat runs, and uncertainty estimates remain to be done. Loops also take the settings the application resolved instead of rereading the environment (part of finding 10), and graph/legacy parity now compares full evidence (part of finding 13).
 
+Finding 12 is partly addressed: attachment extraction runs in a worker thread, multimodal bytes are checked against the ingestion hash before they are sent, and scholarly metadata responses stream with a 2 MB cap through the same helper as page fetches. Still open: year filters for arXiv and Crossref, which would change search results, cached search token statistics, and a shared HTTP client per run.
+
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 
 **Recommendation.** Keep PydanticAI, Pydantic Graph, the evidence ledger, and Postgres. Make a focused internal restructure around run lifecycle, canonical evidence, and bounded prompts. The graph is a useful description of the research algorithm. The largest problems occur in the contracts around it: what counts as a successful run, whether citations resolve, whether campaign artifacts belong together, and how much evidence a model receives.

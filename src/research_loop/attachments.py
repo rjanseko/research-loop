@@ -693,10 +693,14 @@ def build_multimodal_prompt(prompt: str, corpus: AttachmentCorpus) -> list[Any]:
 
     parts: list[Any] = [prompt]
     for attachment_id, media_type, path in corpus.multimodal_binary_specs():
+        # The model must see the bytes whose hash was recorded, not a file changed since.
+        data = path.read_bytes()
+        if _sha256_bytes(data) != corpus.get(attachment_id).sha256:
+            raise AttachmentIngestionError(f"attachment {attachment_id} changed since ingestion; its recorded hash no longer matches")
         label = "image" if media_type.startswith("image/") else "document"
         parts.append(
             f"The following {label} corresponds to attachment_id={attachment_id}. "
             f"When using it as evidence, cite that attachment_id and an accurate locator."
         )
-        parts.append(BinaryContent(data=path.read_bytes(), media_type=media_type))
+        parts.append(BinaryContent(data=data, media_type=media_type))
     return parts

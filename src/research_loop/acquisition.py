@@ -190,6 +190,21 @@ def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str,
 FETCH_USER_AGENT = "research-loop/0.5 (research agent page fetcher)"
 
 
+async def read_capped(response: httpx.Response, max_bytes: int) -> httpx.Response:
+    """A streamed response read into a complete one, stopping once it passes `max_bytes`."""
+    chunks = []
+    total = 0
+    async for chunk in response.aiter_bytes():  # decoded bytes, so the cap bounds decompression
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("response exceeded size limit")
+        chunks.append(chunk)
+    # The body is already decoded: drop encoding headers or httpx would decode it again.
+    headers = [(key, value) for key, value in response.headers.multi_items()
+               if key.lower() not in ("content-encoding", "content-length")]
+    return httpx.Response(response.status_code, headers=headers, content=b"".join(chunks), request=response.request)
+
+
 async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int,
                              policy: SourcePolicy | None = None) -> httpx.Response:
     """Download a public HTTPS URL, following at most three redirects, each checked like the first."""
@@ -206,18 +221,7 @@ async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int
                     raise ValueError("redirect missing location")
                 url = urljoin(url, location)
                 continue
-            chunks = []
-            total = 0
-            async for chunk in response.aiter_bytes():  # decoded bytes, so the cap bounds decompression
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError("response exceeded size limit")
-                chunks.append(chunk)
-            # The body is already decoded: drop encoding headers or httpx would decode it again.
-            headers = [(key, value) for key, value in response.headers.multi_items()
-                       if key.lower() not in ("content-encoding", "content-length")]
-            return httpx.Response(response.status_code, headers=headers,
-                                  content=b"".join(chunks), request=response.request)
+            return await read_capped(response, max_bytes)
     raise ValueError("too many redirects")
 
 

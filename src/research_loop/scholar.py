@@ -28,11 +28,14 @@ from .acquisition import (
     fetch_cache_key,
     fetch_window,
     public_url,
+    read_capped,
     wait_rate_slot,
 )
 
 
 _PDF_PAGE_LIMIT = 30
+# Largest metadata response read from a provider; reading stops once a response passes it.
+_MAX_METADATA_BYTES = 2_000_000
 Status = Literal["preprint", "journal", "accepted_conference", "conference_submission", "unknown"]
 
 
@@ -180,9 +183,9 @@ class ScholarClient:
                 if self.client is None:
                     await wait_rate_slot(provider)
                     async with httpx.AsyncClient(follow_redirects=False) as client:
-                        response = await client.get(hosts[provider] + path, params=params, headers=headers, timeout=15)
+                        response = await self._get(client, hosts[provider] + path, params, headers)
                 else:
-                    response = await self.client.get(hosts[provider] + path, params=params, headers=headers, timeout=15)
+                    response = await self._get(self.client, hosts[provider] + path, params, headers)
                 if response.status_code not in (429, 503) or attempt == 1:
                     break
                 try:
@@ -191,11 +194,14 @@ class ScholarClient:
                     delay = 1.0
                 await asyncio.sleep(delay)
         response.raise_for_status()
-        if len(response.content) > 2_000_000:
-            raise ValueError("provider response exceeded size limit")
         value = response.text if text else response.json()
         self.cache.put(provider, key, value)
         return value
+
+    @staticmethod
+    async def _get(client: httpx.AsyncClient, url: str, params: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
+        async with client.stream("GET", url, params=params, headers=headers, timeout=15) as response:
+            return await read_capped(response, _MAX_METADATA_BYTES)
 
     async def search(self, query: str, year_from: int | None = None, year_to: int | None = None,
                      limit: int = 5, include_arxiv: bool = True, include_crossref: bool = False) -> ScholarResponse:
