@@ -75,7 +75,7 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | `RESEARCH_SYNTH_MODEL` | Synthesizer, including campaign synthesis |
 | `RESEARCH_VERIFY_MODEL` | Verifier |
 
-The defaults in `policy.py` and the values in `.env.example` can go stale. A model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
+Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
 
 ## Postgres
 
@@ -100,7 +100,7 @@ research-diagnose --scholar-live                     # also probe the public sch
 research-diagnose --policy quality --attachments --smoke   # bounded paid calls to each configured model
 ```
 
-Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` (alias `--live`) makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
+Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
 
 Failed smoke checks give a short reason without the provider's response body. A credit-balance failure needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
 

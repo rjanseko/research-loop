@@ -341,8 +341,7 @@ class CampaignEvidence:
     bibliography: list[dict[str, Any]]
     contradictions: dict[str, list[dict[str, Any]]]
     verification: dict[str, dict[str, Any]]
-    # Completed outputs not matched to the current spec's objective: it changed, or the run
-    # predates objective hashes and the spec file changed since.
+    # Completed outputs whose recorded objective hash is missing or differs from the current spec's.
     stale: list[str]
 
     @property
@@ -350,19 +349,11 @@ class CampaignEvidence:
         return frozenset(item["ref"] for item in self.claims)
 
 
-def _answers_current_objective(campaign: dict[str, Any], question: dict[str, str], run: dict[str, Any],
-                               spec_sha256: str | None) -> bool:
-    if "objective_sha256" in run:
-        return run["objective_sha256"] == _objective_sha256(campaign, question)
-    # Runs recorded before objective hashes: only an unchanged spec file shows the objective is the same.
-    return spec_sha256 is not None and run.get("campaign_spec_sha256") == spec_sha256
-
-
-def aggregate_campaign(campaign: dict[str, Any], output_dir: Path, *,
-                       spec_sha256: str | None = None) -> CampaignEvidence:
+def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEvidence:
     """Merge completed question outputs; claim refs are '<question>/<claim id>' in ledger order.
 
-    `spec_sha256` is the current spec file's hash, used only for runs recorded without an objective hash.
+    Only runs whose recorded objective hash matches the current spec count; budget-only spec
+    edits leave the objective, and so the hash, unchanged.
     """
     completed: list[CompletedQuestion] = []
     missing: list[str] = []
@@ -377,7 +368,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path, *,
         if run.get("status") != "completed":
             missing.append(question["id"])
             continue
-        if not _answers_current_objective(campaign, question, run, spec_sha256):
+        if run.get("objective_sha256") != _objective_sha256(campaign, question):
             stale.append(question["id"])
             missing.append(question["id"])
             continue
@@ -538,7 +529,7 @@ def write_synthesis(campaign_dir: Path, campaign: dict[str, Any], evidence: Camp
 def prepare_synthesis(path: Path, output_dir: Path, *, allow_partial: bool) -> tuple[dict[str, Any], CampaignEvidence, str]:
     """Validate synthesis inputs without model calls; raise before any paid step."""
     campaign = load_campaign(path)
-    evidence = aggregate_campaign(campaign, output_dir, spec_sha256=_spec_sha256(path))
+    evidence = aggregate_campaign(campaign, output_dir)
     stale = (f" ({', '.join(evidence.stale)} cannot be matched to the current spec's objective; rerun them)"
              if evidence.stale else "")
     if not evidence.completed:
@@ -635,7 +626,7 @@ def _paid_preflight(settings: ResearchSettings, policy_name: str, persist: bool)
         raise RuntimeError("local preflight failed; run research-diagnose for details")
     checks = run_diagnose(settings, policy_name=policy_name, smoke=True)
     if any(check.name.startswith("model:") and check.status != "PASS" for check in checks):
-        raise RuntimeError("live model preflight failed; run research-diagnose --live for details")
+        raise RuntimeError("live model preflight failed; run research-diagnose --smoke for details")
 
 
 def main() -> None:
@@ -664,7 +655,7 @@ def main() -> None:
     try:
         if args.aggregate:
             campaign = load_campaign(args.spec)
-            evidence = aggregate_campaign(campaign, args.output, spec_sha256=_spec_sha256(args.spec))
+            evidence = aggregate_campaign(campaign, args.output)
             if not args.dry_run:
                 write_aggregate(args.output / SYNTHESIS_DIR, evidence)
             print(f"Aggregated {len(evidence.completed)} questions, {len(evidence.claims)} claims, "

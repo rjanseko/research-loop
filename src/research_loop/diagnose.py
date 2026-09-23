@@ -294,7 +294,7 @@ def main() -> None:
     parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy"), default="quality")
     parser.add_argument("--attachments", action="store_true", help="Check normalized attachment dependencies")
     parser.add_argument("--multimodal", action="store_true", help="Check image input route and dependencies")
-    parser.add_argument("--smoke", "--live", action="store_true", help="Make bounded, paid model calls for each unique configured model")
+    parser.add_argument("--smoke", action="store_true", help="Make bounded, paid model calls for each unique configured model")
     parser.add_argument("--scholar-live", action="store_true", help="Probe public scholarly metadata endpoints without model calls")
     args = parser.parse_args()
     try:

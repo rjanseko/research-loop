@@ -1,7 +1,8 @@
 # Prompt sizes: where they come from and why they cause problems
 
 Status as of 2026-09-23. The measurements come from the successful calibration pilot (question
-`p01`, job `253311b6`, `benchmark_outputs/long_horizon_pilot/`). They were taken after the fixes
+`p01`, job `253311b6`, now archived in `benchmark_outputs/archive/long_horizon_pilot-2026-09-23/`).
+They were taken after the fixes
 in commits `5c62878` and `36ce94e`. The deeper research settings from `36ce94e` had not yet been
 used for a paid run. Numbers marked *estimate* are projections, not measurements.
 
@@ -291,7 +292,9 @@ select t.role, t.question_id, e.tool_name, count(*) as calls,
 The composition of the ledger-carrying prompts comes from parsing `research_tasks.prompt` for the
 gap-analysis, synthesis, and verifier tasks as JSON and measuring each key's serialized length.
 
-Campaign synthesis prompt, rebuilt without any model call:
+Campaign synthesis prompt, rebuilt without any model call. The archived p01 outputs predate
+objective hashes, so the aggregator no longer accepts them; rerun p01 into
+`benchmark_outputs/long_horizon_pilot` first, and expect a different size from a new run:
 
 ```python
 from pathlib import Path
@@ -299,7 +302,7 @@ from research_loop.campaign import aggregate_campaign, load_campaign, synthesis_
 
 campaign = load_campaign(Path("campaigns/long_horizon_agentic_se/pilot.toml"))
 evidence = aggregate_campaign(campaign, Path("benchmark_outputs/long_horizon_pilot"))
-print(len(synthesis_prompt(campaign, evidence)))  # 82,719 for p01
+print(len(synthesis_prompt(campaign, evidence)))  # the archived p01 measured 82,719
 ```
 
 `research-campaign --spec campaigns/long_horizon_agentic_se/pilot.toml --output

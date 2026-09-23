@@ -115,8 +115,26 @@ class ModelPolicy:
         }
 
 
-def _env(name: str, default: str) -> str:
-    return os.getenv(name, "").strip() or default
+# Default model for each route override. `.env.example` lists the same values (a test keeps
+# them equal). Model IDs go stale: confirm routes with `research-diagnose --smoke` before paid runs.
+DEFAULT_MODELS: dict[str, str] = {
+    "RESEARCH_PLANNER_MODEL": "anthropic:claude-opus-5",
+    "RESEARCH_SCOUT_MODEL": "zai:glm-5.3",
+    "RESEARCH_CHEAP_SCOUT_MODEL": "openai:gpt-5.6-luna",
+    "RESEARCH_GAP_MODEL": "openai:gpt-5.6-sol",
+    "RESEARCH_DEEP_MODEL": "openai:gpt-5.6-sol",
+    "RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5",
+    "RESEARCH_VERIFY_MODEL": "openai:gpt-5.6-sol",
+    "RESEARCH_MULTIMODAL_MODEL": "google:gemini-3.8-flash",
+    "RESEARCH_ALT_DEEP_MODEL": "xai:grok-4.5",
+    "RESEARCH_BREADTH_SCOUT_MODEL": "openai:gpt-5.6-luna",
+    "RESEARCH_GLM_GAP_MODEL": "zai:glm-5.3",
+    "RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3-flash",
+}
+
+
+def _model(name: str) -> str:
+    return os.getenv(name, "").strip() or DEFAULT_MODELS[name]
 
 
 def _quality_policy() -> ModelPolicy:
@@ -125,40 +143,40 @@ def _quality_policy() -> ModelPolicy:
         {
             # Anthropic defaults max_tokens to 4096, shared by adaptive thinking and output.
             ResearchRole.PLANNER: ModelRoute(
-                _env("RESEARCH_PLANNER_MODEL", "anthropic:claude-opus-5"),
+                _model("RESEARCH_PLANNER_MODEL"),
                 6, 4, 70_000, 2.50, "high", {"max_tokens": 32_000},
             ),
             ResearchRole.SCOUT: ModelRoute(
-                _env("RESEARCH_SCOUT_MODEL", "zai:glm-5.3"),
+                _model("RESEARCH_SCOUT_MODEL"),
                 12, 24, 100_000, 0.80, "high",
             ),
             ResearchRole.GAP_ANALYST: ModelRoute(
-                _env("RESEARCH_GAP_MODEL", "openai:gpt-5.6-sol"),
+                _model("RESEARCH_GAP_MODEL"),
                 6, 4, 70_000, 1.25, "medium",
             ),
             ResearchRole.DEEP_DIVE: ModelRoute(
-                _env("RESEARCH_DEEP_MODEL", "openai:gpt-6-astra"),
+                _model("RESEARCH_DEEP_MODEL"),
                 20, 40, 180_000, 5.00, "high",
             ),
             ResearchRole.SYNTHESIZER: ModelRoute(
-                _env("RESEARCH_SYNTH_MODEL", "anthropic:claude-opus-5"),
+                _model("RESEARCH_SYNTH_MODEL"),
                 8, 4, 120_000, 3.50, "high", {"max_tokens": 32_000},
             ),
             ResearchRole.VERIFIER: ModelRoute(
-                _env("RESEARCH_VERIFY_MODEL", "openai:gpt-5.6-sol"),
+                _model("RESEARCH_VERIFY_MODEL"),
                 8, 8, 100_000, 2.50, "high",
             ),
         },
         cheap_scout=ModelRoute(
-            _env("RESEARCH_CHEAP_SCOUT_MODEL", "openai:gpt-5.6-luna"),
+            _model("RESEARCH_CHEAP_SCOUT_MODEL"),
             10, 20, 80_000, 0.25, "low",
         ),
         multimodal_scout=ModelRoute(
-            _env("RESEARCH_MULTIMODAL_MODEL", "google:gemini-3.8-flash"),
+            _model("RESEARCH_MULTIMODAL_MODEL"),
             12, 20, 100_000, 0.75, "medium",
         ),
         alternate_deep_dive=ModelRoute(
-            _env("RESEARCH_ALT_DEEP_MODEL", "xai:grok-4.5-latest"),
+            _model("RESEARCH_ALT_DEEP_MODEL"),
             20, 40, 180_000, 5.00, "high",
         ),
         planner_question_range=(6, 10),
@@ -169,7 +187,7 @@ def _breadth_policy() -> ModelPolicy:
     p = _quality_policy()
     routes = dict(p.routes)
     routes[ResearchRole.SCOUT] = ModelRoute(
-        _env("RESEARCH_BREADTH_SCOUT_MODEL", "openai:gpt-5.6-luna"),
+        _model("RESEARCH_BREADTH_SCOUT_MODEL"),
         10, 20, 80_000, 0.25, "low",
     )
     return ModelPolicy(
@@ -186,13 +204,13 @@ def _glm_heavy_policy() -> ModelPolicy:
     p = _quality_policy()
     routes = dict(p.routes)
     routes[ResearchRole.GAP_ANALYST] = ModelRoute(
-        _env("RESEARCH_GLM_GAP_MODEL", "zai:glm-5.3"), 8, 12, 100_000, 1.00, "high"
+        _model("RESEARCH_GLM_GAP_MODEL"), 8, 12, 100_000, 1.00, "high"
     )
     return ModelPolicy(
         "glm-heavy",
         routes,
         cheap_scout=ModelRoute(
-            _env("RESEARCH_GLM_CHEAP_MODEL", "zai:glm-5.3-flash"),
+            _model("RESEARCH_GLM_CHEAP_MODEL"),
             10, 20, 80_000, 0.30, "low",
         ),
         multimodal_scout=p.multimodal_scout,

@@ -67,7 +67,7 @@ Per-task usage in Postgres then shows what each step cost, which is how the camp
 
 `--aggregate` merges the completed questions' ledgers and bibliographies into `<output>/campaign/`. Each claim gets a campaign ref, the question ID plus the ledger claim ID, such as `q01/q1/c3`; a repeated ID in an older ledger gets a `~2` suffix.
 
-A completed question counts only if its objective hash still matches the spec. Editing a question, the window, or the source policy therefore requires rerunning the affected questions, while budget-only edits keep earlier outputs usable. Runs recorded before objective hashes count only while the spec file is byte-for-byte unchanged. Question IDs cannot be `.`, `..`, `campaign`, or `manifests`, which would collide with output folders.
+A completed question counts only if its objective hash still matches the spec. Editing a question, the window, or the source policy therefore requires rerunning the affected questions, while budget-only edits keep earlier outputs usable. A run recorded without an objective hash never counts. Question IDs cannot be `.`, `..`, `campaign`, or `manifests`, which would collide with output folders.
 
 `--synthesize --paid` runs the same preflight, then one campaign-level synthesizer job under the `[synthesis]` limits, and writes `outputs.campaign_files`:
 

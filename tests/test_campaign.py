@@ -262,8 +262,6 @@ async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path:
 
 @pytest.mark.asyncio
 async def test_aggregate_skips_outputs_that_answered_a_different_objective(monkeypatch, tmp_path: Path) -> None:
-    import hashlib
-
     from research_loop.campaign import aggregate_campaign
 
     await _complete_questions(monkeypatch, tmp_path, ["q01", "q02"])
@@ -274,16 +272,12 @@ async def test_aggregate_skips_outputs_that_answered_a_different_objective(monke
     assert evidence.stale == ["q02"]
     assert "q02" in evidence.missing
 
-    # Runs recorded before objective hashes are accepted only while the spec file is unchanged.
+    # A run recorded without an objective hash cannot show what it answered.
     run_path = tmp_path / "q01" / "run.json"
     run = json.loads(run_path.read_text())
     del run["objective_sha256"]
     run_path.write_text(json.dumps(run))
-    campaign = load_campaign(CAMPAIGN_FILE)
-    current = hashlib.sha256(CAMPAIGN_FILE.read_bytes()).hexdigest()
-    assert aggregate_campaign(campaign, tmp_path, spec_sha256=current).stale == []
-    assert aggregate_campaign(campaign, tmp_path, spec_sha256="0" * 64).stale == ["q01"]
-    assert aggregate_campaign(campaign, tmp_path).stale == ["q01"]
+    assert aggregate_campaign(load_campaign(CAMPAIGN_FILE), tmp_path).stale == ["q01"]
 
 
 @pytest.mark.asyncio

@@ -39,3 +39,39 @@ def test_policy_applies_typed_settings_override() -> None:
     settings = ResearchSettings.from_env({"RESEARCH_SCOUT_MODEL": "openai:typed-scout"})
     policy = get_policy("quality", model_overrides=settings.model_overrides)
     assert policy.for_role(ResearchRole.SCOUT).model == "openai:typed-scout"
+
+
+def test_env_example_lists_every_default_model() -> None:
+    import re
+    from pathlib import Path
+
+    from research_loop.policy import DEFAULT_MODELS
+    from research_loop.settings import MODEL_OVERRIDE_ENV
+
+    example = (Path(__file__).parents[1] / ".env.example").read_text()
+    listed = dict(re.findall(r"^(RESEARCH_\w+_MODEL)=(.*)$", example, re.M))
+    assert listed == DEFAULT_MODELS
+    assert set(DEFAULT_MODELS) == set(MODEL_OVERRIDE_ENV)
+
+
+def test_routes_fall_back_to_default_models(monkeypatch) -> None:
+    from research_loop.policy import DEFAULT_MODELS
+
+    for name in DEFAULT_MODELS:
+        monkeypatch.delenv(name, raising=False)  # a test may have loaded the local .env
+    quality, breadth, glm = (get_policy(name) for name in ("quality", "breadth", "glm-heavy"))
+    used = {
+        "RESEARCH_PLANNER_MODEL": quality.for_role(ResearchRole.PLANNER).model,
+        "RESEARCH_SCOUT_MODEL": quality.for_role(ResearchRole.SCOUT).model,
+        "RESEARCH_CHEAP_SCOUT_MODEL": quality.cheap_scout.model,
+        "RESEARCH_GAP_MODEL": quality.for_role(ResearchRole.GAP_ANALYST).model,
+        "RESEARCH_DEEP_MODEL": quality.for_role(ResearchRole.DEEP_DIVE).model,
+        "RESEARCH_SYNTH_MODEL": quality.for_role(ResearchRole.SYNTHESIZER).model,
+        "RESEARCH_VERIFY_MODEL": quality.for_role(ResearchRole.VERIFIER).model,
+        "RESEARCH_MULTIMODAL_MODEL": quality.multimodal_scout.model,
+        "RESEARCH_ALT_DEEP_MODEL": quality.alternate_deep_dive.model,
+        "RESEARCH_BREADTH_SCOUT_MODEL": breadth.for_role(ResearchRole.SCOUT).model,
+        "RESEARCH_GLM_GAP_MODEL": glm.for_role(ResearchRole.GAP_ANALYST).model,
+        "RESEARCH_GLM_CHEAP_MODEL": glm.cheap_scout.model,
+    }
+    assert used == DEFAULT_MODELS
