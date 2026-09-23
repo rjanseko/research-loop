@@ -72,3 +72,28 @@ async def test_uncapped_job_runs_and_failed_task_keeps_usage() -> None:
     (task,) = loop.repository.tasks.values()
     assert task["status"] == "failed"
     assert task["usage"]["requests"] == 1
+
+
+@pytest.mark.asyncio
+async def test_single_agent_job_persists_lifecycle_and_clears_spend() -> None:
+    route = ModelRoute("test", 5, 5, 10_000)
+    loop = _loop(route, job_cost_limit=None)
+    outcome = await loop.run_agent_job(
+        "campaign synthesis", agent=Agent(output_type=str), role=ResearchRole.SYNTHESIZER,
+        route=route, prompt="synthesize", config={"campaign": {"id": "c1"}},
+    )
+    job = loop.repository.jobs[outcome.job_id]
+    assert job["status"] == "succeeded"
+    assert job["config"]["orchestrator"]["kind"] == "single-agent"
+    assert job["config"]["campaign"] == {"id": "c1"}
+    assert outcome.cost_usd is None  # TestModel has no pricing data
+    assert loop._job_spend == {}
+
+    failing = _loop(ModelRoute("test", 0, 5, 10_000), job_cost_limit=None)
+    with pytest.raises(UsageLimitExceeded):
+        await failing.run_agent_job("x", agent=Agent(output_type=str), role=ResearchRole.SYNTHESIZER,
+                                    route=ModelRoute("test", 0, 5, 10_000), prompt="x")
+    (failed_job,) = failing.repository.jobs.values()
+    assert failed_job["status"] == "failed"
+    assert failed_job["error"] == {"type": "UsageLimitExceeded"}
+    assert failing._job_spend == {}

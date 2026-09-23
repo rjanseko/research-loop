@@ -73,6 +73,13 @@ class ResearchOutcome:
     cost_usd: Decimal | None = None
 
 
+@dataclass
+class AgentJobOutcome:
+    job_id: UUID
+    output: Any
+    cost_usd: Decimal | None = None
+
+
 class JobBudgetExceeded(RuntimeError):
     """The policy's per-job cost cap is spent, or spend could not be priced."""
 
@@ -153,6 +160,7 @@ class AsyncResearchLoop:
         attachment_corpus: AttachmentCorpus | None = None,
         attachment_tools: bool = False,
         multimodal_inputs: bool = False,
+        deps: Any = None,
     ) -> Any:
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
@@ -213,6 +221,7 @@ class AsyncResearchLoop:
                     model_settings=route.model_settings(),
                     usage_limits=self._limits(route, remaining_budget),
                     usage=usage,
+                    deps=deps,
                     capabilities=capabilities,
                     toolsets=toolsets or None,
                 )
@@ -441,6 +450,53 @@ class AsyncResearchLoop:
             if current is None or gap.severity > current.severity:
                 best[gap.question_id] = gap
         return list(best.values())
+
+    async def run_agent_job(
+        self,
+        objective: str,
+        *,
+        agent: Any,
+        role: ResearchRole,
+        route: ModelRoute,
+        prompt: str,
+        deps: Any = None,
+        config: dict[str, Any] | None = None,
+    ) -> AgentJobOutcome:
+        """Run one agent as its own job with the same persistence and job cost cap as run()."""
+        job_id = await self.repository.create_job(
+            session_id=uuid4(),
+            root_run_id=uuid4(),
+            objective=objective,
+            policy_name=self.policy.name,
+            config={
+                "orchestrator": {"kind": "single-agent", "graph_version": None},
+                "policy": self.policy.snapshot(),
+                **(config or {}),
+            },
+        )
+        self._job_spend[job_id] = Decimal(0)
+        try:
+            output = await self._run_agent(
+                job_id=job_id, agent=agent, role=role, route=route, prompt=prompt, deps=deps
+            )
+            await self.repository.finish_job(
+                job_id,
+                status="succeeded",
+                final_report=output.model_dump(mode="json") if isinstance(output, BaseModel) else jsonable(output),
+                verification=None,
+            )
+            return AgentJobOutcome(job_id, output, cost_usd=self._job_spend.get(job_id))
+        except Exception as exc:
+            await self.repository.finish_job(
+                job_id,
+                status="failed",
+                final_report=None,
+                verification=None,
+                error=error_snapshot(exc),
+            )
+            raise
+        finally:
+            self._job_spend.pop(job_id, None)
 
     async def run(
         self,

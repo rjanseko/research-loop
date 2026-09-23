@@ -187,3 +187,111 @@ class ToolEvent(BaseModel):
     def is_research_tool(self) -> bool:
         name = self.tool_name.lower()
         return any(token in name for token in ("search", "fetch", "page", "url", "attachment"))
+
+
+# Campaign-level synthesis over completed campaign questions. Claim refs such as
+# "q01/c3" identify claims in the aggregated campaign evidence ledger.
+_CLAIM_REFS = "Campaign claim refs such as 'q01/c3', copied exactly from the supplied evidence"
+
+
+class CampaignFinding(BaseModel):
+    statement: str
+    claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+
+
+class CampaignFindings(BaseModel):
+    well_supported: list[CampaignFinding] = Field(
+        default_factory=list, description="Consistent evidence from multiple independent tier A-C sources"
+    )
+    preliminary: list[CampaignFinding] = Field(
+        default_factory=list, description="Single-source, preprint-only, or narrowly evaluated results"
+    )
+    vendor_claims: list[CampaignFinding] = Field(
+        default_factory=list, description="Results reported by a model or product vendor without independent replication"
+    )
+    contradictory: list[CampaignFinding] = Field(
+        default_factory=list, description="Points where cited sources disagree; cite both sides"
+    )
+    unknowns: list[CampaignFinding] = Field(
+        default_factory=list, description="Questions the evidence could not settle; refs optional"
+    )
+
+
+class BenchmarkEntry(BaseModel):
+    name: str
+    versions: list[str] = Field(default_factory=list)
+    scope: str
+    evaluation_method: str
+    limits: list[str] = Field(default_factory=list)
+    claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+
+
+class ArchitecturePattern(BaseModel):
+    name: str
+    description: str
+    reported_effects: list[str] = Field(
+        default_factory=list, description="Measured effects together with their evaluation conditions"
+    )
+    claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+
+
+class FailureMode(BaseModel):
+    name: str
+    description: str
+    mitigations: list[str] = Field(default_factory=list)
+    claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+
+
+class OpenQuestion(BaseModel):
+    question: str
+    why_open: str
+    claim_refs: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+
+
+class Hypothesis(BaseModel):
+    id: str
+    statement: str = Field(description="Falsifiable claim about coding-agent behavior")
+    supporting_evidence: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+    contradicting_evidence: list[str] = Field(default_factory=list, description=_CLAIM_REFS)
+    confidence: float = Field(ge=0.0, le=1.0)
+    proposed_experiment: str
+    expected_metric: str
+    estimated_cost: str = Field(description="Rough API, compute, and time cost of the experiment")
+
+
+class CampaignSynthesis(BaseModel):
+    summary: str = Field(description="Markdown overview of the campaign's conclusions")
+    findings: CampaignFindings
+    benchmark_catalog: list[BenchmarkEntry] = Field(default_factory=list)
+    architecture_patterns: list[ArchitecturePattern] = Field(default_factory=list)
+    failure_modes: list[FailureMode] = Field(default_factory=list)
+    open_questions: list[OpenQuestion] = Field(default_factory=list)
+    hypotheses: list[Hypothesis] = Field(default_factory=list)
+
+    def citation_problems(self, known_refs: set[str] | frozenset[str]) -> list[str]:
+        """Unknown claim refs anywhere, and evidence-bearing entries that cite nothing."""
+        problems: list[str] = []
+
+        def check(label: str, refs: list[str], *, required: bool) -> None:
+            unknown = [ref for ref in refs if ref not in known_refs]
+            if unknown:
+                problems.append(f"{label} cites unknown refs {unknown}")
+            elif required and not refs:
+                problems.append(f"{label} cites no evidence")
+
+        for section in CampaignFindings.model_fields:
+            for index, finding in enumerate(getattr(self.findings, section)):
+                check(f"findings.{section}[{index}]", finding.claim_refs, required=section != "unknowns")
+        for field_name in ("benchmark_catalog", "architecture_patterns", "failure_modes"):
+            for index, entry in enumerate(getattr(self, field_name)):
+                check(f"{field_name}[{index}] {entry.name!r}", entry.claim_refs, required=True)
+        for index, open_question in enumerate(self.open_questions):
+            check(f"open_questions[{index}]", open_question.claim_refs, required=False)
+        seen: set[str] = set()
+        for hypothesis in self.hypotheses:
+            if hypothesis.id in seen:
+                problems.append(f"hypothesis id {hypothesis.id!r} is duplicated")
+            seen.add(hypothesis.id)
+            check(f"hypothesis {hypothesis.id!r} supporting_evidence", hypothesis.supporting_evidence, required=True)
+            check(f"hypothesis {hypothesis.id!r} contradicting_evidence", hypothesis.contradicting_evidence, required=False)
+        return problems

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry, RunContext
 
-from .schemas import FinalReport, GapAnalysis, ResearchPlan, ResearchResult, VerificationReport
+from .schemas import (
+    CampaignSynthesis,
+    FinalReport,
+    GapAnalysis,
+    ResearchPlan,
+    ResearchResult,
+    VerificationReport,
+)
 
 
 planner_agent = Agent(
@@ -71,3 +78,31 @@ verifier_agent = Agent(
         "evidence that appears to violate them. Recommend more research only when the issue is material."
     ),
 )
+
+# Campaign-level only: runs once over completed campaign questions, outside research-graph-v1.
+campaign_synthesizer_agent = Agent(
+    output_type=CampaignSynthesis,
+    deps_type=frozenset[str],
+    # Two citation-fix retries; campaign synthesis.max_requests bounds the total.
+    retries={"output": 2},
+    instructions=(
+        "Synthesize a research campaign from the supplied per-question reports and evidence only; do not "
+        "research further or use outside knowledge. Cite evidence with the exact claim refs supplied (for "
+        "example 'q01/c3') and never invent refs. Classify findings as well_supported (consistent evidence "
+        "from multiple independent tier A-C sources), preliminary (single source, preprint-only, or narrow "
+        "evaluation), vendor_claims (results reported by a vendor without independent replication), "
+        "contradictory (cite both sides), or unknowns. Keep preprint, submission, and published status "
+        "distinct. In the benchmark catalog, record versions, scope, evaluation method, and limits only as "
+        "the evidence states them. Hypotheses must be falsifiable, cite supporting and any contradicting "
+        "refs, and propose an experiment with an expected metric and an estimated cost. Prefer fewer, "
+        "well-grounded entries over broad coverage."
+    ),
+)
+
+
+@campaign_synthesizer_agent.output_validator
+def _campaign_refs_exist(ctx: RunContext[frozenset[str]], output: CampaignSynthesis) -> CampaignSynthesis:
+    problems = output.citation_problems(ctx.deps)
+    if problems:
+        raise ModelRetry("Fix these citation problems using only supplied claim refs: " + "; ".join(problems[:25]))
+    return output

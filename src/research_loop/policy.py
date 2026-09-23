@@ -101,9 +101,10 @@ def _quality_policy() -> ModelPolicy:
     return ModelPolicy(
         "quality",
         {
+            # Anthropic defaults max_tokens to 4096, shared by adaptive thinking and output.
             ResearchRole.PLANNER: ModelRoute(
                 _env("RESEARCH_PLANNER_MODEL", "anthropic:claude-opus-5"),
-                6, 4, 70_000, 2.50, "high",
+                6, 4, 70_000, 2.50, "high", {"max_tokens": 32_000},
             ),
             ResearchRole.SCOUT: ModelRoute(
                 _env("RESEARCH_SCOUT_MODEL", "zai:glm-5.3"),
@@ -119,7 +120,7 @@ def _quality_policy() -> ModelPolicy:
             ),
             ResearchRole.SYNTHESIZER: ModelRoute(
                 _env("RESEARCH_SYNTH_MODEL", "anthropic:claude-opus-5"),
-                8, 4, 120_000, 3.50, "high",
+                8, 4, 120_000, 3.50, "high", {"max_tokens": 32_000},
             ),
             ResearchRole.VERIFIER: ModelRoute(
                 _env("RESEARCH_VERIFY_MODEL", "openai:gpt-5.6-sol"),
