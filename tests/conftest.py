@@ -2,6 +2,7 @@
 
 Every test runs offline: model providers are refused and non-loopback DNS lookups and socket
 connections fail the test. Loopback stays open for tests that expect a local connection to fail.
+Settings never load the local .env.
 """
 from __future__ import annotations
 
@@ -49,6 +50,12 @@ def _offline(monkeypatch: pytest.MonkeyPatch):
     yield
     # Code under test may catch the error above; the attempt still fails the test.
     assert not attempts, f"test reached the network: {attempts}"
+
+
+@pytest.fixture(autouse=True)
+def _no_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Settings see the environment a test sets up, never the developer's .env and its API keys."""
+    monkeypatch.setattr("research_loop.settings.load_dotenv", lambda *_args, **_kwargs: False)
 
 
 @pytest.fixture

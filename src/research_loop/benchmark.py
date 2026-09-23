@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from statistics import mean
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from pydantic_evals import Case
@@ -182,7 +182,7 @@ async def _run_policy_case(
     pool: Any | None = None,
     suite_name: str | None = None,
     on_job_created: Callable[[UUID, UUID], None] | None = None,
-    model_overrides: Mapping[str, str] | None = None,
+    settings: ResearchSettings | None = None,
 ) -> BenchmarkOutput:
     if repository_mode == "postgres" and pool is None:
         raise ValueError("Postgres benchmark mode requires a connection pool")
@@ -194,9 +194,10 @@ async def _run_policy_case(
     )
     loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
     loop = loop_class(
-        get_policy(policy_name, model_overrides=model_overrides),
+        get_policy(policy_name, model_overrides=settings.model_overrides if settings else None),
         ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode, scholarly_cache_mode="off"),
         repository=repo,
+        settings=settings,
     )
     outcome = await loop.run(
         case.render_objective(),
@@ -421,7 +422,7 @@ async def run_benchmark(
                             pool=pool,
                             suite_name=suite_name,
                             on_job_created=record_job,
-                            model_overrides=settings.model_overrides,
+                            settings=settings,
                         )
                         if run_record:
                             run_record["status"] = "succeeded"

@@ -193,9 +193,12 @@ class AsyncResearchLoop:
         policy: ModelPolicy,
         config: ResearchConfig | None = None,
         repository: ResearchRepository | None = None,
+        *,
+        settings: ResearchSettings | None = None,
     ) -> None:
         self.policy = policy
-        self.settings = ResearchSettings.from_env()
+        # Applications pass the settings they resolved; only a bare library call reads the environment.
+        self.settings = settings or ResearchSettings.from_env()
         self.config = config or ResearchConfig(scholarly_cache_mode=self.settings.scholarly_cache_mode)
         self.repository: ResearchRepository = repository or NullResearchRepository()
         # Per-job USD spend; None once any billed call could not be priced.

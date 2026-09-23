@@ -300,3 +300,22 @@ def test_policy_summary_averages_applicable_scores_and_keeps_unknown_cost_unknow
     }
     runs[1]["measures"]["cost_usd"] = None  # one unpriced case makes the total unknown
     assert _policy_summary(runs)["succeeded_cost_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_benchmark_runs_use_the_settings_they_were_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import research_loop.benchmark as benchmark
+
+    seen = []
+
+    class Recording(benchmark.SyntheticResearchLoop):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            seen.append(self.settings)
+
+    monkeypatch.setattr(benchmark, "SyntheticResearchLoop", Recording)
+    settings = ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path),
+                                          "RESEARCH_BENCHMARK_CACHE": str(tmp_path / "cache")})
+    await run_benchmark(_two_case_suite(tmp_path, ["one"]), policies=["synthetic"], max_concurrency=1,
+                        manifest_path=tmp_path / "manifest.json", settings=settings)
+    assert seen == [settings]

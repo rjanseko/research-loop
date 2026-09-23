@@ -16,6 +16,7 @@ from .ledger import EvidenceLedger
 from .policy import ModelPolicy
 from .repository import ResearchRepository
 from .schemas import ResearchConstraints
+from .settings import ResearchSettings
 
 
 class ResearchLoop(AsyncResearchLoop):
@@ -33,8 +34,10 @@ class ResearchLoop(AsyncResearchLoop):
         policy: ModelPolicy,
         config: ResearchConfig | None = None,
         repository: ResearchRepository | None = None,
+        *,
+        settings: ResearchSettings | None = None,
     ) -> None:
-        super().__init__(policy, config, repository)
+        super().__init__(policy, config, repository, settings=settings)
         self.graph = get_research_graph()
 
     async def run(

@@ -372,8 +372,8 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
     seen = {}
 
     class RecordingLoop:
-        def __init__(self, policy, config, **_kwargs):
-            seen["policy"], seen["config"] = policy, config
+        def __init__(self, policy, config, **kwargs):
+            seen["policy"], seen["config"], seen["settings"] = policy, config, kwargs.get("settings")
 
         async def run(self, _objective, *, constraints):
             seen["notes"] = constraints.notes
@@ -381,8 +381,10 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
                                    verification=VerificationReport(), cost_usd=None)
 
     monkeypatch.setattr("research_loop.campaign.ResearchLoop", RecordingLoop)
+    settings = ResearchSettings.from_env({})
     await run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
-                       settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
+                       settings=settings, output_dir=tmp_path, persist=False)
+    assert seen["settings"] is settings  # the loop uses the campaign's settings, not a fresh environment read
     execution = load_campaign(CAMPAIGN_FILE)["execution"]
     policy = seen["policy"]
     assert seen["config"].salvage_exhausted_research is True

@@ -286,7 +286,7 @@ async def run_campaign(
             pool = await open_migrated_pool(stack, settings.database_dsn) if persist else None
             for index, question_id in enumerate(question_ids):
                 backend = PostgresResearchRepository(pool) if pool else InMemoryResearchRepository()
-                loop = ResearchLoop(policy, run_config, repository=backend)
+                loop = ResearchLoop(policy, run_config, repository=backend, settings=settings)
                 objective = render_objective(campaign, questions[question_id])
                 try:
                     outcome = await loop.run(
@@ -592,7 +592,8 @@ async def synthesize_campaign(
     try:
         async with AsyncExitStack() as stack:
             pool = await open_migrated_pool(stack, settings.database_dsn) if persist else None
-            loop = ResearchLoop(policy, repository=PostgresResearchRepository(pool) if pool else InMemoryResearchRepository())
+            loop = ResearchLoop(policy, repository=PostgresResearchRepository(pool) if pool else InMemoryResearchRepository(),
+                                settings=settings)
             outcome = await loop.run_agent_job(
                 f"{campaign['title']}: campaign synthesis",
                 agent=campaign_synthesizer_agent,
