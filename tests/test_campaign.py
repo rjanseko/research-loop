@@ -130,7 +130,7 @@ async def test_campaign_run_exports_spec_question_files(monkeypatch, tmp_path: P
     assert manifest["status"] == "completed"
     assert manifest["run_limits"]["question_cost_limit_usd"] == 5.0
     assert manifest["acquisition"]["fetch_version"] == 3
-    assert manifest["evidence_version"] == 3
+    assert manifest["evidence_version"] == 4
     assert manifest["questions"][0]["cost_usd"] == "1.25"
     assert run["status"] == "completed"
     assert run["review_reasons"] == manifest["questions"][0]["review_reasons"] == ["the report cites no evidence claims"]

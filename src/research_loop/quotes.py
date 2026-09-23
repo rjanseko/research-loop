@@ -1,8 +1,9 @@
 """Deterministic checks of evidence against the text a research run's tools returned.
 
-A quote is `verified` when its segments, split at '...' and bracketed insertions, appear in
-order within one piece of tool output, after normalizing case, whitespace, typographic quotes
-and dashes, and word-internal hyphens (which PDF line breaks introduce). Otherwise it is
+A quote is `verified` when each of its segments, split at '...' and bracketed insertions,
+appears in one piece of tool output, in any order, comparing only letters and digits after
+Unicode (NFKC) normalization and case folding. Spacing, punctuation, list bullets, and
+hyphenated line breaks therefore never decide the check. Otherwise it is
 `not_found`: no tool output in that research run contained it, so the wording may have been
 reconstructed or invented. Paraphrases in `excerpt` are not checked.
 
@@ -23,39 +24,28 @@ from urllib.parse import unquote, urlparse
 
 from .schemas import ResearchResult, SourceRef, ToolEvent
 
-_TYPOGRAPHY = str.maketrans({
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-",
-    "­": None,  # soft hyphen
-})
-_WORD_HYPHEN = re.compile(r"(?<=\w)-\s*(?=\w)")
+# Only letters and digits are compared. PDF extraction puts spaces inside words ("s olutions")
+# and breaks words with hyphens, and quotes drop list bullets and code comment signs; none of
+# that changes the wording. NFKC folds ligatures and the ellipsis character.
+_NON_WORD = re.compile(r"[\W_]+")
 _GAP = re.compile(r"\.\.\.|\[[^\]]*\]")
-_SEGMENT_EDGES = " \"'.,;:!?"
 
 
-def _normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text).translate(_TYPOGRAPHY).casefold()
-    return " ".join(_WORD_HYPHEN.sub("", text).split())
+def _key(text: str) -> str:
+    return _NON_WORD.sub("", unicodedata.normalize("NFKC", text).casefold())
 
 
 def _segments(quote: str) -> list[str]:
-    return [segment for segment in (part.strip(_SEGMENT_EDGES) for part in _GAP.split(_normalize(quote))) if segment]
+    return [segment for segment in map(_key, _GAP.split(unicodedata.normalize("NFKC", quote))) if segment]
 
 
 def _contains(haystack: str, segments: list[str]) -> bool:
-    position = 0
-    for segment in segments:
-        position = haystack.find(segment, position)
-        if position < 0:
-            return False
-        position += len(segment)
-    return True
+    return all(segment in haystack for segment in segments)
 
 
 def quote_found(quote: str, texts: Iterable[str]) -> bool:
     segments = _segments(quote)
-    return bool(segments) and any(_contains(_normalize(text), segments) for text in texts)
+    return bool(segments) and any(_contains(_key(text), segments) for text in texts)
 
 
 def _strings(value: Any, out: list[str]) -> None:
@@ -84,7 +74,7 @@ def tool_texts(events: Iterable[ToolEvent]) -> list[str]:
 
 def check_quotes(result: ResearchResult, texts: Iterable[str]) -> ResearchResult:
     """Set each evidence item's quote_check from `texts`, the tool output its research run saw."""
-    haystacks = list(dict.fromkeys(_normalize(text) for text in texts))
+    haystacks = list(dict.fromkeys(_key(text) for text in texts))
 
     def check(quote: str | None) -> Literal["verified", "not_found"] | None:
         segments = _segments(quote) if quote else []

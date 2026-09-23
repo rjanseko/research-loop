@@ -12,7 +12,9 @@ from pydantic.json_schema import SkipJsonSchema
 # 3: role outputs are checked against the run (agents.py): plans, question IDs, and claim and
 #    attachment citations; a mismatch gets one retry, then fails the run. Cited sources are
 #    checked against the run's tool output (`source_check`).
-EVIDENCE_VERSION = 3
+# 4: quotes are compared on letters and digits only, and "..." segments in any order, so PDF
+#    extraction spacing, list bullets, and comment signs no longer mark faithful quotes not_found.
+EVIDENCE_VERSION = 4
 
 
 class ResearchRole(StrEnum):

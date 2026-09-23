@@ -26,12 +26,12 @@ Finding 14 is addressed without changing the output layout: each question's file
 
 Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field of `campaign.toml` when it loads, rejects unknown keys, checks the planner range and reserve against their limits, and fills defaults, so `--dry-run` catches what a run would otherwise hit after the paid preflight. The spec's `scholarly_cache_mode` is now honored instead of hardcoded. Rendered objectives are unchanged.
 
-**Status by finding, as of commit `d85d2bf` (2026-09-23, 277 tests).** This table sums up the status notes above; the findings below keep their original text.
+**Status by finding, as of 2026-09-23 (evidence version 4, 284 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
 |---|---|---|
 | 1. Benchmark failures shown as success; error bodies in output | Done | — |
-| 2. Evidence not an enforced grounding contract | Mostly done (`evidence_version` 3) | Held `max_deep_dives_per_round = 0` routing fix (changes `research-graph-v1`); acquisition-observation records and locator checks |
+| 2. Evidence not an enforced grounding contract | Mostly done (`evidence_version` 4) | Held `max_deep_dives_per_round = 0` routing fix (changes `research-graph-v1`); acquisition-observation records and locator checks |
 | 3. Campaign synthesis drops verifier findings, accepts stale artifacts | Done | — |
 | 4. Metrics claim passes and complete costs they cannot support | Done | — |
 | 5. Source restrictions not enforced by tools | Done for normalized tools (`fetch_version` 3) | Provider-native tools in `adaptive` mode are only audited; acquisition events are not stored as records |
@@ -45,6 +45,8 @@ Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field 
 | 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; lockfile, CI, and a wheel install smoke test |
 | 14. Campaign artifacts not published atomically | Done | — |
 | 15. Budget accounting separate from admission control | Open (P3) | Reserving budget before concurrent calls |
+
+Later, `evidence_version` 4 fixed false negatives in the quote check. All 8 quotes the p01 rerun marked `not_found` turned out to be faithful quotes of text the run had fetched: PDF extraction had put spaces inside words, or the quote differed from the source only in bullets, comment signs, or the order of its `...` parts. Those false negatives caused both of p01's major verifier findings. Quotes are now compared on letters and digits only, with each part matched in any order; a quote that spans a PDF running header is still `not_found`. See [benchmarks](benchmarks.md).
 
 Revised the same day after a second pass: findings re-ranked by how silently they corrupt results, low-effort fixes separated from the restructure, and three probes added (invalid verifier follow-ups, empty plans, zero scout concurrency).
 

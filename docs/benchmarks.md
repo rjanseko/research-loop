@@ -125,6 +125,8 @@ Evidence version 3 checks each role's output against the run, so every reference
 
 Version 3 also checks each URL-cited evidence item's source against the same tool output as its quote. It is `observed` when the URL appears there, ignoring scheme, `www.`, query, fragment, and trailing slash, or when its DOI or arXiv ID does, and `not_found` otherwise; attachment sources are covered by the ID check above. Like `quote_check`, `source_check` is set by code and hidden from the model's output schema. It shows that a tool returned the source, not that the source supports the claim, and it is separate from blocked-source auditing.
 
+Evidence version 4 compares quotes on their letters and digits only, after Unicode normalization and case folding, and accepts each `...` or bracket-separated part wherever it appears in the same piece of tool output, in either order. The p01 pilot showed why: all 8 of its `not_found` quotes were faithful quotes of text the run had fetched. PDF extraction had put spaces inside words ("s olutions") in four, the model had written list bullets as semicolons in one and dropped code comment signs in another, and one joined two passages out of document order. They caused both of p01's major verifier findings. One known gap remains: pypdf can place a page's running header inside a sentence, and a quote that spans it is still `not_found`. Quote rates under versions 3 and 4 are not comparable.
+
 Keep official scoring separate: use the official BrowseComp and GAIA semantic graders for published comparisons, and the official DRB-II evaluator for rubric scores.
 
 ## Anti-contamination rules
