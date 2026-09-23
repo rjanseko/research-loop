@@ -1,9 +1,13 @@
-.PHONY: setup test lint graph diagnose postgres-up postgres-down db-status migrate
+.PHONY: setup skills test lint graph diagnose postgres-up postgres-down db-status migrate
 
 VENV := .venv/bin
 
 setup:
 	./scripts/bootstrap.sh
+
+# Repair the agent skill links after upgrading a package that bundles skills.
+skills:
+	VIRTUAL_ENV=$(CURDIR)/.venv uvx library-skills --claude --yes
 
 test:
 	$(VENV)/pytest -q
