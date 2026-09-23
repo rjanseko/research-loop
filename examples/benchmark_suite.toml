@@ -1,0 +1,18 @@
+name = "research-loop-public-core"
+
+# BrowseComp: hard short-answer web research. The official encrypted CSV is
+# downloaded to ~/.cache/research-loop and decrypted only in memory.
+[[sources]]
+name = "browsecomp"
+kind = "browsecomp"
+limit = 20
+seed = 17
+
+# DeepResearch Bench II: expert-grounded long-form reports with atomic rubrics.
+# If path is omitted, the public tasks_and_rubrics.jsonl is cached automatically.
+[[sources]]
+name = "drb2-en"
+kind = "deepresearch_bench_2"
+limit = 12
+seed = 17
+languages = ["en"]

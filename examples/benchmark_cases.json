@@ -1,0 +1,14 @@
+[
+  {
+    "name": "framework-comparison",
+    "objective": "Compare the current PydanticAI, LangGraph, and AutoGen approaches to multi-agent research workflows. Focus on orchestration model, persistence, tool use, evaluation, and operational complexity. Prefer official documentation."
+  },
+  {
+    "name": "technical-claim-audit",
+    "objective": "Determine whether PostgreSQL advisory locks are appropriate for preventing duplicate execution of the same background job across multiple workers. Explain limitations and identify safer alternatives for long-running work. Prefer PostgreSQL primary documentation."
+  },
+  {
+    "name": "model-research",
+    "objective": "Compare two current frontier language models for evidence-heavy web research. Separate model capability from search harness effects and prefer primary model/provider documentation plus independent benchmarks."
+  }
+]

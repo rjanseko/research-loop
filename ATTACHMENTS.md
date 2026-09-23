@@ -1,0 +1,80 @@
+# Attachment ingestion and benchmark fairness
+
+Introduced in v4 and retained in v5, the project provides a provider-neutral local attachment corpus for research tasks and GAIA-style benchmarks.
+
+## Two lanes
+
+### `normalized` (default)
+
+The application extracts local file contents before any model sees them and exposes the same three function tools to every provider:
+
+- `list_attachments()`
+- `search_attachments(query, attachment_id=None, top_k=8)`
+- `read_attachment(attachment_id, start_chunk=0, count=5)`
+
+This is the preferred comparative benchmark lane because OpenAI, Anthropic, Google, xAI, and Z.AI receive the same extracted representation instead of provider-specific file APIs.
+
+Supported deterministic extractors:
+
+| Type | Representation |
+|---|---|
+| TXT/Markdown/JSON/XML/YAML/TOML | decoded/chunked text |
+| HTML | visible text with script/style removed |
+| PDF | page-aware text via pypdf |
+| DOCX | paragraphs + tables |
+| CSV | row-range table chunks |
+| XLSX/XLSM | sheet + row-range table chunks |
+| Images | dimensions/format metadata only |
+
+Every attachment gets a SHA-256 hash, stable per-run attachment ID, media type, extraction metadata, chunk locators, and chunk hashes.
+
+## `multimodal`
+
+The normalized tools remain available, but local images are also sent as PydanticAI `BinaryContent`. PDFs are sent as binary only when deterministic extraction indicates that visual understanding is required (for example a scanned PDF with little/no extractable text).
+
+Use this lane when vision/document understanding is intentionally part of the benchmark. It is **not** as clean a model-only comparison because provider support and file handling may differ.
+
+```bash
+research-bench examples/benchmark_suite_full.example.toml \
+  --policies quality breadth glm-heavy \
+  --attachment-mode multimodal
+```
+
+## Provenance
+
+Attachment evidence is represented without fake local URLs:
+
+```python
+SourceRef(
+    attachment_id="att-1-abc123...",
+    locator="page 4",
+    title="report.pdf",
+    source_type="attachment",
+)
+```
+
+Web evidence continues to use `url=...`.
+
+This allows the evidence ledger and verifier to distinguish web sources from local materials and preserve page/sheet/row-level provenance.
+
+## Privacy / reproducibility
+
+Host filesystem paths are intentionally kept inside the application process:
+
+- paths are not rendered into benchmark prompts;
+- paths are not stored in `research_attachments`;
+- Postgres stores filename, hash, media type, extractor, size, chunk count, and extraction metadata;
+- file bytes are not copied into Postgres by this layer.
+
+Apply both migrations:
+
+```text
+migrations/001_research.sql
+migrations/002_research_attachments.sql
+```
+
+## Limits
+
+`AttachmentLimits` bounds file size, extracted text, chunks, CSV rows, workbook rows, and sheet count. Benchmark runs default to strict ingestion: a missing/oversized required attachment fails the run instead of silently changing the task.
+
+Images are **not OCRed** in normalized mode. That is deliberate: OCR quality would become another uncontrolled dependency. Use the multimodal lane when pixels matter.
