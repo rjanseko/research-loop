@@ -493,3 +493,32 @@ This changes the salvage prompt, so it is a behavior change for any run that sal
 long-horizon studies. The figures in the new column are computed from the stored result sizes; the
 effect on evidence quality has not been measured on a paid run.
 
+## p01 rerun under evidence version 4
+
+Status as of 2026-09-23. p01 was rerun (job `31eba511`, $2.50) after the quote-check fix (evidence
+version 4, commit `c4ee927`) and the salvage selection change (commit `1abac11`). The Anthropic
+account had no credits, so the planner ran on `openai:gpt-5.6-sol` and the synthesizer on
+`zai:glm-5.3` (`xai:grok-4.5` returned HTTP 403 on the synthesizer route); the verifier stayed on
+`openai:gpt-5.6-sol`, so it still checked another model's report. The earlier run (job `46044486`,
+evidence version 3) is archived in `benchmark_outputs/archive/long_horizon_pilot-p01-evidence-v3/`.
+
+| | Evidence version 3 | Evidence version 4 |
+|---|---|---|
+| Planner / synthesizer | Opus 5 / Opus 5 | GPT-5.6 Sol / GLM-5.3 |
+| Cost | $2.94 | $2.50 |
+| Claims / sources | 56 / 62 | 62 / 86 |
+| Quotes not found | 8 of 92 (8.7%) | 2 of 120 (1.7%) |
+| Verifier checks unsupported | 13 of 42 (31%) | 8 of 32 (25%) |
+| Major findings | 2, both from quotes the checker missed | 2, both about the report's content |
+| Research calls salvaged | 2 scouts, 2 deep dives | 2 deep dives |
+| Results given to each salvage | first 13–21 | all useful: 29 and 31 (14 errors and 15 unanswered calls skipped) |
+
+The quote check no longer produces the false alarms that drove v3's major findings. Both v4 majors
+are problems a reviewer should see: a comparison the cited excerpt does not support, and a source
+dated only "2026" called post-window although the window runs to 2026-09-23. The two quotes still
+not found come from arXiv papers and are unexamined; the PDF page-header case is a likely cause.
+
+This is one run with a different planner and synthesizer, so it shows direction, not effect size:
+a different synthesizer writes a different report, and the verifier's counts move with it. A rerun
+on the original models would separate the fixes from the model change.
+
