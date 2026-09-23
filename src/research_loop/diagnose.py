@@ -7,24 +7,25 @@ import io
 import sys
 import tempfile
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
+from .acquisition import AcquisitionCache
 from .db import pending_migrations
+from .graph import get_research_graph
+from .observability import configure_logfire
 from .policy import ModelRoute, get_policy
 from .schemas import ResearchRole
-from .observability import configure_logfire
+from .scholar import ScholarClient, build_scholar_toolset
 from .settings import PROVIDER_KEY_ENV, ResearchSettings, model_provider
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
-from .acquisition import AcquisitionCache
-from .scholar import ScholarClient, build_scholar_toolset
-from .graph import get_research_graph
 
 
 @dataclass(frozen=True)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, SecretStr
-
 
 PROVIDER_KEY_ENV = {
     "openai": "OPENAI_API_KEY",

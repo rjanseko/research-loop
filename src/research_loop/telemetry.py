@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
@@ -59,8 +60,7 @@ def usage_snapshot(usage: Any) -> dict[str, Any]:
 
 def _parts(messages: Iterable[Any]) -> Iterable[Any]:
     for message in messages:
-        for part in getattr(message, "parts", ()):
-            yield part
+        yield from getattr(message, "parts", ())
 
 
 def safe_tool_result(tool_name: str, value: Any) -> Any:

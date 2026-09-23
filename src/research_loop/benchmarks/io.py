@@ -21,7 +21,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise ValueError(f"invalid JSONL at {path}:{line_no}: {exc}") from exc
             if not isinstance(item, dict):
-                raise ValueError(f"expected object at {path}:{line_no}")
+                raise ValueError(f"expected object at {path}:{line_no}")  # noqa: TRY004 - callers report ValueError as invalid input
             rows.append(item)
     return rows
 

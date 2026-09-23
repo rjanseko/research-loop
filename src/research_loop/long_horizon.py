@@ -6,23 +6,27 @@ import asyncio
 import hashlib
 import json
 import shutil
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from uuid import uuid4
 
 import httpx
 
-from .agents import long_horizon_synthesizer_agent
-from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
-from .long_horizon_spec import SYNTHESIS_DIR, load_spec
 from .acquisition import FETCH_VERSION, AcquisitionCache
-from .citations import BasisPaperReport, SemanticScholar, discover_basis_papers, render_basis_papers
+from .agents import long_horizon_synthesizer_agent, prompt_fingerprint
+from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
+from .citations import (
+    BasisPaperReport,
+    SemanticScholar,
+    discover_basis_papers,
+    render_basis_papers,
+)
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
-from .agents import prompt_fingerprint
 from .experiment import (
     MANIFEST_SCHEMA_VERSION,
     file_sha256,
@@ -33,6 +37,7 @@ from .experiment import (
     write_manifest,
 )
 from .ledger import EvidenceLedger
+from .long_horizon_spec import SYNTHESIS_DIR, load_spec
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
 from .policy import ModelPolicy, ModelRoute, get_policy, retry_token_budget
@@ -40,10 +45,10 @@ from .quotes import source_keys
 from .repository import InMemoryResearchRepository, PostgresResearchRepository
 from .schemas import (
     EVIDENCE_VERSION,
-    LongHorizonFindings,
     ClaimCheck,
-    LongHorizonSynthesis,
     FinalReport,
+    LongHorizonFindings,
+    LongHorizonSynthesis,
     ResearchConstraints,
     ResearchResult,
     ResearchRole,
@@ -53,7 +58,6 @@ from .schemas import (
 from .settings import ResearchSettings
 from .telemetry import jsonable
 from .tools import ResearchToolMode
-
 
 SPEC_FILE = Path(__file__).resolve().parents[2] / "long_horizon" / "agentic_se" / "spec.toml"
 CATALOGS = ("benchmark_catalog", "architecture_patterns", "failure_modes", "open_questions", "hypotheses")
@@ -117,8 +121,8 @@ def render_question_report(report: FinalReport, verification: VerificationReport
     unsupported = [check for check in checks if not check.supported]
     major = sum(1 for check in unsupported if check.severity == "major")
     lines += ["## Verification", "",
-              f"The verifier checked {len(checks)} statements: {len(checks) - len(unsupported)} supported, "
-              f"{len(unsupported)} not supported ({major} major)."]
+              (f"The verifier checked {len(checks)} statements: {len(checks) - len(unsupported)} supported, "
+               f"{len(unsupported)} not supported ({major} major).")]
     if verification.needs_research:
         lines.append("It asked for more research, which this run did not do, so the issues below are unresolved.")
     flagged = _flagged_checks(verification)
@@ -133,9 +137,9 @@ def render_question_report(report: FinalReport, verification: VerificationReport
                     for item in claim.evidence if getattr(item, check_field)]
         not_found = [claim_id for claim_id, verdict in verdicts if verdict == "not_found"]
         if not_found:
-            lines += ["", f"{len(not_found)} of {len(verdicts)} {noun} {'was' if len(not_found) == 1 else 'were'} "
-                          "not found in any text the research tools returned "
-                          f"(claims: {', '.join(dict.fromkeys(not_found))})."]
+            lines += ["", (f"{len(not_found)} of {len(verdicts)} {noun} {'was' if len(not_found) == 1 else 'were'} "
+                           "not found in any text the research tools returned "
+                           f"(claims: {', '.join(dict.fromkeys(not_found))}).")]
         elif verdicts:
             lines += ["", f"All {len(verdicts)} {noun} were found in text the research tools returned."]
     return "\n".join(lines) + "\n"
@@ -313,7 +317,7 @@ async def run_long_horizon(
                         objective,
                         constraints=ResearchConstraints(notes=list(execution["research_notes"])),
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     # Questions are independent: record the failure and go on, unless failures
                     # keep coming, which points to a shared cause. Cancellation stops the run.
                     manifest["questions"].append({
@@ -942,7 +946,7 @@ def main() -> None:
                 args.spec, question_ids=selected, policy_name=args.policy,
                 settings=settings, output_dir=args.output, persist=args.persist,
             ))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report the type only; provider errors can carry response bodies
         parser.exit(1, f"Long-horizon run failed ({type(exc).__name__}); check settings and run manifest.\n")
     print(f"Long-horizon manifest: {manifest}")
     record = json.loads(manifest.read_text(encoding="utf-8"))

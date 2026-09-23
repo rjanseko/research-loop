@@ -49,7 +49,7 @@ def test_env_example_lists_every_default_model() -> None:
     from research_loop.settings import MODEL_OVERRIDE_ENV
 
     example = (Path(__file__).parents[1] / ".env.example").read_text()
-    listed = dict(re.findall(r"^(RESEARCH_\w+_MODEL)=(.*)$", example, re.M))
+    listed = dict(re.findall(r"^(RESEARCH_\w+_MODEL)=(.*)$", example, re.MULTILINE))
     assert listed == DEFAULT_MODELS
     assert set(DEFAULT_MODELS) == set(MODEL_OVERRIDE_ENV)
 

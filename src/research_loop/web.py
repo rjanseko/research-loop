@@ -42,7 +42,7 @@ def resilient_duckduckgo_tool(*, retry_delay: float = 2.0) -> Tool:
             await wait_rate_slot("duckduckgo")
             try:
                 return await inner.function(query=query)
-            except Exception as exc:  # the search client raises its own types on rate limits and drops
+            except Exception as exc:  # noqa: BLE001 - the search client raises its own types on rate limits and drops
                 error = type(exc).__name__
                 if attempt == 0:
                     await asyncio.sleep(retry_delay)
@@ -117,7 +117,7 @@ class WebAcquisition:
         try:
             import trafilatura
             extracted = trafilatura.extract(clean_html, include_comments=False, include_tables=True) or ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - arbitrary HTML can break the extractor; fall back below
             extracted = ""
         method = "trafilatura"
         if not extracted.strip():

@@ -6,12 +6,13 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import UTC, datetime
-from statistics import mean
 from pathlib import Path
-from typing import Any, Callable
+from statistics import mean
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic_evals import Case
@@ -19,20 +20,23 @@ from pydantic_evals import Case
 from .acquisition import SourcePolicy
 from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
+from .db import open_migrated_pool
 from .evals import EVALUATOR_VERSION, BenchmarkOutput, make_dataset
 from .experiment import build_manifest, write_manifest
-from .db import open_migrated_pool
-from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .observability import configure_logfire
+from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .policy import POLICY_PRESETS, get_policy
-from .repository import CapturingResearchRepository, InMemoryResearchRepository, PostgresResearchRepository
 from .quotes import find_urls
+from .repository import (
+    CapturingResearchRepository,
+    InMemoryResearchRepository,
+    PostgresResearchRepository,
+)
 from .schemas import ResearchConstraints, SourceRef, is_research_tool
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
 from .telemetry import jsonable
 from .tools import ResearchToolMode
-
 
 EXACT_ANSWER_RE = re.compile(r"(?im)^\s*Exact Answer\s*:\s*(.+?)\s*$")
 EVAL_AWARENESS_TERMS = (
@@ -577,7 +581,7 @@ def main() -> None:
                 max_cases=max_cases,
             )
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report the type only; provider errors can carry response bodies
         parser.exit(1, f"Benchmark failed ({type(exc).__name__}). Check configuration and the experiment manifest.\n")
     print(f"Experiment manifest: {manifest_path}")
     status = json.loads(manifest_path.read_text(encoding="utf-8"))["status"]

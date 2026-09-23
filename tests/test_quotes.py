@@ -27,21 +27,21 @@ def test_quotes_survive_formatting_differences(quote: str) -> None:
 # Tool output as extraction returned it, and the faithful quotes the p01 pilot marked not_found.
 @pytest.mark.parametrize(("text", "quote"), [
     (   # pypdf puts spaces inside words; the ligature is NFKC-folded
-        "32.67% of the successful patches involve “cheating” as the s olutions were directly\n"
-        "provided in the issue report. SWE-bench Lite and SWE-Bench\nV eriﬁed. over 94% of the "
-        "issues were created before LLM’ s knowl-\nedge cutoff dates",
-        "the solutions were directly provided in the issue report ... SWE-Bench Verified. "
-        "over 94% of the issues were created before LLM's knowledge cutoff dates",
+        ("32.67% of the successful patches involve “cheating” as the s olutions were directly\n"
+         "provided in the issue report. SWE-bench Lite and SWE-Bench\nV eriﬁed. over 94% of the "
+         "issues were created before LLM’ s knowl-\nedge cutoff dates"),
+        ("the solutions were directly provided in the issue report ... SWE-Bench Verified. "
+         "over 94% of the issues were created before LLM's knowledge cutoff dates"),
     ),
     (   # markdown bullets quoted as semicolons
         "- removed instances with images\n- removed instances that edit more than 1 file",
         "removed instances with images; removed instances that edit more than 1 file",
     ),
     (   # code comment signs dropped
-        "# under EvalType.FAIL_ONLY an empty status map scores every F2P test as passing, so a zero\n"
-        "# count read as evidence turns a suite that never ran into a resolved instance.",
-        "under EvalType.FAIL_ONLY an empty status map scores every F2P test as passing, so a zero "
-        "count read as evidence turns a suite that never ran into a resolved instance.",
+        ("# under EvalType.FAIL_ONLY an empty status map scores every F2P test as passing, so a zero\n"
+         "# count read as evidence turns a suite that never ran into a resolved instance."),
+        ("under EvalType.FAIL_ONLY an empty status map scores every F2P test as passing, so a zero "
+         "count read as evidence turns a suite that never ran into a resolved instance."),
     ),
 ])
 def test_quotes_survive_extraction_artifacts(text: str, quote: str) -> None:

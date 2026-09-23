@@ -4,10 +4,11 @@ import hashlib
 import json
 import platform
 import subprocess
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from uuid import uuid4
 
 from .acquisition import FETCH_VERSION
@@ -17,7 +18,6 @@ from .benchmarks.models import BenchmarkCaseSpec
 from .graph import RESEARCH_GRAPH_VERSION
 from .policy import get_policy
 from .schemas import EVIDENCE_VERSION
-
 
 PACKAGE_NAMES = (
     "research-loop", "pydantic", "pydantic-ai", "pydantic-graph", "pydantic-evals", "psycopg",
@@ -37,7 +37,7 @@ def safe_value(value: Any, key: str = "") -> Any:
         return {str(k): safe_value(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
         return [safe_value(item) for item in value]
-    if isinstance(value, str) and (value.startswith("/") or value.startswith("file:")):
+    if isinstance(value, str) and value.startswith(("/", "file:")):
         return "[redacted]"
     return value
 

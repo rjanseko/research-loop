@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-
 from decimal import Decimal
 from uuid import uuid4
 
@@ -29,7 +28,7 @@ async def test_job_cap_clamps_call_limit_and_blocks_once_spent() -> None:
     loop._job_spend[job_id] = Decimal(0)
 
     assert loop._limits(route, loop._remaining_budget(job_id)).cost_limit == 3.0
-    loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal("4")))
+    loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal(4)))
     assert loop._limits(route, loop._remaining_budget(job_id)).cost_limit == pytest.approx(1.0)
     loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal("1.5")))
     assert loop._job_spend[job_id] == Decimal("5.5")
@@ -211,7 +210,12 @@ async def test_research_without_budget_returns_empty_result_without_calls() -> N
 
 def _tool_messages(calls: list[tuple[str, dict, object]]) -> list:
     """A run's messages: each (tool, args, result) as a call and its return; result None is unanswered."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
 
     messages: list = []
     for index, (tool, args, result) in enumerate(calls):
@@ -237,7 +241,10 @@ def test_salvage_skips_errors_unanswered_and_repeated_calls() -> None:
 
 
 def test_salvage_shares_its_budget_so_late_results_are_not_crowded_out() -> None:
-    from research_loop.async_orchestrator import _SALVAGE_EVIDENCE_CHARS, _gathered_evidence
+    from research_loop.async_orchestrator import (
+        _SALVAGE_EVIDENCE_CHARS,
+        _gathered_evidence,
+    )
 
     calls = [("scholar_search", {"query": f"q{i}"}, {"text": "s" * 16_000}) for i in range(4)]
     calls += [("scholar_get", {"id": f"g{i}"}, {"text": "g" * 500}) for i in range(4)]
@@ -253,7 +260,11 @@ def test_salvage_shares_its_budget_so_late_results_are_not_crowded_out() -> None
 
 
 def test_salvage_leaves_out_the_oldest_results_only_when_there_are_too_many() -> None:
-    from research_loop.async_orchestrator import _SALVAGE_EVIDENCE_CHARS, _SALVAGE_MIN_RESULT_CHARS, _gathered_evidence
+    from research_loop.async_orchestrator import (
+        _SALVAGE_EVIDENCE_CHARS,
+        _SALVAGE_MIN_RESULT_CHARS,
+        _gathered_evidence,
+    )
 
     fit = _SALVAGE_EVIDENCE_CHARS // _SALVAGE_MIN_RESULT_CHARS
     calls = [("web_fetch", {"url": f"https://{i}.example"}, {"text": "t" * 2_000}) for i in range(fit + 10)]

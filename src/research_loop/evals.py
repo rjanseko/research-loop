@@ -9,7 +9,6 @@ from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from .benchmarks.models import BenchmarkCaseSpec
 
-
 # Recorded in manifests and the configuration fingerprint; bump when a metric's definition changes,
 # since scores are comparable only under one definition. 1: the metrics in make_dataset below.
 EVALUATOR_VERSION = 1

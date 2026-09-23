@@ -27,7 +27,7 @@ Do not add DBOS, Temporal, Redis, a vector database, event sourcing, a learned r
 
 ## Validation
 
-For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
+For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. `make lint` runs ruff 0.16 with its default rules; a deliberate blind `except Exception` carries `# noqa: BLE001` and the reason. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
 
 Graph and legacy orchestrators share role calls, prompts, and job lifecycle through `AsyncResearchLoop`. Change a prompt or role call there, not in a graph step, and treat any change to a model-visible prompt as a behavior change.
 

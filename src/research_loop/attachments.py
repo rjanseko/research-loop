@@ -8,10 +8,11 @@ import math
 import mimetypes
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -185,8 +186,8 @@ def _extract_text_file(path: Path, data: bytes, limits: AttachmentLimits) -> tup
     if path.suffix.casefold() == ".json":
         try:
             text = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        except (ValueError, RecursionError):
+            pass  # not valid JSON: keep the text as decoded
     truncated = len(text) > limits.max_text_chars
     text = text[: limits.max_text_chars]
     return _chunk_text(text, max_chars=limits.chunk_chars, locator_prefix="document"), {"encoding": encoding}, truncated
@@ -433,7 +434,7 @@ class AttachmentCorpus:
         *,
         limits: AttachmentLimits | None = None,
         strict: bool = True,
-    ) -> "AttachmentCorpus":
+    ) -> AttachmentCorpus:
         limits = limits or AttachmentLimits()
         records: list[AttachmentRecord] = []
         path_map: dict[str, Path] = {}

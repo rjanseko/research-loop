@@ -6,7 +6,6 @@ import pytest
 from research_loop.acquisition import AcquisitionCache, FetchMemo
 from research_loop.scholar import ScholarClient, _arxiv_works, build_scholar_toolset
 
-
 ARXIV_XML = '''<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 <id>http://arxiv.org/abs/2601.01234v2</id><title> Long Horizon Agents </title>
 <published>2026-01-03T00:00:00Z</published><summary>Preprint summary</summary>
@@ -65,6 +64,7 @@ async def test_openreview_is_explicitly_disabled_without_credentials(tmp_path) -
 
 def _pdf(pages: int) -> bytes:
     import io
+
     from reportlab.pdfgen import canvas
 
     stream = io.BytesIO()

@@ -3,21 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .acquisition import SourcePolicy
 from .schemas import (
-    LongHorizonSynthesis,
     FinalReport,
     GapAnalysis,
+    LongHorizonSynthesis,
     ResearchPlan,
     ResearchQuestion,
     ResearchResult,
     VerificationReport,
 )
-
 
 # What each role's output is checked against. A mismatch gets one retry that names it; a
 # repeated mismatch fails the run (UnexpectedModelBehavior).
@@ -34,7 +33,7 @@ class ResearchAssignment:
 
     question: ResearchQuestion
     attachment_ids: frozenset[str] = frozenset()
-    source_policy: SourcePolicy = SourcePolicy()
+    source_policy: SourcePolicy = field(default_factory=SourcePolicy)
 
 
 @dataclass(frozen=True)
@@ -222,8 +221,8 @@ def _result_fits_assignment(ctx: RunContext[ResearchAssignment], output: Researc
         (source.attachment_id for source in sources if source.attachment_id),
         ctx.deps.attachment_ids,
         "Cite attachments only by the IDs list_attachments returns, or drop that evidence.",
-    ) + ([f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
-          "them, or support the claim from other sources."] if blocked else []))
+    ) + ([(f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
+           "them, or support the claim from other sources.")] if blocked else []))
     question = ctx.deps.question
     return output.model_copy(update={"question_id": question.id, "question": question.question})
 

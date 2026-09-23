@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from .schemas import ResearchQuestion, ResearchRole
 

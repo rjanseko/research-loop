@@ -87,8 +87,8 @@ class ResearchLoop(AsyncResearchLoop):
 LegacyResearchLoop = AsyncResearchLoop
 
 __all__ = [
-    "LegacyResearchLoop",
     "RESEARCH_GRAPH_VERSION",
+    "LegacyResearchLoop",
     "ResearchConfig",
     "ResearchLoop",
     "ResearchOutcome",

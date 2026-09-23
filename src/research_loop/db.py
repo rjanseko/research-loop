@@ -10,7 +10,6 @@ from typing import Any
 
 from .settings import ResearchSettings
 
-
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 

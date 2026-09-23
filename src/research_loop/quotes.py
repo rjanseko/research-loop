@@ -19,7 +19,8 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Iterable, Literal
+from collections.abc import Iterable
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 from .schemas import ResearchResult, SourceRef, ToolEvent

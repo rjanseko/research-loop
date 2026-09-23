@@ -29,7 +29,6 @@ from research_loop.schemas import (
 )
 
 
-
 def _policy() -> ModelPolicy:
     route = ModelRoute("test:model", 20, 40, 100_000, None, None)
     return ModelPolicy(

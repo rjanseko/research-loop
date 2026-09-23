@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from research_loop.acquisition import AcquisitionCache, SourcePolicy
-from research_loop.scholar import ScholarClient
 from research_loop.schemas import SourceRef
+from research_loop.scholar import ScholarClient
 from research_loop.web import WebAcquisition
 
 REPORT = "https://www.example.org/reports/2024/"
