@@ -49,6 +49,15 @@ def test_diagnosis_checks_configured_model_with_injected_smoke() -> None:
     assert "private-key" not in repr(checks)
 
 
+def test_diagnosis_fails_a_route_whose_model_names_no_known_provider() -> None:
+    # from_env refuses this override, so build the settings directly.
+    settings = ResearchSettings(model_overrides={"RESEARCH_GAP_MODEL": "openrouter:openai/gpt-5.6-sol"})
+    checks = run_diagnose(settings, web_probe=lambda: None, writable_probe=lambda _path: None)
+    (gap,) = [check for check in checks if check.name == "model:gap_analyst"]
+    assert gap.status == "FAIL"
+    assert "provider:model" in gap.detail
+
+
 def test_smoke_failure_classifies_credit_errors_without_response_body() -> None:
     from pydantic_ai.exceptions import ModelHTTPError
 
@@ -71,6 +80,7 @@ def test_smoke_failure_classifies_access_and_missing_sdk() -> None:
     from research_loop.diagnose import _smoke_failure_detail
 
     assert "HTTP 403" in _smoke_failure_detail(ModelHTTPError(403, "xai:model", {"message": "private"}))
+    assert "credit balance exhausted" in _smoke_failure_detail(ModelHTTPError(402, "zai:model", {"message": "private"}))
     assert "xAI SDK" in _smoke_failure_detail(ImportError("Please install xai-sdk"))
     assert "private" not in _smoke_failure_detail(ModelHTTPError(403, "xai:model", {"message": "private"}))
 

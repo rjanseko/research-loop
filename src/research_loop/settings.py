@@ -32,6 +32,12 @@ MODEL_OVERRIDE_ENV = (
 )
 
 
+def model_provider(model_id: str) -> str | None:
+    """The provider of a `provider:model` id, or None when it names no known provider or no model."""
+    provider, separator, model = model_id.partition(":")
+    return provider if separator and model.strip() and provider in PROVIDER_KEY_ENV else None
+
+
 class ResearchSettings(BaseModel):
     """Typed local configuration. Exported variables override an optional local .env."""
 
@@ -50,6 +56,8 @@ class ResearchSettings(BaseModel):
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ResearchSettings:
+        """Load configuration; a `RESEARCH_*_MODEL` override that is not `provider:model` for a
+        provider in PROVIDER_KEY_ENV is refused here, before any job starts."""
         if environ is None:
             load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
         source = os.environ if environ is None else environ
@@ -67,11 +75,18 @@ class ResearchSettings(BaseModel):
         unknown = set(enabled) - set(PROVIDER_KEY_ENV)
         if unknown:
             raise ValueError(f"unknown providers in RESEARCH_ENABLED_PROVIDERS: {', '.join(sorted(unknown))}")
+        overrides = {name: source[name].strip() for name in MODEL_OVERRIDE_ENV if source.get(name, "").strip()}
+        invalid = [f"{name}={value}" for name, value in overrides.items() if model_provider(value) is None]
+        if invalid:
+            raise ValueError(
+                f"model overrides must be provider:model with a provider from {', '.join(sorted(PROVIDER_KEY_ENV))}: "
+                + ", ".join(invalid)
+            )
         return cls(
             database_url=SecretStr(source["DATABASE_URL"].strip()) if source.get("DATABASE_URL", "").strip() else None,
             provider_keys=keys,
             enabled_providers=enabled,
-            model_overrides={name: source[name].strip() for name in MODEL_OVERRIDE_ENV if source.get(name, "").strip()},
+            model_overrides=overrides,
             benchmark_cache=Path(source.get("RESEARCH_BENCHMARK_CACHE") or ".cache/research-loop").expanduser(),
             benchmark_output=Path(source.get("RESEARCH_BENCHMARK_OUTPUT") or "benchmark_outputs").expanduser(),
             benchmark_concurrency=int(source.get("RESEARCH_BENCHMARK_CONCURRENCY") or "1"),

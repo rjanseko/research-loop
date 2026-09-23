@@ -44,7 +44,7 @@ chmod 600 .env
 | `DATABASE_URL` | unset | Postgres DSN for `research-db`, `--persist`, and `--repository postgres` |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY` | unset | Provider credentials |
 | `RESEARCH_ENABLED_PROVIDERS` | providers with a key | Comma-separated subset of `openai,anthropic,google,xai,zai` |
-| `RESEARCH_*_MODEL` | see below | Model route overrides |
+| `RESEARCH_*_MODEL` | see below | Model route overrides, each `provider:model` |
 | `RESEARCH_BENCHMARK_CACHE` | `.cache/research-loop` | Downloaded datasets and the acquisition cache |
 | `RESEARCH_BENCHMARK_OUTPUT` | `benchmark_outputs` | Experiment manifests and pilot outputs (ignored by git) |
 | `RESEARCH_BENCHMARK_CONCURRENCY` | `1` | Default `research-bench --max-concurrency` |
@@ -75,7 +75,7 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | `RESEARCH_SYNTH_MODEL` | Synthesizer, including campaign synthesis |
 | `RESEARCH_VERIFY_MODEL` | Verifier |
 
-Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
+An override must be `provider:model` for one of the providers above; any other value, such as an `openrouter:` id, stops the CLIs when settings load, before any job starts. Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
 
 ## Postgres
 
@@ -111,7 +111,7 @@ research-diagnose --policy quality --attachments --smoke   # bounded paid calls 
 
 Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
 
-Failed smoke checks give a short reason without the provider's response body. A credit-balance failure needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
+Failed smoke checks give a short reason without the provider's response body. A credit-balance failure, including HTTP 402, needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
 
 ## First runs
 

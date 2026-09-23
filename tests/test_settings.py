@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from research_loop.settings import ResearchSettings
 
 
@@ -36,3 +38,21 @@ def test_local_dotenv_loads_with_exported_environment_precedence(tmp_path, monke
         assert settings.provider_keys["openai"].get_secret_value() == "exported-key"
         assert settings.provider_keys["anthropic"].get_secret_value() == "file-anthropic"
         assert "file-anthropic" not in repr(settings)
+
+
+def test_settings_refuse_model_overrides_without_a_known_provider() -> None:
+    # An OpenRouter id left in .env would otherwise reach PydanticAI, which routes it to OpenRouter.
+    with pytest.raises(ValueError) as raised:
+        ResearchSettings.from_env({
+            "RESEARCH_SCOUT_MODEL": "openrouter:z-ai/glm-5.3",
+            "RESEARCH_GAP_MODEL": "gpt-5.6-sol",
+            "RESEARCH_DEEP_MODEL": "openai:",
+            "RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5",
+        })
+    message = str(raised.value)
+    assert "RESEARCH_SCOUT_MODEL=openrouter:z-ai/glm-5.3" in message
+    assert "RESEARCH_GAP_MODEL=gpt-5.6-sol" in message
+    assert "RESEARCH_DEEP_MODEL=openai:" in message
+    assert "RESEARCH_SYNTH_MODEL" not in message
+    settings = ResearchSettings.from_env({"RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5"})
+    assert settings.model_overrides == {"RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5"}

@@ -19,7 +19,7 @@ from .db import pending_migrations
 from .policy import ModelRoute, get_policy
 from .schemas import ResearchRole
 from .observability import configure_logfire
-from .settings import PROVIDER_KEY_ENV, ResearchSettings
+from .settings import PROVIDER_KEY_ENV, ResearchSettings, model_provider
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
 from .acquisition import AcquisitionCache
@@ -104,7 +104,7 @@ def _smoke_failure_detail(exc: Exception) -> str:
             "no credits remaining",
             "'code': 1113",
             '"code": 1113',
-        )):
+        )) or exc.status_code == 402:
             return "Provider credit balance exhausted; add credits before smoke"
         if exc.status_code == 401:
             return "Provider returned HTTP 401; check API key"
@@ -248,8 +248,9 @@ def run_diagnose(
     unpriced: set[str] = set()
     for label, route, needs_tools, needs_image in routes:
         name = f"model:{label}"
-        provider, separator, model = route.model.partition(":")
-        if not separator or not model or provider not in PROVIDER_KEY_ENV:
+        # from_env refuses a bad override; this covers settings and policies built another way.
+        provider = model_provider(route.model)
+        if provider is None:
             checks.append(Check(name, "FAIL", "Invalid provider:model ID; set a valid RESEARCH_*_MODEL override"))
             continue
         if not settings.provider_enabled(provider) or not settings.has_credential(provider):
