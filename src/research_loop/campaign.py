@@ -32,7 +32,8 @@ from .experiment import (
 from .ledger import EvidenceLedger
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
-from .policy import ModelPolicy, get_policy
+from .policy import ModelPolicy, ModelRoute, get_policy, retry_token_budget
+from .quotes import source_keys
 from .repository import InMemoryResearchRepository, PostgresResearchRepository
 from .schemas import (
     EVIDENCE_VERSION,
@@ -43,6 +44,7 @@ from .schemas import (
     ResearchConstraints,
     ResearchResult,
     ResearchRole,
+    SourceRef,
     VerificationReport,
 )
 from .settings import ResearchSettings
@@ -364,6 +366,13 @@ class CampaignEvidence:
     def refs(self) -> frozenset[str]:
         return frozenset(item["ref"] for item in self.claims)
 
+    @property
+    def uncited(self) -> list[str]:
+        """Completed questions whose report cites no ledger claim, so synthesis gets no evidence from them."""
+        cited = {(entry["question_id"], entry["claim"]["id"]) for entry in self.claims}
+        return [item.question["id"] for item in self.completed
+                if not any((item.question["id"], claim_id) in cited for claim_id in item.report.claim_ids_used)]
+
 
 def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEvidence:
     """Merge completed question outputs; claim refs are '<question>/<claim id>' in ledger order.
@@ -411,7 +420,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
     for item in completed:
         question_id = item.question["id"]
         seen: set[str] = set()
-        first_ref: dict[str, str] = {}
+        refs_for: dict[str, list[str]] = {}
         for results in item.ledger.values():
             for result in results:
                 for claim in result.claims:
@@ -419,7 +428,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
                     while ref in seen:
                         ref, suffix = f"{question_id}/{claim.id}~{suffix}", suffix + 1
                     seen.add(ref)
-                    first_ref.setdefault(claim.id, ref)
+                    refs_for.setdefault(claim.id, []).append(ref)
                     claims.append({"ref": ref, "question_id": question_id,
                                    "result_question_id": result.question_id, "claim": claim.model_dump(mode="json")})
                     for evidence in claim.evidence:
@@ -429,7 +438,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
                             entry["question_ids"].append(question_id)
         contradictions[question_id] = [
             {"description": contradiction.description,
-             "claim_refs": [first_ref[claim_id] for claim_id in contradiction.claim_ids if claim_id in first_ref]}
+             "claim_refs": _cited_refs(contradiction.claim_ids, refs_for)}
             for results in item.ledger.values() for result in results for contradiction in result.contradictions
         ]
         checks = item.verification.checks
@@ -441,7 +450,7 @@ def aggregate_campaign(campaign: dict[str, Any], output_dir: Path) -> CampaignEv
             "findings": [
                 {"statement": check.statement, "supported": check.supported, "severity": check.severity,
                  "explanation": check.explanation,
-                 "claim_refs": [first_ref[claim_id] for claim_id in check.claim_ids if claim_id in first_ref]}
+                 "claim_refs": _cited_refs(check.claim_ids, refs_for)}
                 for check in _flagged_checks(item.verification)
             ],
         }
@@ -462,11 +471,156 @@ def write_aggregate(campaign_dir: Path, evidence: CampaignEvidence) -> None:
     _write_json(campaign_dir / "bibliography.json", evidence.bibliography)
 
 
-_SOURCE_FIELDS = {"title", "url", "source_type", "publication_status", "published_at", "doi", "arxiv_id",
-                  "openalex_id", "acl_id", "provider", "is_retracted", "attachment_id", "locator"}
+def _cited_refs(claim_ids: list[str], refs_for: dict[str, list[str]]) -> list[str]:
+    """Every campaign ref for these claim ids, in ledger order, without duplicates."""
+    refs: list[str] = []
+    for claim_id in claim_ids:
+        for ref in refs_for.get(claim_id, []):
+            if ref not in refs:
+                refs.append(ref)
+    return refs
 
 
-def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence, *, excerpt_chars: int = 300) -> str:
+class _Works:
+    """The campaign prompt's source table: one row per work, numbered in the order the prompt cites them.
+
+    Every source in the campaign ledger is grouped up front. Citations that share any
+    `source_keys` entry are one work, including when only a third citation links them, so
+    one paper keeps one id across questions. A row shows the first citation's title, url (or
+    attachment id), and publication date.
+    """
+
+    def __init__(self, claims: list[dict[str, Any]]) -> None:
+        self._parent: list[int] = []
+        self._owner: dict[str, int] = {}
+        for entry in claims:
+            for item in entry["claim"].get("evidence", []):
+                self._work(source_keys(SourceRef.model_validate(item["source"])))
+        self._ids: dict[int, str] = {}
+        self.rows: list[dict[str, Any]] = []
+
+    def _root(self, work: int) -> int:
+        while self._parent[work] != work:
+            work = self._parent[work]
+        return work
+
+    def _work(self, keys: frozenset[str]) -> int:
+        work = len(self._parent)
+        self._parent.append(work)
+        for key in sorted(keys):
+            if key not in self._owner:
+                self._owner[key] = work
+                continue
+            first, second = sorted((self._root(self._owner[key]), self._root(work)))
+            self._parent[second] = first
+        return self._root(work)
+
+    def id_for(self, source: SourceRef) -> str:
+        keys = source_keys(source)
+        known = {self._root(self._owner[key]) for key in keys if key in self._owner}
+        work = min(known) if known else self._work(keys)
+        if work not in self._ids:
+            self._ids[work] = f"s{len(self._ids) + 1}"
+            row = {"id": self._ids[work], "title": source.title}
+            row |= {"url": str(source.url)} if source.url is not None else {"attachment_id": source.attachment_id}
+            if source.published_at:
+                row["published_at"] = source.published_at
+            self.rows.append(row)
+        return self._ids[work]
+
+
+def _prompt_claims(question_id: str, report: FinalReport, claims: list[dict[str, Any]],
+                   works: _Works | None = None) -> list[dict[str, Any]]:
+    """Report claims with campaign refs and the source facts the synthesizer classifies on.
+
+    Excerpts stay in the aggregated ledger. `source_ids` name the works in `works` whose
+    evidence supports the claim, and `source_count` is how many there are; `source_types` and
+    `publication_statuses` also cover supporting evidence only. Works whose evidence does not
+    support it are `contradicting_source_ids` and `contradicting_source_count`. One work cited
+    at two locators, or fetched through two providers, counts once. `min_confidence` is the
+    lowest confidence among the ledger claims cited. A not-found quote or source is kept as a
+    flag on the claim, which is enough to keep that claim from being treated as well supported.
+    Several stored claims can share one id; an older ledger suffixes the later campaign refs.
+    A citation of that id includes every copy. Without `works`, a table of `claims` is used.
+    """
+    works = works or _Works(claims)
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for entry in claims:
+        if entry["question_id"] == question_id:
+            by_id.setdefault(entry["claim"]["id"], []).append(entry)
+    rows: list[dict[str, Any]] = []
+    for claim in report.claims:
+        refs: list[str] = []
+        supporting: list[str] = []
+        contradicting: list[str] = []
+        confidences: list[float] = []
+        source_types: list[str] = []
+        statuses: list[str] = []
+        quote_not_found = source_not_found = retracted = False
+        for claim_id in claim.claim_ids:
+            for entry in by_id.get(claim_id, []):
+                if entry["ref"] not in refs:
+                    refs.append(entry["ref"])
+                if entry["claim"].get("confidence") is not None:
+                    confidences.append(entry["claim"]["confidence"])
+                for item in entry["claim"].get("evidence", []):
+                    source = SourceRef.model_validate(item["source"])
+                    work = works.id_for(source)
+                    if item.get("supports", True):
+                        if work not in supporting:
+                            supporting.append(work)
+                        source_types.append(source.source_type)
+                        if source.publication_status != "unknown":
+                            statuses.append(source.publication_status)
+                    elif work not in contradicting:
+                        contradicting.append(work)
+                    quote_not_found = quote_not_found or item.get("quote_check") == "not_found"
+                    source_not_found = source_not_found or item.get("source_check") == "not_found"
+                    retracted = retracted or bool(source.is_retracted)
+        row: dict[str, Any] = {"statement": claim.statement, "claim_refs": refs}
+        if confidences:
+            row["min_confidence"] = min(confidences)
+        row["source_count"] = len(supporting)
+        if supporting:
+            row["source_ids"] = supporting
+        if contradicting:
+            row["contradicting_source_count"] = len(contradicting)
+            row["contradicting_source_ids"] = contradicting
+        if source_types:
+            row["source_types"] = sorted(set(source_types))
+        if statuses:
+            row["publication_statuses"] = sorted(set(statuses))
+        if quote_not_found:
+            row["quote_check"] = "not_found"
+        if source_not_found:
+            row["source_check"] = "not_found"
+        if retracted:
+            row["retracted"] = True
+        rows.append(row)
+    return rows
+
+
+def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence) -> str:
+    """Campaign prompt: a source table, then each question's report claims, caveats, unresolved
+    questions, contradictions, and verifier findings.
+
+    The full ledger is written beside the report for audit and is not repeated here.
+    """
+    works = _Works(evidence.claims)
+    questions = [
+        {
+            "id": item.question["id"], "text": item.question["text"],
+            "claims": _prompt_claims(item.question["id"], item.report, evidence.claims, works),
+            "caveats": item.report.caveats,
+            "unresolved_questions": list(dict.fromkeys(
+                question for results in item.ledger.values() for result in results
+                for question in result.unresolved_questions
+            )),
+            "contradictions": evidence.contradictions[item.question["id"]],
+            "verification": evidence.verification[item.question["id"]],
+        }
+        for item in evidence.completed
+    ]
     payload = {
         "campaign": {
             "title": campaign["title"], "as_of": campaign["as_of"],
@@ -476,36 +630,8 @@ def synthesis_prompt(campaign: dict[str, Any], evidence: CampaignEvidence, *, ex
             "hypothesis_fields": campaign["outputs"]["hypothesis_fields"],
         },
         "missing_question_ids": evidence.missing,
-        "questions": [
-            {
-                "id": item.question["id"], "text": item.question["text"],
-                "report": item.report.answer, "caveats": item.report.caveats,
-                "contradictions": evidence.contradictions[item.question["id"]],
-                "verification": evidence.verification[item.question["id"]],
-                "unresolved_questions": [
-                    text for results in item.ledger.values() for result in results
-                    for text in result.unresolved_questions
-                ],
-            }
-            for item in evidence.completed
-        ],
-        "evidence": [
-            {
-                "ref": entry["ref"], "question_id": entry["question_id"],
-                "statement": entry["claim"]["statement"], "confidence": entry["claim"]["confidence"],
-                "evidence": [
-                    {
-                        "source": {key: value for key, value in item["source"].items()
-                                   if key in _SOURCE_FIELDS and value is not None},
-                        "excerpt": item["excerpt"][:excerpt_chars],
-                        "supports": item["supports"],
-                        **{check: item[check] for check in ("quote_check", "source_check") if item.get(check)},
-                    }
-                    for item in entry["claim"]["evidence"]
-                ],
-            }
-            for entry in evidence.claims
-        ],
+        "sources": works.rows,
+        "questions": questions,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -516,6 +642,8 @@ def render_campaign_report(campaign: dict[str, Any], evidence: CampaignEvidence,
     scope = f"As of {campaign['as_of']}. Synthesized from {len(done)} of {len(campaign['questions'])} questions: {', '.join(done)}."
     if evidence.missing:
         scope += f" **Partial synthesis**; missing: {', '.join(evidence.missing)}."
+    if evidence.uncited:
+        scope += f" Reports that cite no evidence claims, so contributed none: {', '.join(evidence.uncited)}."
     lines += [scope, "", "## Summary", "", synthesis.summary.strip(), "", "## Findings"]
     for section in CampaignFindings.model_fields:
         findings = getattr(synthesis.findings, section)
@@ -547,8 +675,30 @@ def write_synthesis(campaign_dir: Path, campaign: dict[str, Any], evidence: Camp
     (campaign_dir / "report.md").write_text(render_campaign_report(campaign, evidence, synthesis), encoding="utf-8")
 
 
-def prepare_synthesis(path: Path, output_dir: Path, *, allow_partial: bool) -> tuple[dict[str, Any], CampaignEvidence, str]:
-    """Validate synthesis inputs without model calls; raise before any paid step."""
+def synthesis_route(policy: ModelPolicy, limits: Mapping[str, Any]) -> ModelRoute:
+    """Synthesizer route with this campaign's request, token, cost, and output caps."""
+    base = policy.for_role(ResearchRole.SYNTHESIZER)
+    return replace(
+        base,
+        max_requests=int(limits["max_requests"]),
+        total_tokens_limit=int(limits["total_tokens_limit"]),
+        cost_limit=float(limits["cost_limit_usd"]),
+        settings={**base.settings, "max_tokens": int(limits["max_output_tokens"])},
+    )
+
+
+def prepare_synthesis(
+    path: Path,
+    output_dir: Path,
+    *,
+    allow_partial: bool,
+    route: ModelRoute | None = None,
+) -> tuple[dict[str, Any], CampaignEvidence, str]:
+    """Validate synthesis inputs without model calls; raise before any paid step.
+
+    ``route``, when given, is the campaign synthesizer route. The prompt is then also
+    refused when one citation retry at that route's output cap would not fit its token limit.
+    """
     campaign = load_campaign(path)
     evidence = aggregate_campaign(campaign, output_dir)
     stale = (f" ({', '.join(evidence.stale)} cannot be matched to the current spec's objective; rerun them)"
@@ -564,6 +714,16 @@ def prepare_synthesis(path: Path, output_dir: Path, *, allow_partial: bool) -> t
     max_chars = int(campaign["synthesis"]["max_prompt_chars"])
     if len(prompt) > max_chars:
         raise ValueError(f"synthesis prompt has {len(prompt)} chars, above synthesis.max_prompt_chars={max_chars}")
+    if route is not None:
+        allowance = int(route.settings["max_tokens"])
+        needed = retry_token_budget(
+            prompt, route, ResearchRole.SYNTHESIZER, output_allowance=allowance,
+        )
+        if needed > route.total_tokens_limit:
+            raise ValueError(
+                f"synthesis prompt needs about {needed} tokens for one retry, "
+                f"above total_tokens_limit={route.total_tokens_limit}"
+            )
     return campaign, evidence, prompt
 
 
@@ -576,21 +736,15 @@ async def synthesize_campaign(
     persist: bool,
     allow_partial: bool,
 ) -> Path:
-    campaign, evidence, prompt = prepare_synthesis(path, output_dir, allow_partial=allow_partial)
     if persist and not settings.database_dsn:
         raise ValueError("DATABASE_URL required for --persist")
     configure_logfire(settings)
-    limits = campaign["synthesis"]
     policy = get_policy(policy_name, model_overrides=settings.model_overrides)
-    base = policy.for_role(ResearchRole.SYNTHESIZER)
-    route = replace(
-        base,
-        max_requests=int(limits["max_requests"]),
-        total_tokens_limit=int(limits["total_tokens_limit"]),
-        cost_limit=float(limits["cost_limit_usd"]),
-        settings={**base.settings, "max_tokens": int(limits["max_output_tokens"])},
+    route = synthesis_route(policy, load_campaign(path)["synthesis"])
+    campaign, evidence, prompt = prepare_synthesis(
+        path, output_dir, allow_partial=allow_partial, route=route,
     )
-    policy.job_cost_limit = float(limits["cost_limit_usd"])
+    policy.job_cost_limit = float(campaign["synthesis"]["cost_limit_usd"])
     prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
     inputs = [
         {"id": item.question["id"], "job_id": item.run.get("job_id"), "experiment_id": item.run.get("experiment_id"),
@@ -605,6 +759,7 @@ async def synthesize_campaign(
     manifest |= {
         "synthesis_route": safe_value(route.snapshot()), "prompt_sha256": prompt_sha256, "prompt_chars": len(prompt),
         "inputs": inputs, "missing_question_ids": evidence.missing, "stale_question_ids": evidence.stale,
+        "uncited_question_ids": evidence.uncited,
         "invalid_question_ids": evidence.invalid,
         "partial": bool(evidence.missing),
         "mixed_question_configs": len({item["config_fingerprint"] for item in inputs}) > 1,
@@ -687,14 +842,26 @@ def main() -> None:
             print(f"Aggregated {len(evidence.completed)} questions, {len(evidence.claims)} claims, "
                   f"{len(evidence.bibliography)} sources; missing: {', '.join(evidence.missing) or 'none'}"
                   + (f"; not matched to the current objective: {', '.join(evidence.stale)}" if evidence.stale else "")
-                  + (f"; files changed since publication: {', '.join(evidence.invalid)}" if evidence.invalid else ""))
+                  + (f"; files changed since publication: {', '.join(evidence.invalid)}" if evidence.invalid else "")
+                  + (f"; reports citing no claims: {', '.join(evidence.uncited)}" if evidence.uncited else ""))
             return
         if args.synthesize:
-            campaign, evidence, prompt = prepare_synthesis(args.spec, args.output, allow_partial=args.allow_partial)
+            policy = get_policy(args.policy)
+            route = synthesis_route(policy, load_campaign(args.spec)["synthesis"])
+            campaign, evidence, prompt = prepare_synthesis(
+                args.spec, args.output, allow_partial=args.allow_partial, route=route,
+            )
             if args.dry_run:
+                needed = retry_token_budget(
+                    prompt, route, ResearchRole.SYNTHESIZER,
+                    output_allowance=int(route.settings["max_tokens"]),
+                )
                 print(f"Synthesis inputs: {', '.join(item.question['id'] for item in evidence.completed)}; "
-                      f"missing: {', '.join(evidence.missing) or 'none'}; prompt {len(prompt)} of "
-                      f"{campaign['synthesis']['max_prompt_chars']} chars")
+                      f"missing: {', '.join(evidence.missing) or 'none'}; "
+                      + (f"reports citing no claims: {', '.join(evidence.uncited)}; " if evidence.uncited else "")
+                      + f"prompt {len(prompt)} of "
+                      f"{campaign['synthesis']['max_prompt_chars']} chars; one retry about {needed} of "
+                      f"{route.total_tokens_limit} tokens")
                 return
         else:
             campaign = load_campaign(args.spec)

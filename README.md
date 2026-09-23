@@ -114,6 +114,7 @@ Every route in a policy caps each call's requests, tool calls, tokens, and cost.
 - `ModelPolicy.job_cost_limit` is a soft USD cap across one job. It is checked before every agent call, and each call's `cost_limit` is clamped to what remains; calls already in flight can overshoot it. PydanticAI can only price models it has pricing data for. Once any billed call comes back unpriced, the job's reported cost becomes unknown (`None`) rather than a partial sum, and a capped job stops before its next call with `JobBudgetExceeded`.
 - `ModelPolicy.job_reserve_usd` is the part of that cap the planner, scouts, and deep dives must leave for gap analysis, synthesis, verification, and salvage.
 - `ResearchConfig.salvage_exhausted_research` (off by default) lets a scout or deep dive that hits a usage limit make one tool-free salvage call that summarizes what it gathered. With nothing gathered or no budget left, the question continues with an empty, zero-confidence result instead of failing the run. Salvage tasks are marked `salvage: true`, and their stored prompt keeps hashes of the replayed tool output, not the text.
+- Gap analysis, synthesis, and verification have no salvage path. Each is refused before the model call when one validation retry would not fit that role's token limit, and the run fails with `PromptExceedsRetryBudget`.
 
 Provider-side spending caps remain the hard limit. Campaigns set all three from `campaign.toml`; benchmarks leave them off.
 
