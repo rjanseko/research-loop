@@ -116,20 +116,21 @@ class ModelPolicy:
 
 
 # Default model for each route override. `.env.example` lists the same values (a test keeps
-# them equal). Model IDs go stale: confirm routes with `research-diagnose --smoke` before paid runs.
+# them equal). Every id is an OpenRouter model. Confirm routes with `research-diagnose --smoke`
+# before paid runs; model IDs go stale.
 DEFAULT_MODELS: dict[str, str] = {
-    "RESEARCH_PLANNER_MODEL": "anthropic:claude-opus-5",
-    "RESEARCH_SCOUT_MODEL": "zai:glm-5.3",
-    "RESEARCH_CHEAP_SCOUT_MODEL": "openai:gpt-5.6-luna",
-    "RESEARCH_GAP_MODEL": "openai:gpt-5.6-sol",
-    "RESEARCH_DEEP_MODEL": "openai:gpt-5.6-sol",
-    "RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5",
-    "RESEARCH_VERIFY_MODEL": "openai:gpt-5.6-sol",
-    "RESEARCH_MULTIMODAL_MODEL": "google:gemini-3.8-flash",
-    "RESEARCH_ALT_DEEP_MODEL": "xai:grok-4.5",
-    "RESEARCH_BREADTH_SCOUT_MODEL": "openai:gpt-5.6-luna",
-    "RESEARCH_GLM_GAP_MODEL": "zai:glm-5.3",
-    "RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3-flash",
+    "RESEARCH_PLANNER_MODEL": "openrouter:anthropic/claude-opus-5",
+    "RESEARCH_SCOUT_MODEL": "openrouter:z-ai/glm-5.3",
+    "RESEARCH_CHEAP_SCOUT_MODEL": "openrouter:openai/gpt-5.6-luna",
+    "RESEARCH_GAP_MODEL": "openrouter:openai/gpt-5.6-sol",
+    "RESEARCH_DEEP_MODEL": "openrouter:openai/gpt-5.6-sol",
+    "RESEARCH_SYNTH_MODEL": "openrouter:anthropic/claude-opus-5",
+    "RESEARCH_VERIFY_MODEL": "openrouter:openai/gpt-5.6-sol",
+    "RESEARCH_MULTIMODAL_MODEL": "openrouter:google/gemini-3.8-flash",
+    "RESEARCH_ALT_DEEP_MODEL": "openrouter:x-ai/grok-4.5",
+    "RESEARCH_BREADTH_SCOUT_MODEL": "openrouter:openai/gpt-5.6-luna",
+    "RESEARCH_GLM_GAP_MODEL": "openrouter:z-ai/glm-5.3",
+    "RESEARCH_GLM_CHEAP_MODEL": "openrouter:z-ai/glm-5.3-flash",
 }
 
 

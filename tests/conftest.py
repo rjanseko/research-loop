@@ -54,8 +54,16 @@ def _offline(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def _no_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Settings see the environment a test sets up, never the developer's .env and its API keys."""
+    """Settings see the environment a test sets up, never the developer's .env and its API keys.
+
+    An exported OpenRouter key or model override is cleared too; a key would make every run
+    build an OpenRouter model for scripted routes.
+    """
+    from research_loop.settings import MODEL_OVERRIDE_ENV, OPENROUTER_API_KEY_ENV
+
     monkeypatch.setattr("research_loop.settings.load_dotenv", lambda *_args, **_kwargs: False)
+    for name in (OPENROUTER_API_KEY_ENV, *MODEL_OVERRIDE_ENV):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

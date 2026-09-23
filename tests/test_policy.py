@@ -36,9 +36,9 @@ def test_policy_uses_current_nonempty_override(monkeypatch) -> None:
 
 
 def test_policy_applies_typed_settings_override() -> None:
-    settings = ResearchSettings.from_env({"RESEARCH_SCOUT_MODEL": "openai:typed-scout"})
+    settings = ResearchSettings.from_env({"RESEARCH_SCOUT_MODEL": "openrouter:openai/typed-scout"})
     policy = get_policy("quality", model_overrides=settings.model_overrides)
-    assert policy.for_role(ResearchRole.SCOUT).model == "openai:typed-scout"
+    assert policy.for_role(ResearchRole.SCOUT).model == "openrouter:openai/typed-scout"
 
 
 def test_env_example_lists_every_default_model() -> None:

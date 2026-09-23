@@ -13,7 +13,7 @@ def test_diagnosis_with_no_credentials_skips_providers() -> None:
     )
     assert not [check for check in checks if check.status == "FAIL"]
     assert any(check.name == "database" and check.status == "SKIP" for check in checks)
-    assert any(check.name == "provider:openai" and check.status == "SKIP" for check in checks)
+    assert any(check.name == "provider:openrouter" and check.status == "SKIP" for check in checks)
     assert any(check.name == "model:planner" and check.status == "SKIP" for check in checks)
 
 
@@ -30,7 +30,7 @@ def test_diagnosis_reports_missing_migrations_without_leaking_dsn() -> None:
 
 
 def test_diagnosis_checks_configured_model_with_injected_smoke() -> None:
-    settings = ResearchSettings.from_env({"OPENAI_API_KEY": "private-key"})
+    settings = ResearchSettings.from_env({"OPENROUTER_API_KEY": "private-key"})
     checked = []
 
     async def smoke_probe(route, *, tools, image):
@@ -71,14 +71,16 @@ def test_smoke_failure_classifies_access_and_missing_sdk() -> None:
     from research_loop.diagnose import _smoke_failure_detail
 
     assert "HTTP 403" in _smoke_failure_detail(ModelHTTPError(403, "xai:model", {"message": "private"}))
-    assert "xAI SDK" in _smoke_failure_detail(ImportError("Please install xai-sdk"))
+    assert "openai package" in _smoke_failure_detail(ImportError("Please install `openai` to use the OpenAI model"))
+    credits = _smoke_failure_detail(ModelHTTPError(402, "openrouter:x", {"message": "Insufficient credits"}))
+    assert credits == "Provider credit balance exhausted; add credits before smoke"
     assert "private" not in _smoke_failure_detail(ModelHTTPError(403, "xai:model", {"message": "private"}))
 
 
 def test_live_smoke_deduplicates_shared_model_routes() -> None:
-    model = "openai:shared-model"
+    model = "openrouter:openai/shared-model"
     settings = ResearchSettings.from_env({
-        "OPENAI_API_KEY": "private-key",
+        "OPENROUTER_API_KEY": "private-key",
         "RESEARCH_GAP_MODEL": model,
         "RESEARCH_DEEP_MODEL": model,
         "RESEARCH_VERIFY_MODEL": model,
@@ -105,7 +107,7 @@ def test_live_smoke_deduplicates_shared_model_routes() -> None:
 
 
 def test_live_smoke_warns_when_model_has_no_pricing() -> None:
-    settings = ResearchSettings.from_env({"OPENAI_API_KEY": "private-key"})
+    settings = ResearchSettings.from_env({"OPENROUTER_API_KEY": "private-key"})
 
     async def smoke_probe(route, *, tools, image):
         return False
@@ -121,6 +123,26 @@ def test_live_smoke_warns_when_model_has_no_pricing() -> None:
     gap = next(check for check in checks if check.name == "model:gap_analyst")
     assert gap.status == "WARN"
     assert "pricing" in gap.detail
+
+
+def test_diagnosis_rejects_a_direct_provider_model() -> None:
+    from pydantic import SecretStr
+
+    # from_env already refuses this override; diagnose still checks settings built another way.
+    settings = ResearchSettings(
+        openrouter_api_key=SecretStr("private-key"),
+        model_overrides={"RESEARCH_GAP_MODEL": "openai:gpt-5.6-sol"},
+    )
+    checks = run_diagnose(
+        settings,
+        web_probe=lambda: None,
+        writable_probe=lambda _path: None,
+        profile_probe=lambda _model: {"supports_tools": True},
+    )
+    gap = next(check for check in checks if check.name == "model:gap_analyst")
+    assert gap.status == "FAIL"
+    assert "openrouter:" in gap.detail
+    assert "private-key" not in repr(checks)
 
 
 def test_scholar_live_probes_openalex_search_and_explains_rate_limit(monkeypatch) -> None:

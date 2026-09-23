@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-make setup      # python3 -m venv .venv && pip install -e '.[all]'
+make setup      # python3 -m venv .venv && pip install -e '.[all]'; PYTHON=python3.12 make setup picks the interpreter
 make test       # pytest -q
 ```
 
@@ -32,7 +32,7 @@ The test suite runs offline. `tests/conftest.py` refuses model-provider requests
 
 ## Configuration
 
-The CLIs read an ignored `.env` in the current directory; exported environment variables take precedence. Start from the template and keep it private:
+The CLIs read an ignored `.env` in the current directory; exported environment variables take precedence. Model calls are the exception: they authenticate only with `OPENROUTER_API_KEY` already exported in the process environment, and a value in `.env` is ignored. Start from the template and keep it private:
 
 ```bash
 cp .env.example .env
@@ -42,9 +42,8 @@ chmod 600 .env
 | Variable | Default | Used for |
 |---|---|---|
 | `DATABASE_URL` | unset | Postgres DSN for `research-db`, `--persist`, and `--repository postgres` |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY` | unset | Provider credentials |
-| `RESEARCH_ENABLED_PROVIDERS` | providers with a key | Comma-separated subset of `openai,anthropic,google,xai,zai` |
-| `RESEARCH_*_MODEL` | see below | Model route overrides |
+| `OPENROUTER_API_KEY` | unset | OpenRouter credential. Export it in the environment; `.env` cannot set it |
+| `RESEARCH_*_MODEL` | see below | Model route overrides, each `openrouter:<author>/<slug>`. Settings refuse any other value when they load, so an id copied from an older `.env.example`, such as `anthropic:claude-opus-5`, fails before a job starts |
 | `RESEARCH_BENCHMARK_CACHE` | `.cache/research-loop` | Downloaded datasets and the acquisition cache |
 | `RESEARCH_BENCHMARK_OUTPUT` | `benchmark_outputs` | Experiment manifests and pilot outputs (ignored by git) |
 | `RESEARCH_BENCHMARK_CONCURRENCY` | `1` | Default `research-bench --max-concurrency` |
@@ -75,14 +74,14 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | `RESEARCH_SYNTH_MODEL` | Synthesizer, including campaign synthesis |
 | `RESEARCH_VERIFY_MODEL` | Verifier |
 
-Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
+Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Every id is an OpenRouter model (`openrouter:<author>/<slug>`). Model IDs still go stale, and a listing on OpenRouter is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
 
 ## Postgres
 
 Postgres is optional; without it, runs stay in memory. The Compose file starts a local PostgreSQL 16 with development-only credentials that match `.env.example`:
 
 ```bash
-docker compose up -d postgres     # or: make postgres-up
+docker compose up -d --wait postgres     # or: make postgres-up
 research-db status
 research-db migrate
 research-db status
@@ -109,9 +108,9 @@ research-diagnose --scholar-live                     # also probe the public sch
 research-diagnose --policy quality --attachments --smoke   # bounded paid calls to each configured model
 ```
 
-Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
+Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, `OPENROUTER_API_KEY`, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
 
-Failed smoke checks give a short reason without the provider's response body. A credit-balance failure needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
+Failed smoke checks give a short reason without the provider's response body. A credit-balance failure, including OpenRouter's HTTP 402, needs funding on that account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
 
 ## First runs
 

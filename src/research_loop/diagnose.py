@@ -19,7 +19,7 @@ from .db import pending_migrations
 from .policy import ModelRoute, get_policy
 from .schemas import ResearchRole
 from .observability import configure_logfire
-from .settings import PROVIDER_KEY_ENV, ResearchSettings
+from .settings import ResearchSettings, openrouter_model, openrouter_slug
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
 from .acquisition import AcquisitionCache
@@ -54,13 +54,11 @@ def _database_probe(dsn: str) -> list[str]:
     return pending_migrations(dsn, connect_timeout=3)
 
 
-def _model_profile(model_id: str) -> dict[str, Any]:
-    from pydantic_ai.models import infer_model
-
-    return dict(infer_model(model_id).profile)
+def _model_profile(model_id: str, api_key: str) -> dict[str, Any]:
+    return dict(openrouter_model(model_id, api_key).profile)
 
 
-async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool) -> bool:
+async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool, api_key: str) -> bool:
     """Run a bounded live call; return whether PydanticAI could price it."""
     from pydantic_ai import Agent, BinaryContent, UsageLimits
 
@@ -83,7 +81,7 @@ async def _smoke_model(route: ModelRoute, *, tools: bool, image: bool) -> bool:
         prompt = [prompt, BinaryContent(data=buffer.getvalue(), media_type="image/png")]
     result = await agent.run(
         prompt,
-        model=route.model,
+        model=openrouter_model(route.model, api_key),
         model_settings=route.model_settings(),
         usage_limits=UsageLimits(request_limit=2, total_tokens_limit=3000, cost_limit=0.10),
     )
@@ -104,7 +102,7 @@ def _smoke_failure_detail(exc: Exception) -> str:
             "no credits remaining",
             "'code': 1113",
             '"code": 1113',
-        )):
+        )) or exc.status_code == 402:
             return "Provider credit balance exhausted; add credits before smoke"
         if exc.status_code == 401:
             return "Provider returned HTTP 401; check API key"
@@ -115,8 +113,8 @@ def _smoke_failure_detail(exc: Exception) -> str:
         if exc.status_code == 429:
             return "Provider returned HTTP 429; check rate limit or balance"
         return f"Provider returned HTTP {exc.status_code}; check account access and model capabilities"
-    if isinstance(exc, ImportError) and ("xai_sdk" in str(exc) or "xai-sdk" in str(exc)):
-        return "Missing xAI SDK; install .[all]"
+    if isinstance(exc, ImportError) and "openai" in str(exc):
+        return "Missing the openai package OpenRouter models use; reinstall the project"
     return f"Live smoke failed ({type(exc).__name__}); verify model ID, access, and capabilities"
 
 
@@ -146,17 +144,23 @@ def run_diagnose(
     web_probe: Callable[[], None] = _web_probe,
     writable_probe: Callable[[Path], None] = _writable_probe,
     database_probe: Callable[[str], list[str]] = _database_probe,
-    profile_probe: Callable[[str], dict[str, Any]] = _model_profile,
-    smoke_probe: Callable[..., Any] = _smoke_model,
+    profile_probe: Callable[[str], dict[str, Any]] | None = None,
+    smoke_probe: Callable[..., Any] | None = None,
 ) -> list[Check]:
+    api_key = settings.openrouter_api_key.get_secret_value() if settings.openrouter_api_key else ""
+    if profile_probe is None:
+        def profile_probe(model_id: str) -> dict[str, Any]:
+            return _model_profile(model_id, api_key)
+    if smoke_probe is None:
+        async def smoke_probe(route: ModelRoute, *, tools: bool, image: bool) -> bool:
+            return await _smoke_model(route, tools=tools, image=image, api_key=api_key)
     checks: list[Check] = []
     python_ok = sys.version_info >= (3, 12)
     checks.append(Check("runtime", "PASS" if python_ok else "FAIL", "Python 3.12+" if python_ok else "Install Python 3.12+"))
-    modules = ["pydantic_ai", "pydantic_graph", "pydantic_evals", "httpx", "trafilatura", "bs4"]
+    # OpenRouter models run on the openai SDK.
+    modules = ["pydantic_ai", "openai", "pydantic_graph", "pydantic_evals", "httpx", "trafilatura", "bs4"]
     if settings.database_dsn:
         modules.append("psycopg")
-    if settings.provider_enabled("xai"):
-        modules.append("xai_sdk")
     if attachments or multimodal:
         modules.extend(["pypdf", "docx", "openpyxl", "bs4", "PIL"])
     missing = [name for name in modules if importlib.util.find_spec(name) is None]
@@ -231,13 +235,13 @@ def run_diagnose(
     else:
         checks.append(Check("database", "SKIP", "Set DATABASE_URL to check Postgres"))
 
-    for provider, key_name in PROVIDER_KEY_ENV.items():
-        if settings.provider_enabled(provider) and settings.has_credential(provider):
-            checks.append(Check(f"provider:{provider}", "PASS", "Enabled; credential present"))
-        elif settings.provider_enabled(provider):
-            checks.append(Check(f"provider:{provider}", "WARN", f"Enabled without credential; set {key_name}"))
-        else:
-            checks.append(Check(f"provider:{provider}", "SKIP", f"Disabled; set {key_name} to enable"))
+    if settings.openrouter_api_key:
+        checks.append(Check("provider:openrouter", "PASS", "OPENROUTER_API_KEY is set in the environment"))
+    else:
+        checks.append(Check(
+            "provider:openrouter", "SKIP",
+            "Set OPENROUTER_API_KEY in the environment; a value in .env is ignored",
+        ))
 
     routes = _routes(policy_name, multimodal, settings.model_overrides)
     smoke_requirements: dict[str, tuple[bool, bool]] = {}
@@ -248,12 +252,13 @@ def run_diagnose(
     unpriced: set[str] = set()
     for label, route, needs_tools, needs_image in routes:
         name = f"model:{label}"
-        provider, separator, model = route.model.partition(":")
-        if not separator or not model or provider not in PROVIDER_KEY_ENV:
-            checks.append(Check(name, "FAIL", "Invalid provider:model ID; set a valid RESEARCH_*_MODEL override"))
+        try:
+            openrouter_slug(route.model)
+        except ValueError:
+            checks.append(Check(name, "FAIL", "Model must be openrouter:<author>/<slug>; set RESEARCH_*_MODEL"))
             continue
-        if not settings.provider_enabled(provider) or not settings.has_credential(provider):
-            checks.append(Check(name, "SKIP", f"{provider} unavailable; configure {PROVIDER_KEY_ENV[provider]} and enable provider"))
+        if not settings.openrouter_api_key:
+            checks.append(Check(name, "SKIP", "Set OPENROUTER_API_KEY in the environment; a value in .env is ignored"))
             continue
         try:
             profile = profile_probe(route.model)

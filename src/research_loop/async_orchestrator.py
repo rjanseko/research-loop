@@ -40,7 +40,6 @@ from .policy import ModelPolicy, ModelRoute
 from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
 from .scholar import ScholarClient, build_scholar_toolset
-from .settings import ResearchSettings
 from .schemas import (
     FinalReport,
     Gap,
@@ -52,6 +51,7 @@ from .schemas import (
     ResearchRole,
     VerificationReport,
 )
+from .settings import ResearchSettings, model_for_call
 from .telemetry import error_snapshot, extract_tool_events, jsonable, safe_tool_args, usage_snapshot
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
@@ -477,7 +477,7 @@ class AsyncResearchLoop:
                 with capture_run_messages() as run_messages:
                     result = await agent.run(
                         user_prompt,
-                        model=route.model,
+                        model=model_for_call(route.model, self.settings.openrouter_api_key),
                         model_settings=route.model_settings(),
                         usage_limits=self._limits(route, remaining_budget),
                         usage=usage,
