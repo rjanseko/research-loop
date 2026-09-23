@@ -228,3 +228,41 @@ async def test_synthesis_retries_unknown_refs_and_writes_campaign_files(monkeypa
     assert manifest["mixed_question_configs"] is False
     assert manifest["synthesis_route"]["settings"]["max_tokens"] == 48_000
     assert manifest["hypothesis_count"] == 1
+
+
+def test_pilot_spec_matches_campaign_except_identity_and_questions() -> None:
+    campaign = load_campaign(CAMPAIGN_FILE)
+    pilot = load_campaign(CAMPAIGN_FILE.with_name("pilot.toml"))
+    identity = {"id", "title", "status", "questions"}
+    assert {key: value for key, value in pilot.items() if key not in identity} == {
+        key: value for key, value in campaign.items() if key not in identity
+    }
+    assert [item["id"] for item in pilot["questions"]] == ["p01"]
+
+
+@pytest.mark.asyncio
+async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypatch, tmp_path: Path) -> None:
+    from research_loop.campaign import run_campaign
+    from research_loop.schemas import ResearchRole
+
+    seen = {}
+
+    class RecordingLoop:
+        def __init__(self, policy, config, **_kwargs):
+            seen["policy"], seen["config"] = policy, config
+
+        async def run(self, _objective, *, constraints):
+            seen["notes"] = constraints.notes
+            return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Draft"), ledger=_ledger("q01"),
+                                   verification=VerificationReport(), cost_usd=None)
+
+    monkeypatch.setattr("research_loop.campaign.ResearchLoop", RecordingLoop)
+    await run_campaign(CAMPAIGN_FILE, question_ids=["q01"], policy_name="quality",
+                       settings=ResearchSettings.from_env({}), output_dir=tmp_path, persist=False)
+    execution = load_campaign(CAMPAIGN_FILE)["execution"]
+    policy = seen["policy"]
+    assert seen["config"].salvage_exhausted_research is True
+    assert policy.job_reserve_usd == execution["question_reserve_usd"]
+    assert policy.for_role(ResearchRole.SCOUT).total_tokens_limit == execution["scout_total_tokens_limit"]
+    assert policy.cheap_scout.total_tokens_limit == execution["scout_total_tokens_limit"]
+    assert seen["notes"] == execution["research_notes"]

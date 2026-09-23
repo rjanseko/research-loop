@@ -2,7 +2,7 @@
 
 Scout and deep-dive workers see five provider-neutral tools: `scholar_search`, `scholar_get`, `scholar_references`, `scholar_citations`, and `scholar_fetch`. They return bounded typed data. The existing serial graph steps record evidence; adapters do not write to `EvidenceLedger` or Postgres, call models, or change `research-graph-v1`.
 
-Install `pip install -e '.[scholarly]'`. `research-diagnose` checks local construction; `research-diagnose --scholar-live` probes five public metadata endpoints with no model calls. The live probe is a reachability check, not a guarantee that every query or full text will be available.
+Install `pip install -e '.[scholarly]'`. `research-diagnose` checks local construction; `research-diagnose --scholar-live` probes five public metadata endpoints with no model calls. The OpenAlex probe runs a search, because OpenAlex rate-limits anonymous search separately from other requests (HTTP 429 under load). Set a free `OPENALEX_API_KEY` for reliable search. The live probe is a reachability check, not a guarantee that every query or full text will be available.
 
 | Backend | Current use |
 | --- | --- |

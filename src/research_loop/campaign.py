@@ -52,8 +52,15 @@ def load_campaign(path: Path) -> dict[str, Any]:
     ids = [item.get("id") for item in questions]
     if not ids or any(not isinstance(item, str) or not item or "/" in item for item in ids) or len(ids) != len(set(ids)) or any(not item.get("text") for item in questions):
         raise ValueError("campaign needs unique question IDs without '/' and nonempty question text")
-    if not _positive_number((campaign.get("execution") or {}).get("question_cost_limit_usd")):
+    execution = campaign.get("execution") or {}
+    if not _positive_number(execution.get("question_cost_limit_usd")):
         raise ValueError("campaign needs a positive execution.question_cost_limit_usd")
+    reserve = execution.get("question_reserve_usd", 0.0)
+    if not isinstance(reserve, (int, float)) or isinstance(reserve, bool) or not 0 <= reserve < execution["question_cost_limit_usd"]:
+        raise ValueError("execution.question_reserve_usd must be at least 0 and below question_cost_limit_usd")
+    notes = execution.get("research_notes", [])
+    if not isinstance(notes, list) or not all(isinstance(note, str) and note for note in notes):
+        raise ValueError("execution.research_notes must be a list of nonempty strings")
     synthesis = campaign.get("synthesis") or {}
     if not all(_positive_number(synthesis.get(key)) for key in _SYNTHESIS_LIMITS):
         raise ValueError(f"campaign needs positive synthesis limits: {', '.join(_SYNTHESIS_LIMITS)}")
@@ -133,12 +140,20 @@ async def run_campaign(
         cost_limit=min(deep_route.cost_limit or float("inf"), float(execution["deep_dive_cost_limit_usd"])),
     )
     policy.job_cost_limit = float(execution["question_cost_limit_usd"])
+    policy.job_reserve_usd = float(execution.get("question_reserve_usd", 0.0))
+    if scout_tokens := execution.get("scout_total_tokens_limit"):
+        policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], total_tokens_limit=int(scout_tokens))
+        if policy.cheap_scout:
+            policy.cheap_scout = replace(policy.cheap_scout, total_tokens_limit=int(scout_tokens))
+        if policy.multimodal_scout:
+            policy.multimodal_scout = replace(policy.multimodal_scout, total_tokens_limit=int(scout_tokens))
     run_config = ResearchConfig(
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode="record",
         max_parallel_scouts=int(execution["max_parallel_scouts"]),
         max_deep_dives_per_round=int(execution["max_deep_dives_per_round"]),
         max_verification_rounds=int(execution["max_verification_rounds"]),
+        salvage_exhausted_research=True,
     )
     policy_snapshot = _safe_value(policy.snapshot())
     acquisition = {"search": "duckduckgo", "web_fetch": "trafilatura+bs4",
@@ -153,6 +168,8 @@ async def run_campaign(
             "max_deep_dives_per_round": run_config.max_deep_dives_per_round,
             "max_verification_rounds": run_config.max_verification_rounds,
             "question_cost_limit_usd": policy.job_cost_limit,
+            "question_reserve_usd": policy.job_reserve_usd,
+            "salvage_exhausted_research": run_config.salvage_exhausted_research,
         },
         "questions": [],
     }
@@ -172,10 +189,7 @@ async def run_campaign(
                 try:
                     outcome = await loop.run(
                         render_objective(campaign, question),
-                        constraints=ResearchConstraints(notes=[
-                            "Use primary benchmark papers and official repositories for benchmark claims.",
-                            "Label publication status and include DOI/arXiv/OpenAlex/ACL IDs when available.",
-                        ]),
+                        constraints=ResearchConstraints(notes=list(execution.get("research_notes", []))),
                     )
                 except Exception as exc:
                     manifest["questions"].append({

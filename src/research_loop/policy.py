@@ -36,6 +36,19 @@ class ModelRoute:
             "settings": self.settings,
         }
 
+    def salvage(self) -> ModelRoute:
+        """Tool-free wrap-up call after this route's research budget ran out."""
+        return replace(
+            self,
+            max_requests=2,
+            total_tokens_limit=80_000,
+            cost_limit=None if self.cost_limit is None else round(self.cost_limit * 0.25, 4),
+        )
+
+
+# Steps after research that the job reserve pays for; salvage calls may also draw on it.
+_FINISHING_ROLES = frozenset({ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER})
+
 
 class ModelPolicy:
     """Config-driven role routing; orchestration never branches on vendor names."""
@@ -50,6 +63,7 @@ class ModelPolicy:
         alternate_deep_dive: ModelRoute | None = None,
         planner_question_range: tuple[int, int] = (6, 10),
         job_cost_limit: float | None = None,
+        job_reserve_usd: float = 0.0,
     ) -> None:
         self.name = name
         self.routes = routes
@@ -59,9 +73,16 @@ class ModelPolicy:
         self.planner_question_range = planner_question_range
         # Soft USD cap across all agent calls in one job; route cost_limit still applies per call.
         self.job_cost_limit = job_cost_limit
+        # Part of job_cost_limit that research calls leave for gap analysis, synthesis,
+        # verification, and salvage.
+        self.job_reserve_usd = job_reserve_usd
 
     def for_role(self, role: ResearchRole) -> ModelRoute:
         return self.routes[role]
+
+    def job_reserve_for(self, role: ResearchRole, *, salvage: bool = False) -> float:
+        """USD a call in this role must leave unspent under job_cost_limit."""
+        return 0.0 if salvage or role in _FINISHING_ROLES else self.job_reserve_usd
 
     def scout_for(self, question: ResearchQuestion) -> ModelRoute:
         if question.requires_multimodal and self.multimodal_scout:
@@ -90,6 +111,7 @@ class ModelPolicy:
             ),
             "planner_question_range": list(self.planner_question_range),
             "job_cost_limit": self.job_cost_limit,
+            "job_reserve_usd": self.job_reserve_usd,
         }
 
 

@@ -97,3 +97,101 @@ async def test_single_agent_job_persists_lifecycle_and_clears_spend() -> None:
     assert failed_job["status"] == "failed"
     assert failed_job["error"] == {"type": "UsageLimitExceeded"}
     assert failing._job_spend == {}
+
+
+def test_reserve_holds_budget_for_finishing_steps_and_salvage() -> None:
+    route = ModelRoute("test", 5, 5, 10_000)
+    policy = ModelPolicy("reserve-test", {role: route for role in ResearchRole},
+                         job_cost_limit=5.0, job_reserve_usd=2.0)
+    loop = AsyncResearchLoop(policy, repository=InMemoryResearchRepository())
+    job_id = uuid4()
+    loop._job_spend[job_id] = Decimal("3.5")
+
+    with pytest.raises(JobBudgetExceeded, match="reserve"):
+        loop._remaining_budget(job_id, policy.job_reserve_for(ResearchRole.SCOUT))
+    for role in (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER):
+        assert loop._remaining_budget(job_id, policy.job_reserve_for(role)) == pytest.approx(1.5)
+    assert loop._remaining_budget(job_id, policy.job_reserve_for(ResearchRole.DEEP_DIVE, salvage=True)) == pytest.approx(1.5)
+
+
+def _research_setup(*, salvage: bool, job_cost_limit: float | None = None):
+    from research_loop.async_orchestrator import ResearchConfig
+    from research_loop.schemas import ResearchQuestion, ResearchResult
+
+    route = ModelRoute("test", 1, 5, 10_000, cost_limit=0.8)
+    policy = ModelPolicy("salvage-test", {role: route for role in ResearchRole}, job_cost_limit=job_cost_limit)
+    loop = AsyncResearchLoop(policy, ResearchConfig(salvage_exhausted_research=salvage),
+                             repository=InMemoryResearchRepository())
+    agent = Agent(output_type=ResearchResult)
+
+    @agent.tool_plain
+    def scholar_search(query: str) -> dict:
+        return {"works": [{"title": "SWE-bench", "provider_id": "W42", "abstract": "PRIVATE-FULL-TEXT"}]}
+
+    question = ResearchQuestion(id="p01", question="What is SWE-bench?")
+    return loop, agent, route, question
+
+
+def _scripted_scout(prompts: list[str]):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        content = str(getattr(messages[-1].parts[-1], "content", ""))
+        prompts.append(content)
+        if "budget_exhausted" in content:
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
+                "question_id": "p01", "question": "What is SWE-bench?", "conclusion": "Salvaged from W42",
+                "confidence": 0.4,
+            })])
+        return ModelResponse(parts=[ToolCallPart("scholar_search", {"query": "SWE-bench"})])
+
+    return FunctionModel(respond)
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore:A `cost_limit` is set but cannot be enforced")
+async def test_exhausted_research_is_salvaged_without_persisting_tool_output() -> None:
+    loop, agent, route, question = _research_setup(salvage=True)
+    job_id = uuid4()
+    prompts: list[str] = []
+    with agent.override(model=_scripted_scout(prompts)):
+        result = await loop._run_research(
+            question, job_id=job_id, agent=agent, role=ResearchRole.SCOUT, route=route,
+            prompt='{"question": {"id": "p01"}}', question_id="p01",
+        )
+    assert result.conclusion == "Salvaged from W42"
+    assert "W42" in prompts[-1] and "PRIVATE-FULL-TEXT" in prompts[-1]  # the model sees what it gathered
+    exhausted, salvaged = loop.repository.tasks.values()
+    assert exhausted["status"] == "failed"
+    assert salvaged["status"] == "succeeded"
+    assert salvaged["effective_config"]["salvage"] is True
+    assert salvaged["effective_config"]["max_requests"] == 2
+    assert salvaged["effective_config"]["cost_limit"] == pytest.approx(0.2)
+    assert "result_sha256" in salvaged["prompt"]
+    assert "PRIVATE-FULL-TEXT" not in salvaged["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_research_fails_when_salvage_is_off() -> None:
+    loop, agent, route, question = _research_setup(salvage=False)
+    with agent.override(model=_scripted_scout([])), pytest.raises(UsageLimitExceeded):
+        await loop._run_research(
+            question, job_id=uuid4(), agent=agent, role=ResearchRole.SCOUT, route=route,
+            prompt='{"question": {"id": "p01"}}', question_id="p01",
+        )
+
+
+@pytest.mark.asyncio
+async def test_research_without_budget_returns_empty_result_without_calls() -> None:
+    loop, agent, route, question = _research_setup(salvage=True, job_cost_limit=1.0)
+    job_id = uuid4()
+    loop._job_spend[job_id] = Decimal("1.0")
+    result = await loop._run_research(
+        question, job_id=job_id, agent=agent, role=ResearchRole.SCOUT, route=route,
+        prompt='{"question": {"id": "p01"}}', question_id="p01",
+    )
+    assert result.confidence == 0.0
+    assert result.claims == []
+    assert result.unresolved_questions == ["What is SWE-bench?"]
+    assert loop.repository.tasks == {}

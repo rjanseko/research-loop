@@ -123,3 +123,30 @@ def test_live_smoke_warns_when_model_has_no_pricing() -> None:
     gap = next(check for check in checks if check.name == "model:gap_analyst")
     assert gap.status == "WARN"
     assert "pricing" in gap.detail
+
+
+def test_scholar_live_probes_openalex_search_and_explains_rate_limit(monkeypatch) -> None:
+    import httpx
+
+    calls = []
+
+    async def fake_request(self, provider, path, params=None, *, text=False):
+        calls.append((provider, params))
+        if provider == "openalex":
+            request = httpx.Request("GET", "https://api.openalex.org/works")
+            raise httpx.HTTPStatusError("429", request=request, response=httpx.Response(429, request=request))
+        return {}
+
+    monkeypatch.setattr("research_loop.diagnose.ScholarClient._request", fake_request)
+    checks = run_diagnose(
+        ResearchSettings.from_env({}),
+        web_probe=lambda: None,
+        writable_probe=lambda _path: None,
+        profile_probe=lambda _model: {"supports_tools": True},
+        scholar_live=True,
+    )
+    assert "search" in dict(calls)["openalex"]
+    openalex = next(check for check in checks if check.name == "scholar:openalex")
+    assert openalex.status == "WARN"
+    assert "OPENALEX_API_KEY" in openalex.detail
+    assert all(check.status == "PASS" for check in checks if check.name in {"scholar:crossref", "scholar:arxiv"})

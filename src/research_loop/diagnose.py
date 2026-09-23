@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
@@ -190,7 +191,8 @@ def run_diagnose(
                 contact_email=settings.crossref_mailto,
             )
             probes = {
-                "openalex": ("/works", {"per_page": 1}, False),
+                # Search, not a plain listing: OpenAlex rate-limits anonymous search separately.
+                "openalex": ("/works", {"search": "software engineering agent", "per_page": 1}, False),
                 "crossref": ("/works", {"rows": 0}, False),
                 "arxiv": ("/api/query", {"id_list": "2601.01234", "max_results": 1}, True),
                 "acl": ("/2024.acl-long.1.bib", None, True),
@@ -202,7 +204,12 @@ def run_diagnose(
                     await client._request(provider, path, params, text=as_text)
                     outcome.append(Check(f"scholar:{provider}", "PASS", "Public metadata endpoint responded"))
                 except Exception as exc:
-                    outcome.append(Check(f"scholar:{provider}", "WARN", f"Endpoint unavailable ({type(exc).__name__})"))
+                    detail = f"Endpoint unavailable ({type(exc).__name__})"
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                        detail = "Rate-limited (HTTP 429)"
+                        if provider == "openalex" and not settings.openalex_api_key:
+                            detail += "; set OPENALEX_API_KEY for search access"
+                    outcome.append(Check(f"scholar:{provider}", "WARN", detail))
             return outcome
         checks.extend(asyncio.run(probe_scholarly()))
     try:

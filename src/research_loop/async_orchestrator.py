@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
@@ -8,7 +9,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
-from pydantic_ai import UsageLimits
+from pydantic_ai import UsageLimits, capture_run_messages
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
 from .agents import (
@@ -42,7 +44,7 @@ from .schemas import (
     ResearchRole,
     VerificationReport,
 )
-from .telemetry import error_snapshot, extract_tool_events, jsonable, usage_snapshot
+from .telemetry import error_snapshot, extract_tool_events, jsonable, safe_tool_args, usage_snapshot
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
 
@@ -60,6 +62,39 @@ class ResearchConfig:
     attachment_strict: bool = True
     scholarly_tools: bool = True
     scholarly_cache_mode: str = "live"
+    # When a scout or deep dive exhausts its budget, summarize what it gathered in one
+    # tool-free call (or return an empty result) instead of failing the job.
+    salvage_exhausted_research: bool = False
+
+
+# Bounds on tool output replayed to a salvage call.
+_SALVAGE_EVIDENCE_CHARS = 48_000
+_SALVAGE_RESULT_CHARS = 4_000
+
+
+def _gathered_evidence(messages: list[Any]) -> list[dict[str, Any]]:
+    """Tool calls and truncated results from an interrupted run, oldest first, within a size bound."""
+    gathered: list[dict[str, Any]] = []
+    used = 0
+    for event in extract_tool_events(messages):
+        if event.result is None:
+            continue
+        result = json.dumps(event.result, ensure_ascii=False, default=str)[:_SALVAGE_RESULT_CHARS]
+        if used + len(result) > _SALVAGE_EVIDENCE_CHARS:
+            break
+        gathered.append({"tool": event.tool_name, "args": event.args, "result": result})
+        used += len(result)
+    return gathered
+
+
+def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
+    return ResearchResult(
+        question_id=question.id,
+        question=question.question,
+        conclusion="No evidence summarized: the research budget ran out before a structured result.",
+        unresolved_questions=[question.question],
+        confidence=0.0,
+    )
 
 
 @dataclass
@@ -113,17 +148,17 @@ class AsyncResearchLoop:
             cost_limit=min(caps) if caps else None,
         )
 
-    def _remaining_budget(self, job_id: UUID) -> float | None:
-        """Spend left under the policy's job cap; raises before a call that cannot fit."""
+    def _remaining_budget(self, job_id: UUID, reserve: float = 0.0) -> float | None:
+        """Spend left under the job cap after `reserve`; raises before a call that cannot fit."""
         limit = self.policy.job_cost_limit
         if limit is None or job_id not in self._job_spend:
             return None
         spent = self._job_spend[job_id]
         if spent is None:
             raise JobBudgetExceeded("job cost cap cannot be enforced: a model call had no pricing data")
-        remaining = limit - float(spent)
+        remaining = limit - float(spent) - reserve
         if remaining <= 0:
-            raise JobBudgetExceeded(f"job cost cap of ${limit:.2f} reached")
+            raise JobBudgetExceeded(f"job cost cap of ${limit:.2f} reached (${reserve:.2f} held in reserve)")
         return remaining
 
     def _record_spend(self, job_id: UUID, usage: RunUsage) -> None:
@@ -161,20 +196,24 @@ class AsyncResearchLoop:
         attachment_tools: bool = False,
         multimodal_inputs: bool = False,
         deps: Any = None,
+        salvage: bool = False,
+        persisted_prompt: str | None = None,
     ) -> Any:
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
             "attachment_mode": self.config.attachment_mode.value,
             "attachment_count": len(attachment_corpus.records) if attachment_corpus else 0,
             "scholarly_cache_mode": self.config.scholarly_cache_mode,
-        }
-        remaining_budget = self._remaining_budget(job_id)
+        } | ({"salvage": True} if salvage else {})
+        remaining_budget = self._remaining_budget(
+            job_id, self.policy.job_reserve_for(role, salvage=salvage)
+        )
         task_id = await self.repository.start_task(
             job_id=job_id,
             parent_task_id=parent_task_id,
             role=role,
             question_id=question_id,
-            prompt=prompt,
+            prompt=prompt if persisted_prompt is None else persisted_prompt,
             model_id=route.model,
             effective_config=effective_config,
             attempt=attempt,
@@ -255,6 +294,49 @@ class AsyncResearchLoop:
             )
             raise
 
+    async def _run_research(self, question: ResearchQuestion, **kwargs: Any) -> ResearchResult:
+        """Run a scout or deep dive; with salvage enabled, budget exhaustion degrades, not fails."""
+        if not self.config.salvage_exhausted_research:
+            return await self._run_agent(**kwargs)
+        with capture_run_messages() as messages:
+            try:
+                return await self._run_agent(**kwargs)
+            except JobBudgetExceeded:
+                return _budget_exhausted_result(question)  # refused before any spend
+            except UsageLimitExceeded:
+                gathered = _gathered_evidence(messages)
+        if not gathered:
+            return _budget_exhausted_result(question)
+        request = json.loads(kwargs["prompt"]) | {
+            "budget_exhausted": True,
+            "instruction": (
+                "Your research budget ran out. Do not call tools. Return the ResearchResult for this "
+                "question using only gathered_evidence: your earlier tool calls with truncated results. "
+                "Cite only sources that appear there, keep their IDs and publication status, record what "
+                "remains unresolved, and lower confidence where the evidence is thin."
+            ),
+        }
+        # Postgres keeps hashes of replayed tool output, as it does for tool telemetry.
+        stored = [
+            {"tool": item["tool"], "args": safe_tool_args(item["args"]),
+             "result_sha256": hashlib.sha256(item["result"].encode()).hexdigest(), "result_chars": len(item["result"])}
+            for item in gathered
+        ]
+        try:
+            return await self._run_agent(
+                job_id=kwargs["job_id"],
+                agent=kwargs["agent"],
+                role=kwargs["role"],
+                route=kwargs["route"].salvage(),
+                prompt=json.dumps(request | {"gathered_evidence": gathered}, ensure_ascii=False),
+                persisted_prompt=json.dumps(request | {"gathered_evidence": stored}, ensure_ascii=False),
+                question_id=question.id,
+                attempt=kwargs.get("attempt", 0),
+                salvage=True,
+            )
+        except (JobBudgetExceeded, UsageLimitExceeded):
+            return _budget_exhausted_result(question)
+
     async def _run_scout(
         self,
         job_id: UUID,
@@ -265,7 +347,8 @@ class AsyncResearchLoop:
     ) -> ResearchResult:
         route = self.policy.scout_for(q)
         async with sem:
-            return await self._run_agent(
+            return await self._run_research(
+                q,
                 job_id=job_id,
                 agent=scout_agent,
                 role=ResearchRole.SCOUT,
@@ -305,7 +388,8 @@ class AsyncResearchLoop:
             ensure_ascii=False,
         )
         async with sem:
-            return await self._run_agent(
+            return await self._run_research(
+                question,
                 job_id=job_id,
                 agent=deep_dive_agent,
                 role=ResearchRole.DEEP_DIVE,
