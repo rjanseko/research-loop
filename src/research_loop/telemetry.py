@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -7,8 +8,17 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 from pydantic import BaseModel
+from pydantic_ai.exceptions import ModelHTTPError
 
 from .schemas import ToolEvent
+
+
+def error_snapshot(exc: BaseException) -> dict[str, Any]:
+    """Persist a failure category without provider response bodies or prompt fragments."""
+    snapshot: dict[str, Any] = {"type": type(exc).__name__}
+    if isinstance(exc, ModelHTTPError):
+        snapshot["status_code"] = exc.status_code
+    return snapshot
 
 
 def jsonable(value: Any) -> Any:
@@ -53,6 +63,58 @@ def _parts(messages: Iterable[Any]) -> Iterable[Any]:
             yield part
 
 
+def safe_tool_result(tool_name: str, value: Any) -> Any:
+    """Persist tool provenance, never fetched article text or long provider payloads."""
+    normalized = jsonable(value)
+    if tool_name.startswith("scholar_") and isinstance(normalized, str):
+        try:
+            normalized = json.loads(normalized)
+        except ValueError:
+            pass
+    encoded = json.dumps(normalized, ensure_ascii=False, default=str)
+    if tool_name.startswith("scholar_") and isinstance(normalized, dict):
+        works = normalized.get("works") or []
+        return {
+            "operation": normalized.get("operation"),
+            "provider_errors": normalized.get("provider_errors", []),
+            "result_count": len(works),
+            "work_ids": [item.get("provider_id") for item in works[:10] if isinstance(item, dict)],
+            "cache_hits": normalized.get("cache_hits", 0),
+            "truncated": normalized.get("truncated", False),
+            "content_sha256": normalized.get("content_sha256"),
+            "response_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+            "response_chars": len(encoded),
+        }
+    if len(encoded) > 2000 or any(word in tool_name.lower() for word in ("fetch", "page", "attachment")):
+        summary = {"response_sha256": hashlib.sha256(encoded.encode()).hexdigest(), "response_chars": len(encoded)}
+        if isinstance(normalized, dict):  # the tool's own error code and HTTP status, not content
+            summary |= {key: normalized[key] for key in ("error", "status") if key in normalized}
+        return summary
+    return normalized
+
+
+def safe_tool_args(value: Any) -> Any:
+    """Keep argument shape while hashing text that may contain benchmark inputs or secrets."""
+    normalized = jsonable(value)
+    if isinstance(normalized, str):
+        try:
+            normalized = json.loads(normalized)
+        except ValueError:
+            return {"sha256": hashlib.sha256(normalized.encode()).hexdigest(), "chars": len(normalized)}
+    if not isinstance(normalized, dict):
+        return None
+    result: dict[str, Any] = {}
+    for key, item in normalized.items():
+        if isinstance(item, str):
+            result[key + "_sha256"] = hashlib.sha256(item.encode()).hexdigest()
+            result[key + "_chars"] = len(item)
+        elif isinstance(item, (int, float, bool)) or item is None:
+            result[key] = item
+        else:
+            result[key] = "[omitted]"
+    return result
+
+
 def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
     try:
         from pydantic_ai.messages import (
@@ -94,12 +156,3 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
                 event.provider_name = getattr(part, "provider_name", None)
 
     return [calls[call_id] for call_id in order]
-
-
-def compact_tool_result(value: Any, *, max_chars: int = 8_000) -> Any:
-    """Bound persisted tool-return volume while retaining useful provenance."""
-    normalized = jsonable(value)
-    encoded = json.dumps(normalized, ensure_ascii=False, default=str)
-    if len(encoded) <= max_chars:
-        return normalized
-    return {"truncated": True, "preview": encoded[:max_chars], "original_chars": len(encoded)}

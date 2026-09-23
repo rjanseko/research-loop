@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -14,12 +13,10 @@ from .ledger import EvidenceLedger
 from .schemas import (
     FinalReport,
     Gap,
-    GapAnalysis,
     ResearchConstraints,
     ResearchPlan,
     ResearchQuestion,
     ResearchResult,
-    ResearchRole,
     VerificationReport,
 )
 
@@ -62,6 +59,7 @@ class ResearchGraphDeps:
 @dataclass(frozen=True)
 class InitialResearchNeeded:
     gaps: list[Gap]
+    parent_task_id: UUID | None = None  # the gap-analysis task
 
 
 @dataclass(frozen=True)
@@ -87,17 +85,20 @@ class DeepDiveWork:
     gap: Gap
     question: ResearchQuestion
     attempt: int
+    parent_task_id: UUID | None = None  # the task that asked for this deep dive
 
 
 @dataclass(frozen=True)
 class VerificationBundle:
     report: FinalReport
     verification: VerificationReport
+    task_id: UUID | None = None  # the verifier task
 
 
 @dataclass(frozen=True)
 class VerificationResearchNeeded:
     followups: list[Gap]
+    parent_task_id: UUID | None = None  # the verifier task
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,29 @@ def _questions(state: ResearchGraphState) -> dict[str, ResearchQuestion]:
     if state.plan is None:
         raise RuntimeError("research plan is not available")
     return {q.id: q for q in state.plan.questions}
+
+
+def _record(ledger: EvidenceLedger, joined: list[OrderedResearchResult]) -> None:
+    """Append joined branch results in input order, whatever order they finished in."""
+    for item in sorted(joined, key=lambda item: item.order):
+        ledger.add(item.result)
+
+
+async def _deep_dive(
+    ctx: StepContext[ResearchGraphState, ResearchGraphDeps, DeepDiveWork],
+) -> OrderedResearchResult:
+    work = ctx.inputs
+    result = await ctx.deps.loop._run_gap(
+        ctx.deps.job_id,
+        work.gap,
+        work.question,
+        ctx.deps.deep_dive_semaphore,
+        ctx.deps.constraints,
+        ctx.deps.attachments,
+        attempt=work.attempt,
+        parent_task_id=work.parent_task_id,
+    )
+    return OrderedResearchResult(order=work.order, result=result)
 
 
 def build_research_graph():
@@ -139,37 +163,11 @@ def build_research_graph():
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, ResearchGraphInput],
     ) -> list[ScoutWork]:
         ctx.state.phase = "planning"
-        objective = ctx.inputs.objective
-        route = ctx.deps.loop.policy.for_role(ResearchRole.PLANNER)
-        qmin, qmax = ctx.deps.loop.policy.planner_question_range
-        prompt = json.dumps(
-            {
-                "objective": objective,
-                "constraints": ctx.deps.loop._constraints_payload(
-                    ctx.deps.constraints, ctx.deps.attachments
-                ),
-                "planning_guidance": (
-                    f"Aim for {qmin}-{qmax} non-overlapping research questions when the objective "
-                    "is broad enough. Use fewer when additional questions would be artificial or redundant."
-                ),
-            },
-            ensure_ascii=False,
-        )
-        research_plan: ResearchPlan = await ctx.deps.loop._run_agent(
-            job_id=ctx.deps.job_id,
-            agent=ctx.deps.loop._planner_agent,
-            role=ResearchRole.PLANNER,
-            route=route,
-            prompt=prompt,
-            attachment_corpus=ctx.deps.attachments,
-            attachment_tools=bool(ctx.deps.attachments),
-            multimodal_inputs=bool(ctx.deps.attachments),
+        research_plan = await ctx.deps.loop._plan(
+            ctx.deps.job_id, ctx.inputs.objective, ctx.deps.constraints, ctx.deps.attachments
         )
         ctx.state.plan = research_plan
         ctx.state.phase = "scouting"
-        await ctx.deps.loop.repository.save_plan(
-            ctx.deps.job_id, research_plan.model_dump(mode="json")
-        )
         return [ScoutWork(order=i, question=q) for i, q in enumerate(research_plan.questions)]
 
     @g.step(label="Scout question")
@@ -191,9 +189,7 @@ def build_research_graph():
     async def record_scouts(
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, list[OrderedResearchResult]],
     ) -> None:
-        for item in sorted(ctx.inputs, key=lambda item: item.order):
-            ctx.deps.ledger.add(item.result)
-        return None
+        _record(ctx.deps.ledger, ctx.inputs)
 
     @g.step(label="Analyze evidence gaps")
     async def analyze_gaps(
@@ -202,33 +198,17 @@ def build_research_graph():
         ctx.state.phase = "gap_analysis"
         if ctx.state.plan is None:
             raise RuntimeError("gap analysis requires a research plan")
-        route = ctx.deps.loop.policy.for_role(ResearchRole.GAP_ANALYST)
-        gap_analysis: GapAnalysis = await ctx.deps.loop._run_agent(
-            job_id=ctx.deps.job_id,
-            agent=ctx.deps.loop._gap_agent,
-            role=ResearchRole.GAP_ANALYST,
-            route=route,
-            prompt=json.dumps(
-                {
-                    "objective": ctx.state.objective,
-                    "plan": ctx.state.plan.model_dump(mode="json"),
-                    "results": [
-                        r.model_dump(mode="json") for r in ctx.deps.ledger.all()
-                    ],
-                    "constraints": ctx.deps.loop._constraints_payload(
-                        ctx.deps.constraints, ctx.deps.attachments
-                    ),
-                },
-                ensure_ascii=False,
-            ),
-        )
-        gaps = ctx.deps.loop._dedupe_gaps(
-            gap_analysis.gaps
-            + ctx.deps.loop._confidence_gaps(ctx.state.plan, ctx.deps.ledger)
+        gaps, gap_task_id = await ctx.deps.loop._analyze_gaps(
+            ctx.deps.job_id,
+            ctx.state.objective,
+            ctx.state.plan,
+            ctx.deps.ledger,
+            ctx.deps.constraints,
+            ctx.deps.attachments,
         )
         selected = ctx.deps.loop._select_gaps(gaps, _questions(ctx.state))
         if selected:
-            return InitialResearchNeeded(selected)
+            return InitialResearchNeeded(selected, parent_task_id=gap_task_id)
         return ReadyForSynthesis()
 
     @g.step(label="Prepare initial deep dives")
@@ -238,26 +218,16 @@ def build_research_graph():
         ctx.state.phase = "initial_deep_dive"
         questions = _questions(ctx.state)
         return [
-            DeepDiveWork(order=i, gap=gap, question=questions[gap.question_id], attempt=0)
+            DeepDiveWork(order=i, gap=gap, question=questions[gap.question_id], attempt=0,
+                         parent_task_id=ctx.inputs.parent_task_id)
             for i, gap in enumerate(ctx.inputs.gaps)
-            if gap.question_id in questions
         ]
 
     @g.step(label="Initial deep dive")
     async def initial_deep_dive(
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, DeepDiveWork],
     ) -> OrderedResearchResult:
-        work = ctx.inputs
-        result = await ctx.deps.loop._run_gap(
-            ctx.deps.job_id,
-            work.gap,
-            work.question,
-            ctx.deps.deep_dive_semaphore,
-            ctx.deps.constraints,
-            ctx.deps.attachments,
-            attempt=work.attempt,
-        )
-        return OrderedResearchResult(order=work.order, result=result)
+        return await _deep_dive(ctx)
 
     initial_deep_join = g.join(
         reduce_list_append, initial_factory=list[OrderedResearchResult]
@@ -267,9 +237,7 @@ def build_research_graph():
     async def record_initial_deep_dives(
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, list[OrderedResearchResult]],
     ) -> None:
-        for item in sorted(ctx.inputs, key=lambda item: item.order):
-            ctx.deps.ledger.add(item.result)
-        return None
+        _record(ctx.deps.ledger, ctx.inputs)
 
     @g.step(label="Synthesize report")
     async def synthesize(
@@ -289,6 +257,7 @@ def build_research_graph():
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, FinalReport],
     ) -> VerificationBundle:
         ctx.state.phase = "verification"
+        verify_task_ids: list[UUID] = []
         verification = await ctx.deps.loop._verify(
             ctx.deps.job_id,
             ctx.state.objective,
@@ -296,8 +265,10 @@ def build_research_graph():
             ctx.deps.ledger,
             ctx.deps.constraints,
             ctx.deps.attachments,
+            task_ids=verify_task_ids,
         )
-        return VerificationBundle(report=ctx.inputs, verification=verification)
+        return VerificationBundle(report=ctx.inputs, verification=verification,
+                                  task_id=verify_task_ids[0] if verify_task_ids else None)
 
     @g.step(label="Route verification result")
     async def route_verification(
@@ -310,7 +281,7 @@ def build_research_graph():
             or ctx.state.verification_round >= ctx.state.max_verification_rounds
         ):
             return VerificationComplete(bundle.report, bundle.verification)
-        return VerificationResearchNeeded(bundle.verification.followups)
+        return VerificationResearchNeeded(bundle.verification.followups, parent_task_id=bundle.task_id)
 
     @g.step(label="Prepare verification deep dives")
     async def prepare_verification_deep_dives(
@@ -329,26 +300,16 @@ def build_research_graph():
                 gap=gap,
                 question=questions[gap.question_id],
                 attempt=ctx.state.verification_round,
+                parent_task_id=ctx.inputs.parent_task_id,
             )
             for i, gap in enumerate(selected)
-            if gap.question_id in questions
         ]
 
     @g.step(label="Verification deep dive")
     async def verification_deep_dive(
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, DeepDiveWork],
     ) -> OrderedResearchResult:
-        work = ctx.inputs
-        result = await ctx.deps.loop._run_gap(
-            ctx.deps.job_id,
-            work.gap,
-            work.question,
-            ctx.deps.deep_dive_semaphore,
-            ctx.deps.constraints,
-            ctx.deps.attachments,
-            attempt=work.attempt,
-        )
-        return OrderedResearchResult(order=work.order, result=result)
+        return await _deep_dive(ctx)
 
     verification_deep_join = g.join(
         reduce_list_append, initial_factory=list[OrderedResearchResult]
@@ -358,9 +319,7 @@ def build_research_graph():
     async def record_verification_deep_dives(
         ctx: StepContext[ResearchGraphState, ResearchGraphDeps, list[OrderedResearchResult]],
     ) -> None:
-        for item in sorted(ctx.inputs, key=lambda item: item.order):
-            ctx.deps.ledger.add(item.result)
-        return None
+        _record(ctx.deps.ledger, ctx.inputs)
 
     @g.step(label="Finalize research")
     async def finalize(

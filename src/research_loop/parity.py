@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,7 +12,7 @@ class ParityFingerprint:
     """Order-insensitive semantic fingerprint for orchestration parity checks."""
 
     plan: tuple[tuple[Any, ...], ...]
-    evidence: tuple[tuple[Any, ...], ...]
+    evidence: tuple[str, ...]
     report: dict[str, Any]
     verification: dict[str, Any]
 
@@ -30,19 +31,10 @@ def outcome_fingerprint(outcome: ResearchOutcome) -> ParityFingerprint:
             for q in outcome.plan.questions
         )
     )
-    evidence = tuple(
-        sorted(
-            (
-                result.question_id,
-                result.question,
-                result.conclusion,
-                result.confidence,
-                tuple(sorted(claim.id for claim in result.claims)),
-                tuple(sorted(result.unresolved_questions)),
-            )
-            for result in outcome.ledger.all()
-        )
-    )
+    # Every field of every result, claims, evidence, and contradictions included; order-insensitive.
+    evidence = tuple(sorted(
+        json.dumps(result.model_dump(mode="json"), sort_keys=True) for result in outcome.ledger.all()
+    ))
     return ParityFingerprint(
         plan=plan,
         evidence=evidence,

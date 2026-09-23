@@ -1,7 +1,7 @@
 name = "research-loop-public-core"
 
 # BrowseComp: hard short-answer web research. The official encrypted CSV is
-# downloaded to ~/.cache/research-loop and decrypted only in memory.
+# downloaded to RESEARCH_BENCHMARK_CACHE (default .cache/research-loop) and decrypted only in memory.
 [[sources]]
 name = "browsecomp"
 kind = "browsecomp"

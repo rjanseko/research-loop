@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+from uuid import uuid4
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -33,8 +35,13 @@ def download_if_missing(url: str, path: Path) -> Path:
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=60) as response, path.open("wb") as out:
-        out.write(response.read())
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as out:
+            shutil.copyfileobj(response, out)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 

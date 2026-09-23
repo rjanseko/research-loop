@@ -19,13 +19,12 @@ class ResearchToolMode(StrEnum):
 
 
 def build_research_capabilities(mode: ResearchToolMode) -> list[Any]:
+    from .web import resilient_duckduckgo_tool
+
     if mode is ResearchToolMode.NORMALIZED:
-        return [
-            WebSearch(native=False, local="duckduckgo"),
-            WebFetch(native=False, local=True),
-        ]
+        return [WebSearch(native=False, local=resilient_duckduckgo_tool())]
 
     return [
-        WebSearch(local="duckduckgo"),
+        WebSearch(local=resilient_duckduckgo_tool()),
         WebFetch(local=True),
     ]

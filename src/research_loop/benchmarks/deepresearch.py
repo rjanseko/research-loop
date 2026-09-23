@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from .base import BenchmarkAdapter, deterministic_select
 from .io import pick, read_jsonl

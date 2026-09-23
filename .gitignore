@@ -13,6 +13,7 @@ build/
 .env
 .env.*
 !.env.example
+.logfire/
 
 # Benchmark/runtime artifacts
 benchmark_outputs/

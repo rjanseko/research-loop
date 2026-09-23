@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import UUID, uuid4
 
 from .schemas import ResearchRole, ToolEvent
-from .telemetry import compact_tool_result, jsonable
+from .telemetry import jsonable, safe_tool_args, safe_tool_result
 
 
 def _pg_json(value: Any):
@@ -67,6 +67,8 @@ class ResearchRepository(Protocol):
         final_report: dict[str, Any] | None,
         verification: dict[str, Any] | None,
         error: dict[str, Any] | None = None,
+        evidence_ledger: dict[str, Any] | None = None,
+        review_reasons: list[str] | None = None,
     ) -> None: ...
 
 
@@ -292,8 +294,8 @@ class PostgresResearchRepository:
                         event.tool_call_id,
                         event.tool_kind,
                         event.provider_name,
-                        _pg_json(event.args),
-                        _pg_json(compact_tool_result(event.result)),
+                        _pg_json(safe_tool_args(event.args)),
+                        _pg_json(safe_tool_result(event.tool_name, event.result)),
                         event.outcome,
                         event.called_at,
                         event.returned_at,
@@ -309,6 +311,8 @@ class PostgresResearchRepository:
                        final_report = %s,
                        verification = %s,
                        error = %s,
+                       evidence_ledger = %s,
+                       review_reasons = %s,
                        finished_at = now()
                  where id = %s
                 """,
@@ -317,6 +321,54 @@ class PostgresResearchRepository:
                     _pg_json(kwargs.get("final_report")),
                     _pg_json(kwargs.get("verification")),
                     _pg_json(kwargs.get("error")),
+                    _pg_json(kwargs.get("evidence_ledger")),
+                    _pg_json(kwargs.get("review_reasons")),
                     job_id,
                 ),
             )
+
+
+class CapturingResearchRepository:
+    """Keep run-local telemetry for benchmark scoring while delegating durable writes."""
+
+    def __init__(self, backend: ResearchRepository, *, on_job_created: Callable[[UUID], None] | None = None) -> None:
+        self.backend = backend
+        self.on_job_created = on_job_created
+        self.memory = InMemoryResearchRepository()
+        self.jobs = self.memory.jobs
+        self.tasks = self.memory.tasks
+        self.tool_events = self.memory.tool_events
+
+    async def create_job(self, **kwargs: Any) -> UUID:
+        job_id = await self.backend.create_job(**kwargs)
+        self.jobs[job_id] = {"id": job_id, **kwargs, "status": "running", "created_at": datetime.now(UTC)}
+        if self.on_job_created:
+            self.on_job_created(job_id)
+        return job_id
+
+    async def save_plan(self, job_id: UUID, plan: dict[str, Any]) -> None:
+        await self.backend.save_plan(job_id, plan)
+        self.jobs[job_id]["plan"] = plan
+
+    async def save_attachments(self, job_id: UUID, attachments: list[dict[str, Any]]) -> None:
+        await self.backend.save_attachments(job_id, attachments)
+        self.jobs[job_id]["attachments"] = attachments
+
+    async def start_task(self, **kwargs: Any) -> UUID:
+        task_id = await self.backend.start_task(**kwargs)
+        self.tasks[task_id] = {"id": task_id, **kwargs, "status": "running", "started_at": datetime.now(UTC)}
+        return task_id
+
+    async def finish_task(self, task_id: UUID, **kwargs: Any) -> None:
+        await self.backend.finish_task(task_id, **kwargs)
+        self.tasks[task_id].update(kwargs)
+        self.tasks[task_id]["finished_at"] = datetime.now(UTC)
+
+    async def record_tool_events(self, task_id: UUID, events: list[ToolEvent]) -> None:
+        await self.backend.record_tool_events(task_id, events)
+        await self.memory.record_tool_events(task_id, events)
+
+    async def finish_job(self, job_id: UUID, **kwargs: Any) -> None:
+        await self.backend.finish_job(job_id, **kwargs)
+        self.jobs[job_id].update(kwargs)
+        self.jobs[job_id]["finished_at"] = datetime.now(UTC)
