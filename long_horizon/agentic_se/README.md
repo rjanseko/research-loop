@@ -54,7 +54,7 @@ Completed is not the same as sound. Each completed question records `review_reas
 | `max_parallel_scouts`, `max_parallel_deep_dives`, `max_deep_dives_per_round`, `max_verification_rounds` | `ResearchConfig` concurrency and round limits |
 | `question_timeout_seconds` | `ResearchConfig.max_run_seconds`: a question still running after an hour is recorded failed (`TimeoutError`) |
 
-Long-horizon runs also turn on salvage, so a scout or deep dive that exhausts its budget summarizes what it gathered instead of failing the question. The [README](../../README.md#budgets) explains the soft cap, the reserve, and salvage. Provider spending caps remain the hard limit.
+Long-horizon runs also turn on salvage, so a scout or deep dive that exhausts its budget summarizes what it gathered instead of failing the question. The [guide](../../docs/guide.md#how-spending-is-limited) explains the soft cap, the reserve, and salvage. Provider spending caps remain the hard limit.
 
 The current spec gives each question a $5 cap with a $2.50 reserve (about $4 expected per question), scouts of 16 requests, 36 tool calls, and 500k tokens, and up to two deep dives per question at $1.25 each, run one at a time so each budget check sees the previous one's spend. It plans one to three subquestions and skips verification rounds in this first pass.
 
