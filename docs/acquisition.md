@@ -7,6 +7,7 @@ Scouts and deep dives gather evidence with three tool groups: web search and fet
 | `tools.py` | Tool modes and the search capability |
 | `web.py` | Resilient DuckDuckGo search and `web_fetch` |
 | `scholar.py` | Provider adapters and the five scholarly tools |
+| `citations.py` | [Citation snowballing](#citation-snowballing-basis-papers) over a study's bibliography; not a research tool |
 | `acquisition.py` | What both share: disk cache, per-job document memo, fetch windows, rate slots, the blocked-source policy, and the guarded HTTPS download |
 
 ## Tool modes
@@ -40,6 +41,7 @@ Scholarly tools are added in both modes unless `ResearchConfig.scholarly_tools` 
 | ACL Anthology | Direct BibTeX lookup by Anthology ID |
 | OpenCitations | DOI citations and references |
 | OpenReview | Disabled; no authenticated adapter is configured |
+| Semantic Scholar | [Citation snowballing](#citation-snowballing-basis-papers) only; not a research tool |
 
 Provider records stay separate. OpenAlex and Crossref may describe the same work differently, and a preprint and its later publication remain distinct records. Source citations can carry DOI, arXiv ID, OpenAlex ID, ACL ID, provider, publication status, full-text URL, and locator. Status rules are conservative: a DOI hint on an arXiv record does not make a preprint peer-reviewed, journal or conference metadata alone does not prove peer review, and ACL BibTeX records stay `unknown` until the venue is verified. Year bounds currently filter OpenAlex results only.
 
@@ -86,6 +88,17 @@ Search results can still show blocked sources; seeing one is not a violation. Th
 | `off` | No | No | Benchmarks, so no result depends on an earlier run |
 
 Entries are versioned and capped at 128 KB. Fetch windows are keyed by URL, `max_chars`, and `start`; a window from the start keeps its original key, so older recordings still replay. Fetches check the cache after the blocked-source check and before the DNS check, so `replay` works offline and never serves a blocked source.
+
+## Citation snowballing (basis papers)
+
+`research-long-horizon --basis-papers` finds the works a study's literature builds on (`citations.py`). It is code, not a tool: no model is called, and research workers never see the result.
+
+1. **Seeds.** Every bibliography entry of the study's completed questions with an arXiv ID or DOI, from its fields or its URL, becomes a Semantic Scholar lookup. An arXiv DOI (`10.48550/arXiv.…`) is looked up by its arXiv ID. Web pages without either are counted and skipped.
+2. **Resolution.** Seeds are resolved in batches of 100 (`POST /graph/v1/paper/batch`) with their reference lists. A seed whose ID Semantic Scholar does not index, such as some ACL Anthology DOIs, is tried once by title and accepted only when the returned title is the same, ignoring case and punctuation. Two lookups for one paper, such as a preprint and its publication, count as one seed.
+3. **Ranking.** Each referenced work is counted once per seed that cites it. Works cited by at least two seeds are ranked by that count, then by total citations. Each is marked `in_study` or not, since works the study never cited are what snowballing adds.
+4. **Output.** `<output>/synthesis/basis_papers.json` and `basis_papers.md`, with the counts behind the ranking: seeds without identifiers, seeds not found, seeds found by title, seeds with no references, and references that matched no paper.
+
+Semantic Scholar is used because its records carry references for arXiv preprints. OpenAlex lists none for them, and most of this literature is on arXiv. Without a key, requests share a public rate limit and are often throttled; the client waits and retries up to four times. A free `SEMANTIC_SCHOLAR_API_KEY` gives a dedicated limit. Responses are cached per paper under the study's cache mode, so a `record` run can be replayed. Forward snowballing (works citing the seeds) is not built yet.
 
 ## Telemetry and privacy
 

@@ -13,10 +13,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+import httpx
+
 from .agents import long_horizon_synthesizer_agent
 from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
 from .long_horizon_spec import SYNTHESIS_DIR, load_spec
-from .acquisition import FETCH_VERSION
+from .acquisition import FETCH_VERSION, AcquisitionCache
+from .citations import BasisPaperReport, SemanticScholar, discover_basis_papers, render_basis_papers
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
 from .agents import prompt_fingerprint
@@ -798,6 +801,24 @@ async def synthesize_long_horizon(
     return manifest_path
 
 
+async def find_basis_papers(spec: dict[str, Any], evidence: LongHorizonEvidence, settings: ResearchSettings,
+                            *, client: Any = None) -> BasisPaperReport:
+    """Backward snowballing over the completed questions' bibliography; no model calls."""
+    key = settings.semantic_scholar_api_key
+    scholar = SemanticScholar(
+        AcquisitionCache(settings.benchmark_cache / "scholarly", mode=spec["execution"]["scholarly_cache_mode"]),
+        api_key=key.get_secret_value() if key else None,
+        client=client,
+    )
+    return await discover_basis_papers(evidence.bibliography, scholar)
+
+
+def write_basis_papers(folder: Path, spec: dict[str, Any], report: BasisPaperReport) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "basis_papers.json").write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    (folder / "basis_papers.md").write_text(render_basis_papers(report, spec["title"]), encoding="utf-8")
+
+
 def _paid_preflight(settings: ResearchSettings, policy_name: str, persist: bool) -> None:
     local_checks = run_diagnose(settings, policy_name=policy_name, smoke=False)
     critical = {"runtime", "dependencies", "graph", "web_tools", "scholar_tools", "cache", "output"}
@@ -817,6 +838,8 @@ def main() -> None:
     parser.add_argument("--all-questions", action="store_true", help="Run every question sequentially")
     parser.add_argument("--aggregate", action="store_true", help="Merge completed question outputs without model calls")
     parser.add_argument("--synthesize", action="store_true", help="Write long-horizon catalogs and hypotheses from completed questions")
+    parser.add_argument("--basis-papers", action="store_true",
+                        help="Rank the works completed questions' sources cite (Semantic Scholar; no model calls)")
     parser.add_argument("--allow-partial", action="store_true", help="Synthesize even if some questions are not completed")
     parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy"), default="quality")
     parser.add_argument("--paid", action="store_true", help="Authorize model provider calls")
@@ -826,10 +849,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.all_questions and args.question:
         parser.error("choose --question or --all-questions")
-    if args.aggregate and args.synthesize:
-        parser.error("choose --aggregate or --synthesize")
-    if (args.aggregate or args.synthesize) and (args.question or args.all_questions):
-        parser.error("--aggregate and --synthesize work on completed questions; omit --question/--all-questions")
+    if sum((args.aggregate, args.synthesize, args.basis_papers)) > 1:
+        parser.error("choose one of --aggregate, --synthesize, or --basis-papers")
+    if (args.aggregate or args.synthesize or args.basis_papers) and (args.question or args.all_questions):
+        parser.error("--aggregate, --synthesize, and --basis-papers work on completed questions; "
+                     "omit --question/--all-questions")
     if args.allow_partial and not args.synthesize:
         parser.error("--allow-partial applies only to --synthesize")
     # Local inputs only: these messages carry no provider responses, so they are shown in full.
@@ -845,6 +869,29 @@ def main() -> None:
                   + (f"; files changed since publication: {', '.join(evidence.invalid)}" if evidence.invalid else "")
                   + (f"; reports citing no claims: {', '.join(evidence.uncited)}" if evidence.uncited else ""))
             return
+        if args.basis_papers:
+            spec = load_spec(args.spec)
+            evidence = aggregate_long_horizon(spec, args.output)
+            if not evidence.completed:
+                raise ValueError("no completed questions to take seeds from")
+            if args.dry_run:
+                print(f"Basis papers would be seeded from {len(evidence.bibliography)} sources in "
+                      f"{', '.join(item.question['id'] for item in evidence.completed)}")
+                return
+    except (ValueError, OSError) as exc:
+        parser.exit(2, f"Long-horizon input invalid: {exc}\n")
+    if args.basis_papers:
+        try:
+            report = asyncio.run(find_basis_papers(spec, evidence, ResearchSettings.from_env()))
+        except (httpx.HTTPError, LookupError, ValueError) as exc:
+            parser.exit(1, f"Basis papers failed ({type(exc).__name__}); set SEMANTIC_SCHOLAR_API_KEY if throttled.\n")
+        write_basis_papers(args.output / SYNTHESIS_DIR, spec, report)
+        new = sum(not paper.in_study for paper in report.papers)
+        print(f"Basis papers: {len(report.papers)} works cited by at least {report.min_seed_citations} of "
+              f"{report.resolved_seeds} resolved seeds ({new} not yet in the study); "
+              f"{len(report.unresolved)} seeds not found; wrote {args.output / SYNTHESIS_DIR / 'basis_papers.md'}")
+        return
+    try:
         if args.synthesize:
             policy = get_policy(args.policy)
             route = synthesis_route(policy, load_spec(args.spec)["synthesis"])

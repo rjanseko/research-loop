@@ -9,6 +9,7 @@ research-long-horizon --dry-run                        # validate the spec; no c
 research-long-horizon --question q01 --paid --persist  # one question
 research-long-horizon --all-questions --paid --persist # every question, one after another
 research-long-horizon --aggregate                      # merge completed evidence; no calls
+research-long-horizon --basis-papers                   # rank the works the sources cite; no model calls
 research-long-horizon --synthesize --dry-run           # check synthesis inputs and prompt size; no calls
 research-long-horizon --synthesize --paid --persist    # write the long-horizon report, catalogs, and hypotheses
 ```

@@ -52,6 +52,7 @@ class ResearchSettings(BaseModel):
     scholarly_cache_mode: Literal["off", "live", "record", "replay"] = "live"
     openalex_api_key: SecretStr | None = None
     crossref_mailto: str | None = None
+    semantic_scholar_api_key: SecretStr | None = None
     grobid_url: str | None = None
 
     @classmethod
@@ -94,6 +95,10 @@ class ResearchSettings(BaseModel):
             scholarly_cache_mode=source.get("RESEARCH_SCHOLAR_CACHE_MODE", "live").strip().lower(),
             openalex_api_key=SecretStr(source["OPENALEX_API_KEY"].strip()) if source.get("OPENALEX_API_KEY", "").strip() else None,
             crossref_mailto=source.get("CROSSREF_MAILTO", "").strip() or None,
+            semantic_scholar_api_key=(
+                SecretStr(source["SEMANTIC_SCHOLAR_API_KEY"].strip())
+                if source.get("SEMANTIC_SCHOLAR_API_KEY", "").strip() else None
+            ),
             grobid_url=source.get("GROBID_URL", "").strip() or None,
         )
 

@@ -51,6 +51,7 @@ chmod 600 .env
 | `RESEARCH_SCHOLAR_CACHE_MODE` | `live` | Web and scholarly cache mode for library runs; see [acquisition.md](acquisition.md#caching) |
 | `OPENALEX_API_KEY` | unset | Reliable OpenAlex search, which is rate-limited without a key |
 | `CROSSREF_MAILTO` | unset | Contact address for Crossref's polite pool |
+| `SEMANTIC_SCHOLAR_API_KEY` | unset | A dedicated rate limit for `research-long-horizon --basis-papers`; see [acquisition.md](acquisition.md#citation-snowballing-basis-papers) |
 | `GROBID_URL` | unset | Local GROBID service for PDF extraction, for example `http://127.0.0.1:8070` |
 | `RESEARCH_LOGFIRE_ENABLED`, `LOGFIRE_TOKEN` | `false`, unset | Optional tracing; see [below](#logfire-tracing) |
 

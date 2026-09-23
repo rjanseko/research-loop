@@ -112,7 +112,7 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
 _RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "opencitations": 0.3, "acl": 0.3,
-                  "duckduckgo": 1.0}
+                  "duckduckgo": 1.0, "semanticscholar": 1.1}
 
 
 async def wait_rate_slot(provider: str) -> None:
