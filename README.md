@@ -194,7 +194,7 @@ stateDiagram-v2
 
 - **Spend.** Each job has a spend account. Before every call, the harness checks the soft job cap and clamps the call's cost limit to what remains. A job whose billed calls include an unpriced model reports its cost as unknown, never as a partial sum.
 - **Reserve.** Research calls must leave `job_reserve_usd` unspent, so gap analysis, synthesis, and verification can still run.
-- **Salvage** (`salvage_exhausted_research`). A scout or deep dive that hits a usage limit gets one tool-free call that summarizes what it gathered, instead of failing the run. Its stored prompt keeps hashes of the replayed tool output, not the text.
+- **Salvage** (`salvage_exhausted_research`). A scout or deep dive that hits a usage limit gets one tool-free call that summarizes what it gathered, instead of failing the run. It receives every useful result the run gathered, skipping errors and repeated calls, with long results cut to one shared allowance within 64,000 characters, so late, targeted fetches are not crowded out. Its stored prompt keeps hashes of the replayed tool output, not the text.
 - **Retry room.** Gap analysis, synthesis, and verification are refused before the call when one validation retry would not fit the role's token limit, so a run never pays for a call it cannot finish.
 - **Failure recording.** Cancellation (including Ctrl-C), a sibling branch cancelled because another failed, and a deadline overrun (`max_run_seconds`) are all recorded as `failed` with the error type. These writes are shielded from cancellation, and a failed write never replaces the original error.
 - **Settings.** The harness takes the settings the application resolved and reads the environment only when none are given.

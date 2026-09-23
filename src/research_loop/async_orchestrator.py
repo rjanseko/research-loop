@@ -126,24 +126,71 @@ async def _gather_or_cancel(awaitables: Iterable[Awaitable[Any]]) -> list[Any]:
         raise
 
 
-# Bounds on tool output replayed to a salvage call.
-_SALVAGE_EVIDENCE_CHARS = 48_000
-_SALVAGE_RESULT_CHARS = 4_000
+# Tool output replayed to a salvage call: a total bound, and the least each kept result gets.
+# The bound leaves room for one validation retry within the salvage route's 80k tokens even at
+# 2.5 characters per token with a 6k-token answer; tests/test_budget.py holds it to that.
+_SALVAGE_EVIDENCE_CHARS = 64_000
+_SALVAGE_MIN_RESULT_CHARS = 800
 
 
-def _gathered_evidence(messages: list[Any]) -> list[dict[str, Any]]:
-    """Tool calls and truncated results from an interrupted run, oldest first, within a size bound."""
-    gathered: list[dict[str, Any]] = []
-    used = 0
+def _dead_result(result: Any) -> bool:
+    """A tool result with nothing to cite: a fetch error, or a scholarly call that found nothing."""
+    if isinstance(result, str) and result[:1] == "{":
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return False
+    if not isinstance(result, dict):
+        return False
+    if result.get("error"):
+        return True
+    return bool(result.get("provider_errors")) and not result.get("works") and not result.get("text")
+
+
+def _gathered_evidence(messages: list[Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Tool results from an exhausted run for its salvage call, within `_SALVAGE_EVIDENCE_CHARS`.
+
+    Unanswered calls, errors, and repeated calls are skipped. Every other result is kept, in call
+    order: short ones whole, long ones cut to one shared allowance, the largest the bound allows,
+    so late results (in a deep dive, usually the most targeted fetches) are not crowded out by
+    early searches. Only when even `_SALVAGE_MIN_RESULT_CHARS` each would not fit are the oldest
+    left out. Returns the kept items and counts of what was skipped, cut, or left out.
+    """
+    kept: list[tuple[Any, str]] = []
+    seen: set[str] = set()
+    counts = {"unanswered": 0, "errors": 0, "repeated": 0}
     for event in extract_tool_events(messages):
         if event.result is None:
+            counts["unanswered"] += 1
             continue
-        result = json.dumps(event.result, ensure_ascii=False, default=str)[:_SALVAGE_RESULT_CHARS]
-        if used + len(result) > _SALVAGE_EVIDENCE_CHARS:
+        if _dead_result(event.result):
+            counts["errors"] += 1
+            continue
+        call = json.dumps([event.tool_name, event.args], sort_keys=True, default=str)
+        if call in seen:
+            counts["repeated"] += 1
+            continue
+        seen.add(call)
+        kept.append((event, json.dumps(event.result, ensure_ascii=False, default=str)))
+    left_out = 0
+    while len(kept) * _SALVAGE_MIN_RESULT_CHARS > _SALVAGE_EVIDENCE_CHARS:
+        kept.pop(0)
+        left_out += 1
+    # The allowance: the largest per-result cut at which everything kept fits the bound.
+    lengths = sorted(len(text) for _, text in kept)
+    budget, allowance = _SALVAGE_EVIDENCE_CHARS, _SALVAGE_EVIDENCE_CHARS
+    for index, length in enumerate(lengths):
+        share = budget // (len(lengths) - index)
+        if length > share:
+            allowance = share
             break
-        gathered.append({"tool": event.tool_name, "args": event.args, "result": result})
-        used += len(result)
-    return gathered
+        budget -= length
+    gathered = [
+        {"tool": event.tool_name, "args": event.args, "result": text[:allowance]}
+        for event, text in kept
+    ]
+    counts |= {"kept": len(gathered), "cut": sum(len(text) > allowance for _, text in kept), "left_out": left_out}
+    return gathered, counts
 
 
 def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
@@ -555,7 +602,7 @@ class AsyncResearchLoop:
         except JobBudgetExceeded:
             return _budget_exhausted_result(question)  # refused before any spend
         except UsageLimitExceeded:
-            gathered = _gathered_evidence(messages)
+            gathered, gathered_counts = _gathered_evidence(messages)
         if not gathered:
             return _budget_exhausted_result(question)
         request = json.loads(kwargs["prompt"]) | {
@@ -566,6 +613,9 @@ class AsyncResearchLoop:
                 "Cite only sources that appear there, keep their IDs and publication status, record what "
                 "remains unresolved, and lower confidence where the evidence is thin."
             ),
+            # How gathered_evidence was built: calls skipped as errors, unanswered, or repeated;
+            # results kept, cut to fit, or left out as oldest.
+            "gathered_counts": gathered_counts,
         }
         # Postgres keeps hashes of replayed tool output, as it does for tool telemetry.
         stored = [

@@ -38,8 +38,9 @@ out, most serious first:
    three scouts and the deep dive stopped on a request or tool-call limit; nothing stopped on
    dollars.
 4. **Some evidence never reached the pilot prompts.** Fetches returned only the first
-   12,000 characters of a document; paging has since landed. Salvage still keeps 4,000 characters
-   per tool result and 48,000 in total. The long-horizon prompt no longer sends excerpts. openai.com
+   12,000 characters of a document; paging has since landed. Salvage used to keep the first
+   results that fit, 4,000 characters each; it now keeps every useful result within 64,000 characters
+   (see [Salvage selection](#salvage-selection)). The long-horizon prompt no longer sends excerpts. openai.com
    blocks the fetcher. The pilot report lists missing primary-source details as caveats because of this.
 
 ## Background: prompts and limits in this pipeline
@@ -74,7 +75,7 @@ out, most serious first:
 | Scout | `_run_scout` | one subquestion and the constraints; tool history grows each turn | 12 / 24 / 400k / $0.80 |
 | Gap analysis | `async_orchestrator.py` `_analyze_gaps`, shared by graph and legacy | objective, plan, projected results (one source table; search fields kept) | 6 / 4 / 70k / $1.25 |
 | Deep dive | `_run_gap` | subquestion, gap, constraints; tool history grows each turn | 20 / 40 / 180k / $3.00 during the pilot (now $1.25; route default $5) |
-| Salvage | `_run_research` | the original prompt plus `gathered_evidence`: tool results cut to 4,000 characters each, 48,000 in total (`_SALVAGE_*`) | 2 requests / 80k / a quarter of the route's $ cap during the pilot ($0.20 scout, $0.75 deep dive); now half |
+| Salvage | `_run_research` | the original prompt plus `gathered_evidence`: every useful tool result, cut to one shared allowance within 64,000 characters, and `gathered_counts` (`_SALVAGE_*`) | 2 requests / 80k / a quarter of the route's $ cap during the pilot ($0.20 scout, $0.75 deep dive); now half |
 | Synthesis | `_synthesize` | objective, projected ledger (one source table; search fields omitted), constraints | 8 / 4 / 120k (now 180k) / $3.50 |
 | Verifier | `_verify` | objective, the report, projected ledger limited to claims the report cites or a contradiction names, constraints | 8 / 8 / 100k (now 150k) / $2.50 |
 | Long-horizon synthesis | `long_horizon.py` `synthesis_prompt` | one source table (title, url, date per work); for each question: report claims (statement, claim refs, lowest cited confidence, supporting and contradicting works, source type, publication status, not-found and retracted flags), caveats, unresolved questions, contradictions, verifier findings. The full ledger stays in the aggregated file | `[synthesis]`: 2 requests / 400k tokens (now 600k) / 36k output tokens / $6, prompt at most 360,000 characters (now 600,000) |
@@ -193,7 +194,8 @@ result. Total input therefore grows roughly with the square of the number of tur
 **No research run stopped on tokens or dollars.** Two scouts hit the 12-request limit and the deep
 dive hit its 40-tool-call limit; the third scout finished on its own after 9 requests. They spent
 17–24% of their dollar caps ($0.80 per scout; $3.00 for the deep dive during the pilot). After a
-limit, salvage replays up to 48,000 characters of what the run gathered.
+limit, salvage replayed up to 48,000 characters of what the run gathered; see
+[Salvage selection](#salvage-selection) for the change since.
 
 **The search guidance was followed only partly.** The study's research notes tell scouts to
 start with scholarly search. Their actual tool use:
@@ -221,8 +223,8 @@ Each of those still adds a call and a result to every later turn.
   dive never reached the dataset-construction section and Table 1 of the SWE-bench paper; the pilot
   report's caveats say so directly. Fetch version 2 now pages through documents with `start` and
   `next_start` (see `docs/acquisition.md`).
-- **Salvage keeps 4,000 characters per tool result and 48,000 in total.** Anything longer or later
-  is dropped before the wrap-up call.
+- **Salvage kept 4,000 characters per tool result and 48,000 in total.** Anything longer or later
+  was dropped before the wrap-up call; [Salvage selection](#salvage-selection) describes the fix.
 - **The pilot's long-horizon synthesis kept 300 characters of each excerpt.** The current long-horizon prompt does not send excerpts. Per-question prompts still cut an excerpt at 300 characters when the evidence has no quote.
 - **openai.com returns HTTP 403** (bot protection), so OpenAI's own posts never enter a prompt. The
   report's OpenAI figures came from secondary sources, and the verifier flagged them as major issues.
@@ -463,3 +465,31 @@ Rebuild each prompt through `EvidenceLedger.prompt_view`: `results` with `includ
 for gap analysis, `evidence` for synthesis, and `evidence` limited to the report's cited claim
 IDs for the verifier. Keep the stored objective, plan, report, and constraints, and compare
 `json.dumps(..., ensure_ascii=False)` lengths. Do not print the prompts.
+
+## Salvage selection
+
+Status as of 2026-09-23. All four research runs in the p01 evidence-version-3 rerun (job `46044486`)
+ran out of budget and were salvaged. Their stored tool events show what the salvage calls received:
+
+| Run | Tool calls | Useful results | Useful characters | Old salvage kept | New salvage keeps |
+|---|---:|---:|---:|---|---|
+| Deep dive q3 | 44 | 31 (8 errors, 5 unanswered) | 183,291 | first 20, up to 4,000 chars each | all 31: 14 whole, 17 cut to 2,788 |
+| Deep dive q1 | 39 | 25 (14 errors) | 165,917 | first 22 | all 25: 7 whole, 18 cut to 3,231 |
+| Scout q3 | 25 | 22 (3 errors) | 122,922 | first 19 | all 22: 10 whole, 12 cut to 3,477 |
+| Scout q1 | 29 | 27 (2 errors) | 196,735 | first 13 | all 27: 3 whole, 24 cut to 2,560 |
+
+The old selection took results in call order until 48,000 characters were used, counting errors and
+unanswered calls against the budget, so the latest results were dropped. In a deep dive those are
+usually the most targeted fetches. The new selection (`_gathered_evidence` in
+`async_orchestrator.py`) skips errors, unanswered calls, and repeated calls. It keeps every other
+result, short ones whole and long ones cut to one shared allowance, the largest the bound allows.
+Only if even 800 characters each would not fit are the oldest left out. The bound rose to 64,000
+characters, which still leaves room for one validation retry within the salvage route's 80,000
+tokens at 2.5 characters per token with a 6,000-token answer; a test holds it to that. The salvage
+prompt gains `gathered_counts`, which is stored with it: calls skipped as errors, unanswered, or
+repeated, and results kept, cut, or left out.
+
+This changes the salvage prompt, so it is a behavior change for any run that salvages, including
+long-horizon studies. The figures in the new column are computed from the stored result sizes; the
+effect on evidence quality has not been measured on a paid run.
+

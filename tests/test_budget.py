@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from decimal import Decimal
 from uuid import uuid4
 
@@ -205,3 +207,66 @@ async def test_research_without_budget_returns_empty_result_without_calls() -> N
     assert result.claims == []
     assert result.unresolved_questions == ["What is SWE-bench?"]
     assert loop.repository.tasks == {}
+
+
+def _tool_messages(calls: list[tuple[str, dict, object]]) -> list:
+    """A run's messages: each (tool, args, result) as a call and its return; result None is unanswered."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+
+    messages: list = []
+    for index, (tool, args, result) in enumerate(calls):
+        messages.append(ModelResponse(parts=[ToolCallPart(tool_name=tool, args=args, tool_call_id=f"c{index}")]))
+        if result is not None:
+            messages.append(ModelRequest(parts=[ToolReturnPart(tool_name=tool, content=result, tool_call_id=f"c{index}")]))
+    return messages
+
+
+def test_salvage_skips_errors_unanswered_and_repeated_calls() -> None:
+    from research_loop.async_orchestrator import _gathered_evidence
+
+    gathered, counts = _gathered_evidence(_tool_messages([
+        ("web_fetch", {"url": "https://a.example"}, {"url": "https://a.example", "error": "HTTPStatusError", "status": 404}),
+        ("scholar_search", {"query": "x"}, json.dumps({"works": [], "provider_errors": ["openalex:HTTPError"]})),
+        ("scholar_search", {"query": "y"}, json.dumps({"works": [{"title": "Found"}], "provider_errors": []})),
+        ("scholar_search", {"query": "y"}, json.dumps({"works": [{"title": "Found"}], "provider_errors": []})),
+        ("web_fetch", {"url": "https://b.example"}, None),
+        ("web_fetch", {"url": "https://c.example"}, {"url": "https://c.example", "text": "page text"}),
+    ]))
+    assert [item["args"] for item in gathered] == [{"query": "y"}, {"url": "https://c.example"}]
+    assert counts == {"unanswered": 1, "errors": 2, "repeated": 1, "kept": 2, "cut": 0, "left_out": 0}
+
+
+def test_salvage_shares_its_budget_so_late_results_are_not_crowded_out() -> None:
+    from research_loop.async_orchestrator import _SALVAGE_EVIDENCE_CHARS, _gathered_evidence
+
+    calls = [("scholar_search", {"query": f"q{i}"}, {"text": "s" * 16_000}) for i in range(4)]
+    calls += [("scholar_get", {"id": f"g{i}"}, {"text": "g" * 500}) for i in range(4)]
+    calls += [("web_fetch", {"url": "https://late.example"}, {"text": "LATE " + "f" * 20_000})]
+    gathered, counts = _gathered_evidence(_tool_messages(calls))
+    sizes = [len(item["result"]) for item in gathered]
+    assert len(gathered) == 9 and gathered[-1]["args"] == {"url": "https://late.example"}
+    assert "LATE" in gathered[-1]["result"]
+    assert all(size > 500 for size in sizes[4:8])                      # short results are kept whole
+    assert len(set(sizes[:4] + sizes[8:])) == 1                        # long ones share one allowance
+    assert sum(sizes) <= _SALVAGE_EVIDENCE_CHARS
+    assert counts["cut"] == 5 and counts["left_out"] == 0
+
+
+def test_salvage_leaves_out_the_oldest_results_only_when_there_are_too_many() -> None:
+    from research_loop.async_orchestrator import _SALVAGE_EVIDENCE_CHARS, _SALVAGE_MIN_RESULT_CHARS, _gathered_evidence
+
+    fit = _SALVAGE_EVIDENCE_CHARS // _SALVAGE_MIN_RESULT_CHARS
+    calls = [("web_fetch", {"url": f"https://{i}.example"}, {"text": "t" * 2_000}) for i in range(fit + 10)]
+    gathered, counts = _gathered_evidence(_tool_messages(calls))
+    assert counts["left_out"] == 10 and len(gathered) == fit
+    assert gathered[0]["args"] == {"url": "https://10.example"}
+    assert all(len(item["result"]) == _SALVAGE_MIN_RESULT_CHARS for item in gathered)
+
+
+def test_salvage_evidence_bound_leaves_room_for_one_retry() -> None:
+    from research_loop.async_orchestrator import _SALVAGE_EVIDENCE_CHARS
+    from research_loop.policy import retry_token_budget
+
+    route = ModelRoute("anthropic:any", 20, 40, 180_000, 5.0).salvage()  # the densest tokenizer on record
+    prompt = "x" * (_SALVAGE_EVIDENCE_CHARS + 4_000)                      # plus the question and instruction
+    assert retry_token_budget(prompt, route, ResearchRole.DEEP_DIVE, output_allowance=6_000) <= route.total_tokens_limit
