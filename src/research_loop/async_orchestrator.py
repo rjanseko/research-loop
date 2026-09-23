@@ -73,6 +73,8 @@ class ResearchConfig:
     # When a scout or deep dive exhausts its budget, summarize what it gathered in one
     # tool-free call (or return an empty result) instead of failing the job.
     salvage_exhausted_research: bool = False
+    # Wall-clock limit for one run; past it the run is cancelled and recorded failed (TimeoutError).
+    max_run_seconds: float | None = None
 
     def __post_init__(self) -> None:
         # Zero deep dives or verification rounds disables that step; zero parallel slots would hang.
@@ -82,6 +84,8 @@ class ResearchConfig:
                 raise ValueError(f"{name} must be at least {minimum}")
         if not 0.0 <= self.min_scout_confidence <= 1.0:
             raise ValueError("min_scout_confidence must be between 0 and 1")
+        if self.max_run_seconds is not None and not self.max_run_seconds > 0:
+            raise ValueError("max_run_seconds must be positive when set")
 
 
 # How long recording a failed or cancelled task or job may take before the run gives up on it.
@@ -245,13 +249,15 @@ class AsyncResearchLoop:
         """Hold the job's spend and fetch memo while it runs; record the job failed if the body raises.
 
         Cancellation, which is how Ctrl-C reaches the run, is recorded too, so an interrupted
-        run does not stay "running". A failed job keeps the evidence `ledger` gathered so far.
+        run does not stay "running", and so is ResearchConfig.max_run_seconds running out
+        (TimeoutError). A failed job keeps the evidence `ledger` gathered so far.
         """
         self._job_spend[job_id] = Decimal(0)
         self._fetch_memos[job_id] = FetchMemo()
         self._source_policies[job_id] = SourcePolicy(tuple(constraints.blocked_urls) if constraints else ())
         try:
-            yield
+            async with asyncio.timeout(self.config.max_run_seconds):
+                yield
         except (Exception, asyncio.CancelledError) as exc:
             with _recording_failure(exc):
                 await self.repository.finish_job(

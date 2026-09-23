@@ -35,6 +35,7 @@ from research_loop.tools import ResearchToolMode
         ("max_deep_dives_per_round", -1),
         ("max_verification_rounds", -1),
         ("min_scout_confidence", 1.5),
+        ("max_run_seconds", 0),
     ],
 )
 def test_research_config_rejects_values_that_cannot_run(field: str, value: float) -> None:
@@ -602,3 +603,20 @@ async def test_evidence_citing_a_blocked_source_gets_a_retry(workflow):
     assert "https://blocked.example" in retry
     cited = {str(item.source.url) for claim in outcome.ledger.claims() for item in claim.evidence}
     assert cited == {"https://example.org/allowed"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["scout", "synthesizer"])
+async def test_run_past_its_deadline_ends_failed(workflow, role):
+    loop, script = workflow
+    loop.repository = YieldingRepository()
+    loop.config = replace(loop.config, max_run_seconds=0.2)
+    script.hang_role = role  # the model never answers
+    with pytest.raises(TimeoutError):
+        await run(loop)
+
+    _no_running_records(loop)
+    (job,) = loop.repository.jobs.values()
+    (hung,) = [task for task in loop.repository.tasks.values() if task["role"].value == role]
+    assert job["error"] == {"type": "TimeoutError"}
+    assert hung["error"] == {"type": "CancelledError"}

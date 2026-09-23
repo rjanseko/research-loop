@@ -67,3 +67,51 @@ def test_repository_migrations_are_numbered_in_order() -> None:
     names = [migration.name for migration in migration_files()]
     assert names == sorted(names)
     assert names[:3] == ["001_research.sql", "002_research_attachments.sql", "003_research_evidence.sql"]
+
+
+class _ReconcileConnection:
+    def __init__(self):
+        self.statements: list[tuple[str, bool]] = []
+        self.in_transaction = False
+
+    def transaction(self):
+        connection = self
+
+        class _Transaction:
+            def __enter__(self):
+                connection.in_transaction = True
+
+            def __exit__(self, *_):
+                connection.in_transaction = False
+
+        return _Transaction()
+
+    def execute(self, query, params=None):
+        self.statements.append((" ".join(query.split()).split()[0], self.in_transaction))
+        cursor = _Cursor(row=(3,))
+        cursor.rowcount = 2
+        return cursor
+
+
+def test_reconcile_only_counts_unless_asked_to_apply() -> None:
+    from research_loop.db import reconcile
+
+    conn = _ReconcileConnection()
+    assert reconcile(conn, 120, apply=False) == (3, 3)
+    assert conn.statements == [("select", False), ("select", False)]
+
+    conn = _ReconcileConnection()
+    assert reconcile(conn, 120, apply=True) == (2, 2)
+    assert conn.statements == [("update", True), ("update", True)]  # jobs first, then their tasks, in one transaction
+
+
+def test_reconcile_requires_an_age_threshold(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import sys
+
+    from research_loop.db import main
+
+    monkeypatch.setattr(sys, "argv", ["research-db", "reconcile"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert "--older-than" in capsys.readouterr().err

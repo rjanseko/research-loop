@@ -92,6 +92,15 @@ Migrations live in `migrations/` and are checksummed: `research-db migrate` refu
 
 The database keeps jobs, the plan, every role task with its prompt, effective configuration, output, usage, and parent task, tool events, and attachment manifests. Each finished job also keeps its evidence ledger, whose unique claim IDs are the ones its report and verification cite (task outputs keep each worker's own IDs), and its `review_reasons`; a failed job keeps the evidence gathered before it failed. Text in tool arguments is stored as hashes and lengths, and fetched content as hashes and sizes, so protected benchmark inputs and article text stay out of it. Graph and policy versions are recorded in each job's effective configuration, so topology changes need no migration.
 
+A run that fails, is interrupted, or passes its `ResearchConfig.max_run_seconds` deadline records itself as failed. Only a process killed outright leaves jobs and tasks `running`. To close those out:
+
+```bash
+research-db reconcile --older-than 120          # count jobs running for over 120 minutes, and their tasks
+research-db reconcile --older-than 120 --apply  # mark them failed (Abandoned)
+```
+
+It also closes running tasks whose job has already finished. Choose a threshold longer than any run still in progress; `finished_at` stays empty, because when the process died is unknown.
+
 ## Checking readiness
 
 ```bash

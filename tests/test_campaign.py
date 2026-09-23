@@ -396,6 +396,7 @@ async def test_campaign_applies_reserve_scout_tokens_salvage_and_notes(monkeypat
     assert policy.for_role(ResearchRole.DEEP_DIVE).cost_limit == execution["deep_dive_cost_limit_usd"]
     assert seen["config"].max_deep_dives_per_round == execution["max_deep_dives_per_round"]
     assert seen["config"].max_parallel_deep_dives == execution["max_parallel_deep_dives"]
+    assert seen["config"].max_run_seconds == execution["question_timeout_seconds"] == 3600
     assert seen["notes"] == execution["research_notes"]
 
 

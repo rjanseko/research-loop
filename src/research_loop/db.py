@@ -88,10 +88,50 @@ def apply_migrations(conn: Any, migrations: list[Migration]) -> list[str]:
     return applied
 
 
+_STALE_JOB = "status = 'running' and created_at < now() - make_interval(secs => %s)"
+_ABANDONED = {"type": "Abandoned",
+              "detail": "Still running when research-db reconcile ran; the process ended without recording a result."}
+
+
+def reconcile(conn: Any, older_than_minutes: float, *, apply: bool) -> tuple[int, int]:
+    """Close out records a killed process left "running"; return (jobs, tasks) affected.
+
+    Jobs still running `older_than_minutes` after they were created are marked failed, and so are
+    running tasks of jobs that are no longer running. finished_at stays empty, since when the
+    process died is unknown. Without `apply`, nothing changes and the counts say what would.
+    """
+    seconds = older_than_minutes * 60
+    if not apply:
+        jobs = conn.execute(f"select count(*) from research_jobs where {_STALE_JOB}", (seconds,)).fetchone()[0]
+        tasks = conn.execute(
+            f"""select count(*) from research_tasks t join research_jobs j on j.id = t.job_id
+                 where t.status = 'running' and (j.status <> 'running' or j.id in
+                       (select id from research_jobs where {_STALE_JOB}))""",
+            (seconds,),
+        ).fetchone()[0]
+        return jobs, tasks
+    from psycopg.types.json import Jsonb
+
+    with conn.transaction():
+        jobs = conn.execute(f"update research_jobs set status = 'failed', error = %s where {_STALE_JOB}",
+                            (Jsonb(_ABANDONED), seconds)).rowcount
+        tasks = conn.execute(
+            """update research_tasks t set status = 'failed', error = %s from research_jobs j
+                where j.id = t.job_id and t.status = 'running' and j.status <> 'running'""",
+            (Jsonb(_ABANDONED),),
+        ).rowcount
+    return jobs, tasks
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage research-loop SQL migrations")
-    parser.add_argument("command", choices=("status", "migrate"))
+    parser = argparse.ArgumentParser(description="Manage research-loop SQL migrations and stale records")
+    parser.add_argument("command", choices=("status", "migrate", "reconcile"))
+    parser.add_argument("--older-than", type=float, metavar="MINUTES",
+                        help="reconcile: jobs still running this long after they started count as abandoned")
+    parser.add_argument("--apply", action="store_true", help="reconcile: make the changes instead of listing counts")
     args = parser.parse_args()
+    if args.command == "reconcile" and not (args.older_than and args.older_than > 0):
+        parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
     settings = ResearchSettings.from_env()
     if not settings.database_dsn:
         parser.error("DATABASE_URL is required; set it in the environment")
@@ -104,6 +144,13 @@ def main() -> None:
     migrations = migration_files()
     try:
         with psycopg.connect(settings.database_dsn, autocommit=True, connect_timeout=5) as conn:
+            if args.command == "reconcile":
+                jobs, tasks = reconcile(conn, args.older_than, apply=args.apply)
+                if args.apply:
+                    print(f"Marked {jobs} job(s) and {tasks} task(s) failed (Abandoned).")
+                else:
+                    print(f"Would mark {jobs} job(s) and {tasks} task(s) failed; pass --apply to do it.")
+                return
             if args.command == "migrate":
                 applied = apply_migrations(conn, migrations)
                 print(f"Applied {len(applied)} migration(s).")

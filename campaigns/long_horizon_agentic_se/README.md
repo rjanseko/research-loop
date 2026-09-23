@@ -49,6 +49,7 @@ Completed is not the same as sound. Each completed question records `review_reas
 | `scout_max_requests`, `scout_max_tool_calls`, `scout_total_tokens_limit` | Replace the limits on every scout route |
 | `planner_question_min`, `planner_question_max` | The planner's question range |
 | `max_parallel_scouts`, `max_parallel_deep_dives`, `max_deep_dives_per_round`, `max_verification_rounds` | `ResearchConfig` concurrency and round limits |
+| `question_timeout_seconds` | `ResearchConfig.max_run_seconds`: a question still running after an hour is recorded failed (`TimeoutError`) |
 
 Campaigns also turn on salvage, so a scout or deep dive that exhausts its budget summarizes what it gathered instead of failing the question. The [README](../../README.md#budgets) explains the soft cap, the reserve, and salvage. Provider spending caps remain the hard limit.
 

@@ -19,7 +19,7 @@ None of these commands cost anything. The `synthetic` policy runs the real graph
 | Command | Purpose | Paid calls |
 |---|---|---|
 | `research-diagnose` | Check dependencies, graph, tools, directories, database, providers, and model routes | Only with `--smoke` |
-| `research-db status` / `migrate` | Show or apply the SQL migrations | No |
+| `research-db status` / `migrate` / `reconcile` | Show or apply the SQL migrations; close out runs a killed process left running | No |
 | `research-bench SUITE` | Run benchmark cases under one or more policies and write a sanitized manifest | Only with `--paid` |
 | `research-campaign` | Run campaign questions, aggregate their evidence, and synthesize the campaign | Only with `--paid` |
 | `research-graph` | Print the executable graph as Mermaid | No |

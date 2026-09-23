@@ -74,6 +74,9 @@ def load_campaign(path: Path) -> dict[str, Any]:
     max_failed = execution.get("max_failed_questions", _DEFAULT_MAX_FAILED_QUESTIONS)
     if not isinstance(max_failed, int) or isinstance(max_failed, bool) or max_failed < 1:
         raise ValueError("execution.max_failed_questions must be a positive integer")
+    timeout = execution.get("question_timeout_seconds")
+    if timeout is not None and not _positive_number(timeout):
+        raise ValueError("execution.question_timeout_seconds must be positive when set")
     notes = execution.get("research_notes", [])
     if not isinstance(notes, list) or not all(isinstance(note, str) and note for note in notes):
         raise ValueError("execution.research_notes must be a list of nonempty strings")
@@ -204,6 +207,7 @@ def campaign_run_config(campaign: dict[str, Any]) -> ResearchConfig:
         max_deep_dives_per_round=int(execution["max_deep_dives_per_round"]),
         max_verification_rounds=int(execution["max_verification_rounds"]),
         salvage_exhausted_research=True,
+        max_run_seconds=execution.get("question_timeout_seconds"),
     )
 
 
