@@ -50,6 +50,7 @@ async def test_synthetic_benchmark_writes_safe_manifest(tmp_path: Path) -> None:
     assert manifest["python_version"]
     assert manifest["policies"]["synthetic"]["routes"]["scout"]["model"] == "synthetic:fake"
     assert manifest["runs"][0]["status"] == "succeeded"
+    assert manifest["runs"][0]["review_reasons"] == []  # the synthetic verifier supports its one claim
     assert manifest["runs"][0]["job_id"]
     assert "Private fixture prompt" not in output.read_text()
     assert str(tmp_path) not in output.read_text()

@@ -206,6 +206,8 @@ async def test_happy_path_persists_report_and_releases_job_resources(workflow):
     assert outcome.report.claim_ids_used == ["q1/c1"]
     assert all(task["status"] == "succeeded" for task in loop.repository.tasks.values())
     assert loop._job_spend == loop._fetch_memos == {}
+    # The run succeeded, but the scripted verifier checked nothing, so the report is unassessed.
+    assert outcome.review_reasons == ["the verifier checked none of the report's statements"]
 
 
 @pytest.mark.asyncio

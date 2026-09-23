@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .agents import campaign_synthesizer_agent
-from .async_orchestrator import ResearchConfig, ResearchOutcome
+from .async_orchestrator import ResearchConfig, ResearchOutcome, review_reasons
 from .acquisition import FETCH_VERSION
 from .db import open_migrated_pool
 from .diagnose import run_diagnose
@@ -224,6 +224,7 @@ def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: s
         "claim_count": outcome.ledger.claim_count(),
         "source_count": len(bibliography), "status": "completed",
         "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
+        "review_reasons": review_reasons(outcome.report, outcome.verification, outcome.ledger),
     }
     # run.json marks the folder as a completed, attributable run.
     _write_json(folder / "run.json", record | {
@@ -572,7 +573,8 @@ async def synthesize_campaign(
     inputs = [
         {"id": item.question["id"], "job_id": item.run.get("job_id"), "experiment_id": item.run.get("experiment_id"),
          "config_fingerprint": item.run.get("config_fingerprint"),
-         "campaign_spec_sha256": item.run.get("campaign_spec_sha256")}
+         "campaign_spec_sha256": item.run.get("campaign_spec_sha256"),
+         "review_reasons": item.run.get("review_reasons")}
         for item in evidence.completed
     ]
     manifest = _manifest_base(campaign, path, kind="synthesis", policy_snapshot=safe_value(policy.snapshot()),
@@ -699,6 +701,10 @@ def main() -> None:
         parser.exit(1, f"Campaign failed ({type(exc).__name__}); check settings and run manifest.\n")
     print(f"Campaign manifest: {manifest}")
     record = json.loads(manifest.read_text(encoding="utf-8"))
+    review = [f"{item['id']} ({'; '.join(item['review_reasons'])})"
+              for item in record.get("questions", []) if item.get("review_reasons")]
+    if review:
+        print(f"Completed but needs review: {', '.join(review)}")
     if record["status"] != "completed":
         failures = ", ".join(f"{item['id']} ({item['error']})" for item in record.get("questions", [])
                              if item["status"] == "failed")

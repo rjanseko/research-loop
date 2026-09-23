@@ -37,6 +37,8 @@ class BenchmarkOutput:
     # Evidence quotes, and those not found in text the research tools returned (quotes.py).
     quotes: int = 0
     quotes_not_found: int = 0
+    # What the finished run left unresolved (async_orchestrator.review_reasons).
+    review_reasons: list[str] = field(default_factory=list)
 
 
 def normalize_answer(value: str) -> str:

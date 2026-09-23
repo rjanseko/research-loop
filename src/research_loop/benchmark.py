@@ -236,6 +236,7 @@ async def _run_policy_case(
         attachment_ids_cited=attachment_ids_cited,
         quotes=len(quote_checks),
         quotes_not_found=quote_checks.count("not_found"),
+        review_reasons=outcome.review_reasons,
     )
 
 
@@ -352,6 +353,7 @@ async def run_benchmark(
                         )
                         if run_record:
                             run_record["status"] = "succeeded"
+                            run_record["review_reasons"] = output.review_reasons
                         return output
                     except (Exception, asyncio.CancelledError) as exc:
                         if run_record is None:  # failed before a job existed

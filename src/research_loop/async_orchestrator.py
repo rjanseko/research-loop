@@ -135,6 +135,29 @@ def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
     )
 
 
+def review_reasons(report: FinalReport, verification: VerificationReport, ledger: EvidenceLedger) -> list[str]:
+    """What a finished run left unresolved, as short reasons; empty when nothing needs review.
+
+    Execution status says whether a run finished. This says whether its result holds up:
+    a report without evidence, one the verifier never checked, or one it did not fully support.
+    """
+    reasons = []
+    if not ledger.claim_count():
+        reasons.append("no evidence claims were gathered")
+    elif not report.claim_ids_used:
+        reasons.append("the report cites no evidence claims")
+    checks = verification.checks
+    if report.claims and not checks:
+        reasons.append("the verifier checked none of the report's statements")
+    if unsupported := sum(not check.supported for check in checks):
+        reasons.append(f"{unsupported} of {len(checks)} verifier checks {'is' if unsupported == 1 else 'are'} unsupported")
+    if major := sum(check.severity == "major" for check in checks):
+        reasons.append(f"{major} verifier check{' is' if major == 1 else 's are'} rated major")
+    if verification.needs_research:
+        reasons.append("the verifier still asked for more research")
+    return reasons
+
+
 @dataclass
 class ResearchOutcome:
     job_id: UUID
@@ -144,6 +167,11 @@ class ResearchOutcome:
     ledger: EvidenceLedger
     attachments: AttachmentCorpus | None = None
     cost_usd: Decimal | None = None
+
+    @property
+    def review_reasons(self) -> list[str]:
+        """Why this run, though it finished, needs review; empty when nothing is unresolved."""
+        return review_reasons(self.report, self.verification, self.ledger)
 
 
 @dataclass
