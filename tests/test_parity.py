@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -172,3 +173,22 @@ async def test_graph_matches_legacy_async_semantics() -> None:
         "graph_version": "research-graph-v1",
     }
     assert legacy_repo.jobs[legacy_outcome.job_id]["config"]["orchestrator"]["kind"] == "async-legacy"
+
+
+@pytest.mark.asyncio
+async def test_parity_catches_changed_evidence_not_just_claim_ids() -> None:
+    from research_loop.ledger import EvidenceLedger
+
+    outcome = await DeterministicGraphLoop(_policy(), ResearchConfig(max_verification_rounds=2)).run("Parity probe")
+    changed_ledger = EvidenceLedger.from_json(outcome.ledger.to_json())
+    result = changed_ledger.for_question("q1")[0]
+    claim = result.claims[0]
+    edited = claim.model_copy(update={
+        "statement": "A different statement",
+        "evidence": [claim.evidence[0].model_copy(update={"excerpt": "a different excerpt"})],
+    })
+    changed_ledger.results["q1"][0] = result.model_copy(update={"claims": [edited]})
+    changed = replace(outcome, ledger=changed_ledger)
+
+    assert parity_differences(outcome, outcome) == []
+    assert parity_differences(outcome, changed) == ["evidence"]

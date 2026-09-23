@@ -133,6 +133,6 @@ If in-flight crash recovery becomes necessary, add a durable execution layer del
 
 `LegacyResearchLoop` keeps the v4 plain-async control flow as a regression baseline.
 
-`tests/test_parity.py` runs both orchestrators with the same deterministic agent outputs. The scenario deliberately takes the long path: parallel scouts that finish out of order, a low-confidence initial deep dive, synthesis and verification, a verifier-requested second deep dive, and a passing re-verification. It compares an order-insensitive fingerprint of the plan, results, report, and verification, plus the role, question, and attempt of every call. The fingerprint does not yet cover claim statements, evidence, or contradictions.
+`tests/test_parity.py` runs both orchestrators with the same deterministic agent outputs. The scenario deliberately takes the long path: parallel scouts that finish out of order, a low-confidence initial deep dive, synthesis and verification, a verifier-requested second deep dive, and a passing re-verification. It compares an order-insensitive fingerprint of the plan, every field of every result (claims, evidence, and contradictions included), the report, and the verification, plus the role, question, and attempt of every call.
 
 `tests/test_workflow_contract.py` runs every contract test (round limits, gap selection, failure and cancellation recording, salvage, prompt contents, task lineage, and the shared fetch memo) against both orchestrators through the real agent runner, with only model responses scripted.
