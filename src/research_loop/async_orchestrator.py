@@ -18,6 +18,9 @@ from pydantic_ai.usage import RunUsage
 
 from .acquisition import AcquisitionCache, FetchMemo
 from .agents import (
+    LedgerRefs,
+    PlanLimits,
+    ResearchAssignment,
     deep_dive_agent,
     gap_agent,
     planner_agent,
@@ -303,6 +306,17 @@ class AsyncResearchLoop:
             "attachments": attachments.prompt_manifest() if attachments else [],
         }
 
+    @staticmethod
+    def _assignment(question: ResearchQuestion, attachments: AttachmentCorpus | None) -> ResearchAssignment:
+        return ResearchAssignment(
+            question=question,
+            attachment_ids=frozenset(record.attachment_id for record in attachments.records) if attachments else frozenset(),
+        )
+
+    @staticmethod
+    def _ledger_refs(ledger: EvidenceLedger) -> LedgerRefs:
+        return LedgerRefs(claim_ids=frozenset(ledger.claim_ids()), question_ids=frozenset(ledger.results))
+
     async def _run_agent(
         self,
         *,
@@ -485,6 +499,7 @@ class AsyncResearchLoop:
                 question_id=question.id,
                 attempt=kwargs.get("attempt", 0),
                 parent_task_id=exhausted_ids[0] if exhausted_ids else None,
+                deps=kwargs.get("deps"),
                 salvage=True,
                 quote_texts=tool_texts(extract_tool_events(messages)),
             )
@@ -518,6 +533,7 @@ class AsyncResearchLoop:
             attachment_corpus=attachments,
             attachment_tools=bool(attachments),
             multimodal_inputs=bool(attachments),
+            deps=PlanLimits(max_questions=qmax),
         )
         await self.repository.save_plan(job_id, plan.model_dump(mode="json"))
         return plan
@@ -546,6 +562,7 @@ class AsyncResearchLoop:
                     ensure_ascii=False,
                 ),
                 question_id=q.id,
+                deps=self._assignment(q, attachments),
                 research_tools=True,
                 attachment_corpus=attachments,
                 attachment_tools=bool(attachments),
@@ -585,6 +602,7 @@ class AsyncResearchLoop:
                 question_id=question.id,
                 attempt=attempt,
                 parent_task_id=parent_task_id,
+                deps=self._assignment(question, attachments),
                 research_tools=True,
                 attachment_corpus=attachments,
                 attachment_tools=bool(attachments),
@@ -617,6 +635,7 @@ class AsyncResearchLoop:
                 ensure_ascii=False,
             ),
             task_ids=task_ids,
+            deps=self._ledger_refs(ledger),
         )
         gaps = self._dedupe_gaps(analysis.gaps + self._confidence_gaps(plan, ledger))
         return gaps, (task_ids[0] if task_ids else None)
@@ -635,7 +654,7 @@ class AsyncResearchLoop:
             agent=synthesizer_agent,
             role=ResearchRole.SYNTHESIZER,
             route=route,
-            deps=frozenset(ledger.claim_ids()),
+            deps=self._ledger_refs(ledger),
             prompt=json.dumps(
                 {
                     "objective": objective,
@@ -663,7 +682,7 @@ class AsyncResearchLoop:
             agent=verifier_agent,
             role=ResearchRole.VERIFIER,
             route=route,
-            deps=frozenset(ledger.claim_ids()),
+            deps=self._ledger_refs(ledger),
             prompt=json.dumps(
                 {
                     "objective": objective,

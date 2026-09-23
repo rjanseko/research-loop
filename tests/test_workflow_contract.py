@@ -95,6 +95,9 @@ class Script:
         self.invalid_scout = False
         # Upcoming synthesizer or verifier calls that cite a claim ID missing from the ledger.
         self.invented_refs: dict[str, int] = {}
+        self.plans: list[list[dict[str, Any]]] = []  # planner answers to give before `questions`
+        self.relabel_results = False  # research results name another question ID and text
+        self.cite_attachment: str | None = None  # "listed", or "invented" until a retry asks to fix it
         self.prompts: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.retries: dict[str, list[str]] = defaultdict(list)  # retry prompts each role received
 
@@ -104,8 +107,8 @@ class Script:
                           if isinstance(part, UserPromptPart))
             payload = json.loads(prompt)
             self.prompts[role].append(payload)
-            self.retries[role] += [str(part.content) for part in messages[-1].parts
-                                   if isinstance(part, RetryPromptPart)]
+            retried = [str(part.content) for part in messages[-1].parts if isinstance(part, RetryPromptPart)]
+            self.retries[role] += retried
             invent = self.invented_refs.get(role, 0) > 0
             if invent:
                 self.invented_refs[role] -= 1
@@ -118,18 +121,31 @@ class Script:
                     await self.reached.wait()  # fail only once the hanging call is in flight
                 raise ModelHTTPError(401, "fixture", {"error": "PRIVATE-PROVIDER-BODY"})
             if role == "planner":
-                output = {"objective": payload["objective"], "questions": self.questions}
+                questions = self.plans.pop(0) if self.plans else self.questions
+                output = {"objective": payload["objective"], "questions": questions}
             elif role in {"scout", "deep_dive"}:
                 question = payload["question"]
+                evidence = []
+                if self.cite_attachment:
+                    listed = payload["constraints"]["attachments"][0]["attachment_id"]
+                    attachment_id = "att-9-invented" if self.cite_attachment == "invented" and not retried else listed
+                    evidence = [{"source": {"attachment_id": attachment_id, "locator": "document",
+                                            "title": "notes.txt", "source_type": "attachment"},
+                                 "excerpt": "The measurement is approximate.", "confidence": 0.9}]
                 output = {
-                    "question_id": question["id"], "question": question["question"],
+                    "question_id": question["id"] + ("-relabelled" if self.relabel_results else ""),
+                    "question": question["question"] + (" (paraphrased)" if self.relabel_results else ""),
                     "conclusion": f"Evidence from {role}",
                     "confidence": 2 if self.invalid_scout and role == "scout" else self.confidence,
                     "claims": [{"id": "c1", "statement": "The measurement is approximate.",
-                                "confidence": 0.9, "evidence": []}],
+                                "confidence": 0.9, "evidence": evidence}],
                 }
             elif role == "gap_analyst":
-                output = {"gaps": self.gaps}
+                gaps = self.gaps
+                if retried:  # drop what the retry named: gaps for questions outside the plan
+                    planned = {question["id"] for question in payload["plan"]["questions"]}
+                    gaps = [item for item in gaps if item["question_id"] in planned]
+                output = {"gaps": gaps}
             elif role == "synthesizer":
                 refs = [claim["id"] for result in payload["evidence"] for claim in result["claims"]]
                 refs += ["q9/c9"] if invent else []
@@ -137,6 +153,10 @@ class Script:
                           "claims": [{"statement": "The measurement is approximate.", "claim_ids": refs}]}
             elif role == "verifier":
                 output = self.verification
+                if retried and output.get("followups"):  # drop follow-ups for questions outside the ledger
+                    known = {result["question_id"] for result in payload["evidence"]}
+                    output = {**output, "followups": [item for item in output["followups"]
+                                                      if item["question_id"] in known]}
                 if invent:
                     output = {**output, "checks": [*output.get("checks", []), {
                         "statement": "Invented", "claim_ids": ["q9/c9"], "supported": False,
@@ -235,6 +255,9 @@ async def test_gap_selection_filters_unknowns_deduplicates_and_caps_by_severity(
         script.verification = {"needs_research": True, "followups": gaps}
     outcome = await run(loop)
 
+    # Each call naming a question outside the plan gets a retry, and the model drops that gap.
+    retries = script.retries["gap_analyst" if stage == "initial" else "verifier"]
+    assert retries and all("absent" in retry for retry in retries)
     expected = [gap("q1", 4), gap("q2", 3)][:limit]
     assert [prompt["gap"] for prompt in script.prompts["deep_dive"]] == expected
     assert len(outcome.ledger.for_question("q1")) == 2
@@ -251,9 +274,12 @@ async def test_unactionable_verifier_followups_terminate_without_dispatch(workfl
     script.verification = {"needs_research": True, "followups": [gap() if disable_dives else gap("absent")]}
     outcome = await run(loop)
     assert script.prompts["deep_dive"] == []
-    assert len(script.prompts["verifier"]) <= 2
     assert len(outcome.ledger.all()) == 1
     assert outcome.verification.needs_research
+    if not disable_dives:
+        # The follow-up for a question outside the plan is retried away, so no empty round follows.
+        assert len(script.retries["verifier"]) == 1
+        assert len(script.prompts["synthesizer"]) == 1
 
 
 @pytest.mark.asyncio
@@ -488,3 +514,60 @@ async def test_run_fails_when_citations_stay_invented(workflow, role):
     (task,) = [task for task in loop.repository.tasks.values() if task["role"].value == role]
     assert job["status"] == task["status"] == "failed"
     assert task["error"] == {"type": "UnexpectedModelBehavior"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("bad_plan", "problem"), [
+    ([], "no research questions"),
+    ([{"id": "q1", "question": "A"}, {"id": "q1", "question": "B"}], "repeated: q1"),
+    ([{"id": f"q{i}", "question": f"Question {i}"} for i in range(11)], "at most 10"),
+], ids=["empty", "duplicate-ids", "too-many"])
+async def test_unworkable_plan_gets_a_retry(workflow, bad_plan, problem):
+    loop, script = workflow
+    script.plans = [bad_plan]
+    outcome = await run(loop)
+
+    (retry,) = script.retries["planner"]
+    assert problem in retry
+    assert [question.id for question in outcome.plan.questions] == ["q1"]
+
+
+@pytest.mark.asyncio
+async def test_run_fails_before_research_when_the_plan_stays_unworkable(workflow):
+    loop, script = workflow
+    script.plans = [[], []]
+    with pytest.raises(UnexpectedModelBehavior):
+        await run(loop)
+    assert script.prompts["scout"] == []
+
+
+@pytest.mark.asyncio
+async def test_research_results_are_filed_under_the_question_asked(workflow):
+    loop, script = workflow
+    script.relabel_results = True
+    script.confidence = 0.3  # a deep dive follows, and is filed the same way
+    outcome = await run(loop)
+
+    assert list(outcome.ledger.results) == ["q1"]
+    assert [result.question for result in outcome.ledger.for_question("q1")] == ["What was measured?"] * 2
+    research = [task for task in loop.repository.tasks.values()
+                if task["role"] in (ResearchRole.SCOUT, ResearchRole.DEEP_DIVE)]
+    assert {task["output"]["question_id"] for task in research} == {"q1"}  # stored as filed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cite", ["listed", "invented"])
+async def test_attachment_evidence_must_cite_a_run_attachment(workflow, tmp_path, cite):
+    loop, script = workflow
+    notes = tmp_path / "notes.txt"
+    notes.write_text("The measurement is approximate.", encoding="utf-8")
+    script.cite_attachment = cite
+    outcome = await run(loop, constraints=ResearchConstraints(attachment_paths=[str(notes)]))
+
+    cited = {item.source.attachment_id for claim in outcome.ledger.claims() for item in claim.evidence}
+    assert cited == {outcome.attachments.records[0].attachment_id}
+    if cite == "invented":
+        (retry,) = script.retries["scout"]
+        assert "att-9-invented" in retry
+    else:
+        assert script.retries["scout"] == []

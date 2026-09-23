@@ -9,7 +9,8 @@ from pydantic.json_schema import SkipJsonSchema
 
 # Recorded in manifests. 1: one `excerpt` field, excerpt or paraphrase.
 # 2: `excerpt` summarizes; a verbatim `quote` is checked against the research run's tool output.
-# 3: report and verifier citations must be ledger claim IDs; an unknown ID gets one retry, then fails.
+# 3: role outputs are checked against the run (agents.py): plans, question IDs, and claim and
+#    attachment citations; a mismatch gets one retry, then fails the run.
 EVIDENCE_VERSION = 3
 
 

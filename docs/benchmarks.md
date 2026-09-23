@@ -91,7 +91,7 @@ Compare runs only when these match:
 - **Graph version.** Keep `research-graph-v1` fixed while comparing policies.
 - **Tool stack.** Benchmarks always use normalized acquisition: DuckDuckGo search, the shared `web_fetch`, and the scholarly tools, with web and scholarly caches off so no result depends on an earlier run. See [acquisition.md](acquisition.md).
 - **Fetch version.** Version 2 pages through long documents and shares fetches within a case. It is part of the configuration fingerprint.
-- **Evidence version.** Version 2 adds verbatim quotes checked against tool output; version 3 requires report and verifier citations to be ledger claim IDs (see [Metrics](#metrics)).
+- **Evidence version.** Version 2 adds verbatim quotes checked against tool output; version 3 checks every role's output against the run (see [Metrics](#metrics)).
 - **Attachment mode.** Never merge normalized and multimodal results into one number.
 
 The manifest's `config_fingerprint` hashes policies, attachment mode, tool mode, repository mode, acquisition, and evidence version. It hashes the suite file, not the downloaded dataset bytes, so record a dataset checksum separately for reproducible comparisons. Two different uncommitted trees can share a commit and fingerprint; commit before named comparison runs.
@@ -115,7 +115,7 @@ The claim rates measure groundedness as judged by the run's own verifier, not fa
 
 Evidence version 2 splits each evidence item into an `excerpt` (the model's summary) and an optional verbatim `quote`. After each scout, deep dive, or salvage call, code checks every quote against all the text that run's tools returned: fetched pages and papers, search results, abstracts, and attachment chunks. Matching ignores case, whitespace, typographic quotes and dashes, and hyphenated line breaks, and accepts `...` and bracketed insertions when the remaining parts appear in order. The verdict is stored as `quote_check` (`verified` or `not_found`); it is hidden from the model's output schema and overwritten if a model sets it. The verbatim-quote rate needs no model judgment, but it shows only that the wording was in the tool output, not that the source supports the claim, and it does not check paraphrases.
 
-Evidence version 3 makes citations resolvable. The synthesizer's report and the verifier's checks may cite only claim IDs in the run's evidence ledger. An unknown ID gets one retry that names it; if the model repeats it, the case fails with `UnexpectedModelBehavior` instead of scoring a report whose citations do not resolve.
+Evidence version 3 checks each role's output against the run, so every reference in a result resolves. Plans must have at least one question, unique IDs, and no more than the policy's maximum. Research results are filed under the question they were asked, and their evidence may cite only the run's attachments. Gaps and verifier follow-ups must name planned questions. The report and verifier checks may cite only the ledger's claim IDs. A mismatch gets one retry that names it; if the model repeats it, the case fails with `UnexpectedModelBehavior` instead of scoring a result that does not hold together.
 
 Keep official scoring separate: use the official BrowseComp and GAIA semantic graders for published comparisons, and the official DRB-II evaluator for rubric scores.
 

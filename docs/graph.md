@@ -43,7 +43,7 @@ Graph steps own control flow only. Each role call is a method on `AsyncResearchL
 | Synthesize report | `_synthesize` |
 | Verify report | `_verify` |
 
-The synthesizer and verifier agents (`agents.py`) accept only citations to claim IDs in the run's ledger; an invented ID gets one retry, then fails the run.
+Each agent's output is checked against the run (`agents.py`): the planner's question count and IDs, the question a research result is filed under, attachment and claim citations, and the questions gaps and follow-ups name. A mismatch gets one retry that names it, then fails the run.
 
 Job creation, attachment loading, spend tracking, the per-job fetch memo, and the terminal job record (`_create_job`, `_load_attachments`, `_job_scope`, `_finish`) are shared the same way.
 
@@ -82,7 +82,7 @@ Every mapped work item carries its position in the plan. Record steps sort joine
 
 ## Gap selection
 
-Initial deep dives come from the gap analyst's gaps plus a `low_confidence` gap for every question whose best result is below `min_scout_confidence`. Verification deep dives come from the verifier's follow-ups. In both cases gaps for questions that are not in the plan are dropped, the most severe gap per question is kept, and at most `max_deep_dives_per_round` are researched, most severe first. Deep dives in verification rounds use `attempt >= 1`, which routes to the policy's alternate deep-dive model when it has one.
+Initial deep dives come from the gap analyst's gaps plus a `low_confidence` gap for every question whose best result is below `min_scout_confidence`. Verification deep dives come from the verifier's follow-ups. In both cases a gap naming a question outside the plan gets the agent a retry; selection also drops any that remain, keeps the most severe gap per question, and at most `max_deep_dives_per_round` are researched, most severe first. Deep dives in verification rounds use `attempt >= 1`, which routes to the policy's alternate deep-dive model when it has one.
 
 ## Verification rounds
 
@@ -97,7 +97,7 @@ initial verification
 
 `max_verification_rounds` bounds the research-and-resynthesis rounds after the first verification; `0` disables them. When the limit is reached, the run finishes with the last verification, including its unresolved findings.
 
-One known gap, held because it would change `v1` behavior: if every follow-up names a question outside the plan, no deep dive runs, yet synthesis and verification repeat on an unchanged ledger. See finding 2 in the [architecture review](architecture-review.md).
+Follow-ups naming questions outside the plan are retried away by the verifier, so they no longer buy an empty round. One case remains, held because fixing it changes `v1` routing: with `max_deep_dives_per_round = 0`, valid follow-ups still repeat synthesis and verification on an unchanged ledger. See finding 2 in the [architecture review](architecture-review.md).
 
 ## Versioning
 

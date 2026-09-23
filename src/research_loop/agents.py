@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
@@ -9,13 +10,40 @@ from .schemas import (
     FinalReport,
     GapAnalysis,
     ResearchPlan,
+    ResearchQuestion,
     ResearchResult,
     VerificationReport,
 )
 
 
+# What each role's output is checked against. A mismatch gets one retry that names it; a
+# repeated mismatch fails the run (UnexpectedModelBehavior).
+
+
+@dataclass(frozen=True)
+class PlanLimits:
+    max_questions: int
+
+
+@dataclass(frozen=True)
+class ResearchAssignment:
+    """A scout's or deep dive's question, and the attachments its evidence may cite."""
+
+    question: ResearchQuestion
+    attachment_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class LedgerRefs:
+    """What gap analysis, synthesis, and verification may cite: ledger claim and question IDs."""
+
+    claim_ids: frozenset[str]
+    question_ids: frozenset[str]
+
+
 planner_agent = Agent(
     output_type=ResearchPlan,
+    deps_type=PlanLimits,
     instructions=(
         "Decompose the user's objective into independent, evidence-seeking research questions. "
         "Prefer questions answerable from primary or authoritative sources. Questions should be "
@@ -27,6 +55,7 @@ planner_agent = Agent(
 
 scout_agent = Agent(
     output_type=ResearchResult,
+    deps_type=ResearchAssignment,
     instructions=(
         "Investigate exactly one research question. Use web and scholar tools when evidence is needed. "
         "Return atomic claims with source-backed evidence. Prefer primary, official, paper, or "
@@ -44,6 +73,7 @@ scout_agent = Agent(
 
 gap_agent = Agent(
     output_type=GapAnalysis,
+    deps_type=LedgerRefs,
     instructions=(
         "Inspect the evidence ledger for missing evidence, contradictions, weak sourcing, stale evidence, "
         "and low confidence. Escalate only gaps that could materially change the final answer."
@@ -52,6 +82,7 @@ gap_agent = Agent(
 
 deep_dive_agent = Agent(
     output_type=ResearchResult,
+    deps_type=ResearchAssignment,
     instructions=(
         "Resolve one difficult research gap. Use web and scholar tools efficiently. Preserve preprint versus published status and scholarly IDs. Favor primary "
         "or authoritative sources, look for disconfirming evidence, and explicitly state when the evidence "
@@ -65,7 +96,7 @@ deep_dive_agent = Agent(
 
 synthesizer_agent = Agent(
     output_type=FinalReport,
-    deps_type=frozenset[str],  # the evidence ledger's claim IDs
+    deps_type=LedgerRefs,
     instructions=(
         "Synthesize only from the supplied evidence ledger. In `claims`, attach every material factual "
         "statement to the exact evidence-ledger claim IDs that support it. Evidence marked "
@@ -77,7 +108,7 @@ synthesizer_agent = Agent(
 
 verifier_agent = Agent(
     output_type=VerificationReport,
-    deps_type=frozenset[str],  # the evidence ledger's claim IDs
+    deps_type=LedgerRefs,
     instructions=(
         "Audit the proposed report claim-by-claim against the supplied evidence. Flag unsupported, "
         "overstated, stale, mismatched, or contradictory statements. Verify that cited claim IDs exist "
@@ -88,25 +119,73 @@ verifier_agent = Agent(
     ),
 )
 
-def _require_ledger_claims(cited: Iterable[str], ledger_claim_ids: frozenset[str]) -> None:
-    """Ask for another answer when output cites claim IDs the evidence ledger does not have."""
-    unknown = sorted(set(cited) - ledger_claim_ids)
-    if unknown:
-        raise ModelRetry(
-            f"These claim IDs are not in the evidence ledger: {', '.join(unknown[:25])}. Cite only claim "
-            "IDs that appear in the supplied evidence, copied exactly, or drop the citation."
-        )
+def _unknown(kind: str, ids: Iterable[str], known: frozenset[str], fix: str) -> list[str]:
+    unknown = sorted(set(ids) - known)
+    return [f"These {kind} do not exist: {', '.join(unknown[:25])}. {fix}"] if unknown else []
+
+
+def _unknown_claims(ids: Iterable[str], refs: LedgerRefs) -> list[str]:
+    return _unknown("claim IDs", ids, refs.claim_ids,
+                    "Cite only claim IDs that appear in the supplied evidence, copied exactly, or drop the citation.")
+
+
+def _unknown_questions(ids: Iterable[str], refs: LedgerRefs) -> list[str]:
+    return _unknown("question IDs", ids, refs.question_ids,
+                    "Name only question IDs from the supplied plan or evidence, copied exactly, or drop the gap.")
+
+
+def _retry_on(problems: list[str]) -> None:
+    if problems:
+        raise ModelRetry(" ".join(problems))
+
+
+@planner_agent.output_validator
+def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> ResearchPlan:
+    ids = [question.id for question in output.questions]
+    problems = []
+    if not ids:
+        problems.append("The plan has no research questions; return at least one.")
+    if repeated := sorted({question_id for question_id in ids if ids.count(question_id) > 1}):
+        problems.append(f"Question IDs must be unique; repeated: {', '.join(repeated)}.")
+    if len(ids) > ctx.deps.max_questions:
+        problems.append(f"The plan has {len(ids)} questions; return at most {ctx.deps.max_questions}, "
+                        "merging overlapping ones.")
+    _retry_on(problems)
+    return output
+
+
+def _result_fits_assignment(ctx: RunContext[ResearchAssignment], output: ResearchResult) -> ResearchResult:
+    """File the result under the question asked, and reject attachments the run does not have."""
+    _retry_on(_unknown(
+        "attachment IDs",
+        (item.source.attachment_id for claim in output.claims for item in claim.evidence if item.source.attachment_id),
+        ctx.deps.attachment_ids,
+        "Cite attachments only by the IDs list_attachments returns, or drop that evidence.",
+    ))
+    question = ctx.deps.question
+    return output.model_copy(update={"question_id": question.id, "question": question.question})
+
+
+scout_agent.output_validator(_result_fits_assignment)
+deep_dive_agent.output_validator(_result_fits_assignment)
+
+
+@gap_agent.output_validator
+def _gaps_name_plan_questions(ctx: RunContext[LedgerRefs], output: GapAnalysis) -> GapAnalysis:
+    _retry_on(_unknown_questions((gap.question_id for gap in output.gaps), ctx.deps))
+    return output
 
 
 @synthesizer_agent.output_validator
-def _report_cites_ledger_claims(ctx: RunContext[frozenset[str]], output: FinalReport) -> FinalReport:
-    _require_ledger_claims(output.claim_ids_used, ctx.deps)
+def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport) -> FinalReport:
+    _retry_on(_unknown_claims(output.claim_ids_used, ctx.deps))
     return output
 
 
 @verifier_agent.output_validator
-def _checks_cite_ledger_claims(ctx: RunContext[frozenset[str]], output: VerificationReport) -> VerificationReport:
-    _require_ledger_claims((claim_id for check in output.checks for claim_id in check.claim_ids), ctx.deps)
+def _verification_cites_ledger(ctx: RunContext[LedgerRefs], output: VerificationReport) -> VerificationReport:
+    _retry_on(_unknown_claims((claim_id for check in output.checks for claim_id in check.claim_ids), ctx.deps)
+              + _unknown_questions((gap.question_id for gap in output.followups), ctx.deps))
     return output
 
 
