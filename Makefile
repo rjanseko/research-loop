@@ -1,25 +1,28 @@
 .PHONY: setup test graph diagnose postgres-up postgres-down db-status migrate
 
+VENV := .venv/bin
+
 setup:
 	./scripts/bootstrap.sh
 
 test:
-	. .venv/bin/activate && pytest -q
+	$(VENV)/pytest -q
 
 graph:
-	. .venv/bin/activate && research-graph
+	$(VENV)/research-graph
 
 diagnose:
-	. .venv/bin/activate && research-diagnose
+	$(VENV)/research-diagnose
 
 db-status:
-	. .venv/bin/activate && research-db status
+	$(VENV)/research-db status
 
+# --wait blocks until the healthcheck passes, so `make postgres-up migrate` works.
 postgres-up:
-	docker compose up -d postgres
+	docker compose up -d --wait postgres
 
 postgres-down:
 	docker compose down
 
 migrate:
-	. .venv/bin/activate && research-db migrate
+	$(VENV)/research-db migrate

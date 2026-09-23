@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e '.[all]'
+cd "$(dirname "$0")/.."
+PYTHON="${PYTHON:-python3}"
+
+if ! "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+    echo "research-loop needs Python 3.12 or newer; set PYTHON=/path/to/python3.12" >&2
+    exit 1
+fi
+
+"$PYTHON" -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[all]'
 
 echo
 echo "Bootstrap complete."

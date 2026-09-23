@@ -103,7 +103,7 @@ outcome = await loop.run(
 print(outcome.report.answer)
 ```
 
-`outcome` carries the plan, report, verification, evidence ledger, attachment corpus, and the job's spend. A run that finishes has succeeded, but that says nothing about its result: `outcome.review_reasons` lists what it left unresolved (no evidence, an uncited or unchecked report, unsupported or major verifier findings, a verifier still asking for research) and is empty when nothing needs review. The model never sees host file paths; attachments are exposed through stable IDs and normalized tools. `examples/run_research.py` runs one objective from the command line.
+`outcome` carries the plan, report, verification, evidence ledger, attachment corpus, and the job's spend. A run that finishes has succeeded, but that says nothing about its result: `outcome.review_reasons` lists what it left unresolved (no evidence, an uncited or unchecked report, unsupported or major verifier findings, a verifier still asking for research) and is empty when nothing needs review. The model never sees host file paths; attachments are exposed through stable IDs and normalized tools. `examples/run_research.py` runs one objective from the command line: offline with the synthetic policy by default, or with a real policy given `--paid`.
 
 `LegacyResearchLoop` takes the same arguments. It exists for parity and regression work and will be retired once the graph implementation has enough benchmark history.
 
