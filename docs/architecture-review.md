@@ -26,7 +26,7 @@ Finding 14 is addressed without changing the output layout: each question's file
 
 Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field of `campaign.toml` when it loads, rejects unknown keys, checks the planner range and reserve against their limits, and fills defaults, so `--dry-run` catches what a run would otherwise hit after the paid preflight. The spec's `scholarly_cache_mode` is now honored instead of hardcoded. Rendered objectives are unchanged.
 
-**Status by finding, as of 2026-09-23 (evidence version 4, 284 tests).** This table sums up the status notes above; the findings below keep their original text.
+**Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
 |---|---|---|
@@ -37,7 +37,7 @@ Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field 
 | 5. Source restrictions not enforced by tools | Done for normalized tools (`fetch_version` 3) | Provider-native tools in `adaptive` mode are only audited; acquisition events are not stored as records |
 | 6. Canonical evidence IDs not stored | Done (migration 003) | Task outputs keep worker-local IDs; the in-memory ledger is mutable |
 | 7. No persisted cancellation or deadline | Done: cancellation, `max_run_seconds`, `research-db reconcile`, legacy sibling cancellation | — |
-| 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, campaign synthesis is bounded ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops still resend their whole history; salvage still truncates tool results |
+| 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, long-horizon synthesis is bounded, and salvage keeps every useful result ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops still resend their whole history |
 | 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, and `campaign.toml` | `ModelRoute` limits are not validated |
