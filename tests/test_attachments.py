@@ -178,3 +178,16 @@ def test_attachment_ingestion_does_not_block_other_tasks(tmp_path: Path, monkeyp
         return ticks
 
     assert asyncio.run(main()) > 5  # the ticker kept running while the attachment was parsed
+
+
+def test_search_matches_words_outside_ascii(tmp_path: Path) -> None:
+    notes = tmp_path / "notes.txt"
+    notes.write_text("Le café de la gare publie un résumé.\n\nМосква и Straße.", encoding="utf-8")
+    corpus = AttachmentCorpus.from_paths([notes])
+    # The ASCII-only tokenizer read "café" as "caf" and dropped Cyrillic entirely.
+    assert corpus.search("café")
+    assert corpus.search("résumé")
+    assert corpus.search("москва")
+    assert corpus.search("STRASSE")  # case folding matches ß with ss
+    # A fragment gets only the substring bonus; the whole word also scores as a term.
+    assert corpus.search("café")[0].score > corpus.search("caf")[0].score
