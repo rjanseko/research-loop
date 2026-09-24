@@ -30,6 +30,8 @@ Finding 11's route and policy limits are validated too (2026-09-24). `ModelRoute
 
 Finding 12's year filters are addressed (2026-09-24, `fetch_version` 4): `scholar_search` passes its year bounds to arXiv as a `submittedDate` range and to Crossref as `from-pub-date`/`until-pub-date`, and drops arXiv records dated outside them, so a study's publication window no longer applies to OpenAlex alone.
 
+Finding 12's DNS gap is closed the same day: the web and scholarly fetch clients connect through a network backend that resolves the host once, refuses unless every address is public, and connects to a checked address, so a rebinding DNS answer cannot redirect the connection. With an HTTPS proxy configured the proxy connects and remains the egress boundary.
+
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -45,7 +47,7 @@ Finding 12's year filters are addressed (2026-09-24, `fetch_version` 4): `schola
 | 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, `campaign.toml`, `ModelRoute`, and `ModelPolicy` (2026-09-24) | — |
-| 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4) | cached search token statistics; one HTTP client per run; DNS check and connection resolve separately |
+| 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4), connections pinned to checked public addresses | cached search token statistics; one HTTP client per run |
 | 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile and a wheel install smoke test (CI now runs lint and the offline suite) |
 | 14. Campaign artifacts not published atomically | Done | — |
 | 15. Budget accounting separate from admission control | Open (P3) | Reserving budget before concurrent calls |

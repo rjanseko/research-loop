@@ -62,7 +62,7 @@ Fetches send a `research-loop` User-Agent, because sites such as Wikimedia rejec
 
 Fetched URLs must be public HTTPS without credentials. The original request and every redirect (at most three) are checked by resolving the host and requiring all of its addresses to be globally routable. A response that exceeds the size cap while streaming is refused, and so are unsupported content types.
 
-The DNS check and the connection resolve separately, so DNS rebinding can pass the check. The rebound connection still needs a TLS certificate valid for the requested host name, because httpx verifies certificates, so local plain-HTTP or non-HTTP services such as GROBID and Postgres fail the handshake. The residual risk is a private HTTPS service presenting a certificate for an attacker-chosen host name; deployments facing hostile DNS should also restrict network egress.
+The connection is checked too, so DNS rebinding cannot slip past the first check. The fetch client resolves the host once when it connects, refuses unless every address is globally routable, and connects to one of those addresses; TLS still verifies the certificate against the URL's host name. When an HTTPS proxy is set in the environment (`HTTPS_PROXY` or `ALL_PROXY`), the proxy resolves and connects instead, so only the URL check applies and the proxy is the egress boundary. A caller-supplied `httpx` client is used as given.
 
 ## Blocked sources
 

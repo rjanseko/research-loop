@@ -19,6 +19,7 @@ from .acquisition import (
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    public_fetch_client,
     public_url,
     wait_rate_slot,
 )
@@ -103,7 +104,7 @@ class WebAcquisition:
         if self.client:
             response = await bounded_public_get(self.client, url, _MAX_PAGE_BYTES, self.policy)
         else:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            async with public_fetch_client(timeout=15) as client:
                 response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()

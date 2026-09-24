@@ -27,6 +27,7 @@ from .acquisition import (
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    public_fetch_client,
     public_url,
     read_capped,
     wait_rate_slot,
@@ -388,7 +389,7 @@ class ScholarClient:
         if self.client:
             response = await bounded_public_get(self.client, url, 5_000_000, self.policy)
         else:
-            async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+            async with public_fetch_client(timeout=15) as client:
                 response = await bounded_public_get(client, url, 5_000_000, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
