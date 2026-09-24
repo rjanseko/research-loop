@@ -250,6 +250,7 @@ Limits that no call could run under are refused before a job is created. A route
 | `max_verification_rounds` | 2 | Extra research-and-rewrite rounds after the first verification; `0` turns them off |
 | `salvage_exhausted_research` | off | Summarize instead of failing when a scout or deep dive runs out of budget |
 | `max_run_seconds` | none | A wall-clock deadline for the run |
+| `keep_recent_tool_results` | none (off) | Experimental. A scout or deep dive sends only its N most recent tool results whole; older results of 2,000 characters or more that it has already read go as a note plus their first 500 characters, and it can call the tool again for the full text. Stored tool output, quote and source checks, and salvage still see everything. It changes what models are sent, so compare quality before turning it on |
 | `tool_mode` | `adaptive` | Whether models use their provider's search or the shared local tools (see [sources](#where-evidence-comes-from)) |
 | `attachment_mode` | `normalized` | Send attachments as extracted text only, or also send images and scanned PDFs |
 | `scholarly_cache_mode` | `live` | How the acquisition cache is used |

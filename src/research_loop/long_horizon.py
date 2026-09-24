@@ -185,6 +185,7 @@ def long_horizon_run_config(spec: dict[str, Any]) -> ResearchConfig:
         max_verification_rounds=int(execution["max_verification_rounds"]),
         salvage_exhausted_research=True,
         max_run_seconds=execution["question_timeout_seconds"],
+        keep_recent_tool_results=execution["keep_recent_tool_results"],
     )
 
 

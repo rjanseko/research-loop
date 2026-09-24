@@ -14,6 +14,7 @@ import anyio
 import httpx
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits, capture_run_messages
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
@@ -67,6 +68,7 @@ from .telemetry import (
     safe_tool_args,
     usage_snapshot,
 )
+from .tool_history import ToolResultTrimmer
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
 
@@ -89,6 +91,10 @@ class ResearchConfig:
     salvage_exhausted_research: bool = False
     # Wall-clock limit for one run; past it the run is cancelled and recorded failed (TimeoutError).
     max_run_seconds: float | None = None
+    # Experimental, off by default: a scout or deep dive sends only its most recent N tool results
+    # whole and a short stub for older ones it has read (tool_history.py). This changes what the
+    # model is sent, so compare runs with it on against runs without before relying on it.
+    keep_recent_tool_results: int | None = None
 
     def __post_init__(self) -> None:
         # Zero deep dives or verification rounds disables that step; zero parallel slots would hang.
@@ -100,6 +106,8 @@ class ResearchConfig:
             raise ValueError("min_scout_confidence must be between 0 and 1")
         if self.max_run_seconds is not None and not self.max_run_seconds > 0:
             raise ValueError("max_run_seconds must be positive when set")
+        if self.keep_recent_tool_results is not None and self.keep_recent_tool_results < 0:
+            raise ValueError("keep_recent_tool_results must be at least 0 when set")
 
 
 # How long recording a failed or cancelled task or job may take before the run gives up on it.
@@ -574,6 +582,9 @@ class AsyncResearchLoop:
             "attachment_count": len(attachment_corpus.records) if attachment_corpus else 0,
             "scholarly_cache_mode": self.config.scholarly_cache_mode,
         } | ({"salvage": True} if salvage else {})
+        keep_recent = self.config.keep_recent_tool_results if research_tools else None
+        if keep_recent is not None:
+            effective_config["keep_recent_tool_results"] = keep_recent
         hold = await self._admit(job_id, route, self.policy.job_reserve_for(role, salvage=salvage))
         remaining_budget = hold.amount if hold else None
         try:
@@ -593,6 +604,7 @@ class AsyncResearchLoop:
             # A caller-owned RunUsage keeps counting billed requests even when the run raises.
             usage = RunUsage()
             run_messages: list[Any] = []
+            trimmer = ToolResultTrimmer(keep_recent) if keep_recent is not None else None
             try:
                 if require_retry_room:
                     needed = retry_token_budget(prompt, route, role)
@@ -604,6 +616,8 @@ class AsyncResearchLoop:
                 capabilities = (
                     build_research_capabilities(self.config.tool_mode) if research_tools else None
                 )
+                if trimmer is not None and capabilities is not None:
+                    capabilities.append(ProcessHistory(trimmer))
                 toolsets = []
                 memo = self._fetch_memos.get(job_id)
                 policy = self._source_policies.get(job_id)
@@ -658,7 +672,9 @@ class AsyncResearchLoop:
                     # Spend and the released allowance change together, so no call sees both or neither.
                     self._record_spend(job_id, usage)
                     self._release(job_id, hold)
-                events = extract_tool_events(result.new_messages())
+                # Tool telemetry and the quote and source checks read what the tools returned.
+                new_messages = trimmer.restore(result.new_messages()) if trimmer else result.new_messages()
+                events = extract_tool_events(new_messages)
                 await self.repository.record_tool_events(task_id, events)
                 output = result.output
                 if isinstance(output, ResearchResult):
@@ -680,6 +696,8 @@ class AsyncResearchLoop:
             except (Exception, asyncio.CancelledError) as exc:
                 # Cancelled tasks are recorded too: a cancelled run, or a sibling branch the graph
                 # cancelled because another failed.
+                if trimmer is not None:
+                    run_messages = trimmer.restore(run_messages)
                 if captured is not None:
                     captured.extend(run_messages)
                 with _recording_failure(exc):

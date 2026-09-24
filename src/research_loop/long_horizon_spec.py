@@ -58,6 +58,7 @@ class Execution(_Spec):
     scout_max_requests: PositiveInt | None = None
     scout_max_tool_calls: PositiveInt | None = None
     scout_total_tokens_limit: PositiveInt | None = None
+    keep_recent_tool_results: NonNegativeInt | None = None  # experimental; see ResearchConfig
     research_notes: list[str] = Field(default_factory=list)
 
     @field_validator("research_notes")
