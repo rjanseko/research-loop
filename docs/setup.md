@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-make setup      # python3 -m venv .venv && pip install -e '.[all]'
+make setup      # .venv with the pinned dependencies in requirements.lock
 make test       # pytest -q
 make lint       # ruff check .
 ```
@@ -13,9 +13,12 @@ Or by hand:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[all]'
+pip install -r requirements.lock
+pip install --no-deps -e .
 pytest -q
 ```
+
+`requirements.lock` pins every dependency of every extra, for all platforms, so installs and CI get the same versions. `pip install -e '.[all]'` still works and takes the newest versions `pyproject.toml` allows. After changing dependencies in `pyproject.toml`, run `make lock` (it keeps existing pins where it can); `make lock UPGRADE=1` moves everything to the newest allowed versions. CI fails if the lockfile no longer matches `pyproject.toml`.
 
 Python 3.12 or later is required. The package tracks the PydanticAI and Pydantic Graph 2.x line (`>=2.47,<3`). `all` installs every optional extra; install fewer with, for example, `pip install -e '.[attachments,postgres]'`.
 
@@ -30,6 +33,14 @@ Python 3.12 or later is required. The package tracks the PydanticAI and Pydantic
 | `test` | pytest, pytest-asyncio, reportlab, and ruff (pinned, with the lint rules set in `pyproject.toml`) |
 
 The test suite runs offline, and GitHub Actions runs `ruff check .` and `pytest -q` on every push to `master` and every pull request (`.github/workflows/ci.yml`). `tests/conftest.py` refuses model-provider requests and fails any test that resolves or connects to a non-loopback host.
+
+`tests/test_postgres.py` runs against a real, disposable Postgres: migrations applied in order and once, a failing migration rolled back, a full synthetic run's job, tasks, tool events, attachments, and ledger stored, failures recorded, and `research-db reconcile`. It is skipped unless `RESEARCH_TEST_DATABASE_URL` names a database with `test` in its name, because each test drops that database's `public` schema. CI starts a Postgres 16 service for it; locally:
+
+```bash
+docker compose up -d --wait postgres
+docker compose exec postgres createdb -U research research_test
+RESEARCH_TEST_DATABASE_URL=postgresql://research:research@127.0.0.1:5432/research_test pytest -q -m postgres
+```
 
 ## Configuration
 

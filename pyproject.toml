@@ -46,6 +46,7 @@ research_loop = ["migrations/*.sql"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+markers = ["postgres: integration tests against a disposable Postgres; set RESEARCH_TEST_DATABASE_URL to run them"]
 
 [tool.ruff.lint]
 # ruff 0.16's default rules, pinned with ruff itself in the `test` extra: upgrading ruff is a
