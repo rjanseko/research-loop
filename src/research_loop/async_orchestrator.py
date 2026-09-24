@@ -274,6 +274,7 @@ class AsyncResearchLoop:
         *,
         settings: ResearchSettings | None = None,
     ) -> None:
+        policy.validate()
         self.policy = policy
         # Applications pass the settings they resolved; only a bare library call reads the environment.
         self.settings = settings or ResearchSettings.from_env()
@@ -297,6 +298,7 @@ class AsyncResearchLoop:
         graph_version: str | None = None,
     ) -> UUID:
         """Persist a research job with its effective configuration; no local paths or file contents."""
+        self.policy.validate()
         return await self.repository.create_job(
             session_id=session_id or uuid4(),
             root_run_id=root_run_id or uuid4(),
@@ -934,6 +936,7 @@ class AsyncResearchLoop:
         config: dict[str, Any] | None = None,
     ) -> AgentJobOutcome:
         """Run one agent as its own job with the same persistence and job cost cap as run()."""
+        self.policy.validate()
         job_id = await self.repository.create_job(
             session_id=uuid4(),
             root_run_id=uuid4(),
