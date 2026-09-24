@@ -66,7 +66,7 @@ Host filesystem paths are intentionally kept inside the application process:
 - Postgres stores filename, hash, media type, extractor, size, chunk count, and extraction metadata;
 - file bytes are not copied into Postgres by this layer.
 
-The `research_attachments` table comes from `migrations/002_research_attachments.sql`; `research-db migrate` applies it with the others (see [setup.md](setup.md#postgres)).
+The `research_attachments` table comes from `src/research_loop/migrations/002_research_attachments.sql`; `research-db migrate` applies it with the others (see [setup.md](setup.md#postgres)).
 
 ## Limits
 

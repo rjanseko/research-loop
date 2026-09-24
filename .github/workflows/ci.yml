@@ -27,3 +27,14 @@ jobs:
       # so no secrets or network access are needed.
       - name: Test
         run: pytest -q
+      # The editable install above reads files from the checkout; a wheel carries only what is
+      # packaged, so install one into a clean environment and check that it runs.
+      - name: Wheel install smoke test
+        run: |
+          pip wheel --no-deps -w dist .
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install -q "$(ls dist/research_loop-*.whl)[postgres]"
+          cd /tmp
+          /tmp/wheel-env/bin/python -c "from research_loop.db import migration_files; print([m.name for m in migration_files()])"
+          /tmp/wheel-env/bin/research-db --help > /dev/null
+          /tmp/wheel-env/bin/research-graph --help > /dev/null

@@ -34,6 +34,8 @@ Finding 12's DNS gap is closed the same day: the web and scholarly fetch clients
 
 Finding 15 is addressed (2026-09-24) with the simple, safe rule the finding describes: before a call starts, the job sets aside its route `cost_limit` (or everything left, for a route without one) and the call keeps that allowance until it ends, when its actual spend is recorded and the allowance returned in one step. A call that does not fit beside the running calls' allowances and the finishing reserve waits for one to finish; with none running it takes what is left, as before. Two calls can therefore no longer count on the same money or reach into the reserve together. The cost is concurrency: under a job cap, parallel scouts run only as many at once as their full caps fit, and an uncapped route runs alone. Salvage still draws on the reserve by design, and a single request can still overshoot its allowance, because usage arrives after the request.
 
+Finding 13's wheel check found a real gap (2026-09-24): SQL migrations sat outside the package, so an installed wheel could not run `research-db migrate`. They now live in `src/research_loop/migrations/` as package data, and CI installs the built wheel into a clean environment and loads them.
+
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -50,7 +52,7 @@ Finding 15 is addressed (2026-09-24) with the simple, safe rule the finding desc
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, `campaign.toml`, `ModelRoute`, and `ModelPolicy` (2026-09-24) | — |
 | 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4), connections pinned to checked public addresses | cached search token statistics; one HTTP client per run |
-| 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile and a wheel install smoke test (CI now runs lint and the offline suite) |
+| 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile (CI runs lint, the offline suite, and a wheel install smoke test) |
 | 14. Campaign artifacts not published atomically | Done | — |
 | 15. Budget accounting separate from admission control | Done (2026-09-24): each call holds its route cost cap until it finishes | Overshoot within a single request |
 
