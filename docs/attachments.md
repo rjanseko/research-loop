@@ -26,7 +26,7 @@ Supported deterministic extractors:
 | XLSX/XLSM | sheet + row-range table chunks |
 | Images | dimensions/format metadata only |
 
-Every attachment gets a SHA-256 hash, a stable per-run attachment ID, a media type, extraction metadata, chunk locators, and chunk hashes. Search is deterministic TF-IDF over the extracted chunks.
+Every attachment gets a SHA-256 hash, a stable per-run attachment ID, a media type, extraction metadata, chunk locators, and chunk hashes. Search is deterministic TF-IDF over the extracted chunks; each chunk is tokenized once, when the corpus is built, so a search tokenizes only its query.
 
 ### `multimodal`
 
