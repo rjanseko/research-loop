@@ -27,6 +27,7 @@ from .acquisition import (
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    public_fetch_client,
     public_url,
     read_capped,
     wait_rate_slot,
@@ -36,6 +37,14 @@ _PDF_PAGE_LIMIT = 30
 # Largest metadata response read from a provider; reading stops once a response passes it.
 _MAX_METADATA_BYTES = 2_000_000
 Status = Literal["preprint", "journal", "accepted_conference", "conference_submission", "unknown"]
+
+
+def _year_within(published_at: str | None, year_from: int | None, year_to: int | None) -> bool:
+    """Whether a record's year is inside the bounds; an undated record is kept."""
+    if not published_at or not published_at[:4].isdigit():
+        return True
+    year = int(published_at[:4])
+    return (not year_from or year >= year_from) and (not year_to or year <= year_to)
 
 
 class ScholarWork(BaseModel):
@@ -225,14 +234,28 @@ class ScholarClient:
         except (httpx.HTTPError, ValueError, LookupError, KeyError, TypeError, AttributeError) as exc:
             result.provider_errors.append(f"openalex:{type(exc).__name__}")
         if include_arxiv:
+            search_query = f"all:{query[:120]}"
+            if year_from or year_to:
+                # arXiv needs both ends of a submittedDate range; its archive starts in 1991.
+                search_query += f" AND submittedDate:[{year_from or 1991}01010000 TO {year_to or 9999}12312359]"
             try:
-                raw = await self._request("arxiv", "/api/query", {"search_query": f"all:{query[:120]}", "start": 0, "max_results": min(5, limit)}, text=True)
-                result.works.extend(_arxiv_works(raw)[:limit])
+                raw = await self._request("arxiv", "/api/query", {"search_query": search_query, "start": 0, "max_results": min(5, limit)}, text=True)
+                # published is the first version's submission date, which the range also filters on.
+                works = [work for work in _arxiv_works(raw) if _year_within(work.published_at, year_from, year_to)]
+                result.works.extend(works[:limit])
             except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError, ET.ParseError) as exc:
                 result.provider_errors.append(f"arxiv:{type(exc).__name__}")
         if include_crossref:
             try:
-                raw = await self._request("crossref", "/works", {"query.bibliographic": query[:300], "rows": min(5, limit)})
+                params = {"query.bibliographic": query[:300], "rows": min(5, limit)}
+                crossref_filters = []
+                if year_from:
+                    crossref_filters.append(f"from-pub-date:{year_from}-01-01")
+                if year_to:
+                    crossref_filters.append(f"until-pub-date:{year_to}-12-31")
+                if crossref_filters:
+                    params["filter"] = ",".join(crossref_filters)
+                raw = await self._request("crossref", "/works", params)
                 result.works.extend(_crossref_work(item) for item in raw.get("message", {}).get("items", [])[:limit])
             except (httpx.HTTPError, ValueError, LookupError, KeyError, TypeError, AttributeError) as exc:
                 result.provider_errors.append(f"crossref:{type(exc).__name__}")
@@ -366,7 +389,7 @@ class ScholarClient:
         if self.client:
             response = await bounded_public_get(self.client, url, 5_000_000, self.policy)
         else:
-            async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
+            async with public_fetch_client(timeout=15) as client:
                 response = await bounded_public_get(client, url, 5_000_000, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()

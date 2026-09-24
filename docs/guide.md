@@ -237,6 +237,8 @@ There are three levels of limits. Your provider account's own caps are the outer
 
 The built-in policies leave `job_cost_limit` unset and `job_reserve_usd` at zero, so out of the box the only protection is the per-call limits. If you use the library directly, set a job cap yourself; long-horizon studies set one from their per-question and synthesis budgets. The job cap is a soft limit: it is checked before each call against spend recorded so far, so it can't promise that your provider bill will never go over it.
 
+Limits that no call could run under are refused before a job is created. A route needs a model, at least one request and one token, and zero or more tool calls (zero makes it tool-free); its dollar limit and `max_tokens`, when set, must be positive. A policy needs a route for every role, a planner range with 1 ≤ min ≤ max, a positive job cap when set, and a reserve of zero or more that stays below the cap.
+
 ### How much work a run does
 
 | Setting | Default | What it controls |
@@ -365,7 +367,7 @@ To compare two runs fairly, hold these fixed. When you are deliberately comparin
 | Graph topology | `research-graph-v1` | `graph.py` |
 | Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
 | Evidence schema | `evidence_version` 4: an `excerpt`, plus a verbatim `quote` and cited source that code checks against tool output, and every role's output checked against the run's plan, ledger, and attachments | `schemas.py`, `quotes.py`, `agents.py` |
-| Fetch behavior | `fetch_version` 3: paged fetches, a per-job document memo, and refusal of the task's forbidden sources | `acquisition.py` |
+| Fetch behavior | `fetch_version` 4: paged fetches, a per-job document memo, refusal of the task's forbidden sources, and year bounds on every scholarly search provider | `acquisition.py` |
 | Tool mode | `normalized` for benchmarks and studies, `adaptive` as the library default | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |
 | Scoring | `evaluator_version` 1, the metric definitions | `evals.py` |
@@ -425,7 +427,7 @@ Basis papers are the works a body of literature rests on: the ones many of the c
 
 On the p01 pilot, the Codex paper that introduced HumanEval ranked first in both runs. It was cited by 6 of 7 seed papers in the evidence-version-3 bibliography and 5 of 8 in the version-4 one, yet the study never cited it. MBPP, SWE-bench, and SWE-agent came next, and 29 of the top 30 were works the study hadn't cited. Forward snowballing found 30 later works, mostly from 2026, because citations are read newest first and capped at 1,000 per seed. These are observations from one pilot, not a general measure of retrieval quality.
 
-Still to come: screening against the spec's window and source tiers, a screening record of how many works were found, screened, and included (with a reason for each exclusion), a review-style synthesis organized by theme and timeline that reuses the study synthesizer, co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata, and their year filters work on OpenAlex only.
+Still to come: screening against the spec's window and source tiers, a screening record of how many works were found, screened, and included (with a reason for each exclusion), a review-style synthesis organized by theme and timeline that reuses the study synthesizer, co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata.
 
 ## Commands
 

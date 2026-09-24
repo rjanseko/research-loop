@@ -14,6 +14,7 @@ import re
 import socket
 import threading
 import time
+import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any, Literal
 from urllib.parse import unquote, urljoin, urlparse
 from uuid import uuid4
 
+import httpcore
 import httpx
 
 # Part of every cache key; bump it to invalidate recorded entries.
@@ -28,7 +30,8 @@ CACHE_VERSION = 1
 # Recorded in manifests. 1: fetch returned only the first 12,000 characters.
 # 2: fetch pages through a document with `start`, backed by a per-job memo.
 # 3: fetches refuse the task's blocked sources, including redirects to them.
-FETCH_VERSION = 3
+# 4: scholar_search year bounds also filter arXiv and Crossref, not only OpenAlex.
+FETCH_VERSION = 4
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
 CacheMode = Literal["off", "live", "record", "replay"]
@@ -229,8 +232,69 @@ async def public_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         return False
+    return bool(await _global_addresses(parsed.hostname, parsed.port or 443))
+
+
+async def _global_addresses(host: str, port: int) -> list[str]:
+    """The addresses `host` resolves to, or none unless every one of them is public."""
     try:
-        addresses = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or 443)
-        return bool(addresses) and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses)
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
+        addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
+        return addresses if all(ipaddress.ip_address(address).is_global for address in addresses) else []
     except (OSError, ValueError):
-        return False
+        return []
+
+
+class _PublicOnlyBackend(httpcore.AsyncNetworkBackend):
+    """Connects to the public address it checked, so a second DNS answer cannot redirect it.
+
+    The URL check before a download resolves the host separately; a rebinding DNS server could
+    answer that lookup with a public address and the connection's with a private one. TLS still
+    verifies the certificate against the URL's hostname, which httpcore passes to start_tls.
+    """
+
+    def __init__(self) -> None:
+        self._inner = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None,
+                          local_address: str | None = None, socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        addresses = await _global_addresses(host, port)
+        if not addresses:
+            raise ValueError("unsafe URL")
+        error: Exception | None = None
+        for address in addresses:
+            try:
+                return await self._inner.connect_tcp(address, port, timeout, local_address, socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                error = exc
+        assert error is not None
+        raise error
+
+    async def connect_unix_socket(self, path: str, timeout: float | None = None,
+                                  socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        raise ValueError("unsafe URL")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+class _PublicOnlyTransport(httpx.AsyncHTTPTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        # httpx does not take a network backend, so the pool it built is replaced with one that does.
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=httpx.create_ssl_context(), max_connections=10, keepalive_expiry=5.0,
+            network_backend=_PublicOnlyBackend(),
+        )
+
+
+def public_fetch_client(timeout: float) -> httpx.AsyncClient:
+    """A client for bounded_public_get that connects only to public addresses.
+
+    With an HTTPS proxy in the environment the proxy makes the connection and is the egress
+    boundary, so the client keeps using it and the URL check in bounded_public_get is the only one.
+    """
+    proxies = urllib.request.getproxies()
+    if "https" in proxies or "all" in proxies:
+        return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    return httpx.AsyncClient(transport=_PublicOnlyTransport(), timeout=timeout, follow_redirects=False)
