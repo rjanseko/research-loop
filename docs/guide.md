@@ -391,6 +391,7 @@ The final synthesis is one bounded agent job. It receives a source table and, fo
 research-long-horizon --dry-run                        # validate the spec; no calls
 research-long-horizon --question q01 --paid --persist  # run one question
 research-long-horizon --all-questions --paid --persist # run every question in turn
+research-long-horizon --all-questions --resume --paid   # rerun only questions not completed under this configuration
 research-long-horizon --aggregate                      # merge completed evidence; no calls
 research-long-horizon --basis-papers                   # find basis papers and later work; no model calls
 research-long-horizon --synthesize --paid --persist    # write the study report, catalogs, and hypotheses
