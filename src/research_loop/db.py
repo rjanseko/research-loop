@@ -10,7 +10,8 @@ from typing import Any
 
 from .settings import ResearchSettings
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+# Inside the package, so an installed wheel carries them.
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 @dataclass(frozen=True)

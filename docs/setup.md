@@ -90,7 +90,7 @@ research-db migrate
 research-db status
 ```
 
-Migrations live in `migrations/` and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-long-horizon --persist`) check for pending migrations before any model call.
+Migrations live in `src/research_loop/migrations/`, ship in the installed package, and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-long-horizon --persist`) check for pending migrations before any model call.
 
 The database keeps jobs, the plan, every role task with its prompt, effective configuration, output, usage, and parent task, tool events, and attachment manifests. Each finished job also keeps its evidence ledger, whose unique claim IDs are the ones its report and verification cite (task outputs keep each worker's own IDs), and its `review_reasons`; a failed job keeps the evidence gathered before it failed. Text in tool arguments is stored as hashes and lengths, and fetched content as hashes and sizes, so protected benchmark inputs and article text stay out of it. Graph and policy versions are recorded in each job's effective configuration, so topology changes need no migration.
 
