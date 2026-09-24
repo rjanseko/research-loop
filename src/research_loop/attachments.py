@@ -111,7 +111,8 @@ class _RawChunk:
     kind: str = "text"
 
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]{1,}")
+# Words of two or more characters in any script; a hyphen may join parts ("state-of-the-art").
+_TOKEN_RE = re.compile(r"\w[\w\-]+")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 _TEXT_SUFFIXES = {".txt", ".md", ".rst", ".log", ".yaml", ".yml", ".toml", ".json", ".xml"}
 

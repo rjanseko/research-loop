@@ -26,7 +26,7 @@ Supported deterministic extractors:
 | XLSX/XLSM | sheet + row-range table chunks |
 | Images | dimensions/format metadata only |
 
-Every attachment gets a SHA-256 hash, a stable per-run attachment ID, a media type, extraction metadata, chunk locators, and chunk hashes. Search is deterministic TF-IDF over the extracted chunks; each chunk is tokenized once, when the corpus is built, so a search tokenizes only its query.
+Every attachment gets a SHA-256 hash, a stable per-run attachment ID, a media type, extraction metadata, chunk locators, and chunk hashes. Search is deterministic TF-IDF over the extracted chunks. Words are runs of letters, digits, and underscores in any script, joined by hyphens and case-folded, so `café`, `Москва`, and `Straße`/`strasse` match; Chinese and Japanese text has no spaces to split on, so a run of it is one token and matches only whole. Search results changed when the tokenizer stopped being ASCII-only (2026-09-24); each chunk is tokenized once, when the corpus is built, so a search tokenizes only its query.
 
 ### `multimodal`
 
