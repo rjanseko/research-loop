@@ -9,11 +9,6 @@ from typing import Any, Literal
 from .schemas import ResearchQuestion, ResearchRole
 
 ThinkingEffort = Literal["minimal", "low", "medium", "high", "xhigh"] | bool | None
-_THINKING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
-
-
-def _positive_finite(value: float | None) -> bool:
-    return value is not None and math.isfinite(value) and value > 0
 
 
 @dataclass(frozen=True)
@@ -25,24 +20,6 @@ class ModelRoute:
     cost_limit: float | None = None
     thinking: ThinkingEffort = None
     settings: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        # Frozen, so this also checks every replace(), including salvage and study overrides.
-        # Zero tool calls is a tool-free route; zero requests or tokens could never run.
-        if not self.model.strip():
-            raise ValueError("model route needs a model")
-        for name, minimum in (("max_requests", 1), ("max_tool_calls", 0), ("total_tokens_limit", 1)):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-                raise ValueError(f"{self.model}: {name} must be an integer of at least {minimum}")
-        if self.cost_limit is not None and not _positive_finite(self.cost_limit):
-            raise ValueError(f"{self.model}: cost_limit must be a positive finite number when set")
-        if not (self.thinking is None or isinstance(self.thinking, bool) or self.thinking in _THINKING_EFFORTS):
-            raise ValueError(f"{self.model}: thinking must be one of {_THINKING_EFFORTS}, a bool, or None")
-        max_tokens = self.settings.get("max_tokens")
-        if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
-                                       or max_tokens < 1):
-            raise ValueError(f"{self.model}: settings max_tokens must be a positive integer when set")
 
     def model_settings(self) -> dict[str, Any] | None:
         result = dict(self.settings)
@@ -141,23 +118,6 @@ class ModelPolicy:
         # Part of job_cost_limit that research calls leave for gap analysis, synthesis,
         # verification, and salvage.
         self.job_reserve_usd = job_reserve_usd
-
-    def validate(self) -> None:
-        """Reject a policy no job could run under; callers check it before creating a job.
-
-        Not done in __init__, because studies adjust the range, budgets, and routes afterwards.
-        """
-        if missing := [role.value for role in ResearchRole if role not in self.routes]:
-            raise ValueError(f"policy {self.name!r} has no route for {', '.join(missing)}")
-        qmin, qmax = self.planner_question_range
-        if not 1 <= qmin <= qmax:
-            raise ValueError(f"policy {self.name!r}: planner_question_range needs 1 <= min <= max, got {qmin}-{qmax}")
-        if self.job_cost_limit is not None and not _positive_finite(self.job_cost_limit):
-            raise ValueError(f"policy {self.name!r}: job_cost_limit must be a positive finite number when set")
-        if not (math.isfinite(self.job_reserve_usd) and self.job_reserve_usd >= 0):
-            raise ValueError(f"policy {self.name!r}: job_reserve_usd must be a finite number of at least 0")
-        if self.job_cost_limit is not None and self.job_reserve_usd >= self.job_cost_limit:
-            raise ValueError(f"policy {self.name!r}: job_reserve_usd must be below job_cost_limit")
 
     def for_role(self, role: ResearchRole) -> ModelRoute:
         return self.routes[role]

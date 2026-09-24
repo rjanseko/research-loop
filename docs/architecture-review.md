@@ -26,8 +26,6 @@ Finding 14 is addressed without changing the output layout: each question's file
 
 Finding 11 is addressed for campaigns: `campaign_spec.py` validates every field of `campaign.toml` when it loads, rejects unknown keys, checks the planner range and reserve against their limits, and fills defaults, so `--dry-run` catches what a run would otherwise hit after the paid preflight. The spec's `scholarly_cache_mode` is now honored instead of hardcoded. Rendered objectives are unchanged.
 
-Finding 11's route and policy limits are validated too (2026-09-24). `ModelRoute` rejects an empty model, fewer than one request or token, negative tool calls, a cost limit or `max_tokens` that is not positive and finite, and an unknown thinking effort; the route is frozen, so salvage and study overrides are checked as well. `ModelPolicy.validate()` requires a route for every role, a planner range with 1 ≤ min ≤ max, a finite positive job cap when set, and a reserve of at least zero below it. The loop runs that check when it is built and again before creating each job, because studies adjust the policy after building it.
-
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -42,7 +40,7 @@ Finding 11's route and policy limits are validated too (2026-09-24). `ModelRoute
 | 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, long-horizon synthesis is bounded, and salvage keeps every useful result ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops still resend their whole history |
 | 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
-| 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, `campaign.toml`, `ModelRoute`, and `ModelPolicy` (2026-09-24) | — |
+| 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, and `campaign.toml` | `ModelRoute` limits are not validated |
 | 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop | arXiv and Crossref year filters; cached search token statistics; one HTTP client per run; DNS check and connection resolve separately |
 | 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile and a wheel install smoke test (CI now runs lint and the offline suite) |
 | 14. Campaign artifacts not published atomically | Done | — |
