@@ -110,24 +110,28 @@ class WebAcquisition:
         media = response.headers.get("content-type", "").split(";")[0].lower()
         if media not in ("text/html", "application/xhtml+xml"):
             raise ValueError("unsupported content type")
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.text, "html.parser")
-        for item in soup(["script", "style", "nav", "footer", "header"]):
-            item.decompose()
-        clean_html = str(soup)
-        try:
-            import trafilatura
-            extracted = trafilatura.extract(clean_html, include_comments=False, include_tables=True) or ""
-        except Exception:  # noqa: BLE001 - arbitrary HTML can break the extractor; fall back below
-            extracted = ""
-        method = "trafilatura"
-        if not extracted.strip():
-            extracted = soup.get_text(" ", strip=True)
-            method = "beautifulsoup-fallback"
+        # Parsing is CPU-bound; a worker thread keeps a large page from stalling the other agents.
+        extracted, method = await asyncio.to_thread(_html_text, response.text)
         if not extracted.strip():
             raise ValueError("empty extraction")
         return {"text": extracted, "extraction": method,
                 "content_sha256": hashlib.sha256(response.content).hexdigest()}
+
+
+def _html_text(html: str) -> tuple[str, str]:
+    """Main text of an HTML page and the extractor that produced it."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for item in soup(["script", "style", "nav", "footer", "header"]):
+        item.decompose()
+    try:
+        import trafilatura
+        extracted = trafilatura.extract(str(soup), include_comments=False, include_tables=True) or ""
+    except Exception:  # noqa: BLE001 - arbitrary HTML can break the extractor; fall back below
+        extracted = ""
+    if extracted.strip():
+        return extracted, "trafilatura"
+    return soup.get_text(" ", strip=True), "beautifulsoup-fallback"
 
 
 def build_web_toolset(acquisition: WebAcquisition) -> FunctionToolset:

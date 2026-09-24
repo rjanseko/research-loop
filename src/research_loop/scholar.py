@@ -420,28 +420,37 @@ class ScholarClient:
                 except (httpx.HTTPError, ValueError, ET.ParseError):
                     pass
             if not extracted:
-                import io
-
-                from pypdf import PdfReader
-                pages = PdfReader(io.BytesIO(response.content)).pages
-                extracted = "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT])
-                extraction_truncated = len(pages) > _PDF_PAGE_LIMIT
+                # Parsing is CPU-bound; worker threads keep a long paper from stalling the other agents.
+                extracted, extraction_truncated = await asyncio.to_thread(_pdf_text, response.content)
                 method = "pypdf"
         elif media in ("text/html", "application/xhtml+xml"):
-            import trafilatura
-            extracted = trafilatura.extract(response.text, include_comments=False, include_tables=True) or ""
-            method = "trafilatura"
-            if not extracted.strip():
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.text, "html.parser")
-                for item in soup(["script", "style", "nav", "footer", "header"]):
-                    item.decompose()
-                extracted = soup.get_text(" ", strip=True)
-                method = "beautifulsoup-fallback"
+            extracted, method = await asyncio.to_thread(_html_text, response.text)
         else:
             raise ValueError("unsupported content type")
         return {"text": extracted, "extraction_method": method, "extraction_truncated": extraction_truncated,
                 "content_sha256": hashlib.sha256(response.content).hexdigest()}
+
+
+def _pdf_text(content: bytes) -> tuple[str, bool]:
+    """Text of a PDF's first pages, and whether it has more."""
+    import io
+
+    from pypdf import PdfReader
+    pages = PdfReader(io.BytesIO(content)).pages
+    return "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT]), len(pages) > _PDF_PAGE_LIMIT
+
+
+def _html_text(html: str) -> tuple[str, str]:
+    """Main text of an HTML page and the extractor that produced it."""
+    import trafilatura
+    extracted = trafilatura.extract(html, include_comments=False, include_tables=True) or ""
+    if extracted.strip():
+        return extracted, "trafilatura"
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for item in soup(["script", "style", "nav", "footer", "header"]):
+        item.decompose()
+    return soup.get_text(" ", strip=True), "beautifulsoup-fallback"
 
 
 def build_scholar_toolset(client: ScholarClient) -> FunctionToolset:

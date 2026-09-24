@@ -223,3 +223,33 @@ async def test_downloads_use_the_fetch_client_not_the_metadata_client(public_url
         client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=meta, fetch_client=fetch)
         result = await client.fetch("https://example.org/paper")
     assert "download client" in (result.text or "")
+
+
+@pytest.mark.asyncio
+async def test_document_parsing_leaves_the_event_loop_free(public_urls, monkeypatch, tmp_path) -> None:
+    import asyncio
+    import time
+
+    def slow_pdf(_content: bytes) -> tuple[str, bool]:
+        time.sleep(0.3)  # a long paper
+        return "Parsed paper text.", False
+
+    monkeypatch.setattr("research_loop.scholar._pdf_text", slow_pdf)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4")
+
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=http).fetch("https://example.org/p.pdf")
+    ticker.cancel()
+    assert result.text == "Parsed paper text."
+    assert ticks >= 10  # other tasks kept running while the paper was parsed
