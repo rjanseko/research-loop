@@ -32,6 +32,8 @@ Finding 12's year filters are addressed (2026-09-24, `fetch_version` 4): `schola
 
 Finding 12's DNS gap is closed the same day: the web and scholarly fetch clients connect through a network backend that resolves the host once, refuses unless every address is public, and connects to a checked address, so a rebinding DNS answer cannot redirect the connection. With an HTTPS proxy configured the proxy connects and remains the egress boundary.
 
+Finding 15 is addressed (2026-09-24) with the simple, safe rule the finding describes: before a call starts, the job sets aside its route `cost_limit` (or everything left, for a route without one) and the call keeps that allowance until it ends, when its actual spend is recorded and the allowance returned in one step. A call that does not fit beside the running calls' allowances and the finishing reserve waits for one to finish; with none running it takes what is left, as before. Two calls can therefore no longer count on the same money or reach into the reserve together. The cost is concurrency: under a job cap, parallel scouts run only as many at once as their full caps fit, and an uncapped route runs alone. Salvage still draws on the reserve by design, and a single request can still overshoot its allowance, because usage arrives after the request.
+
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -50,7 +52,7 @@ Finding 12's DNS gap is closed the same day: the web and scholarly fetch clients
 | 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4), connections pinned to checked public addresses | cached search token statistics; one HTTP client per run |
 | 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile and a wheel install smoke test (CI now runs lint and the offline suite) |
 | 14. Campaign artifacts not published atomically | Done | — |
-| 15. Budget accounting separate from admission control | Open (P3) | Reserving budget before concurrent calls |
+| 15. Budget accounting separate from admission control | Done (2026-09-24): each call holds its route cost cap until it finishes | Overshoot within a single request |
 
 Later, `evidence_version` 4 fixed false negatives in the quote check. All 8 quotes the p01 rerun marked `not_found` turned out to be faithful quotes of text the run had fetched: PDF extraction had put spaces inside words, or the quote differed from the source only in bullets, comment signs, or the order of its `...` parts. Those false negatives caused both of p01's major verifier findings. Quotes are now compared on letters and digits only, with each part matched in any order; a quote that spans a PDF running header is still `not_found`. See [benchmarks](benchmarks.md).
 
