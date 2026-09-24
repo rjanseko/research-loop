@@ -367,7 +367,7 @@ To compare two runs fairly, hold these fixed. When you are deliberately comparin
 | Graph topology | `research-graph-v1` | `graph.py` |
 | Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
 | Evidence schema | `evidence_version` 4: an `excerpt`, plus a verbatim `quote` and cited source that code checks against tool output, and every role's output checked against the run's plan, ledger, and attachments | `schemas.py`, `quotes.py`, `agents.py` |
-| Fetch behavior | `fetch_version` 3: paged fetches, a per-job document memo, and refusal of the task's forbidden sources | `acquisition.py` |
+| Fetch behavior | `fetch_version` 4: paged fetches, a per-job document memo, refusal of the task's forbidden sources, and year bounds on every scholarly search provider | `acquisition.py` |
 | Tool mode | `normalized` for benchmarks and studies, `adaptive` as the library default | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |
 | Scoring | `evaluator_version` 1, the metric definitions | `evals.py` |
@@ -427,7 +427,7 @@ Basis papers are the works a body of literature rests on: the ones many of the c
 
 On the p01 pilot, the Codex paper that introduced HumanEval ranked first in both runs. It was cited by 6 of 7 seed papers in the evidence-version-3 bibliography and 5 of 8 in the version-4 one, yet the study never cited it. MBPP, SWE-bench, and SWE-agent came next, and 29 of the top 30 were works the study hadn't cited. Forward snowballing found 30 later works, mostly from 2026, because citations are read newest first and capped at 1,000 per seed. These are observations from one pilot, not a general measure of retrieval quality.
 
-Still to come: screening against the spec's window and source tiers, a screening record of how many works were found, screened, and included (with a reason for each exclusion), a review-style synthesis organized by theme and timeline that reuses the study synthesizer, co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata, and their year filters work on OpenAlex only.
+Still to come: screening against the spec's window and source tiers, a screening record of how many works were found, screened, and included (with a reason for each exclusion), a review-style synthesis organized by theme and timeline that reuses the study synthesizer, co-citation ranking, and feeding basis papers back into a study. The research agents' own `scholar_references` and `scholar_citations` tools still return at most 10 works per call with unresolved metadata.
 
 ## Commands
 

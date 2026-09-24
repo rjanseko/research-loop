@@ -28,7 +28,8 @@ CACHE_VERSION = 1
 # Recorded in manifests. 1: fetch returned only the first 12,000 characters.
 # 2: fetch pages through a document with `start`, backed by a per-job memo.
 # 3: fetches refuse the task's blocked sources, including redirects to them.
-FETCH_VERSION = 3
+# 4: scholar_search year bounds also filter arXiv and Crossref, not only OpenAlex.
+FETCH_VERSION = 4
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
 CacheMode = Literal["off", "live", "record", "replay"]

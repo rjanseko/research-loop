@@ -43,7 +43,7 @@ Scholarly tools are added in both modes unless `ResearchConfig.scholarly_tools` 
 | OpenReview | Disabled; no authenticated adapter is configured |
 | Semantic Scholar | [Citation snowballing](#citation-snowballing-basis-papers) only; not a research tool |
 
-Provider records stay separate. OpenAlex and Crossref may describe the same work differently, and a preprint and its later publication remain distinct records. Source citations can carry DOI, arXiv ID, OpenAlex ID, ACL ID, provider, publication status, full-text URL, and locator. Status rules are conservative: a DOI hint on an arXiv record does not make a preprint peer-reviewed, journal or conference metadata alone does not prove peer review, and ACL BibTeX records stay `unknown` until the venue is verified. Year bounds currently filter OpenAlex results only.
+Provider records stay separate. OpenAlex and Crossref may describe the same work differently, and a preprint and its later publication remain distinct records. Source citations can carry DOI, arXiv ID, OpenAlex ID, ACL ID, provider, publication status, full-text URL, and locator. Status rules are conservative: a DOI hint on an arXiv record does not make a preprint peer-reviewed, journal or conference metadata alone does not prove peer review, and ACL BibTeX records stay `unknown` until the venue is verified. Year bounds filter every search provider: OpenAlex by publication date, Crossref with `from-pub-date` and `until-pub-date`, and arXiv by the first version's submission date. arXiv results are also checked against the bounds after they return; an undated record is kept.
 
 ## Fetching
 
@@ -52,7 +52,7 @@ Provider records stay separate. OpenAlex and Crossref may describe the same work
 - A result with `next_start` has more text; call again with `start=next_start`. `total_chars` is the extracted length.
 - Each research job keeps the full documents it fetched in memory, shared by all of its agents. Paging, and a second agent fetching the same URL, reuse the download in every cache mode. No job sees another job's documents.
 - pypdf extracts the first 30 pages of a PDF. `extraction_truncated` marks a longer document, whose last window is therefore not the end of the paper.
-- Manifests record this behavior as `fetch_version` 3. Version 1 returned only the first window; version 2 added paging but did not refuse [blocked sources](#blocked-sources).
+- Manifests record this behavior as `fetch_version` 4. Version 1 returned only the first window; version 2 added paging but did not refuse [blocked sources](#blocked-sources); version 3 applied `scholar_search` year bounds to OpenAlex only.
 
 Pages are extracted with Trafilatura, falling back to Beautiful Soup. `scholar_fetch` extracts PDFs with pypdf; set `GROBID_URL` (for example `http://127.0.0.1:8070`, local HTTP only) to try a GROBID `/api/processFulltextDocument` service first, falling back to pypdf if it fails.
 
