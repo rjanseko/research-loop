@@ -29,6 +29,22 @@ def test_text_attachment_search_is_deterministic(tmp_path: Path) -> None:
     assert hits[0].attachment_id == first.records[0].attachment_id
 
 
+def test_search_tokenizes_chunks_once_not_per_query(tmp_path: Path, monkeypatch) -> None:
+    notes, other = tmp_path / "notes.txt", tmp_path / "other.txt"
+    notes.write_text("Alpha project uses PostgreSQL for durable history.", encoding="utf-8")
+    other.write_text("Beta project keeps PostgreSQL out of the cache.", encoding="utf-8")
+    corpus = AttachmentCorpus.from_paths([notes, other])
+    tokenized: list[str] = []
+    tokens = AttachmentCorpus._tokens
+    monkeypatch.setattr(AttachmentCorpus, "_tokens", staticmethod(lambda text: tokenized.append(text) or tokens(text)))
+
+    everywhere = corpus.search("PostgreSQL project")
+    only_notes = corpus.search("PostgreSQL project", attachment_id=corpus.records[0].attachment_id)
+    assert tokenized == ["PostgreSQL project"] * 2  # only the queries; chunk statistics were cached
+    assert {hit.attachment_id for hit in everywhere} == {record.attachment_id for record in corpus.records}
+    assert [hit.attachment_id for hit in only_notes] == [corpus.records[0].attachment_id]
+
+
 def test_structured_document_extractors(tmp_path: Path) -> None:
     html = tmp_path / "page.html"
     html.write_text("<html><head><title>T</title></head><body><h1>Heading</h1><p>HTML fact</p></body></html>")

@@ -38,6 +38,8 @@ Finding 13's wheel check found a real gap (2026-09-24): SQL migrations sat outsi
 
 Finding 12's per-request clients are replaced (2026-09-24): each job opens a metadata client and a public-only download client on first use, shares them across its research agents, and closes them when it ends, cancelled or not. Rate slots no longer depend on whether a client was passed in, which a shared client would otherwise have switched off.
 
+Finding 12's attachment search no longer retokenizes (2026-09-24): each chunk's token counts are computed once when the corpus is built, and results are unchanged. The ASCII-oriented tokenizer is left as is, since changing it would change search results.
+
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -53,7 +55,7 @@ Finding 12's per-request clients are replaced (2026-09-24): each job opens a met
 | 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, `campaign.toml`, `ModelRoute`, and `ModelPolicy` (2026-09-24) | — |
-| 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4), connections pinned to checked public addresses, one pair of HTTP clients per job | cached search token statistics |
+| 12. Acquisition and attachment resource contracts | Partly done: streaming caps, attachment hash check, parsing off the event loop, year filters on every search provider (`fetch_version` 4), connections pinned to checked public addresses, one pair of HTTP clients per job, attachment chunk statistics computed once | Search tokenizer is ASCII-oriented |
 | 13. Key contracts under-tested | Partly done: full-evidence parity, probes kept as regression tests, tests fail on network access | Fake models below the executor; a disposable-Postgres integration gate; a lockfile (CI runs lint, the offline suite, and a wheel install smoke test) |
 | 14. Campaign artifacts not published atomically | Done | — |
 | 15. Budget accounting separate from admission control | Done (2026-09-24): each call holds its route cost cap until it finishes | Overshoot within a single request |

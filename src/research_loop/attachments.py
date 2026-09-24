@@ -422,10 +422,15 @@ class AttachmentCorpus:
         self._by_id = {record.attachment_id: record for record in records}
         self._paths = paths
         self._chunks = [chunk for record in records for chunk in record.chunks]
+        # Chunks never change during a run, so each is tokenized once here rather than per search:
+        # its token counts, token total, and case-folded text for the phrase bonus.
+        self._chunk_terms: list[tuple[Counter[str], int, str]] = []
         self._doc_freq: Counter[str] = Counter()
         for chunk in self._chunks:
-            for token in set(self._tokens(chunk.text)):
-                self._doc_freq[token] += 1
+            tokens = self._tokens(chunk.text)
+            counts = Counter(tokens)
+            self._chunk_terms.append((counts, len(tokens), chunk.text.casefold()))
+            self._doc_freq.update(counts.keys())
 
     @classmethod
     def from_paths(
@@ -605,24 +610,22 @@ class AttachmentCorpus:
         if not q_tokens:
             return []
         q_counts = Counter(q_tokens)
-        candidates = self._chunks
         if attachment_id:
             self.get(attachment_id)
-            candidates = [c for c in candidates if c.attachment_id == attachment_id]
         total_docs = max(len(self._chunks), 1)
         hits: list[AttachmentSearchHit] = []
         norm_query = query.casefold().strip()
-        for chunk in candidates:
-            tokens = self._tokens(chunk.text)
-            if not tokens:
+        for chunk, (counts, length, folded) in zip(self._chunks, self._chunk_terms, strict=True):
+            if attachment_id and chunk.attachment_id != attachment_id:
                 continue
-            counts = Counter(tokens)
+            if not length:
+                continue
             score = 0.0
             for token, q_weight in q_counts.items():
-                tf = counts[token] / max(len(tokens), 1)
+                tf = counts[token] / length
                 idf = math.log((total_docs + 1) / (self._doc_freq[token] + 1)) + 1.0
                 score += q_weight * tf * idf * 100.0
-            if norm_query and norm_query in chunk.text.casefold():
+            if norm_query and norm_query in folded:
                 score += 5.0
             if score <= 0:
                 continue
