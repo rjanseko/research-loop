@@ -189,6 +189,10 @@ def long_horizon_run_config(spec: dict[str, Any]) -> ResearchConfig:
     )
 
 
+# The manifest record of a completed question, also rebuilt from run.json when a study resumes.
+_RUN_RECORD_KEYS = ("id", "job_id", "claim_count", "source_count", "status", "cost_usd", "review_reasons")
+
+
 def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: str,
                             manifest: dict[str, Any]) -> dict[str, Any]:
     """Export one completed question and publish it in one step; returns its manifest record.
@@ -259,24 +263,26 @@ def _files_match(folder: Path, run: dict[str, Any]) -> bool:
                     for name, digest in files.items()))
 
 
-async def run_long_horizon(
-    path: Path,
-    *,
-    question_ids: list[str],
-    policy_name: str,
-    settings: ResearchSettings,
-    output_dir: Path,
-    persist: bool,
-) -> Path:
-    spec = load_spec(path)
-    questions = {item["id"]: item for item in spec["questions"]}
-    unknown = set(question_ids) - set(questions)
-    if unknown:
-        raise ValueError(f"unknown long-horizon question IDs: {', '.join(sorted(unknown))}")
-    if persist and not settings.database_dsn:
-        raise ValueError("DATABASE_URL required for --persist")
-    configure_logfire(settings)
-    execution = spec["execution"]
+def _completed_run(folder: Path, spec: dict[str, Any], question: dict[str, str],
+                   config_fingerprint: str) -> dict[str, Any] | None:
+    """run.json of a published question a resumed study keeps: completed under the same
+    configuration fingerprint (spec file, policy, prompts, acquisition, evidence version, and
+    run config), for the same objective, with every file still matching its recorded hash."""
+    try:
+        run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (isinstance(run, dict) and run.get("status") == "completed"
+            and run.get("config_fingerprint") == config_fingerprint
+            and run.get("objective_sha256") == _objective_sha256(spec, question)
+            and _files_match(folder, run)):
+        return run
+    return None
+
+
+def _questions_manifest(spec: dict[str, Any], path: Path, *, policy_name: str, settings: ResearchSettings,
+                        persist: bool) -> tuple[dict[str, Any], ModelPolicy, ResearchConfig]:
+    """The manifest a question run starts with, and the policy and run config it records."""
     policy = long_horizon_policy(spec, policy_name, settings.model_overrides)
     run_config = long_horizon_run_config(spec)
     policy_snapshot = safe_value(policy.snapshot())
@@ -302,6 +308,56 @@ async def run_long_horizon(
         },
         "questions": [],
     }
+    return manifest, policy, run_config
+
+
+def _kept_runs(spec: dict[str, Any], output_dir: Path, question_ids: list[str],
+               config_fingerprint: str) -> dict[str, dict[str, Any]]:
+    questions = {item["id"]: item for item in spec["questions"]}
+    return {
+        question_id: run for question_id in question_ids
+        if (run := _completed_run(output_dir / question_id, spec, questions[question_id],
+                                  config_fingerprint)) is not None
+    }
+
+
+def resumable_questions(spec: dict[str, Any], path: Path, output_dir: Path, question_ids: list[str], *,
+                        policy_name: str, settings: ResearchSettings) -> dict[str, dict[str, Any]]:
+    """Published runs, by question ID, that a resumed study would keep instead of rerunning."""
+    manifest, _, _ = _questions_manifest(spec, path, policy_name=policy_name, settings=settings, persist=False)
+    return _kept_runs(spec, output_dir, question_ids, manifest["config_fingerprint"])
+
+
+async def run_long_horizon(
+    path: Path,
+    *,
+    question_ids: list[str],
+    policy_name: str,
+    settings: ResearchSettings,
+    output_dir: Path,
+    persist: bool,
+    resume: bool = False,
+) -> Path:
+    """Run each question in turn. With `resume`, a question whose published output is still
+    valid under this exact configuration (_completed_run) is kept and recorded, not rerun."""
+    spec = load_spec(path)
+    questions = {item["id"]: item for item in spec["questions"]}
+    unknown = set(question_ids) - set(questions)
+    if unknown:
+        raise ValueError(f"unknown long-horizon question IDs: {', '.join(sorted(unknown))}")
+    if persist and not settings.database_dsn:
+        raise ValueError("DATABASE_URL required for --persist")
+    configure_logfire(settings)
+    execution = spec["execution"]
+    manifest, policy, run_config = _questions_manifest(spec, path, policy_name=policy_name,
+                                                       settings=settings, persist=persist)
+    if resume:
+        kept = _kept_runs(spec, output_dir, question_ids, manifest["config_fingerprint"])
+        manifest["questions"] = [
+            {key: run.get(key) for key in _RUN_RECORD_KEYS} | {"resumed_from": run.get("experiment_id")}
+            for run in kept.values()
+        ]
+        question_ids = [question_id for question_id in question_ids if question_id not in kept]
     manifest_path = output_dir / "manifests" / f"{manifest['experiment_id']}.json"
     write_manifest(manifest_path, manifest)
     max_failed = int(execution["max_failed_questions"])
@@ -844,6 +900,8 @@ def main() -> None:
     parser.add_argument("--spec", type=Path, default=SPEC_FILE)
     parser.add_argument("--question", default=None, help="Question ID; defaults to the first question")
     parser.add_argument("--all-questions", action="store_true", help="Run every question sequentially")
+    parser.add_argument("--resume", action="store_true",
+                        help="Keep questions already completed under this exact configuration instead of rerunning them")
     parser.add_argument("--aggregate", action="store_true", help="Merge completed question outputs without model calls")
     parser.add_argument("--synthesize", action="store_true", help="Write long-horizon catalogs and hypotheses from completed questions")
     parser.add_argument("--basis-papers", action="store_true",
@@ -864,6 +922,8 @@ def main() -> None:
                      "omit --question/--all-questions")
     if args.allow_partial and not args.synthesize:
         parser.error("--allow-partial applies only to --synthesize")
+    if args.resume and (args.aggregate or args.synthesize or args.basis_papers):
+        parser.error("--resume applies only to question runs")
     # Local inputs only: these messages carry no provider responses, so they are shown in full.
     try:
         if args.aggregate:
@@ -928,7 +988,11 @@ def main() -> None:
             if set(selected) - set(ids):
                 raise ValueError("unknown long-horizon question ID")
             if args.dry_run:
-                print(f"Long-horizon study {spec['id']}: {', '.join(selected)}")
+                kept = (resumable_questions(spec, args.spec, args.output, selected, policy_name=args.policy,
+                                            settings=ResearchSettings.from_env()) if args.resume else {})
+                to_run = [question_id for question_id in selected if question_id not in kept]
+                print(f"Long-horizon study {spec['id']}: {', '.join(to_run) or 'nothing to run'}"
+                      + (f"; kept from earlier runs: {', '.join(kept)}" if kept else ""))
                 return
     except (ValueError, OSError) as exc:
         parser.exit(2, f"Long-horizon input invalid: {exc}\n")
@@ -945,7 +1009,7 @@ def main() -> None:
         else:
             manifest = asyncio.run(run_long_horizon(
                 args.spec, question_ids=selected, policy_name=args.policy,
-                settings=settings, output_dir=args.output, persist=args.persist,
+                settings=settings, output_dir=args.output, persist=args.persist, resume=args.resume,
             ))
     except Exception as exc:  # noqa: BLE001 - report the type only; provider errors can carry response bodies
         parser.exit(1, f"Long-horizon run failed ({type(exc).__name__}); check settings and run manifest.\n")

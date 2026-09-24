@@ -227,6 +227,81 @@ def test_long_horizon_cli_exits_nonzero_and_names_failed_questions(monkeypatch, 
     assert "q01 (JobBudgetExceeded)" in capsys.readouterr().err
 
 
+
+def _recording_loop(ran: list[str], failing: set[str] = frozenset()):
+    base = _loop_failing_on(set(failing))
+
+    class RecordingLoop(base):
+        async def run(self, objective, **kwargs):
+            ran.append(objective.split("Question ", 1)[1].split(":", 1)[0])
+            return await super().run(objective, **kwargs)
+
+    return RecordingLoop
+
+
+async def _study(monkeypatch, output: Path, loop, *, resume: bool, policy: str = "quality") -> dict:
+    from research_loop.long_horizon import run_long_horizon
+
+    monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", loop)
+    manifest_path = await run_long_horizon(
+        SPEC_FILE, question_ids=["q01", "q02", "q03"], policy_name=policy,
+        settings=ResearchSettings.from_env({}), output_dir=output, persist=False, resume=resume,
+    )
+    return json.loads(manifest_path.read_text())
+
+
+@pytest.mark.asyncio
+async def test_resumed_study_reruns_only_what_did_not_complete(monkeypatch, tmp_path: Path) -> None:
+    first_ran: list[str] = []
+    first = await _study(monkeypatch, tmp_path, _recording_loop(first_ran, {"q02"}), resume=False)
+    assert first["status"] == "completed_with_failures" and first_ran == ["q01", "q02", "q03"]
+
+    ran: list[str] = []
+    resumed = await _study(monkeypatch, tmp_path, _recording_loop(ran), resume=True)
+    assert ran == ["q02"]
+    assert resumed["status"] == "completed"
+    records = {item["id"]: item for item in resumed["questions"]}
+    assert records["q01"]["resumed_from"] == records["q03"]["resumed_from"] == first["experiment_id"]
+    assert records["q01"]["status"] == "completed" and "resumed_from" not in records["q02"]
+    assert records["q01"]["claim_count"] == 2  # the published record, rebuilt from run.json
+
+    # Without --resume every question runs again, as before.
+    again: list[str] = []
+    await _study(monkeypatch, tmp_path, _recording_loop(again), resume=False)
+    assert again == ["q01", "q02", "q03"]
+
+
+@pytest.mark.asyncio
+async def test_resume_reruns_questions_whose_outputs_changed_or_came_from_another_config(monkeypatch, tmp_path: Path) -> None:
+    await _study(monkeypatch, tmp_path, _recording_loop([]), resume=False)
+    (tmp_path / "q01" / "report.md").write_text("edited by hand\n", encoding="utf-8")
+    ran: list[str] = []
+    await _study(monkeypatch, tmp_path, _recording_loop(ran), resume=True)
+    assert ran == ["q01"]  # its files no longer match run.json
+
+    other: list[str] = []
+    await _study(monkeypatch, tmp_path, _recording_loop(other), resume=True, policy="breadth")
+    assert other == ["q01", "q02", "q03"]  # a different policy changes the config fingerprint
+
+
+def test_resume_dry_run_reports_what_it_would_keep(monkeypatch, tmp_path: Path, capsys) -> None:
+    import asyncio
+    import sys
+
+    from research_loop import long_horizon
+
+    asyncio.run(_study(monkeypatch, tmp_path, _recording_loop([], {"q02"}), resume=False))
+    settings = ResearchSettings.from_env({})
+    monkeypatch.setattr(long_horizon, "ResearchSettings", SimpleNamespace(from_env=lambda: settings))
+    monkeypatch.setattr(sys, "argv", ["research-long-horizon", "--all-questions", "--resume", "--dry-run",
+                                      "--output", str(tmp_path)])
+    long_horizon.main()
+    # Every question the earlier run did not complete still runs, starting with q02.
+    assert ": q02, q04, q05, q06, q07, q08, q09, q10, q11; kept from earlier runs: q01, q03" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["research-long-horizon", "--aggregate", "--resume"])
+    with pytest.raises(SystemExit):
+        long_horizon.main()
+
 def test_long_horizon_rejects_a_nonpositive_failure_limit(tmp_path: Path) -> None:
     spec = tmp_path / "limit.toml"
     spec.write_text(SPEC_FILE.read_text().replace("max_failed_questions = 2", "max_failed_questions = 0"))

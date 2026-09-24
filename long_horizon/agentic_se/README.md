@@ -8,6 +8,7 @@
 research-long-horizon --dry-run                        # validate the spec; no calls
 research-long-horizon --question q01 --paid --persist  # one question
 research-long-horizon --all-questions --paid --persist # every question, one after another
+research-long-horizon --all-questions --resume --paid   # rerun only questions not completed under this configuration
 research-long-horizon --aggregate                      # merge completed evidence; no calls
 research-long-horizon --basis-papers                   # rank the works the sources cite, and later work citing them; no model calls
 research-long-horizon --synthesize --dry-run           # check synthesis inputs and prompt size; no calls
@@ -15,6 +16,8 @@ research-long-horizon --synthesize --paid --persist    # write the long-horizon 
 ```
 
 The spec is validated in full when it loads (`long_horizon_spec.py`): a missing or mistyped setting, an unknown key, or inconsistent limits fail `--dry-run` rather than a paid run. `--spec PATH` selects another spec (default: this study), `--output DIR` another output folder (default `benchmark_outputs/long_horizon`, which git ignores), and `--policy` another model policy. `--persist` stores jobs in Postgres; see [setup](../../docs/setup.md#postgres).
+
+`--resume` picks a study up after a crash or failed questions without paying for finished ones again. A question is kept, not rerun, when its published `run.json` says completed, its config fingerprint matches this run's (the spec file, policy, prompts, acquisition and evidence versions, and run config), its objective is unchanged, and every file still has its recorded hash. Anything else runs again. The new manifest lists kept questions with `resumed_from`, the experiment that produced them, and `--resume --dry-run` shows what would run and what would be kept. Editing the spec file, even a budget, changes the fingerprint, so every question runs again.
 
 Before paid runs, confirm routes and balances with `research-diagnose --smoke`, set provider spending caps, and review the scope. Every paid invocation repeats that preflight, local checks first and then small live calls to each model; a failed or unpriced route stops it before any research call.
 
