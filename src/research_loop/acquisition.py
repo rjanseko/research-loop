@@ -7,11 +7,13 @@ live in scholar.py and web.py.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import ipaddress
 import json
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -278,12 +280,18 @@ class _PublicOnlyBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
+@functools.cache
+def shared_ssl_context() -> ssl.SSLContext:
+    """One verifying TLS context for every client; building one loads the certificate bundle."""
+    return httpx.create_ssl_context()
+
+
 class _PublicOnlyTransport(httpx.AsyncHTTPTransport):
     def __init__(self) -> None:
-        super().__init__()
-        # httpx does not take a network backend, so the pool it built is replaced with one that does.
+        # httpx takes no network backend, so this builds the one attribute its transport uses,
+        # the pool, with one; the parent constructor would load TLS certificates for a discarded pool.
         self._pool = httpcore.AsyncConnectionPool(
-            ssl_context=httpx.create_ssl_context(), max_connections=10, keepalive_expiry=5.0,
+            ssl_context=shared_ssl_context(), max_connections=10, keepalive_expiry=5.0,
             network_backend=_PublicOnlyBackend(),
         )
 
@@ -296,5 +304,5 @@ def public_fetch_client(timeout: float) -> httpx.AsyncClient:
     """
     proxies = urllib.request.getproxies()
     if "https" in proxies or "all" in proxies:
-        return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        return httpx.AsyncClient(timeout=timeout, follow_redirects=False, verify=shared_ssl_context())
     return httpx.AsyncClient(transport=_PublicOnlyTransport(), timeout=timeout, follow_redirects=False)

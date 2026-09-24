@@ -11,12 +11,19 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import anyio
+import httpx
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
-from .acquisition import AcquisitionCache, FetchMemo, SourcePolicy
+from .acquisition import (
+    AcquisitionCache,
+    FetchMemo,
+    SourcePolicy,
+    public_fetch_client,
+    shared_ssl_context,
+)
 from .agents import (
     LedgerRefs,
     PlanLimits,
@@ -255,6 +262,31 @@ class AgentJobOutcome:
     cost_usd: Decimal | None = None
 
 
+class _JobHttp:
+    """A job's HTTP clients, opened on first use: building one loads TLS certificates."""
+
+    def __init__(self) -> None:
+        self._metadata: httpx.AsyncClient | None = None
+        self._fetch: httpx.AsyncClient | None = None
+
+    @property
+    def metadata(self) -> httpx.AsyncClient:
+        if self._metadata is None:
+            self._metadata = httpx.AsyncClient(follow_redirects=False, verify=shared_ssl_context())
+        return self._metadata
+
+    @property
+    def fetch(self) -> httpx.AsyncClient:
+        if self._fetch is None:
+            self._fetch = public_fetch_client(timeout=15)
+        return self._fetch
+
+    async def aclose(self) -> None:
+        for client in (self._metadata, self._fetch):
+            if client is not None:
+                await client.aclose()
+
+
 @dataclass
 class _BudgetHold:
     """A running call's share of the job cap, returned once when the call ends."""
@@ -296,6 +328,10 @@ class AsyncResearchLoop:
         self._budget_released: dict[UUID, asyncio.Event] = {}
         # Per-job fetched documents, shared by the job's agents and dropped when it ends.
         self._fetch_memos: dict[UUID, FetchMemo] = {}
+        # Per-job HTTP clients shared by the job's research tools, so calls reuse connections:
+        # one for scholarly metadata APIs and one for page downloads that connects only to
+        # public addresses.
+        self._http_clients: dict[UUID, _JobHttp] = {}
         # Per-job blocked sources, enforced by the fetch tools and the research output check.
         self._source_policies: dict[UUID, SourcePolicy] = {}
 
@@ -342,6 +378,7 @@ class AsyncResearchLoop:
         """
         self._job_spend[job_id] = Decimal(0)
         self._fetch_memos[job_id] = FetchMemo()
+        self._http_clients[job_id] = _JobHttp()
         self._source_policies[job_id] = SourcePolicy(tuple(constraints.blocked_urls) if constraints else ())
         try:
             with job_span(job_id, self.policy.name):
@@ -364,6 +401,10 @@ class AsyncResearchLoop:
             self._budget_released.pop(job_id, None)
             self._fetch_memos.pop(job_id, None)
             self._source_policies.pop(job_id, None)
+            if http := self._http_clients.pop(job_id, None):
+                # Shielded and bounded like failure records, so a cancelled run still closes them.
+                with anyio.move_on_after(_FAILURE_WRITE_SECONDS, shield=True):
+                    await http.aclose()
 
     async def _load_attachments(
         self, job_id: UUID, constraints: ResearchConstraints
@@ -566,10 +607,12 @@ class AsyncResearchLoop:
                 toolsets = []
                 memo = self._fetch_memos.get(job_id)
                 policy = self._source_policies.get(job_id)
+                http = self._http_clients.get(job_id)
                 if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
                     toolsets.append(build_web_toolset(WebAcquisition(
                         cache_root=self.settings.benchmark_cache / "web",
                         cache_mode=self.config.scholarly_cache_mode,
+                        client=http.fetch if http else None,
                         memo=memo,
                         policy=policy,
                     )))
@@ -584,6 +627,8 @@ class AsyncResearchLoop:
                         grobid_url=self.settings.grobid_url,
                         memo=memo,
                         policy=policy,
+                        client=http.metadata if http else None,
+                        fetch_client=http.fetch if http else None,
                     )
                     toolsets.append(build_scholar_toolset(scholar_client))
                 if attachment_corpus and attachment_tools:

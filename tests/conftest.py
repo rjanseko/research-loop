@@ -95,3 +95,11 @@ def go_offline(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
             monkeypatch.setattr(f"{module}.bounded_public_get", offline)
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider rate slots apply to every client; tests answer locally and need no spacing."""
+    from research_loop import acquisition
+
+    monkeypatch.setattr(acquisition, "_RATE_INTERVAL", dict.fromkeys(acquisition._RATE_INTERVAL, 0.0))

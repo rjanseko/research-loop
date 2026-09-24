@@ -188,3 +188,38 @@ async def test_oversized_metadata_response_is_refused(tmp_path) -> None:
         result = await client.search("agents", include_arxiv=False)
     assert result.provider_errors == ["openalex:ValueError"]
     assert len(streamed) < 40  # reading stopped at the cap instead of buffering the whole body
+
+
+@pytest.mark.asyncio
+async def test_rate_slots_apply_with_an_injected_client(monkeypatch, tmp_path) -> None:
+    waited: list[str] = []
+
+    async def record(provider: str) -> None:
+        waited.append(provider)
+
+    monkeypatch.setattr("research_loop.scholar.wait_rate_slot", record)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"meta": {"count": 0}, "results": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=http)
+        await client.search("agents", include_arxiv=False)
+    # A run passes its shared client, and providers are still paced.
+    assert waited == ["openalex"]
+
+
+@pytest.mark.asyncio
+async def test_downloads_use_the_fetch_client_not_the_metadata_client(public_urls, tmp_path) -> None:
+    def metadata(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("downloads must not use the metadata client")
+
+    def pages(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/html"},
+                              text="<html><body><article><p>Fetched through the download client.</p></article></body></html>")
+
+    async with (httpx.AsyncClient(transport=httpx.MockTransport(metadata)) as meta,
+                httpx.AsyncClient(transport=httpx.MockTransport(pages)) as fetch):
+        client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=meta, fetch_client=fetch)
+        result = await client.fetch("https://example.org/paper")
+    assert "download client" in (result.text or "")
