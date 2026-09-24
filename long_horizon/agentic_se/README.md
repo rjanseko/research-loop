@@ -50,6 +50,7 @@ Completed is not the same as sound. Each completed question records `review_reas
 | `question_reserve_usd` | Part of that cap the planner, scouts, and deep dives must leave for gap analysis, synthesis, verification, and salvage |
 | `deep_dive_cost_limit_usd` | Lowers the deep-dive route's per-call cap |
 | `scout_max_requests`, `scout_max_tool_calls`, `scout_total_tokens_limit` | Replace the limits on every scout route |
+| `keep_recent_tool_results` | Optional and experimental: `ResearchConfig.keep_recent_tool_results` for scouts and deep dives; leave it unset to send every tool result whole |
 | `planner_question_min`, `planner_question_max` | The planner's question range |
 | `max_parallel_scouts`, `max_parallel_deep_dives`, `max_deep_dives_per_round`, `max_verification_rounds` | `ResearchConfig` concurrency and round limits |
 | `question_timeout_seconds` | `ResearchConfig.max_run_seconds`: a question still running after an hour is recorded failed (`TimeoutError`) |

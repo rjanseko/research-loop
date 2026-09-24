@@ -42,6 +42,8 @@ Finding 12's attachment search no longer retokenizes (2026-09-24): each chunk's 
 
 The attachment search tokenizer matches words in any script (2026-09-24), so accented and non-Latin words are no longer truncated or dropped. This changes attachment search results; unsegmented CJK runs remain single tokens.
 
+Finding 8's research loops have an experimental, opt-in fix (2026-09-24): with `ResearchConfig.keep_recent_tool_results` set, a scout or deep dive sends only its N most recent tool results whole and a short note for older large ones it has read. PydanticAI writes processed history back into the run, so the originals are restored before telemetry, the quote and source checks, and salvage read it. It is off by default and in the study spec until a paid comparison shows quality holds.
+
 **Status by finding, as of 2026-09-23 (evidence version 4, 300 tests).** This table sums up the status notes above; the findings below keep their original text.
 
 | Finding | Status | Still open |
@@ -53,7 +55,7 @@ The attachment search tokenizer matches words in any script (2026-09-24), so acc
 | 5. Source restrictions not enforced by tools | Done for normalized tools (`fetch_version` 3) | Provider-native tools in `adaptive` mode are only audited; acquisition events are not stored as records |
 | 6. Canonical evidence IDs not stored | Done (migration 003) | Task outputs keep worker-local IDs; the in-memory ledger is mutable |
 | 7. No persisted cancellation or deadline | Done: cancellation, `max_run_seconds`, `research-db reconcile`, legacy sibling cancellation | — |
-| 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, long-horizon synthesis is bounded, and salvage keeps every useful result ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops still resend their whole history |
+| 8. Full-ledger prompts limit scale | Mostly done: finishing roles get a projection and a retry-fit check, fetches page, long-horizon synthesis is bounded, and salvage keeps every useful result ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md)) | Scout and deep-dive loops resend their whole history by default; `keep_recent_tool_results` (experimental, off) trims read tool results, pending a quality comparison |
 | 9. Experiment identity incomplete | Mostly done (manifest schema 3) | Paired cases, repeat runs, uncertainty estimates |
 | 10. Runtime tied to legacy orchestration | Partly done: shared lifecycle and role calls, resolved settings injected | Graph steps call the loop's private methods; no shared executor (work package E) |
 | 11. Invalid configuration accepted | Done for `ResearchConfig`, plans, `campaign.toml`, `ModelRoute`, and `ModelPolicy` (2026-09-24) | — |
