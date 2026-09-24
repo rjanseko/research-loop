@@ -47,6 +47,36 @@ async def test_scholarly_adapters_keep_provider_records_separate(tmp_path) -> No
         assert build_scholar_toolset(client) is not None
 
 
+@pytest.mark.asyncio
+async def test_year_bounds_filter_every_search_provider(tmp_path) -> None:
+    seen: dict[str, httpx.QueryParams] = {}
+    arxiv_queries: list[str] = []
+    old_preprint = ARXIV_XML.replace("2601.01234", "2101.00001").replace("2026-01-03", "2021-01-03")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.url.params
+        if request.url.host == "export.arxiv.org":
+            arxiv_queries.append(request.url.params["search_query"])
+        if request.url.host == "api.openalex.org":
+            return httpx.Response(200, json={"meta": {"count": 0}, "results": []})
+        if request.url.host == "export.arxiv.org":
+            # The feed ignores the date range, so the returned dates are checked too.
+            return httpx.Response(200, text=ARXIV_XML.replace("</feed>", old_preprint.split("<feed", 1)[1].split(">", 1)[1]))
+        return httpx.Response(200, json={"message": {"items": []}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ScholarClient(cache=AcquisitionCache(tmp_path, "off"), client=http)
+        result = await client.search("agents", year_from=2024, include_crossref=True)
+        await client.search("agents", year_from=2020, year_to=2022, include_crossref=True)
+
+    assert [w.arxiv_id for w in result.works] == ["2601.01234v2"]
+    assert seen["api.openalex.org"]["filter"] == "from_publication_date:2020-01-01,to_publication_date:2022-12-31"
+    assert arxiv_queries == [
+        "all:agents AND submittedDate:[202401010000 TO 999912312359]",
+        "all:agents AND submittedDate:[202001010000 TO 202212312359]",
+    ]
+    assert seen["api.crossref.org"]["filter"] == "from-pub-date:2020-01-01,until-pub-date:2022-12-31"
+
 def test_replay_cache_does_not_call_network(tmp_path) -> None:
     cache = AcquisitionCache(tmp_path, "record")
     cache.put("crossref", "k", {"value": 1})

@@ -156,3 +156,69 @@ async def test_agents_in_one_job_share_fetches(public_urls, serve, tmp_path) -> 
     serve(lambda _url: _long_page(calls))
     await WebAcquisition(cache_root=tmp_path, cache_mode="off", memo=FetchMemo()).fetch("https://example.org/report")
     assert calls == [1, 1]  # another job's memo starts empty
+
+
+def _resolve_to(monkeypatch: pytest.MonkeyPatch, *answers: list[str]) -> list[str]:
+    """Answer successive DNS lookups with `answers`, as a rebinding server would."""
+    import socket
+
+    lookups: list[str] = []
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        lookups.append(host)
+        addresses = answers[min(len(lookups), len(answers)) - 1]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port)) for address in addresses]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    return lookups
+
+
+@pytest.fixture
+def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_fetch_client_refuses_to_connect_to_a_private_address(monkeypatch, no_proxy_env) -> None:
+    from research_loop.acquisition import public_fetch_client
+
+    # The URL check saw a public address; the connection's own lookup gets a private one.
+    _resolve_to(monkeypatch, ["10.0.0.5"])
+    async with public_fetch_client(timeout=5) as client:
+        with pytest.raises(ValueError, match="unsafe URL"):
+            await client.get("https://rebind.example/")
+
+
+@pytest.mark.asyncio
+async def test_fetch_backend_connects_to_the_address_it_checked(monkeypatch) -> None:
+    import httpcore
+
+    from research_loop.acquisition import _PublicOnlyBackend
+
+    lookups = _resolve_to(monkeypatch, ["93.184.216.34", "93.184.216.35"], ["127.0.0.1"])
+    connected: list[str] = []
+
+    class Inner:
+        async def connect_tcp(self, host, port, *_args):
+            connected.append(host)
+            if host == "93.184.216.34":
+                raise httpcore.ConnectError("refused")
+            return "stream"
+
+    backend = _PublicOnlyBackend()
+    backend._inner = Inner()
+    assert await backend.connect_tcp("example.org", 443) == "stream"
+    assert lookups == ["example.org"]  # one lookup, then the checked addresses in order
+    assert connected == ["93.184.216.34", "93.184.216.35"]
+    with pytest.raises(ValueError, match="unsafe URL"):
+        await backend.connect_tcp("example.org", 443)  # the next answer is loopback
+    assert connected == ["93.184.216.34", "93.184.216.35"]
+
+
+def test_fetch_client_leaves_a_configured_proxy_as_the_egress_boundary(monkeypatch, no_proxy_env) -> None:
+    from research_loop.acquisition import _PublicOnlyTransport, public_fetch_client
+
+    assert isinstance(public_fetch_client(timeout=5)._transport, _PublicOnlyTransport)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    assert not isinstance(public_fetch_client(timeout=5)._transport, _PublicOnlyTransport)

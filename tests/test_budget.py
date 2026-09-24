@@ -95,10 +95,18 @@ async def test_single_agent_job_persists_lifecycle_and_clears_spend() -> None:
     assert outcome.cost_usd is None  # TestModel has no pricing data
     assert loop._job_spend == {}
 
-    failing = _loop(ModelRoute("test", 0, 5, 10_000), job_cost_limit=None)
+    one_request = ModelRoute("test", 1, 5, 10_000)
+    failing = _loop(one_request, job_cost_limit=None)
+    tool_agent = Agent(output_type=str)
+
+    @tool_agent.tool_plain
+    def lookup() -> str:
+        return "value"
+
+    # TestModel calls the tool first, so the second request trips request_limit=1.
     with pytest.raises(UsageLimitExceeded):
-        await failing.run_agent_job("x", agent=Agent(output_type=str), role=ResearchRole.SYNTHESIZER,
-                                    route=ModelRoute("test", 0, 5, 10_000), prompt="x")
+        await failing.run_agent_job("x", agent=tool_agent, role=ResearchRole.SYNTHESIZER,
+                                    route=one_request, prompt="x")
     (failed_job,) = failing.repository.jobs.values()
     assert failed_job["status"] == "failed"
     assert failed_job["error"] == {"type": "UsageLimitExceeded"}
