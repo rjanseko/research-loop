@@ -11,7 +11,9 @@ fi
 
 "$PYTHON" -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[all]'
+# Pinned dependencies from the lockfile (make lock refreshes it), then the project itself.
+.venv/bin/python -m pip install -r requirements.lock
+.venv/bin/python -m pip install --no-deps -e .
 
 # Repair the links in .agents/skills and .claude/skills, which point at agent skills bundled
 # inside installed packages. Setup still succeeds without uvx or if the repair fails.

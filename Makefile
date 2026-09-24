@@ -1,4 +1,4 @@
-.PHONY: setup skills test lint graph diagnose postgres-up postgres-down db-status migrate
+.PHONY: setup skills lock test lint graph diagnose postgres-up postgres-down db-status migrate
 
 VENV := .venv/bin
 
@@ -8,6 +8,12 @@ setup:
 # Repair the agent skill links after upgrading a package that bundles skills.
 skills:
 	VIRTUAL_ENV=$(CURDIR)/.venv uvx library-skills --claude --yes
+
+# Pin every dependency of every extra, for all platforms. Existing pins are kept unless
+# pyproject.toml needs a change; `make lock UPGRADE=1` moves everything to the newest allowed.
+lock:
+	uvx --from uv==0.8.17 uv pip compile pyproject.toml --extra all --universal --python-version 3.12 \
+		-q -o requirements.lock $(if $(UPGRADE),--upgrade)
 
 test:
 	$(VENV)/pytest -q
