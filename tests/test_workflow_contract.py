@@ -461,26 +461,34 @@ async def test_deep_dives_record_the_task_that_asked_for_them(workflow):
 
 
 @pytest.mark.asyncio
-async def test_research_agents_in_one_job_share_one_fetch_memo(workflow, monkeypatch):
+async def test_research_agents_in_one_job_share_one_fetch_memo_and_http_clients(workflow, monkeypatch):
     import research_loop.async_orchestrator as orchestrator
 
     loop, script = workflow
     _one_followup_round(loop, script)
     loop.config = replace(loop.config, scholarly_tools=True)
     memos: list[Any] = []
+    fetch_clients: list[Any] = []
+    metadata_clients: list[Any] = []
 
     def recording(cls):
         class Recording(cls):
             def __init__(self, **kwargs: Any) -> None:
                 super().__init__(**kwargs)
                 memos.append(self.memo)
+                fetch_clients.append(getattr(self, "fetch_client", self.client))
+                if hasattr(self, "fetch_client"):
+                    metadata_clients.append(self.client)
         return Recording
 
     monkeypatch.setattr(orchestrator, "WebAcquisition", recording(orchestrator.WebAcquisition))
     monkeypatch.setattr(orchestrator, "ScholarClient", recording(orchestrator.ScholarClient))
     await run(loop)
     first_job = list(memos)
+    first_fetch, first_metadata = fetch_clients[0], metadata_clients[0]
     memos.clear()
+    fetch_clients.clear()
+    metadata_clients.clear()
     await run(loop)
 
     # The scout and both deep dives each build a web fetcher and a scholar client.
@@ -488,12 +496,18 @@ async def test_research_agents_in_one_job_share_one_fetch_memo(workflow, monkeyp
     assert all(memo is first_job[0] for memo in first_job)
     assert all(memo is memos[0] for memo in memos) and memos[0] is not first_job[0]
     assert loop._fetch_memos == {}
+    # One download client and one metadata client per job, closed when the job ends.
+    assert all(client is fetch_clients[0] for client in fetch_clients) and fetch_clients[0] is not first_fetch
+    assert all(client is metadata_clients[0] for client in metadata_clients) and len(metadata_clients) == 3
+    assert fetch_clients[0] is not metadata_clients[0]
+    assert all(client.is_closed for client in (first_fetch, first_metadata, fetch_clients[0], metadata_clients[0]))
+    assert loop._http_clients == {}
 
 
 def _no_running_records(loop) -> None:
     assert [job["status"] for job in loop.repository.jobs.values()] == ["failed"]
     assert all(task["status"] != "running" for task in loop.repository.tasks.values())
-    assert loop._job_spend == loop._fetch_memos == {}
+    assert loop._job_spend == loop._fetch_memos == loop._http_clients == {}
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,8 @@ Provider records stay separate. OpenAlex and Crossref may describe the same work
 
 - A result with `next_start` has more text; call again with `start=next_start`. `total_chars` is the extracted length.
 - Each research job keeps the full documents it fetched in memory, shared by all of its agents. Paging, and a second agent fetching the same URL, reuse the download in every cache mode. No job sees another job's documents.
-- pypdf extracts the first 30 pages of a PDF. `extraction_truncated` marks a longer document, whose last window is therefore not the end of the paper.
+- Each research job also opens two HTTP clients on first use and closes them when it ends: one for scholarly metadata APIs and one for downloads, which connects only to [public addresses](#url-safety). Its agents share them, so requests reuse connections, and every client shares one TLS context. Provider rate slots apply to every request, whichever client sends it.
+- pypdf extracts the first 30 pages of a PDF. PDF and HTML parsing run in worker threads, so a long document does not stall a job's other agents. `extraction_truncated` marks a longer document, whose last window is therefore not the end of the paper.
 - Manifests record this behavior as `fetch_version` 4. Version 1 returned only the first window; version 2 added paging but did not refuse [blocked sources](#blocked-sources); version 3 applied `scholar_search` year bounds to OpenAlex only.
 
 Pages are extracted with Trafilatura, falling back to Beautiful Soup. `scholar_fetch` extracts PDFs with pypdf; set `GROBID_URL` (for example `http://127.0.0.1:8070`, local HTTP only) to try a GROBID `/api/processFulltextDocument` service first, falling back to pypdf if it fails.

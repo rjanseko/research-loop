@@ -157,8 +157,11 @@ class ScholarClient:
     def __init__(self, *, cache: AcquisitionCache, api_key: str | None = None,
                  contact_email: str | None = None, client: httpx.AsyncClient | None = None,
                  grobid_url: str | None = None, memo: FetchMemo | None = None,
-                 policy: SourcePolicy | None = None) -> None:
+                 policy: SourcePolicy | None = None, fetch_client: httpx.AsyncClient | None = None) -> None:
+        # `client` serves metadata requests and, without `fetch_client`, downloads too; a fetch
+        # client should connect only to public addresses (public_fetch_client).
         self.cache, self.api_key, self.contact_email, self.client = cache, api_key, contact_email, client
+        self.fetch_client = fetch_client or client
         self.grobid_url = grobid_url
         self.memo = memo or FetchMemo()
         self.policy = policy or SourcePolicy()
@@ -188,8 +191,8 @@ class ScholarClient:
             headers["User-Agent"] += f" mailto:{self.contact_email}"
         async with self._semaphores[provider]:
             for attempt in range(2):
+                await wait_rate_slot(provider)
                 if self.client is None:
-                    await wait_rate_slot(provider)
                     async with httpx.AsyncClient(follow_redirects=False) as client:
                         response = await self._get(client, hosts[provider] + path, params, headers)
                 else:
@@ -386,8 +389,8 @@ class ScholarClient:
 
     async def _extract(self, url: str) -> dict[str, Any]:
         """Download a public page or PDF and extract its full text."""
-        if self.client:
-            response = await bounded_public_get(self.client, url, 5_000_000, self.policy)
+        if self.fetch_client:
+            response = await bounded_public_get(self.fetch_client, url, 5_000_000, self.policy)
         else:
             async with public_fetch_client(timeout=15) as client:
                 response = await bounded_public_get(client, url, 5_000_000, self.policy)
@@ -417,28 +420,37 @@ class ScholarClient:
                 except (httpx.HTTPError, ValueError, ET.ParseError):
                     pass
             if not extracted:
-                import io
-
-                from pypdf import PdfReader
-                pages = PdfReader(io.BytesIO(response.content)).pages
-                extracted = "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT])
-                extraction_truncated = len(pages) > _PDF_PAGE_LIMIT
+                # Parsing is CPU-bound; worker threads keep a long paper from stalling the other agents.
+                extracted, extraction_truncated = await asyncio.to_thread(_pdf_text, response.content)
                 method = "pypdf"
         elif media in ("text/html", "application/xhtml+xml"):
-            import trafilatura
-            extracted = trafilatura.extract(response.text, include_comments=False, include_tables=True) or ""
-            method = "trafilatura"
-            if not extracted.strip():
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.text, "html.parser")
-                for item in soup(["script", "style", "nav", "footer", "header"]):
-                    item.decompose()
-                extracted = soup.get_text(" ", strip=True)
-                method = "beautifulsoup-fallback"
+            extracted, method = await asyncio.to_thread(_html_text, response.text)
         else:
             raise ValueError("unsupported content type")
         return {"text": extracted, "extraction_method": method, "extraction_truncated": extraction_truncated,
                 "content_sha256": hashlib.sha256(response.content).hexdigest()}
+
+
+def _pdf_text(content: bytes) -> tuple[str, bool]:
+    """Text of a PDF's first pages, and whether it has more."""
+    import io
+
+    from pypdf import PdfReader
+    pages = PdfReader(io.BytesIO(content)).pages
+    return "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT]), len(pages) > _PDF_PAGE_LIMIT
+
+
+def _html_text(html: str) -> tuple[str, str]:
+    """Main text of an HTML page and the extractor that produced it."""
+    import trafilatura
+    extracted = trafilatura.extract(html, include_comments=False, include_tables=True) or ""
+    if extracted.strip():
+        return extracted, "trafilatura"
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for item in soup(["script", "style", "nav", "footer", "header"]):
+        item.decompose()
+    return soup.get_text(" ", strip=True), "beautifulsoup-fallback"
 
 
 def build_scholar_toolset(client: ScholarClient) -> FunctionToolset:
