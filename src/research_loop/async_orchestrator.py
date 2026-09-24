@@ -255,6 +255,14 @@ class AgentJobOutcome:
     cost_usd: Decimal | None = None
 
 
+@dataclass
+class _BudgetHold:
+    """A running call's share of the job cap, returned once when the call ends."""
+
+    amount: float
+    released: bool = False
+
+
 class JobBudgetExceeded(RuntimeError):
     """The policy's per-job cost cap is spent, or spend could not be priced."""
 
@@ -281,6 +289,10 @@ class AsyncResearchLoop:
         self.repository: ResearchRepository = repository or NullResearchRepository()
         # Per-job USD spend; None once any billed call could not be priced.
         self._job_spend: dict[UUID, Decimal | None] = {}
+        # Per-job cost allowances held by running calls (total, count), and the event that
+        # wakes calls waiting for one to be released.
+        self._job_holds: dict[UUID, tuple[float, int]] = {}
+        self._budget_released: dict[UUID, asyncio.Event] = {}
         # Per-job fetched documents, shared by the job's agents and dropped when it ends.
         self._fetch_memos: dict[UUID, FetchMemo] = {}
         # Per-job blocked sources, enforced by the fetch tools and the research output check.
@@ -346,6 +358,8 @@ class AsyncResearchLoop:
             raise
         finally:
             self._job_spend.pop(job_id, None)
+            self._job_holds.pop(job_id, None)
+            self._budget_released.pop(job_id, None)
             self._fetch_memos.pop(job_id, None)
             self._source_policies.pop(job_id, None)
 
@@ -397,18 +411,57 @@ class AsyncResearchLoop:
             cost_limit=min(caps) if caps else None,
         )
 
-    def _remaining_budget(self, job_id: UUID, reserve: float = 0.0) -> float | None:
-        """Spend left under the job cap after `reserve`; raises before a call that cannot fit."""
+    def _available(self, job_id: UUID, reserve: float) -> float | None:
+        """Job cap less spend, allowances held by running calls, and `reserve`; None when uncapped."""
         limit = self.policy.job_cost_limit
         if limit is None or job_id not in self._job_spend:
             return None
         spent = self._job_spend[job_id]
         if spent is None:
             raise JobBudgetExceeded("job cost cap cannot be enforced: a model call had no pricing data")
-        remaining = limit - float(spent) - reserve
-        if remaining <= 0:
-            raise JobBudgetExceeded(f"job cost cap of ${limit:.2f} reached (${reserve:.2f} held in reserve)")
-        return remaining
+        held, _ = self._job_holds.get(job_id, (0.0, 0))
+        return limit - float(spent) - held - reserve
+
+    async def _admit(self, job_id: UUID, route: ModelRoute, reserve: float) -> _BudgetHold | None:
+        """Hold a call's cost allowance under the job cap until _release; None when uncapped.
+
+        A call holds its route cost_limit, or everything left when the route has none. When that
+        does not fit beside the allowances running calls hold, it waits for one of them to finish
+        instead of counting on the same money; with none running it takes what is left, or is
+        refused when nothing is. Parallel calls therefore run only as many at once as their full
+        allowances fit, and a route without a cost_limit runs alone under a job cap.
+        """
+        while True:
+            available = self._available(job_id, reserve)
+            if available is None:
+                return None
+            held, holders = self._job_holds.get(job_id, (0.0, 0))
+            wanted = route.cost_limit
+            if wanted is not None and available >= wanted:
+                amount = wanted
+            elif holders:
+                await self._budget_released.setdefault(job_id, asyncio.Event()).wait()
+                continue
+            elif available <= 0:
+                limit = self.policy.job_cost_limit
+                raise JobBudgetExceeded(f"job cost cap of ${limit:.2f} reached (${reserve:.2f} held in reserve)")
+            else:
+                amount = available
+            self._job_holds[job_id] = (held + amount, holders + 1)
+            return _BudgetHold(amount)
+
+    def _release(self, job_id: UUID, hold: _BudgetHold | None) -> None:
+        """Return a call's allowance and wake calls waiting for one; later calls do nothing."""
+        if hold is None or hold.released:
+            return
+        hold.released = True
+        held, holders = self._job_holds.get(job_id, (0.0, 0))
+        if holders > 1:
+            self._job_holds[job_id] = (held - hold.amount, holders - 1)
+        else:
+            self._job_holds.pop(job_id, None)
+        if released := self._budget_released.pop(job_id, None):
+            released.set()
 
     def _record_spend(self, job_id: UUID, usage: RunUsage) -> None:
         spent = self._job_spend.get(job_id)
@@ -478,123 +531,127 @@ class AsyncResearchLoop:
             "attachment_count": len(attachment_corpus.records) if attachment_corpus else 0,
             "scholarly_cache_mode": self.config.scholarly_cache_mode,
         } | ({"salvage": True} if salvage else {})
-        remaining_budget = self._remaining_budget(
-            job_id, self.policy.job_reserve_for(role, salvage=salvage)
-        )
-        task_id = await self.repository.start_task(
-            job_id=job_id,
-            parent_task_id=parent_task_id,
-            role=role,
-            question_id=question_id,
-            prompt=prompt if persisted_prompt is None else persisted_prompt,
-            model_id=route.model,
-            effective_config=effective_config,
-            attempt=attempt,
-        )
-        if task_ids is not None:
-            task_ids.append(task_id)
-
-        # A caller-owned RunUsage keeps counting billed requests even when the run raises.
-        usage = RunUsage()
-        run_messages: list[Any] = []
+        hold = await self._admit(job_id, route, self.policy.job_reserve_for(role, salvage=salvage))
+        remaining_budget = hold.amount if hold else None
         try:
-            if require_retry_room:
-                needed = retry_token_budget(prompt, route, role)
-                if needed > route.total_tokens_limit:
-                    raise PromptExceedsRetryBudget(
-                        f"{role.value} needs about {needed} tokens for one retry, "
-                        f"above its {route.total_tokens_limit} token limit"
-                    )
-            capabilities = (
-                build_research_capabilities(self.config.tool_mode) if research_tools else None
+            task_id = await self.repository.start_task(
+                job_id=job_id,
+                parent_task_id=parent_task_id,
+                role=role,
+                question_id=question_id,
+                prompt=prompt if persisted_prompt is None else persisted_prompt,
+                model_id=route.model,
+                effective_config=effective_config,
+                attempt=attempt,
             )
-            toolsets = []
-            memo = self._fetch_memos.get(job_id)
-            policy = self._source_policies.get(job_id)
-            if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
-                toolsets.append(build_web_toolset(WebAcquisition(
-                    cache_root=self.settings.benchmark_cache / "web",
-                    cache_mode=self.config.scholarly_cache_mode,
-                    memo=memo,
-                    policy=policy,
-                )))
-            if research_tools and self.config.scholarly_tools:
-                scholar_client = ScholarClient(
-                    cache=AcquisitionCache(
-                        self.settings.benchmark_cache / "scholarly",
-                        mode=self.config.scholarly_cache_mode,
-                    ),
-                    api_key=self.settings.openalex_api_key.get_secret_value() if self.settings.openalex_api_key else None,
-                    contact_email=self.settings.crossref_mailto,
-                    grobid_url=self.settings.grobid_url,
-                    memo=memo,
-                    policy=policy,
-                )
-                toolsets.append(build_scholar_toolset(scholar_client))
-            if attachment_corpus and attachment_tools:
-                toolsets.append(build_attachment_toolset(attachment_corpus))
+            if task_ids is not None:
+                task_ids.append(task_id)
 
-            user_prompt: Any = prompt
-            if (
-                attachment_corpus
-                and multimodal_inputs
-                and self.config.attachment_mode is AttachmentMode.MULTIMODAL
-            ):
-                user_prompt = build_multimodal_prompt(prompt, attachment_corpus)
-
+            # A caller-owned RunUsage keeps counting billed requests even when the run raises.
+            usage = RunUsage()
+            run_messages: list[Any] = []
             try:
-                with capture_run_messages() as run_messages:
-                    result = await agent.run(
-                        user_prompt,
-                        model=route.model,
-                        model_settings=route.model_settings(),
-                        usage_limits=self._limits(route, remaining_budget),
-                        usage=usage,
-                        deps=deps,
-                        capabilities=capabilities,
-                        toolsets=toolsets or None,
+                if require_retry_room:
+                    needed = retry_token_budget(prompt, route, role)
+                    if needed > route.total_tokens_limit:
+                        raise PromptExceedsRetryBudget(
+                            f"{role.value} needs about {needed} tokens for one retry, "
+                            f"above its {route.total_tokens_limit} token limit"
+                        )
+                capabilities = (
+                    build_research_capabilities(self.config.tool_mode) if research_tools else None
+                )
+                toolsets = []
+                memo = self._fetch_memos.get(job_id)
+                policy = self._source_policies.get(job_id)
+                if research_tools and self.config.tool_mode is ResearchToolMode.NORMALIZED:
+                    toolsets.append(build_web_toolset(WebAcquisition(
+                        cache_root=self.settings.benchmark_cache / "web",
+                        cache_mode=self.config.scholarly_cache_mode,
+                        memo=memo,
+                        policy=policy,
+                    )))
+                if research_tools and self.config.scholarly_tools:
+                    scholar_client = ScholarClient(
+                        cache=AcquisitionCache(
+                            self.settings.benchmark_cache / "scholarly",
+                            mode=self.config.scholarly_cache_mode,
+                        ),
+                        api_key=self.settings.openalex_api_key.get_secret_value() if self.settings.openalex_api_key else None,
+                        contact_email=self.settings.crossref_mailto,
+                        grobid_url=self.settings.grobid_url,
+                        memo=memo,
+                        policy=policy,
                     )
-            finally:
-                self._record_spend(job_id, usage)
-            events = extract_tool_events(result.new_messages())
-            await self.repository.record_tool_events(task_id, events)
-            output = result.output
-            if isinstance(output, ResearchResult):
-                texts = [*tool_texts(events), *(quote_texts or ())]
-                output = check_sources(check_quotes(output, texts), texts)
-            await self.repository.finish_task(
-                task_id,
-                status="succeeded",
-                output=(
-                    output.model_dump(mode="json")
-                    if isinstance(output, BaseModel)
-                    else jsonable(output)
-                ),
-                usage=usage_snapshot(result.usage),
-                agent_run_id=result.run_id,
-                conversation_id=result.conversation_id,
-            )
-            return output
-        except (Exception, asyncio.CancelledError) as exc:
-            # Cancelled tasks are recorded too: a cancelled run, or a sibling branch the graph
-            # cancelled because another failed.
-            if captured is not None:
-                captured.extend(run_messages)
-            with _recording_failure(exc):
-                if run_messages:
-                    # Keep the original failure; the task row still records it.
-                    with suppress(Exception):
-                        await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
+                    toolsets.append(build_scholar_toolset(scholar_client))
+                if attachment_corpus and attachment_tools:
+                    toolsets.append(build_attachment_toolset(attachment_corpus))
+
+                user_prompt: Any = prompt
+                if (
+                    attachment_corpus
+                    and multimodal_inputs
+                    and self.config.attachment_mode is AttachmentMode.MULTIMODAL
+                ):
+                    user_prompt = build_multimodal_prompt(prompt, attachment_corpus)
+
+                try:
+                    with capture_run_messages() as run_messages:
+                        result = await agent.run(
+                            user_prompt,
+                            model=route.model,
+                            model_settings=route.model_settings(),
+                            usage_limits=self._limits(route, remaining_budget),
+                            usage=usage,
+                            deps=deps,
+                            capabilities=capabilities,
+                            toolsets=toolsets or None,
+                        )
+                finally:
+                    # Spend and the released allowance change together, so no call sees both or neither.
+                    self._record_spend(job_id, usage)
+                    self._release(job_id, hold)
+                events = extract_tool_events(result.new_messages())
+                await self.repository.record_tool_events(task_id, events)
+                output = result.output
+                if isinstance(output, ResearchResult):
+                    texts = [*tool_texts(events), *(quote_texts or ())]
+                    output = check_sources(check_quotes(output, texts), texts)
                 await self.repository.finish_task(
                     task_id,
-                    status="failed",
-                    output=None,
-                    usage=usage_snapshot(usage) if usage.requests else None,
-                    agent_run_id=None,
-                    conversation_id=None,
-                    error=error_snapshot(exc),
+                    status="succeeded",
+                    output=(
+                        output.model_dump(mode="json")
+                        if isinstance(output, BaseModel)
+                        else jsonable(output)
+                    ),
+                    usage=usage_snapshot(result.usage),
+                    agent_run_id=result.run_id,
+                    conversation_id=result.conversation_id,
                 )
-            raise
+                return output
+            except (Exception, asyncio.CancelledError) as exc:
+                # Cancelled tasks are recorded too: a cancelled run, or a sibling branch the graph
+                # cancelled because another failed.
+                if captured is not None:
+                    captured.extend(run_messages)
+                with _recording_failure(exc):
+                    if run_messages:
+                        # Keep the original failure; the task row still records it.
+                        with suppress(Exception):
+                            await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
+                    await self.repository.finish_task(
+                        task_id,
+                        status="failed",
+                        output=None,
+                        usage=usage_snapshot(usage) if usage.requests else None,
+                        agent_run_id=None,
+                        conversation_id=None,
+                        error=error_snapshot(exc),
+                    )
+                raise
+        finally:
+            self._release(job_id, hold)
 
     async def _run_research(self, question: ResearchQuestion, **kwargs: Any) -> ResearchResult:
         """Run a scout or deep dive; with salvage enabled, budget exhaustion degrades, not fails."""

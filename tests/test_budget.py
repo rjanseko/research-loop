@@ -27,9 +27,14 @@ async def test_job_cap_clamps_call_limit_and_blocks_once_spent() -> None:
     job_id = uuid4()
     loop._job_spend[job_id] = Decimal(0)
 
-    assert loop._limits(route, loop._remaining_budget(job_id)).cost_limit == 3.0
+    async def call_limit() -> float:
+        hold = await loop._admit(job_id, route, 0.0)
+        loop._release(job_id, hold)
+        return loop._limits(route, hold.amount).cost_limit
+
+    assert await call_limit() == 3.0
     loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal(4)))
-    assert loop._limits(route, loop._remaining_budget(job_id)).cost_limit == pytest.approx(1.0)
+    assert await call_limit() == pytest.approx(1.0)
     loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal("1.5")))
     assert loop._job_spend[job_id] == Decimal("5.5")
 
@@ -100,7 +105,8 @@ async def test_single_agent_job_persists_lifecycle_and_clears_spend() -> None:
     assert failing._job_spend == {}
 
 
-def test_reserve_holds_budget_for_finishing_steps_and_salvage() -> None:
+@pytest.mark.asyncio
+async def test_reserve_holds_budget_for_finishing_steps_and_salvage() -> None:
     route = ModelRoute("test", 5, 5, 10_000)
     policy = ModelPolicy("reserve-test", {role: route for role in ResearchRole},
                          job_cost_limit=5.0, job_reserve_usd=2.0)
@@ -108,11 +114,91 @@ def test_reserve_holds_budget_for_finishing_steps_and_salvage() -> None:
     job_id = uuid4()
     loop._job_spend[job_id] = Decimal("3.5")
 
+    async def allowance(reserve: float) -> float:
+        hold = await loop._admit(job_id, route, reserve)
+        loop._release(job_id, hold)
+        return hold.amount
+
     with pytest.raises(JobBudgetExceeded, match="reserve"):
-        loop._remaining_budget(job_id, policy.job_reserve_for(ResearchRole.SCOUT))
+        await allowance(policy.job_reserve_for(ResearchRole.SCOUT))
     for role in (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER):
-        assert loop._remaining_budget(job_id, policy.job_reserve_for(role)) == pytest.approx(1.5)
-    assert loop._remaining_budget(job_id, policy.job_reserve_for(ResearchRole.DEEP_DIVE, salvage=True)) == pytest.approx(1.5)
+        assert await allowance(policy.job_reserve_for(role)) == pytest.approx(1.5)
+    assert await allowance(policy.job_reserve_for(ResearchRole.DEEP_DIVE, salvage=True)) == pytest.approx(1.5)
+
+
+@pytest.mark.asyncio
+async def test_parallel_calls_cannot_hold_the_same_allowance() -> None:
+    import asyncio
+
+    route = ModelRoute("test", 5, 5, 10_000, cost_limit=2.0)
+    policy = ModelPolicy("hold-test", {role: route for role in ResearchRole},
+                         job_cost_limit=7.0, job_reserve_usd=2.0)
+    loop = AsyncResearchLoop(policy, repository=InMemoryResearchRepository())
+    job_id = uuid4()
+    loop._job_spend[job_id] = Decimal(0)
+    scout_reserve = policy.job_reserve_for(ResearchRole.SCOUT)
+
+    # $5 above the reserve fits two $2 allowances; a third would reach into the reserve.
+    first = await loop._admit(job_id, route, scout_reserve)
+    second = await loop._admit(job_id, route, scout_reserve)
+    third = asyncio.create_task(loop._admit(job_id, route, scout_reserve))
+    await asyncio.sleep(0)
+    assert not third.done()  # waits instead of taking the $1 left beside the running calls
+
+    # A finishing call may use the reserve, but not money a running call holds.
+    finishing = await loop._admit(job_id, route, policy.job_reserve_for(ResearchRole.SYNTHESIZER))
+    assert finishing.amount == 2.0
+    assert loop._job_holds[job_id] == (6.0, 3)
+
+    # The first call spent $0.50 of its $2; with the finishing call's $2 still held, $0.50 is free.
+    loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal("0.5")))
+    loop._release(job_id, first)
+    loop._release(job_id, first)  # a second release returns nothing more
+    await asyncio.sleep(0)
+    assert not third.done()
+    loop._release(job_id, finishing)
+    assert (await asyncio.wait_for(third, 1)).amount == 2.0
+    loop._release(job_id, second)
+    loop._release(job_id, third.result())
+    assert job_id not in loop._job_holds
+
+    # With nothing running, a call takes what is left, as before.
+    loop._record_spend(job_id, RunUsage(requests=1, cost=Decimal("4.0")))
+    assert (await loop._admit(job_id, route, scout_reserve)).amount == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::pydantic_ai.usage.CostNotFoundWarning")  # TestModel has no prices
+async def test_parallel_scouts_run_only_as_many_as_their_allowances_fit() -> None:
+    import asyncio
+
+    route = ModelRoute("test", 5, 5, 10_000, cost_limit=1.0)
+    policy = ModelPolicy("scouts", {role: route for role in ResearchRole}, job_cost_limit=3.0, job_reserve_usd=1.0)
+    loop = AsyncResearchLoop(policy, repository=InMemoryResearchRepository())
+    job_id = uuid4()
+    running = peak = 0
+    agent = Agent(output_type=str)
+    # TestModel has no pricing data; record $0.10 a call so the job cap stays enforceable.
+    loop._record_spend = lambda job, usage: AsyncResearchLoop._record_spend(
+        loop, job, RunUsage(requests=usage.requests, cost=Decimal("0.1")))
+
+    @agent.tool_plain
+    async def lookup() -> str:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return "value"
+
+    async with loop._job_scope(job_id):
+        await asyncio.gather(*(
+            loop._run_agent(job_id=job_id, agent=agent, role=ResearchRole.SCOUT, route=route, prompt=f"q{i}")
+            for i in range(5)
+        ))
+        assert job_id not in loop._job_holds
+    assert peak == 2  # $2 above the reserve holds two $1 allowances at a time
+    assert len(loop.repository.tasks) == 5
 
 
 def _research_setup(*, salvage: bool, job_cost_limit: float | None = None):

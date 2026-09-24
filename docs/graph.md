@@ -76,7 +76,7 @@ map scouts
    └── scout ──┘
 ```
 
-Deep dives use a separate semaphore (`max_parallel_deep_dives`). A breadth policy can therefore plan 24 questions without opening 24 simultaneous model runs. `ResearchConfig` rejects zero-slot semaphores, which would wait forever.
+Deep dives use a separate semaphore (`max_parallel_deep_dives`). A breadth policy can therefore plan 24 questions without opening 24 simultaneous model runs. `ResearchConfig` rejects zero-slot semaphores, which would wait forever. Under a `job_cost_limit`, a semaphore slot is not enough: each call also sets aside its route's `cost_limit`, so fewer calls may run at once than the semaphore allows (see the [guide](guide.md#how-spending-is-limited)).
 
 Every mapped work item carries its position in the plan. Record steps sort joined results by that position before they reach the ledger, so a faster provider cannot reorder evidence. This matches the input-order behavior of the legacy `asyncio.gather` implementation.
 
