@@ -237,6 +237,8 @@ There are three levels of limits. Your provider account's own caps are the outer
 
 The built-in policies leave `job_cost_limit` unset and `job_reserve_usd` at zero, so out of the box the only protection is the per-call limits. If you use the library directly, set a job cap yourself; long-horizon studies set one from their per-question and synthesis budgets. The job cap is a soft limit: it is checked before each call against spend recorded so far, so it can't promise that your provider bill will never go over it.
 
+Limits that no call could run under are refused before a job is created. A route needs a model, at least one request and one token, and zero or more tool calls (zero makes it tool-free); its dollar limit and `max_tokens`, when set, must be positive. A policy needs a route for every role, a planner range with 1 ≤ min ≤ max, a positive job cap when set, and a reserve of zero or more that stays below the cap.
+
 ### How much work a run does
 
 | Setting | Default | What it controls |

@@ -1,4 +1,9 @@
-from research_loop.policy import ModelRoute, get_policy, retry_token_budget
+from dataclasses import replace
+
+import pytest
+
+from research_loop.async_orchestrator import AsyncResearchLoop
+from research_loop.policy import ModelPolicy, ModelRoute, get_policy, retry_token_budget
 from research_loop.schemas import ResearchQuestion, ResearchRole
 from research_loop.settings import ResearchSettings
 
@@ -117,3 +122,69 @@ def test_quality_finishing_routes_fit_a_retry_of_prompts_nearly_twice_p01() -> N
     for role, chars in ((ResearchRole.SYNTHESIZER, 94_390), (ResearchRole.VERIFIER, 123_055)):
         route = policy.for_role(role)
         assert retry_token_budget("x" * int(chars * 1.8), route, role) <= route.total_tokens_limit
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"model": " "}, "needs a model"),
+        ({"max_requests": 0}, "max_requests"),
+        ({"max_tool_calls": -1}, "max_tool_calls"),
+        ({"total_tokens_limit": 0}, "total_tokens_limit"),
+        ({"total_tokens_limit": 1.5}, "total_tokens_limit"),
+        ({"cost_limit": 0.0}, "cost_limit"),
+        ({"cost_limit": float("nan")}, "cost_limit"),
+        ({"cost_limit": float("inf")}, "cost_limit"),
+        ({"thinking": "extreme"}, "thinking"),
+        ({"settings": {"max_tokens": 0}}, "max_tokens"),
+    ],
+)
+def test_route_rejects_limits_no_call_could_run_under(fields, message) -> None:
+    route = ModelRoute("test", 5, 5, 10_000)
+    with pytest.raises(ValueError, match=message):
+        replace(route, **fields)
+
+
+def test_tool_free_route_and_every_preset_are_valid() -> None:
+    assert ModelRoute("test", 1, 0, 1).max_tool_calls == 0
+    for name in ("quality", "breadth", "glm-heavy", "synthetic"):
+        policy = get_policy(name)
+        policy.validate()
+        for route in policy.routes.values():
+            route.salvage()
+
+
+def _policy(**kwargs) -> ModelPolicy:
+    route = ModelRoute("test", 5, 5, 10_000)
+    return ModelPolicy("p", {role: route for role in ResearchRole}, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"planner_question_range": (0, 3)}, "planner_question_range"),
+        ({"planner_question_range": (5, 4)}, "planner_question_range"),
+        ({"job_cost_limit": 0.0}, "job_cost_limit"),
+        ({"job_cost_limit": float("nan")}, "job_cost_limit"),
+        ({"job_reserve_usd": -1.0}, "job_reserve_usd"),
+        ({"job_cost_limit": 2.0, "job_reserve_usd": 2.0}, "below job_cost_limit"),
+    ],
+)
+def test_loop_refuses_a_policy_no_job_could_run_under(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        AsyncResearchLoop(_policy(**kwargs))
+
+
+def test_policy_needs_a_route_for_every_role() -> None:
+    policy = _policy()
+    del policy.routes[ResearchRole.VERIFIER]
+    with pytest.raises(ValueError, match="no route for verifier"):
+        policy.validate()
+
+
+@pytest.mark.asyncio
+async def test_job_creation_rechecks_a_policy_changed_after_construction() -> None:
+    loop = AsyncResearchLoop(_policy(job_cost_limit=2.0))
+    loop.policy.job_reserve_usd = 3.0
+    with pytest.raises(ValueError, match="job_reserve_usd"):
+        await loop.run("objective")
