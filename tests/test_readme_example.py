@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from research_loop.render import ReportDocument
 from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 from research_loop.tools import ResearchToolMode
@@ -60,3 +61,6 @@ def test_synthetic_run_writes_the_record(tmp_path, monkeypatch, capsys) -> None:
     assert record["review_reasons"] == [] and record["cost_usd"] == 0.0
     assert [row["id"] for row in record["sources"]] == ["s1"]  # what the report's [sN] citations name
     assert f"record: {output}" in capsys.readouterr().out
+    # The record carries the ledger, so research-report can render it with its sources.
+    document = ReportDocument.from_record(record)
+    assert document.objective == readme_example.QUESTION and [e.id for e in document.sources] == ["s1"]

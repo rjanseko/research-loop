@@ -17,6 +17,7 @@ build/
 
 # Benchmark/runtime artifacts
 benchmark_outputs/
+report/
 .cache/
 *.log
 

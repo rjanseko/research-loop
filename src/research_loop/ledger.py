@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -118,6 +118,12 @@ class EvidenceLedger:
         numbering = self._source_numbering()
         return {claim.id: frozenset(numbering[_source_key(item.source)[0]] for item in claim.evidence if item.supports)
                 for claim in self.claims()}
+
+    def evidence_source_ids(self) -> dict[tuple[str, int], str]:
+        """The source ID of every evidence item, keyed by claim ID and the item's index in that claim."""
+        numbering = self._source_numbering()
+        return {(claim.id, index): numbering[_source_key(item.source)[0]]
+                for claim in self.claims() for index, item in enumerate(claim.evidence)}
 
     def to_json(self) -> dict[str, list[dict[str, Any]]]:
         """Results by question, as stored in Postgres and exported as evidence_ledger.json."""
@@ -266,6 +272,11 @@ _INLINE_CITATION = re.compile(r"\[\s*(s\d+(?:\s*[,;]\s*s\d+)*)\s*\]")
 def inline_source_ids(text: str) -> list[str]:
     """The source IDs a text cites inline, in order."""
     return [source_id for group in _INLINE_CITATION.findall(text) for source_id in re.findall(r"s\d+", group)]
+
+
+def rewrite_inline_citations(text: str, rewrite: Callable[[list[str]], str]) -> str:
+    """`text` with each inline citation replaced by `rewrite` of its source IDs."""
+    return _INLINE_CITATION.sub(lambda match: rewrite(re.findall(r"s\d+", match.group(1))), text)
 
 
 def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> str:

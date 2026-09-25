@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         ResearchOutcome,
     )
     from .policy import ModelPolicy, ModelRoute
+    from .render import ReportDocument, write_report
     from .schemas import ResearchConstraints
     from .tools import ResearchToolMode
 
@@ -25,12 +26,14 @@ __all__ = [
     "LegacyResearchLoop",
     "ModelPolicy",
     "ModelRoute",
+    "ReportDocument",
     "ResearchConfig",
     "ResearchConstraints",
     "ResearchLoop",
     "ResearchOutcome",
     "ResearchToolMode",
     "get_policy",
+    "write_report",
 ]
 
 
@@ -44,6 +47,9 @@ def __getattr__(name: str) -> Any:
     if name in {"ModelPolicy", "ModelRoute", "POLICY_PRESETS", "get_policy"}:
         from . import policy
         return getattr(policy, name)
+    if name in {"ReportDocument", "write_report"}:
+        from . import render
+        return getattr(render, name)
     if name == "ResearchConstraints":
         from .schemas import ResearchConstraints
         return ResearchConstraints

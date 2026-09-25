@@ -197,7 +197,9 @@ lxml==6.1.3
 lxml-html-clean==0.4.5
     # via lxml
 markdown-it-py==4.2.0
-    # via rich
+    # via
+    #   research-loop (pyproject.toml)
+    #   rich
 markdownify==1.2.3
     # via pydantic-ai-slim
 mcp==2.2.0

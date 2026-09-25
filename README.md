@@ -12,6 +12,7 @@ pytest -q                                          # offline tests
 python examples/run_research.py "Your question"    # scripted models: free, no network
 python examples/run_research.py "Your question" --policy quality --paid   # real models
 python examples/run_research.py "Your question" --policy quality --paid --persist   # and store the job in Postgres
+python examples/run_research.py "Your question" --report-dir report/   # and write it as a PDF and Markdown
 ```
 
 Before your first paid run, set up provider keys and network access with [docs/setup.md](docs/setup.md#preparing-for-paid-runs) and check them with `research-diagnose --smoke`.
@@ -29,6 +30,14 @@ outcome.verification    # the verifier's check of each claim
 outcome.ledger          # all the evidence gathered
 outcome.sources         # what the report's inline [sN] citations name
 outcome.review_reasons  # anything left unresolved; empty means no check flagged a problem
+```
+
+To read or share a run, render it as a document. The PDF (through LaTeX) holds the report with its key statements and verdicts, a bibliography of every source in the ledger with scholarly works listed apart from web sources and attachments, and appendices for the plan, the evidence ledger, and the verification. Citations, claim IDs, and sources link to each other.
+
+```python
+from research_loop import ReportDocument, write_report
+
+write_report(ReportDocument.from_outcome(outcome), "report/", ["pdf", "md", "html", "bib", "json"])
 ```
 
 You steer a run with `ResearchConstraints`: files for the agents to read, sources they must not use, and notes they should follow.
@@ -456,7 +465,7 @@ The code is layered: each layer uses only the layers below it.
 
 | Layer | Modules in `src/research_loop/` |
 |---|---|
-| Commands | `main()` in `benchmark.py`, `long_horizon.py`, `diagnose.py`, `db.py`; `graph_cli.py` |
+| Commands | `main()` in `benchmark.py`, `long_horizon.py`, `diagnose.py`, `db.py`; `graph_cli.py`; `render.py` (report documents) |
 | Workflows built on the loop | `benchmark.py`, `benchmarks/`, `evals.py`, `experiment.py`, `long_horizon.py`, `citations.py`, `diagnose.py` |
 | The research loop | `orchestrator.py` (the public `ResearchLoop`), `graph.py`, `async_orchestrator.py`, `agents.py` |
 | Core types and rules | `schemas.py`, `ledger.py`, `quotes.py`, `policy.py` |
@@ -469,6 +478,7 @@ The code is layered: each layer uses only the layers below it.
 | `research-long-horizon` | Runs a multi-question study and synthesizes the results |
 | `research-db` | Applies migrations and closes out runs a crashed process left open |
 | `research-graph` | Prints the workflow graph as Mermaid |
+| `research-report` | Renders a saved run or a stored job as PDF, LaTeX, Markdown, HTML, BibTeX, or JSON |
 
 ## Read more
 

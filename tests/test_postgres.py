@@ -122,6 +122,14 @@ async def test_a_synthetic_run_persists_every_record(dsn: str, tmp_path: Path) -
     ((name, sha256),) = _rows(dsn, "select name, sha256 from research_attachments where job_id = %s", (outcome.job_id,))
     assert name == "notes.txt" and sha256 == outcome.attachments.records[0].sha256
 
+    # research-report --job-id renders the stored job as the run itself would.
+    from research_loop.render import ReportDocument, _load_job, render_markdown
+
+    stored = ReportDocument.from_record(await _load_job(dsn, outcome.job_id))
+    assert stored.review_reasons == outcome.review_reasons and stored.job_id == str(outcome.job_id)
+    assert render_markdown(stored).split("## Findings")[1] == render_markdown(
+        ReportDocument.from_outcome(outcome)).split("## Findings")[1]
+
 
 @pytest.mark.asyncio
 async def test_failures_are_recorded_and_reconcile_closes_abandoned_runs(dsn: str) -> None:
