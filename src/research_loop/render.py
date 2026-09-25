@@ -49,6 +49,9 @@ if TYPE_CHECKING:
 
 FORMATS = ("pdf", "tex", "md", "html", "bib", "json")
 ENGINES = ("latexmk", "pdflatex", "lualatex", "xelatex", "tectonic")
+# Engines that print text from system fonts, best first for scripts beyond Latin Modern: XeTeX breaks
+# Thai and Chinese lines by locale, and LuaLaTeX needs luaotfload for system fonts.
+_UNICODE_ENGINES = ("xelatex", "lualatex", "tectonic")
 _SUFFIX = {"pdf": ".pdf", "tex": ".tex", "md": ".md", "html": ".html", "bib": ".bib", "json": ".json"}
 
 SourceGroup = Literal["scholarly", "web", "attachment"]
@@ -581,6 +584,50 @@ def _unicode_declarations(tex: str) -> tuple[str, str]:
     return pdftex, unicode_tex
 
 
+# Scripts Latin Modern lacks, which reports quote from sources such as Thai or Chinese government pages:
+# their characters, the fonts to print them in under XeLaTeX or LuaLaTeX (the first installed), and the
+# locale XeTeX breaks their lines by, since Thai and Chinese put no spaces between words. pdfLaTeX has no
+# fonts for them and prints each character's code point.
+_SCRIPTS = {
+    "thai": ("\u0e00-\u0e7f", ("Noto Serif Thai", "Noto Sans Thai", "FreeSerif", "Loma"), "th"),
+    "cjk": ("\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef",
+            ("Noto Serif CJK SC", "Noto Sans CJK SC", "Noto Serif CJK JP", "Noto Sans CJK JP"), "zh"),
+}
+# A run of one script's characters, with the spaces between them; punctuation such as "." stays in the
+# main font, since script fonts often lack it.
+_SCRIPT_RUNS = [(name, re.compile(f"[{chars}]+(?: +[{chars}]+)*")) for name, (chars, _, _) in _SCRIPTS.items()]
+
+
+def _script_fonts() -> str:
+    lines = []
+    for name, (_, fonts, locale) in _SCRIPTS.items():
+        # The first installed font, or none, in which case the text prints in the main font.
+        choice = rf"\let\rlfont@{name}\relax"
+        for font in reversed(fonts):
+            choice = rf"\IfFontExistsTF{{{font}}}{{\newfontfamily\rlfont@{name}{{{font}}}}}{{{choice}}}"
+        lines.append("  " + choice)
+        lines.append(rf"  \expandafter\def\csname rlscript@{name}\endcsname#1{{{{\rlfont@{name}"
+                     rf'\ifXeTeX\XeTeXlinebreaklocale "{locale}"\relax\fi #1}}}}')
+    return "\n".join([r"  \makeatletter", *lines, r"  \makeatother"])
+
+
+_SCRIPT_FONTS = _script_fonts()
+
+
+def _mark_scripts(tex: str) -> str:
+    """`tex` with each run of a script Latin Modern lacks set in \\rlscript, outside verbatim blocks."""
+    parts = re.split(r"(\\begin\{verbatim\}.*?\\end\{verbatim\})", tex, flags=re.DOTALL)
+    for index in range(0, len(parts), 2):
+        for name, run in _SCRIPT_RUNS:
+            parts[index] = run.sub(lambda match, name=name: rf"\rlscript{{{name}}}{{{match.group()}}}", parts[index])
+    return "".join(parts)
+
+
+def needs_unicode_engine(tex: str) -> bool:
+    """Whether `tex` sets text in a script only XeLaTeX or LuaLaTeX can print."""
+    return r"\rlscript{" in tex.split("\\begin{document}", 1)[-1]
+
+
 def _href_target(url: str) -> str:
     """A URL safe to put in \\href's first argument: odd characters percent-encoded, % and # escaped."""
     encoded = quote(url, safe="/:?&=+,;@!()*[]-._%#")
@@ -590,6 +637,8 @@ def _href_target(url: str) -> str:
 def _url_text(url: str) -> str:
     """A URL as printable text, with line breaks allowed after its separators."""
     escaped = latex_escape(url)
+    # Before each escaped %, too: a percent-encoded path, such as a Thai page's, has no other break.
+    escaped = escaped.replace(r"\%", r"\allowbreak{}\%")
     return re.sub(r"(/|\.|-|\\_|\?|\\&|=|\\#)", r"\1\\allowbreak{}", escaped)
 
 
@@ -758,11 +807,14 @@ _LATEX_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
   \usepackage{textcomp}
   \IfFileExists{lmodern.sty}{\usepackage{lmodern}}{}
 %(pdftex_chars)s
+  \newcommand{\rlscript}[2]{#2}
 \else
   \usepackage{fontspec}
   \IfFileExists{newunicodechar.sty}{\usepackage{newunicodechar}
 %(unicode_chars)s
   }{}
+  \newcommand{\rlscript}[2]{\csname rlscript@#1\endcsname{#2}}
+%(script_fonts)s
 \fi
 \usepackage[margin=2.5cm]{geometry}
 \usepackage[table]{xcolor}
@@ -826,12 +878,13 @@ def render_latex(doc: ReportDocument) -> str:
     body += _latex_sources(doc, claim_ids)
     body += [r"\appendix", *_latex_plan(doc, md), *_latex_ledger(doc, md, cite, claim_ids),
              *_latex_verification(doc, md, claim_ids)]
-    text = "\n".join(body)
+    text = _mark_scripts("\n".join(body))
     pdftex_chars, unicode_chars = _unicode_declarations(text)
     preamble = _LATEX_PREAMBLE % {
         "pdftex_chars": pdftex_chars,
         "unicode_chars": unicode_chars,
         "title": latex_escape(_truncate(doc.objective, 120)),
+        "script_fonts": _SCRIPT_FONTS,
     }
     return preamble + "\n\\begin{document}\n\n" + text + "\n\\end{document}\n"
 
@@ -1053,8 +1106,14 @@ def find_engine(preferred: str | None = None) -> str | None:
 
 
 def compile_pdf(tex_path: Path, *, engine: str | None = None, timeout: float = 180.0) -> Path:
-    """Compile `tex_path` beside itself and return the PDF; shell escape stays off."""
+    """Compile `tex_path` beside itself and return the PDF; shell escape stays off.
+
+    Without an `engine`, a document with Thai or CJK text goes to XeLaTeX (or LuaLaTeX, then Tectonic)
+    when one is installed, since pdfLaTeX prints those characters as code points.
+    """
     chosen = find_engine(engine)
+    if engine is None and needs_unicode_engine(tex_path.read_text(encoding="utf-8")):
+        chosen = next((name for name in _UNICODE_ENGINES if shutil.which(name)), chosen)
     if chosen is None:
         wanted = engine or " or ".join(ENGINES)
         raise LatexError(f"no LaTeX engine found ({wanted}); install TeX Live or Tectonic, or compile {tex_path.name} yourself")

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime
 
 import pytest
@@ -289,3 +291,50 @@ def test_a_long_objective_is_cut_on_the_title_page_and_printed_whole_in_the_plan
     assert tail.split(":")[0] not in title and "The full objective is in the research plan" in title
     plan = tex[tex.index(r"\section{Research plan}"):]
     assert "BENCHMARK CONSTRAINT" in plan
+
+
+def test_thai_and_cjk_runs_get_a_script_font_and_leave_punctuation_in_the_main_one() -> None:
+    from dataclasses import replace as replace_field
+
+    doc = replace_field(_document(), report=_document().report.model_copy(
+        update={"answer": "Law “กฎกระทรวง และจำนวน” พ.ศ. ๒๕๕๘ and 养老金.\n\n    กฎ in code"}))
+    tex = render_latex(doc)
+    assert r"“\rlscript{thai}{กฎกระทรวง และจำนวน}”" in tex
+    assert r"\rlscript{thai}{พ}.\rlscript{thai}{ศ}." in tex and r"\rlscript{cjk}{养老金}." in tex
+    assert "\\begin{verbatim}\nกฎ in code" in tex  # verbatim text is left as it is
+    assert r"\IfFontExistsTF{Noto Serif Thai}" in tex and render.needs_unicode_engine(tex)
+    assert not render.needs_unicode_engine("\\newcommand{\\rlscript}[2]{#2}\n\\begin{document}plain")
+
+
+def test_a_document_with_thai_goes_to_xelatex_when_no_engine_is_named(tmp_path, monkeypatch) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("pdflatex", "xelatex"):
+        engine = bin_dir / name
+        engine.write_text(f"#!/bin/sh\nfor a; do f=$a; done\nprintf '%%PDF {name}' > \"${{f%.tex}}.pdf\"\n")
+        engine.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    thai, latin = tmp_path / "thai.tex", tmp_path / "latin.tex"
+    thai.write_text("\\begin{document}\\rlscript{thai}{กฎ}", encoding="utf-8")
+    latin.write_text("\\begin{document}plain", encoding="utf-8")
+    assert render.compile_pdf(thai).read_text() == "%PDF xelatex"
+    assert render.compile_pdf(latin).read_text() == "%PDF pdflatex"
+    assert render.compile_pdf(thai, engine="pdflatex").read_text() == "%PDF pdflatex"
+
+
+@pytest.mark.skipif(shutil.which("xelatex") is None or shutil.which("fc-list") is None
+                    or "Noto Serif Thai" not in subprocess.run(["fc-list", ":lang=th", "family"], capture_output=True,
+                                                               text=True, check=False).stdout,
+                    reason="needs xelatex and Noto Serif Thai")
+def test_thai_prints_in_its_font_under_xelatex(tmp_path) -> None:
+    from dataclasses import replace as replace_field
+
+    doc = replace_field(_document(), report=_document().report.model_copy(
+        update={"answer": "กฎกระทรวง พ.ศ. ๒๕๕๘"}))
+    pdf = render.write_report(doc, tmp_path, ["pdf"])["pdf"]
+    fonts = subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True, check=False).stdout
+    assert "NotoSerifThai" in fonts
+
+
+def test_a_percent_encoded_url_can_break_between_its_escapes() -> None:
+    assert render._url_text("https://x.th/%E0%B8%81") .endswith(r"\allowbreak{}\%E0\allowbreak{}\%B8\allowbreak{}\%81")
