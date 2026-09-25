@@ -1,7 +1,8 @@
 # Contributing
 
 Pull requests are welcome. Fork the repository, make your change on a branch, and open a pull
-request against `master`. For a large change, open an issue first so we can agree on the
+request against `master`. A maintainer reviews and approves every pull request before it is
+merged. For a large change, open an issue first so we can agree on the
 approach before you write it.
 
 ## Setup
