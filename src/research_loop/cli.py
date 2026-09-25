@@ -1,5 +1,5 @@
-"""The `research` command: run Scout, show, break down, or grade a stored run, check the setup, and manage
-the database."""
+"""The `research` command: run Scout, research or synthesize a stored run again, show, break down, or grade a
+stored run, check the setup, and manage the database."""
 from __future__ import annotations
 
 import argparse
@@ -131,6 +131,52 @@ async def _synthesize(args: argparse.Namespace, settings: Settings) -> int:
         (args.out / "report.md").write_text(markdown, encoding="utf-8")
         (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}; source {args.source_run_id}.", file=sys.stderr)
+    return 1 if run.status == "failed" else 0
+
+
+async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
+    import faulthandler
+
+    from .db import open_migrated_pool
+    from .render import render_markdown
+    from .scout import ConfigError, StudyLabels, check_config, rescout_stored
+    from .store import PostgresStore, load_run
+    from .study_budget import StudyBudget
+    from .telemetry import configure_logfire
+
+    settings = settings.model_copy(update={"models": settings.models.model_copy(update={"scout": args.model})})
+    try:
+        check_config(settings)
+    except ConfigError as exc:
+        print(f"Cannot run: {exc}", file=sys.stderr)
+        return 2
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    configure_logfire(settings)
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        source = await load_run(pool, args.source_run_id)
+        if source is None:
+            print(f"No source run {args.source_run_id}", file=sys.stderr)
+            return 1
+        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
+        budget = StudyBudget(args.max_usd)
+        print(f"Fixed-plan research: scouts {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap, "
+              f"{settings.limits.research_seconds / 60:.1f} minutes; this is a paid run.", file=sys.stderr)
+        try:
+            run = await rescout_stored(source, settings=settings, store=PostgresStore(pool), study=study,
+                                       budget=budget)
+        except ValueError as exc:
+            print(f"Cannot rescout: {exc}", file=sys.stderr)
+            return 2
+    record = run.to_record()
+    markdown = render_markdown(record)
+    print(markdown)
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "report.md").write_text(markdown, encoding="utf-8")
+        (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}, {run.seconds / 60:.1f} minutes; "
+          f"source {args.source_run_id}.", file=sys.stderr)
     return 1 if run.status == "failed" else 0
 
 
@@ -319,6 +365,16 @@ def main(argv: list[str] | None = None) -> None:
     synth.add_argument("--arm", default="default")
     synth.add_argument("--replicate", type=int, default=1)
 
+    again = commands.add_parser("rescout", help="Research a stored Scout plan again with a chosen scout model, "
+                                                "without planning or synthesis (paid)")
+    again.add_argument("source_run_id", type=UUID)
+    again.add_argument("--model", required=True, help="Scout provider:model")
+    again.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this command")
+    again.add_argument("--out", type=Path, help="Also write report.md and run.json here")
+    again.add_argument("--study", help="Record this as part of a study")
+    again.add_argument("--arm", default="default")
+    again.add_argument("--replicate", type=int, default=1)
+
     show = commands.add_parser("show", help="Render a stored run")
     show.add_argument("run_id", type=UUID)
     show.add_argument("--format", choices=("md", "json"), default="md")
@@ -358,9 +414,9 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
         if args.max_usd is not None and args.max_usd <= 0:
             parser.error("--max-usd must be positive")
-    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "db") and not settings.database_dsn:
+    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "rescout", "db") and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
-    if args.command in ("grade", "assess", "synthesize") and args.max_usd <= 0:
+    if args.command in ("grade", "assess", "synthesize", "rescout") and args.max_usd <= 0:
         parser.error("--max-usd must be positive")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
@@ -371,6 +427,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_show(args, settings))
         elif args.command == "synthesize":
             code = asyncio.run(_synthesize(args, settings))
+        elif args.command == "rescout":
+            code = asyncio.run(_rescout(args, settings))
         elif args.command == "breakdown":
             code = asyncio.run(_breakdown(args, settings))
         elif args.command == "grade":

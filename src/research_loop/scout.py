@@ -115,6 +115,7 @@ from .web import WebAcquisition, WebSearch
 
 WORKFLOW_VERSION = "scout-v1"
 FOLLOWUP_VERSION = "scout-followup-v1"
+RESCOUT_VERSION = "scout-research-v1"
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, or a deadline.
@@ -639,7 +640,8 @@ def _not_established(plan: ResearchPlan, ledger: EvidenceLedger) -> list[str]:
             for q in plan.questions if q.id not in answered]
 
 
-def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | None, unpriced: bool) -> RunChecks:
+def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | None, unpriced: bool,
+            *, synthesized: bool = True) -> RunChecks:
     claims = ledger.claims_by_id()
     evidence = [item for claim in claims.values() for item in claim.evidence]
     checks = RunChecks(
@@ -656,9 +658,10 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
         key = item.source_access or "not_returned"
         checks.evidence_by_access[key] = checks.evidence_by_access.get(key, 0) + 1
     reasons = checks.review_reasons
-    if report is None:
-        reasons.append("the synthesis did not finish, so this lists the research's claims without a written answer"
-                       if claims else "no research question returned evidence")
+    if report is None and not claims:
+        reasons.append("no research question returned evidence")
+    elif report is None and synthesized:
+        reasons.append("the synthesis did not finish, so this lists the research's claims without a written answer")
     if shallow := [s for s in checks.statements if s.support == "shallow"]:
         reasons.append(f"{len(shallow)} of {len(checks.statements)} statements rest only on search snippets, metadata, "
                        "or quotes and sources the tools did not return")
@@ -712,7 +715,8 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     The new run points at its source and records a digest of the fixed ledger. Its synthesis call
     uses `_Run._synthesize`, so prompts, validation, fallback, usage, and call recording match Scout.
     """
-    if source.get("workflow_version") not in (WORKFLOW_VERSION, FOLLOWUP_VERSION) or not source.get("plan") or not source.get("ledger"):
+    if (source.get("workflow_version") not in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION)
+            or not source.get("plan") or not source.get("ledger")):
         raise ValueError("source must have a Scout plan and ledger")
     plan = ResearchPlan.model_validate(source["plan"])
     ledger = EvidenceLedger.from_json(source["ledger"])
@@ -727,6 +731,9 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     config = run_config(settings, notes, blocked)
     config["fixed_ledger"] = {"source_run_id": str(source_id), "ledger_sha256": ledger_sha,
                               "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
+    # A frozen case's identity carries over, so `research grade` accepts the new report.
+    if case := (source.get("config") or {}).get("case"):
+        config["case"] = case
     if budget is not None:
         config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
                                   "sdk_retries": 0, "fallback": False}
@@ -760,3 +767,62 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
                            checks=checks, cost_usd=runner.cost, trace_id=span_trace)
     return ScoutRun(runner.run_id, runner.question, status, plan, report, ledger, checks, runner.cost,
                     time.monotonic() - started, span_trace, runner.notes, config)
+
+
+async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: RunStore,
+                         study: StudyLabels | None = None, budget: StudyBudget | None = None) -> ScoutRun:
+    """Research an exact stored Scout plan again, without planning or synthesis.
+
+    The new run points at its source and records a digest of the fixed plan, so scout models can be compared on
+    identical questions. Its scouts use `_Run._research`, so prompts, tools, evidence checks, shares, and call
+    recording match Scout. They get the whole research window, which in Scout also covers planning, so compare
+    rescouts with each other rather than with their source. `research synthesize` writes a report from the ledger.
+    """
+    if source.get("workflow_version") not in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION) or not source.get("plan"):
+        raise ValueError("source must have a Scout plan")
+    plan = ResearchPlan.model_validate(source["plan"])
+    source_config = source.get("config") or {}
+    notes, blocked = source_config.get("notes") or [], source_config.get("blocked_urls") or []
+    source_id = UUID(str(source["id"]))
+    runner = _Run(source["question"], settings, store, notes, blocked, source_id, study, budget=budget)
+    plan_json = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    plan_sha = hashlib.sha256(plan_json.encode()).hexdigest()
+    config = run_config(settings, notes, blocked)
+    config["fixed_plan"] = {"source_run_id": str(source_id), "plan_sha256": plan_sha,
+                            "source_prompt_fingerprint": source_config.get("prompt_fingerprint")}
+    if case := source_config.get("case"):
+        config["case"] = case
+    if budget is not None:
+        config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
+                                  "sdk_retries": 0, "fallback": False,
+                                  "scout_max_output_tokens": settings.limits.guarded_scout_max_output_tokens}
+    await store.start_run(runner.run_id, mode="fixed-plan", workflow_version=RESCOUT_VERSION,
+                          question=runner.question, config=config, parent_run_id=source_id,
+                          input_hash=hashlib.sha256((runner.question + "\n" + plan_sha).encode()).hexdigest(),
+                          study_id=study.study_id if study else None, arm=study.arm if study else None,
+                          replicate=study.replicate if study else None)
+    started, ledger, span_trace = time.monotonic(), EvidenceLedger(), None
+    try:
+        async with AsyncExitStack() as stack:
+            span = stack.enter_context(run_span(runner.run_id, "fixed-plan", RESCOUT_VERSION))
+            span_trace = trace_id(span)
+            toolset = await runner._toolset(stack)
+            deadline = asyncio.get_running_loop().time() + settings.limits.research_seconds
+            for result in await runner._research(plan, deadline, toolset):
+                ledger.add(result)
+            checks = _checks(plan, ledger, None, runner.unpriced, synthesized=False)
+            checks.study_budget_reserved_usd = budget.reserved_usd if budget else None
+            status: Status = ("failed" if not ledger.claims() else "partial" if checks.not_established
+                              else "complete")
+            span.set_attributes({"status": status, "cost_usd": float(runner.cost)})
+    except BaseException as exc:
+        status = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
+        failure_checks = RunChecks(study_budget_reserved_usd=budget.reserved_usd) if budget else None
+        await _record(store.finish_run(runner.run_id, status=status, plan=plan, ledger=ledger.to_json(),
+                                       checks=failure_checks, cost_usd=runner.cost, error=_error(exc),
+                                       trace_id=span_trace, cache=runner._cache_counts()))
+        raise
+    await store.finish_run(runner.run_id, status=status, plan=plan, ledger=ledger.to_json(), checks=checks,
+                           cost_usd=runner.cost, trace_id=span_trace, cache=runner._cache_counts())
+    return ScoutRun(runner.run_id, runner.question, status, plan, None, ledger, checks, runner.cost,
+                    time.monotonic() - started, span_trace, runner.notes, config, RESCOUT_VERSION)

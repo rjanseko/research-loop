@@ -20,7 +20,13 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from research_loop.agents import planner_agent, scout_agent, synthesizer_agent
 from research_loop.config import ScoutLimits, Settings
 from research_loop.render import render_markdown
-from research_loop.scout import ConfigError, StudyLabels, scout, synthesize_stored
+from research_loop.scout import (
+    ConfigError,
+    StudyLabels,
+    rescout_stored,
+    scout,
+    synthesize_stored,
+)
 from research_loop.store import MemoryStore
 from research_loop.study_budget import StudyBudget
 
@@ -334,6 +340,47 @@ async def test_fixed_ledger_budget_refuses_before_streaming(settings, pages, mon
     call = next(c for c in store.calls.values() if c["run_id"] == rerendered.run_id)
     assert call["error"]["type"] == "StudyBudgetRefusal"
     assert call["stop_reason"].startswith("study budget refused:")
+
+
+async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis(settings, pages) -> None:
+    store = MemoryStore()
+    original = await _run(settings, store)
+    source = store.runs[original.run_id]
+    case = {"id": "drb2-test", "rubric_version": "1", "sha256": "0" * 64, "dataset_revision": ""}
+    source["config"]["case"] = case
+    before = set(store.calls)
+    with scout_agent.override(model=researcher()):
+        again = await rescout_stored(source, settings=settings, store=store, study=StudyLabels("scouts", "flash"))
+    assert again.status == "complete" and again.report is None and reasons(again) == []
+    assert again.plan == original.plan and sorted(again.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
+    saved = store.runs[again.run_id]
+    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == "scout-research-v1"
+    assert saved["parent_run_id"] == original.run_id and saved["study_id"] == "scouts"
+    assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
+    assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case
+    calls = [store.calls[i] for i in set(store.calls) - before]
+    assert sorted(call["role"] for call in calls) == ["scout", "scout"]
+    # The new ledger can then be synthesized, and the report stays gradable against the frozen case.
+    with synthesizer_agent.override(model=writer()):
+        written = await synthesize_stored(saved, settings=settings, store=store)
+    assert written.status == "complete" and store.runs[written.run_id]["config"]["case"] == case
+
+
+async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings, pages) -> None:
+    store = MemoryStore()
+    original = await _run(settings, store)
+
+    def half(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        question = _prompt(messages)["question"]
+        if question["id"] == "q1":
+            return researcher().function(messages, info)
+        return _output(info, {"question_id": "q2", "question": question["question"], "conclusion": "nothing found",
+                              "confidence": 0.1, "claims": []})
+
+    with scout_agent.override(model=FunctionModel(half)):
+        again = await rescout_stored(store.runs[original.run_id], settings=settings, store=store)
+    assert again.status == "partial"
+    assert reasons(again) == ["1 of 2 research questions returned no evidence"]
 
 
 async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
