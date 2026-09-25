@@ -30,7 +30,7 @@ from .evidence import EvidenceLedger, inline_source_ids
 from .models import build_model
 from .schemas import FinalReport
 from .store import error_record, transcript, usage_record
-from .study_budget import StudyBudget, StudyBudgetModel
+from .study_budget import BUDGET_POLICY_VERSION, StudyBudget, StudyBudgetModel
 
 # Recorded with every rubric score; bump when JUDGE_INSTRUCTIONS or the verdict schema changes, since
 # scores are comparable only under one judge prompt. 1: one call per report, a verdict for every point,
@@ -216,7 +216,7 @@ def grade_row(grade: GradeRecord) -> dict[str, Any]:
         "messages": transcript(grade.messages) if grade.messages else None,
         "error": error_record(grade.error) if grade.error else None,
         "budget_cap_usd": grade.budget_cap_usd, "reserved_usd": grade.reserved_usd,
-        "budget_policy": "byte-reserve-v1" if grade.budget_cap_usd is not None else None,
+        "budget_policy": BUDGET_POLICY_VERSION if grade.budget_cap_usd is not None else None,
     }
 
 

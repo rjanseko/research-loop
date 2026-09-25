@@ -103,7 +103,12 @@ from .schemas import (
 )
 from .scholar import ScholarClient
 from .store import MemoryStore, RunStore
-from .study_budget import StudyBudget, StudyBudgetModel, StudyBudgetRefusal
+from .study_budget import (
+    BUDGET_POLICY_VERSION,
+    StudyBudget,
+    StudyBudgetModel,
+    StudyBudgetRefusal,
+)
 from .telemetry import run_span, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
 from .web import WebAcquisition, WebSearch
@@ -322,7 +327,9 @@ class _Run:
         if not usage.requests:
             return
         if usage.cost is None:
-            self.unpriced = True
+            # A pre-dispatch budget refusal sends no request and has no provider price to report.
+            if usage.requests:
+                self.unpriced = True
         else:
             self.cost += usage.cost
 
@@ -531,7 +538,7 @@ class _Run:
         config = run_config(self.settings, self.notes_in, self.blocked_urls, follow_up=self.follow_up)
         config["follow_up"] = self.follow_up
         if self.budget:
-            config["study_budget"] = {"cap_usd": str(self.budget.cap_usd), "policy": "byte-reserve-v1",
+            config["study_budget"] = {"cap_usd": str(self.budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
                                       "sdk_retries": 0, "fallback": False,
                                       "scout_max_output_tokens": self.limits.guarded_scout_max_output_tokens}
         if self.case_identity:
@@ -720,7 +727,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     config["fixed_ledger"] = {"source_run_id": str(source_id), "ledger_sha256": ledger_sha,
                               "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
     if budget is not None:
-        config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": "byte-reserve-v1",
+        config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
                                   "sdk_retries": 0, "fallback": False}
         runner.models["synthesizer"] = StudyBudgetModel(
             build_model(settings.models.synthesizer, "synthesizer", settings, sdk_retries=0),

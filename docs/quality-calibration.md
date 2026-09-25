@@ -52,7 +52,25 @@ cases was read. The dataset snapshot was `imlrz/DeepResearch-Bench-II` commit
 These are stress cases: a bounded Scout run may return partial coverage of a rubric drawn from a long
 expert report. Report task coverage, unresolved sections, cost, and deadline behavior separately from
 overall reader quality. The existing seven-country pension case (`task2+`, 72 points) is an extreme
-stress diagnostic if the first two cases show the workflow can finish useful research. No hard-case
-research or grading call has run as part of this integration. The next useful paid stage is one
-`drb2-task8` baseline Scout run, inspected for coverage, source access, duration, and cost before
-grading or trying the follow-up mode on the same case. Give that stage its own approved ceiling.
+stress diagnostic if the first two cases show the workflow can finish useful research.
+
+## First hard-case baseline and budget correction
+
+The user approved one `drb2-task8` baseline Scout run with a $3.00 pre-dispatch ceiling and the
+ordinary $0.75 soft budget. Run `53478812-e5d0-4b89-82cc-031184cfe24f` took 103.7 seconds and
+charged $0.043367815. It reserved $2.4916688 under `byte-reserve-v1`. Two of four scouts returned
+claims, with 11 distinct sources, 10 read as full text or abstracts, and 26 of 28 quotes verified.
+The exploration and optimization scouts were refused before later requests because the four-times-byte
+reservation estimated more than one million input tokens, despite their recorded model usage being
+about 90,000 and 111,000 input tokens. Synthesis was not dispatched: its $1.1928 reservation would
+have exceeded the $3.00 ceiling. This run has no final report or rubric grade, so it is a budget-guard
+diagnostic, not a quality score for Scout or Luna. The `unpriced call` review flag was also misleading:
+the refused synthesis sent no request.
+
+The guard now uses `byte-reserve-v2`: two times serialized request bytes plus 16,000 fixed input
+tokens, with the same output caps and atomic pre-dispatch ceiling. The doubled byte count remains a
+conservative allowance for message framing and serialization. It stops treating zero-request budget
+refusals as unpriced calls. An offline regression checks a 300,000-byte history that v1 would reject
+as above the million-token range. The next paid step is one separately approved baseline retry of the
+same frozen case under the same $3.00 ceiling. Inspect its coverage and final report before paying to
+grade it or comparing gap follow-up. No follow-up or grading call has yet been made on these cases.

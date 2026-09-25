@@ -40,7 +40,11 @@ from research_loop.schemas import (
     ResearchResult,
     SourceRef,
 )
-from research_loop.study_budget import StudyBudget, StudyBudgetRefusal
+from research_loop.study_budget import (
+    BUDGET_POLICY_VERSION,
+    StudyBudget,
+    StudyBudgetRefusal,
+)
 
 pytestmark = pytest.mark.filterwarnings("ignore::pydantic_ai.exceptions.CostNotFoundWarning")
 
@@ -173,7 +177,7 @@ async def test_guarded_rubric_grade_refuses_before_model_dispatch() -> None:
     assert not calls and budget.reserved_usd == 0
     row = grade_row(grade)
     assert row["budget_cap_usd"] == Decimal("0.0001") and row["reserved_usd"] == 0
-    assert row["budget_policy"] == "byte-reserve-v1"
+    assert row["budget_policy"] == BUDGET_POLICY_VERSION
 
 
 def test_a_breakdown_shows_each_calls_time_cost_and_stop_reason() -> None:

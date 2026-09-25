@@ -51,6 +51,18 @@ async def test_output_bound_is_required() -> None:
                              None, ModelRequestParameters())
 
 
+async def test_large_scout_context_stays_within_priced_reservation_range() -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    # A prior factor of four refused this before dispatch as >1M input tokens,
+    # although the actual Scout histories were around 100k tokens.
+    budget = StudyBudget(Decimal(10))
+    charge = await budget.reserve("openai:gpt-6-luna",
+                                  [ModelRequest(parts=[UserPromptPart("x" * 300_000)])],
+                                  {"max_tokens": 1000}, ModelRequestParameters())
+    assert Decimal(0) < charge == budget.reserved_usd < budget.cap_usd
+
+
 async def test_parallel_reservations_share_one_ceiling() -> None:
     import asyncio
 

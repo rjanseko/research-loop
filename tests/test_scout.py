@@ -421,6 +421,16 @@ async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> Non
     assert "The follow-up did not fully resolve this gap." in render_markdown(run.to_record())
 
 
+async def test_undispatched_budget_refusal_is_not_an_unpriced_call(settings) -> None:
+    from pydantic_ai.usage import RunUsage
+
+    from research_loop.scout import _Run
+
+    runner = _Run("Q?", settings, MemoryStore(), [], [], None, None, budget=StudyBudget(Decimal("0.01")))
+    runner._spend(RunUsage())
+    assert not runner.unpriced and runner.cost == 0
+
+
 async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, monkeypatch) -> None:
     from pydantic_ai import UsageLimits
 

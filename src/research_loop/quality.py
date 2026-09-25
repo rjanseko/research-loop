@@ -27,7 +27,7 @@ from .evidence import EvidenceLedger
 from .models import build_model
 from .schemas import FinalReport
 from .store import error_record, transcript, usage_record
-from .study_budget import StudyBudget, StudyBudgetModel
+from .study_budget import BUDGET_POLICY_VERSION, StudyBudget, StudyBudgetModel
 
 QUALITY_VERSION = 1
 QUALITY_MODEL = "openai:gpt-6-sol"
@@ -229,7 +229,7 @@ def quality_row(record: QualityRecord) -> dict[str, Any]:
             "messages": transcript(record.messages) if record.messages else None,
             "error": error_record(record.error) if record.error else None,
             "budget_cap_usd": record.budget_cap_usd, "reserved_usd": record.reserved_usd,
-            "budget_policy": "byte-reserve-v1" if record.budget_cap_usd is not None else None}
+            "budget_policy": BUDGET_POLICY_VERSION if record.budget_cap_usd is not None else None}
 
 
 @dataclass

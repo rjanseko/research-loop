@@ -21,9 +21,11 @@ from pydantic_ai.usage import RequestUsage
 
 from .prices import install_price_overrides
 
-# Bytes cover each UTF-8 token; multiplying by four leaves room for provider framing and any
-# serialization difference. A further 16k tokens covers fixed system/schema overhead.
-_BYTE_FACTOR = 4
+# A serialized UTF-8 byte can account for at most one text token. Doubling the byte count
+# allows for provider framing and serialization differences; another 16k covers fixed overhead.
+# The former factor of four falsely refused observed ~100k-token Scout requests as >1M tokens.
+BUDGET_POLICY_VERSION = "byte-reserve-v2"
+_BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 
 
