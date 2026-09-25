@@ -45,3 +45,46 @@ def test_a_supported_grounded_report_needs_no_review() -> None:
 ], ids=["no-evidence", "uncited", "unassessed", "unsupported", "major-and-open"])
 def test_unresolved_results_are_named(report, verification, ledger, expected) -> None:
     assert review_reasons(report, verification, ledger) == expected
+
+
+def _synthesis(answer: str, *claim_ids: str, caveats: tuple[str, ...] = ()) -> FinalReport:
+    return FinalReport(answer=answer, caveats=list(caveats),
+                       claims=[ReportClaim(statement="s", claim_ids=list(claim_ids))] if claim_ids else [])
+
+
+@pytest.mark.parametrize(("report", "problem"), [
+    (_synthesis("Verified has 500 tasks [s1, s2].", "q1/c1"), None),
+    (_synthesis("Verified has 500 tasks [s1;s2]; see the S3 bucket s3 docs.", "q1/c1"), None),  # bare s3 is not a citation
+    (_synthesis("Scores are inflated [s3].", "q1/c1"), "s3"),  # a real source, but not behind a listed claim
+    (_synthesis("Scores are inflated [s45].", "q1/c1"), "s45"),  # no such source
+    (_synthesis("Clean answer.", "q1/c1", caveats=("Vendor claim [s9].",)), "s9"),  # caveats are checked too
+], ids=["cited", "separators", "not-behind-claims", "unknown", "caveat"])
+def test_synthesis_retries_inline_citations_the_listed_claims_do_not_back(report, problem) -> None:
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelRetry
+
+    from research_loop.agents import LedgerRefs, _report_cites_ledger_claims
+
+    refs = LedgerRefs(claim_ids=frozenset({"q1/c1", "q2/c1"}), question_ids=frozenset({"q1", "q2"}),
+                      claim_sources={"q1/c1": frozenset({"s1", "s2"}), "q2/c1": frozenset({"s3"})})
+    ctx = SimpleNamespace(deps=refs, last_attempt=False)
+    if problem is None:
+        assert _report_cites_ledger_claims(ctx, report) is report
+    else:
+        with pytest.raises(ModelRetry, match=f"name no source behind the claim IDs listed in `claims`: {problem}\\."):
+            _report_cites_ledger_claims(ctx, report)
+
+
+
+def test_last_synthesis_attempt_drops_stray_citations_instead_of_failing_the_run() -> None:
+    from types import SimpleNamespace
+
+    from research_loop.agents import LedgerRefs, _report_cites_ledger_claims
+
+    refs = LedgerRefs(claim_ids=frozenset({"q1/c1"}), question_ids=frozenset({"q1"}),
+                      claim_sources={"q1/c1": frozenset({"s1", "s2"})})
+    report = _synthesis("Verified has 500 tasks [s1, s45]. Scores rose [s9].", "q1/c1", caveats=("Vendor claim [s2].",))
+    kept = _report_cites_ledger_claims(SimpleNamespace(deps=refs, last_attempt=True), report)
+    assert kept.answer == "Verified has 500 tasks [s1]. Scores rose."
+    assert kept.caveats == ["Vendor claim [s2]."]

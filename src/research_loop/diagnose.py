@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,69 @@ def _reach_check(name: str, what: str, urls: Iterable[str], failures: dict[str, 
     if len(unreached) == len(urls):
         return Check(name, "FAIL", f"None of {len(urls)} {what} reachable ({failures[urls[0]]}); {consequence}")
     return Check(name, "WARN", f"Unreachable: {', '.join(unreached)}")
+
+
+def _model_price(model: str) -> tuple[Decimal, Decimal] | None:
+    """USD per million input and output tokens, from the genai-prices data PydanticAI prices calls with.
+
+    Priced at 100k tokens and scaled, so a price tier for long prompts does not set the rate.
+    None when the data has no price for the model: its calls then have no cost_usd, and cost caps
+    cannot be enforced for them.
+    """
+    from genai_prices import calc_price
+    from pydantic_ai.usage import RequestUsage
+
+    provider, _, name = model.partition(":")
+    try:
+        per_million = [calc_price(usage, name, provider_id=provider).total_price * 10
+                       for usage in (RequestUsage(input_tokens=100_000), RequestUsage(output_tokens=100_000))]
+    except LookupError:
+        return None
+    return per_million[0], per_million[1]
+
+
+def _update_prices() -> None:
+    """Fetch the latest genai-prices data; this process then prices every call with it."""
+    from genai_prices import UpdatePrices
+
+    with UpdatePrices() as updater:
+        if not updater.wait(timeout=30):
+            raise TimeoutError("no price data fetched within 30 seconds")
+
+
+def _price_checks(
+    routes: list[tuple[str, ModelRoute, bool, bool]],
+    *,
+    update: bool,
+    price_lookup: Callable[[str], tuple[Decimal, Decimal] | None],
+    price_updater: Callable[[], None],
+) -> list[Check]:
+    """Each distinct model's price per million tokens, and the roles that use it."""
+    from importlib.metadata import version
+
+    bundled = f"prices bundled with genai-prices {version('genai-prices')}"
+    checks = []
+    if update:
+        try:
+            price_updater()
+            checks.append(Check("prices", "PASS", "Latest genai-prices data fetched; prices below use it"))
+        except Exception as exc:
+            checks.append(Check("prices", "WARN", f"Could not fetch latest prices ({type(exc).__name__}); using {bundled}"))
+    else:
+        checks.append(Check("prices", "PASS", f"Using {bundled}; --update-prices fetches the latest"))
+    roles: dict[str, list[str]] = {}
+    for label, route, _, _ in routes:
+        roles.setdefault(route.model, []).append(label)
+    for model, labels in roles.items():
+        price = price_lookup(model)
+        used_by = ", ".join(labels)
+        if price is None:
+            checks.append(Check(f"price:{model}", "WARN",
+                                f"No price data ({used_by}); cost_usd is unknown and cost caps cannot be enforced"))
+        else:
+            checks.append(Check(f"price:{model}", "PASS",
+                                f"${price[0]:.2f} in / ${price[1]:.2f} out per million tokens ({used_by})"))
+    return checks
 
 
 def _writable_probe(path: Path) -> None:
@@ -198,6 +262,10 @@ def run_diagnose(
     smoke: bool = False,
     scholar_live: bool = False,
     network: bool = False,
+    prices: bool = False,
+    update_prices: bool = False,
+    price_lookup: Callable[[str], tuple[Decimal, Decimal] | None] = _model_price,
+    price_updater: Callable[[], None] = _update_prices,
     network_probe: Callable[[list[str]], dict[str, str | None]] = _network_probe,
     web_probe: Callable[[], None] = _web_probe,
     writable_probe: Callable[[Path], None] = _writable_probe,
@@ -345,6 +413,9 @@ def run_diagnose(
             checks.append(Check(name, "WARN", detail))
     if network:
         checks.extend(_network_checks(settings, routes, network_probe))
+    if prices or update_prices:
+        checks.extend(_price_checks(routes, update=update_prices, price_lookup=price_lookup,
+                                    price_updater=price_updater))
     return checks
 
 
@@ -388,12 +459,16 @@ def main() -> None:
     parser.add_argument("--scholar-live", action="store_true", help="Probe public scholarly metadata endpoints without model calls")
     parser.add_argument("--network", action="store_true",
                         help="Check that model providers, scholarly APIs, search engines, and general web sites are reachable, without model calls")
+    parser.add_argument("--prices", action="store_true",
+                        help="Show each route model's price per million tokens, without model calls")
+    parser.add_argument("--update-prices", action="store_true",
+                        help="Like --prices, after fetching the latest genai-prices data")
     args = parser.parse_args()
     try:
         settings = ResearchSettings.from_env()
         if args.smoke:
             configure_logfire(settings)
-        checks = run_diagnose(settings, policy_name=args.policy, attachments=args.attachments, multimodal=args.multimodal, smoke=args.smoke, scholar_live=args.scholar_live, network=args.network)
+        checks = run_diagnose(settings, policy_name=args.policy, attachments=args.attachments, multimodal=args.multimodal, smoke=args.smoke, scholar_live=args.scholar_live, network=args.network, prices=args.prices, update_prices=args.update_prices)
     except (ValueError, RuntimeError) as exc:
         parser.error(str(exc))
     for check in checks:

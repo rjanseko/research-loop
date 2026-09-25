@@ -19,6 +19,7 @@ from research_loop import (
     get_policy,
 )
 from research_loop.db import open_migrated_pool
+from research_loop.ledger import sources_markdown
 from research_loop.observability import configure_logfire
 from research_loop.repository import (
     InMemoryResearchRepository,
@@ -51,7 +52,7 @@ async def run(objective: str, policy_name: str, tool_mode: str, settings: Resear
         outcome = await loop.run(objective)
 
     print("\n=== FINAL REPORT ===\n")
-    print(outcome.report.answer)
+    print(outcome.report.answer + sources_markdown(outcome.report, outcome.ledger))
     print("\n=== VERIFICATION ===")
     print(f"needs_research={outcome.verification.needs_research}")
     print(f"claims={len(outcome.verification.checks)}")
