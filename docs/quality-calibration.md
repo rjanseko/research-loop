@@ -92,3 +92,9 @@ one whose usage cannot be priced, keeps its full reservation. A refusal that was
 is no longer reported as an unpriced call. Offline tests cover settling, a kept reservation after
 failure, streamed responses, and sequential requests that v2 would have refused. The next paid step
 is again one separately approved retry of `drb2-task8` under the $3.00 ceiling.
+
+The approved `byte-reserve-v3` retry, run `e16d7c7b-3ea9-491e-ad69-c01ae3e71ae0`, took 3.1 minutes and
+charged about $0.06. All four scouts returned claims from 19 sources, 18 read as full text or
+abstracts, and the guard dispatched synthesis with room to spare. Anthropic rejected that request with
+HTTP 400 because the configured API key is not scoped to a workspace. The run is partial with no
+report. It confirms the settled reservations, but it is a credential failure, not a quality result.
