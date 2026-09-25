@@ -77,6 +77,8 @@ STUDY_MODELS = {
     "verifier": "openai:gpt-6-sol",
     "cheap_scout": "zai:glm-5.3-flash",
     "alternate_deep_dive": "zai:glm-5.3",
+    # Where the planner and synthesizer go when Opus 5.5 refuses a question, as it refused task26.
+    "refusal_fallback": "openai:gpt-6-sol",
 }
 CACHE_MODES = ("record", "reuse", "replay", "off")
 
@@ -117,7 +119,8 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
         policy.routes[role] = _limited(policy.routes[role], {"total_tokens_limit": FINISHING_TOKENS})
     if policy_name == "value":
         lineup = {role.value: route.model for role, route in policy.routes.items()} | {
-            "cheap_scout": policy.cheap_scout.model, "alternate_deep_dive": policy.alternate_deep_dive.model}
+            "cheap_scout": policy.cheap_scout.model, "alternate_deep_dive": policy.alternate_deep_dive.model,
+            "refusal_fallback": policy.routes[ResearchRole.SYNTHESIZER].refusal_fallback}
         if moved := [f"{role} is {lineup[role]}, not {model}" for role, model in STUDY_MODELS.items()
                      if lineup[role] != model]:
             raise ValueError("the environment moves the study's models; unset or change its RESEARCH_*_MODEL "

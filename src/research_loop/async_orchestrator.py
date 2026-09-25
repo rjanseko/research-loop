@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,7 +16,11 @@ import httpx
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.exceptions import (
+    ContentFilterError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
 from pydantic_ai.usage import RunUsage
 
 from .acquisition import (
@@ -704,7 +708,22 @@ class AsyncResearchLoop:
         return LedgerRefs(claim_ids=frozenset(ledger.claim_ids()), question_ids=frozenset(ledger.results),
                           claim_sources=ledger.claim_source_ids() if sources else {})
 
-    async def _run_agent(
+    async def _run_agent(self, **kwargs: Any) -> Any:
+        """Run one agent as a persisted task, once more on the route's `refusal_fallback` if its model refuses.
+
+        A refusal (ContentFilterError) is the provider's filter declining the prompt, which a retry on
+        the same model would repeat; the refused call stays recorded as a failed task.
+        """
+        try:
+            return await self._run_agent_once(**kwargs)
+        except ContentFilterError:
+            route: ModelRoute = kwargs["route"]
+            if route.refusal_fallback is None or route.refusal_fallback == route.model:
+                raise
+            return await self._run_agent_once(
+                **kwargs | {"route": replace(route, model=route.refusal_fallback, refusal_fallback=None)})
+
+    async def _run_agent_once(
         self,
         *,
         job_id: UUID,

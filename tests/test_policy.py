@@ -1,9 +1,16 @@
+import asyncio
 from dataclasses import replace
+from uuid import uuid4
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.exceptions import ContentFilterError
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
 
 from research_loop.async_orchestrator import AsyncResearchLoop
 from research_loop.policy import ModelPolicy, ModelRoute, get_policy, retry_token_budget
+from research_loop.repository import InMemoryResearchRepository
 from research_loop.schemas import ResearchQuestion, ResearchRole
 from research_loop.settings import ResearchSettings
 
@@ -259,3 +266,48 @@ def test_value_effort_follows_models_set_in_the_environment(monkeypatch) -> None
     value = get_policy("value")
     assert value.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
     assert value.for_role(ResearchRole.PLANNER).thinking == "medium"
+
+
+def _refusing_then_answering(calls: list[int]):
+    """A model whose first response is a content-filter refusal and whose later ones answer."""
+    def respond(messages, info):
+        calls.append(1)
+        if len(calls) == 1:
+            return ModelResponse(parts=[], finish_reason="content_filter")
+        return ModelResponse(parts=[TextPart("answer")])
+    return FunctionModel(respond)
+
+
+async def _run_refused(route: ModelRoute):
+    loop = AsyncResearchLoop(ModelPolicy("p", {role: route for role in ResearchRole}),
+                             repository=InMemoryResearchRepository())
+    agent = Agent(output_type=str)
+    with agent.override(model=_refusing_then_answering([])):
+        output = await loop._run_agent(job_id=uuid4(), agent=agent, role=ResearchRole.PLANNER, route=route,
+                                       prompt="plan")
+    return output, list(loop.repository.tasks.values())
+
+
+def test_a_refused_call_runs_again_on_the_routes_refusal_fallback() -> None:
+    route = ModelRoute("test:primary", 2, 0, 10_000, refusal_fallback="test:fallback")
+    output, tasks = asyncio.run(_run_refused(route))
+    assert output == "answer"
+    assert [(t["model_id"], t["status"]) for t in tasks] == [("test:primary", "failed"), ("test:fallback", "succeeded")]
+    assert tasks[0]["error"]["type"] == "ContentFilterError"
+    assert "refusal_fallback" not in tasks[1]["effective_config"]
+
+
+def test_a_refusal_without_a_fallback_fails_the_call() -> None:
+    with pytest.raises(ContentFilterError):
+        asyncio.run(_run_refused(ModelRoute("test:primary", 2, 0, 10_000)))
+
+
+def test_anthropic_planners_and_synthesizers_fall_back_to_the_gap_model() -> None:
+    for name in ("quality", "value"):
+        policy = get_policy(name)
+        for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
+            route = policy.routes[role]
+            assert route.refusal_fallback == policy.routes[ResearchRole.GAP_ANALYST].model
+            assert route.snapshot()["refusal_fallback"] == route.refusal_fallback
+    with pytest.raises(ValueError, match="refusal_fallback"):
+        ModelRoute("m", 1, 0, 1, refusal_fallback=" ")

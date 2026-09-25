@@ -29,6 +29,9 @@ class ModelRoute:
     # when asked; OpenAI caches automatically, and a stable key raises its hit rate. Other
     # providers cache on their own, so the flag adds nothing for them.
     prompt_cache: bool = False
+    # A model to run the call on when this route's model refuses it (ContentFilterError). Providers'
+    # filters can refuse ordinary research: Opus 5.5 refused to plan a question on T-cell exhaustion.
+    refusal_fallback: str | None = None
 
     def __post_init__(self) -> None:
         # Frozen, so this also checks every replace(), including salvage and study overrides.
@@ -39,6 +42,8 @@ class ModelRoute:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{self.model}: {name} must be an integer of at least {minimum}")
+        if self.refusal_fallback is not None and not self.refusal_fallback.strip():
+            raise ValueError(f"{self.model}: refusal_fallback must name a model when set")
         if self.cost_limit is not None and not _positive_finite(self.cost_limit):
             raise ValueError(f"{self.model}: cost_limit must be a positive finite number when set")
         if not (self.thinking is None or isinstance(self.thinking, bool) or self.thinking in _THINKING_EFFORTS):
@@ -72,6 +77,7 @@ class ModelRoute:
             "settings": self.settings,
             # Recorded only when set, so presets without caching keep their earlier fingerprint.
             **({"prompt_cache": True} if self.prompt_cache else {}),
+            **({"refusal_fallback": self.refusal_fallback} if self.refusal_fallback else {}),
         }
 
     def salvage(self) -> ModelRoute:
@@ -256,6 +262,7 @@ def _quality_policy() -> ModelPolicy:
             ResearchRole.PLANNER: ModelRoute(
                 _model("RESEARCH_PLANNER_MODEL"),
                 6, 4, 70_000, 2.50, "high", {"max_tokens": 32_000},
+                refusal_fallback=_model("RESEARCH_GAP_MODEL"),
             ),
             ResearchRole.SCOUT: ModelRoute(
                 _model("RESEARCH_SCOUT_MODEL"),
@@ -272,6 +279,7 @@ def _quality_policy() -> ModelPolicy:
             ResearchRole.SYNTHESIZER: ModelRoute(
                 _model("RESEARCH_SYNTH_MODEL"),
                 8, 4, 180_000, 3.50, "high", {"max_tokens": 32_000},
+                refusal_fallback=_model("RESEARCH_GAP_MODEL"),
             ),
             ResearchRole.VERIFIER: ModelRoute(
                 _model("RESEARCH_VERIFY_MODEL"),
@@ -335,9 +343,12 @@ _VALUE_EFFORT_ROLES = (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER)
 
 
 def _value_route(quality_route: ModelRoute, model: str) -> ModelRoute:
-    """`quality`'s route on `model`, at `medium` on Anthropic and at `quality`'s effort elsewhere."""
+    """`quality`'s route on `model`, at `medium` on Anthropic and at `quality`'s effort elsewhere.
+
+    A refusal falls back to the lineup's gap-analysis model, as `quality`'s does to its own.
+    """
     thinking = "medium" if model.partition(":")[0] == "anthropic" else quality_route.thinking
-    return replace(quality_route, model=model, thinking=thinking)
+    return replace(quality_route, model=model, thinking=thinking, refusal_fallback=_model("RESEARCH_VALUE_GAP_MODEL"))
 
 
 def _value_policy() -> ModelPolicy:
