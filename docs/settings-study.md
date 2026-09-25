@@ -324,3 +324,14 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Run.* `single` and `best-of-3`, three plans each on `task2+` and `task17+`, so three pairs per case and arm.
 - *Decision rule.* `best-of-3` is adopted if its mean agreement exceeds `single`'s by at least 0.15 and its mean coverage is no more than 0.02 below. Otherwise planning stays one call.
 - *Cap.* $0.60.
+
+**Planner follow-up, ran 25 September 2026. $0.36 of the $0.60 cap.**
+
+| Arm | Agreement | Pairs fully alike | Coverage | Questions | Cost |
+|---|---:|---:|---:|---:|---:|
+| `single` | 0.70 | 1 of 6 | 1.00 | 4.5 | $0.09 |
+| `best-of-3` | 0.60 | 3 of 6 | 1.00 | 4.8 | $0.27 |
+
+- *Decided, by the rules set before the run.* `best-of-3` is not adopted: its agreement is below `single`'s. Planning stays one call.
+- *By case.* On `task2+`, `best-of-3` split the seven countries the same way all three times (three alone, two pairs), where `single` split them into three or four groups with different pairings (agreement 0.6, 0.6, 1.0); every plan in both arms split by country this time, none by topic. On `task17+`, `best-of-3`'s three plans each grouped the platforms differently (0.2 each), while `single`'s agreed more (0.8, 0.6, 0.6). So the selector steadied the case it was built for and unsettled the other, and pooled it did worse. Both arms named every entity in every plan.
+- *Reading.* Across both trials, one `gpt-6-sol` call has varied in how it groups entities but, in the follow-up, always split by entity; a different grouping changes which subjects share a scout, not whether they are researched. The next pilots' reports show whether that matters; the planner trials stop here.
