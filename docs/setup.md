@@ -114,6 +114,56 @@ research-db reconcile --older-than 120 --apply  # mark them failed (Abandoned)
 
 It also closes running tasks whose job has already finished. Choose a threshold longer than any run still in progress; `finished_at` stays empty, because when the process died is unknown.
 
+## Preparing for paid runs
+
+A paid run needs keys for the providers its policy routes to, network access to those providers and to the sources the tools fetch, and a spending plan.
+
+### Provider keys
+
+By default the `quality` policy spreads its roles across five providers (`DEFAULT_MODELS` in `policy.py`):
+
+| Key | Roles it serves by default |
+|---|---|
+| `ANTHROPIC_API_KEY` | Planner, synthesizer |
+| `OPENAI_API_KEY` | Gap analyst, deep dive, verifier, cheap scout |
+| `ZAI_API_KEY` | Scout |
+| `GOOGLE_API_KEY` | Multimodal scout, used only for questions that need image input |
+| `XAI_API_KEY` | Deep dives in verification rounds |
+
+Routes do not fall back to another provider on their own, so every route a policy uses needs either its provider's key or a `RESEARCH_*_MODEL` override that points it at a provider you do have (see [Model routing](#model-routing)). To run on one provider, override every route to it, for example `RESEARCH_DEEP_MODEL=anthropic:<model>`, and set only that provider's key.
+
+`OPENALEX_API_KEY` and `CROSSREF_MAILTO` are optional but worth setting: OpenAlex is rate-limited without a key, and Crossref gives better service to requests that include a contact address.
+
+Put the keys in `.env` locally. In a hosted or sandboxed environment, such as a Claude Code cloud session, add them as environment variables in the environment's settings instead, and never paste them into a chat or a log. A new session picks up changed variables.
+
+### Network access
+
+Sandboxed environments often allow only some hosts. Each provider you use must be reachable:
+
+| Provider | Host |
+|---|---|
+| Anthropic | `api.anthropic.com` |
+| OpenAI | `api.openai.com` |
+| Google | `generativelanguage.googleapis.com` |
+| xAI | `api.x.ai` |
+| Z.ai | `api.z.ai` |
+
+The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, `api.crossref.org`, `api.opencitations.net`, `aclanthology.org`, `doi.org`, and `api.semanticscholar.org` for basis papers), DuckDuckGo for web search, and whatever pages `web_fetch` follows. Since those pages can be on any site, a domain allowlist makes evidence gathering fail in ways that are hard to see; for real research runs, use a level of network access that allows general public web access. A blocked host usually shows up as a refused connection or an HTTP 403 from the proxy, not from the provider. `curl -sS -o /dev/null -w '%{http_code}\n' https://api.openai.com/` tells you quickly whether a host is reachable.
+
+### Before the first query
+
+- **Budget and scope.** Decide how many queries, which policy (`quality` or `breadth`), and whether to use benchmark cases or your own questions. Each route has a cost cap per call, but that does not limit the total spend of a batch.
+- **Model IDs.** The defaults can go stale. Run `research-diagnose --policy quality --smoke` ([below](#checking-readiness)), which makes one small paid call per distinct model, and fix any failing route with an override rather than by editing `policy.py`.
+- **Postgres (optional).** Without `DATABASE_URL`, runs stay in memory. To keep jobs and evidence, point `DATABASE_URL` at a Postgres database ([above](#postgres)); the Compose service needs Docker.
+
+Then run a single case before you run more:
+
+```bash
+make setup
+research-diagnose --policy quality --smoke
+research-bench examples/benchmark_suite.toml --policies quality --paid --max-concurrency 1
+```
+
 ## Checking readiness
 
 ```bash

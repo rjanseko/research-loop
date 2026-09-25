@@ -13,7 +13,7 @@ python examples/run_research.py "Your question"    # scripted models: free, no n
 python examples/run_research.py "Your question" --policy quality --paid   # real models
 ```
 
-Before your first paid run, set up provider keys with [docs/setup.md](docs/setup.md) and check them with `research-diagnose --smoke`.
+Before your first paid run, set up provider keys and network access with [docs/setup.md](docs/setup.md#preparing-for-paid-runs) and check them with `research-diagnose --smoke`.
 
 From Python:
 
