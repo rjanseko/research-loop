@@ -61,9 +61,9 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
         route = policy.routes[role]
         assert route.total_tokens_limit == 600_000 and route.model == preset.routes[role].model
         assert route.settings == preset.routes[role].settings
-    # The study's synthesizer: glm-5.3 at Z.ai's highest effort, with room for its reasoning.
+    # The study's synthesizer: glm-5.3 at high, with room for its reasoning.
     synthesizer = policy.routes[ResearchRole.SYNTHESIZER]
-    assert (synthesizer.model, synthesizer.thinking, synthesizer.settings["max_tokens"]) == ("zai:glm-5.3", "xhigh", 64_000)
+    assert (synthesizer.model, synthesizer.thinking, synthesizer.settings["max_tokens"]) == ("zai:glm-5.3", "high", 64_000)
     assert synthesizer.total_tokens_limit == 600_000 and synthesizer.refusal_fallback == "openai:gpt-6-sol"
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
