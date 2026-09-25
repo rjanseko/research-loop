@@ -43,6 +43,7 @@ research-db = "research_loop.db:main"
 research-diagnose = "research_loop.diagnose:main"
 research-long-horizon = "research_loop.long_horizon:main"
 research-report = "research_loop.render:main"
+research-grade = "research_loop.grading:main"
 
 [tool.setuptools.package-data]
 research_loop = ["migrations/*.sql", "prices.toml"]

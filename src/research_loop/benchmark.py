@@ -20,9 +20,16 @@ from .acquisition import SourcePolicy
 from .attachments import AttachmentMode
 from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
 from .db import open_migrated_pool
-from .evals import EVALUATOR_VERSION, BenchmarkOutput, make_dataset
+from .evals import (
+    EVALUATOR_VERSION,
+    BenchmarkOutput,
+    RubricJudge,
+    judge_records,
+    make_dataset,
+    parse_judge,
+)
 from .experiment import build_manifest, write_manifest
-from .ledger import sources_markdown, strip_inline_citations
+from .ledger import EvidenceLedger, sources_markdown, strip_inline_citations
 from .observability import configure_logfire
 from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .policy import POLICY_PRESETS, get_policy
@@ -32,7 +39,14 @@ from .repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
 )
-from .schemas import ResearchConstraints, ResearchRole, SourceRef, is_research_tool
+from .schemas import (
+    FinalReport,
+    ResearchConstraints,
+    ResearchRole,
+    SourceRef,
+    VerificationReport,
+    is_research_tool,
+)
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
 from .tools import ResearchToolMode
@@ -221,25 +235,6 @@ async def _run_policy_case(
         ),
     )
 
-    sources = outcome.ledger.sources()
-    source_urls = [str(s.url) for s in sources if s.url is not None]
-    primary_urls = [
-        str(s.url)
-        for s in sources
-        if s.url is not None and s.source_type in {"primary", "official", "paper", "documentation"}
-    ]
-    attachment_ids_cited = sorted({s.attachment_id for s in sources if s.attachment_id})
-    evidence = [item for claim in outcome.ledger.claims() for item in claim.evidence]
-    quote_checks = [item.quote_check for item in evidence if item.quote_check]
-    source_checks = [item.source_check for item in evidence if item.source_check]
-    checks = outcome.verification.checks
-    unsupported = [c for c in checks if not c.supported]
-    major = [c for c in unsupported if c.severity == "major"]
-    tool_calls, total_tokens = _sum_usage(repo)
-    research_tool_calls = sum(1 for event in repo.tool_events if is_research_tool(str(event.get("tool_name", ""))))
-    attachment_tool_calls = sum(1 for event in repo.tool_events if _is_attachment_event(event))
-    search_queries = _extract_search_queries(repo.tool_events)
-
     if export_dir is not None:
         policy_dir = (
             export_dir / _export_component(policy_name) / _export_component(case.benchmark_id)
@@ -251,14 +246,74 @@ async def _run_policy_case(
         (policy_dir / filename).write_text(outcome.report.answer + sources_markdown(outcome.report, outcome.ledger),
                                            encoding="utf-8")
 
+    tool_calls, total_tokens = _sum_usage(repo)
+    return benchmark_output(
+        case,
+        job_id=str(outcome.job_id),
+        root_run_id=str(root_run_id),
+        report=outcome.report,
+        verification=outcome.verification,
+        ledger=outcome.ledger,
+        tool_events=repo.tool_events,
+        tool_calls=tool_calls,
+        total_tokens=total_tokens,
+        # The job's own spend ledger: None once any billed call could not be priced.
+        cost_usd=None if outcome.cost_usd is None else float(outcome.cost_usd),
+        attachment_count=len(outcome.attachments.records) if outcome.attachments else 0,
+        review_reasons=outcome.review_reasons,
+    )
+
+
+def benchmark_output(
+    case: BenchmarkCaseSpec,
+    *,
+    job_id: str,
+    root_run_id: str,
+    report: FinalReport,
+    verification: VerificationReport,
+    ledger: EvidenceLedger,
+    tool_events: list[dict[str, Any]],
+    tool_calls: int,
+    total_tokens: int,
+    cost_usd: float | None,
+    attachment_count: int,
+    review_reasons: list[str],
+    tool_args_known: bool = True,
+    graph_version: str = RESEARCH_GRAPH_VERSION,
+) -> BenchmarkOutput:
+    """What the evaluators score, from a finished run: a live one, or one reloaded from Postgres (grading.py).
+
+    `tool_events` are dicts with `tool_name` and `args`. With `tool_args_known` false, the arguments
+    are hashes, as Postgres keeps them without a transcript, so search queries, fetched URLs, and the
+    checks built on them are left out rather than scored from hashes.
+    """
+    sources = ledger.sources()
+    source_urls = [str(s.url) for s in sources if s.url is not None]
+    primary_urls = [
+        str(s.url)
+        for s in sources
+        if s.url is not None and s.source_type in {"primary", "official", "paper", "documentation"}
+    ]
+    attachment_ids_cited = sorted({s.attachment_id for s in sources if s.attachment_id})
+    evidence = [item for claim in ledger.claims() for item in claim.evidence]
+    quote_checks = [item.quote_check for item in evidence if item.quote_check]
+    source_checks = [item.source_check for item in evidence if item.source_check]
+    checks = verification.checks
+    unsupported = [c for c in checks if not c.supported]
+    major = [c for c in unsupported if c.severity == "major"]
+    research_tool_calls = sum(1 for event in tool_events if is_research_tool(str(event.get("tool_name", ""))))
+    attachment_tool_calls = sum(1 for event in tool_events if _is_attachment_event(event))
+    search_queries = _extract_search_queries(tool_events) if tool_args_known else []
+    audit = _audit_blocked_sources(tool_events if tool_args_known else [], sources, SourcePolicy(tuple(case.blocked_urls)))
+
     return BenchmarkOutput(
         benchmark_id=case.benchmark_id,
         case_id=case.case_id,
-        graph_version=RESEARCH_GRAPH_VERSION,
-        job_id=str(outcome.job_id),
-        root_run_id=str(root_run_id),
-        answer=outcome.report.answer,
-        extracted_answer=_extract_exact_answer(outcome.report.answer, case.output_mode),
+        graph_version=graph_version,
+        job_id=job_id,
+        root_run_id=root_run_id,
+        answer=report.answer,
+        extracted_answer=_extract_exact_answer(report.answer, case.output_mode),
         source_urls=source_urls,
         primary_source_urls=primary_urls,
         unsupported_claims=len(unsupported),
@@ -267,19 +322,20 @@ async def _run_policy_case(
         tool_calls=tool_calls,
         research_tool_calls=research_tool_calls,
         total_tokens=total_tokens,
-        # The job's own spend ledger: None once any billed call could not be priced.
-        cost_usd=None if outcome.cost_usd is None else float(outcome.cost_usd),
+        cost_usd=cost_usd,
         search_queries=search_queries,
-        **_audit_blocked_sources(repo.tool_events, sources, SourcePolicy(tuple(case.blocked_urls))),
-        integrity_flags=_integrity_flags(case, search_queries, repo.tool_events),
-        attachment_count=len(outcome.attachments.records) if outcome.attachments else 0,
+        **audit,
+        integrity_flags=_integrity_flags(case, search_queries, tool_events) if tool_args_known else [],
+        attachment_count=attachment_count,
         attachment_tool_calls=attachment_tool_calls,
         attachment_ids_cited=attachment_ids_cited,
         quotes=len(quote_checks),
         quotes_not_found=quote_checks.count("not_found"),
         sources=len(source_checks),
         sources_not_found=source_checks.count("not_found"),
-        review_reasons=outcome.review_reasons,
+        review_reasons=review_reasons,
+        sources_text=sources_markdown(report, ledger),
+        tool_args_known=tool_args_known,
     )
 
 
@@ -359,6 +415,7 @@ async def run_benchmark(
     settings: ResearchSettings | None = None,
     max_cases: int | None = None,
     budget_notes: tuple[ResearchRole, ...] = (),
+    judges: tuple[RubricJudge, ...] = (),
 ) -> Path:
     settings = settings or ResearchSettings.from_env()
     configure_logfire(settings)
@@ -392,6 +449,8 @@ async def run_benchmark(
         model_overrides=settings.model_overrides,
     )
     manifest["summary"] = {}
+    if judges:  # rubric scores are comparable only under one judge model and prompt version
+        manifest["judges"] = judge_records(judges)
     write_manifest(manifest_path, manifest)
 
     cases = [
@@ -403,7 +462,7 @@ async def run_benchmark(
         )
         for spec in specs
     ]
-    dataset = make_dataset(cases)
+    dataset = make_dataset(cases, judges=judges)
     baseline = None
     failed_cases = 0
     run_records: dict[tuple[str, str], dict[str, Any]] = {}  # (policy, case name) -> manifest run record
@@ -563,7 +622,15 @@ def main() -> None:
         choices=[ResearchRole.SCOUT.value, ResearchRole.DEEP_DIVE.value],
         help="Experimental: these tool-loop roles end each request with the requests and tool calls they have left",
     )
+    parser.add_argument(
+        "--judge", type=parse_judge, action="append", default=[], metavar="[NAME=]MODEL",
+        help="Also grade each report against its case's rubric with this model; repeat for a second judge (needs --paid)",
+    )
     args = parser.parse_args()
+    if args.judge and not args.paid:
+        parser.error("--judge calls a model; add --paid")
+    if len({judge.name for judge in args.judge}) != len(args.judge):
+        parser.error("two judges share a name; give the second one NAME=MODEL")
     if any(policy != "synthetic" for policy in args.policies) and not args.paid:
         parser.error("real model policies require --paid")
     if args.persist:
@@ -590,6 +657,7 @@ def main() -> None:
                 settings=settings,
                 max_cases=max_cases,
                 budget_notes=tuple(ResearchRole(role) for role in args.budget_notes),
+                judges=tuple(args.judge),
             )
         )
     except Exception as exc:  # noqa: BLE001 - report the type only; provider errors can carry response bodies

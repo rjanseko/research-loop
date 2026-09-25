@@ -479,6 +479,7 @@ The code is layered: each layer uses only the layers below it.
 | `research-db` | Applies migrations and closes out runs a crashed process left open |
 | `research-graph` | Prints the workflow graph as Mermaid |
 | `research-report` | Renders a saved run or a stored job as PDF, LaTeX, Markdown, HTML, BibTeX, or JSON |
+| `research-grade SUITE` | Grades stored jobs against a suite's cases, optionally with a rubric judge, without rerunning them |
 
 ## Read more
 

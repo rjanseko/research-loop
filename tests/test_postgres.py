@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -218,3 +218,30 @@ async def test_capture_stores_each_task_transcript_only_when_asked(dsn: str) -> 
     assert all(message.get("usage") for message in messages if message["kind"] == "response")  # per-response usage
     assert _rows(dsn, """select count(*) from research_task_messages m join research_tasks t on t.id = m.task_id
                          join research_jobs j on j.id = t.job_id where j.objective = 'not captured'""") == [(0,)]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_job_grades_like_the_live_run_that_made_it(dsn: str) -> None:
+    from research_loop.benchmark import _run_policy_case
+    from research_loop.benchmarks import BenchmarkCaseSpec
+    from research_loop.db import open_migrated_pool
+    from research_loop.grading import grade_stored, load_stored_output
+    from research_loop.settings import ResearchSettings
+
+    _migrate(dsn)
+    case = BenchmarkCaseSpec(benchmark_id="study", case_id="c1", objective="Synthetic objective")
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, dsn)
+        live = await _run_policy_case("synthetic", case, repository_mode="postgres", pool=pool,
+                                      settings=ResearchSettings.from_env({}))
+    stored = await load_stored_output(dsn, case, UUID(live.job_id))
+
+    same = ("answer", "root_run_id", "total_claims", "unsupported_claims", "tool_calls", "research_tool_calls",
+            "total_tokens", "cost_usd", "source_urls", "quotes", "sources", "review_reasons", "sources_text")
+    assert {name: getattr(stored, name) for name in same} == {name: getattr(live, name) for name in same}
+    # No transcript was kept, so the checks that need real tool arguments are skipped, not scored from hashes.
+    assert live.search_queries and not stored.tool_args_known and not stored.search_queries
+    live_scores = (await grade_stored([(case, live)])).cases[0].scores
+    stored_scores = (await grade_stored([(case, stored)])).cases[0].scores
+    assert {k: v.value for k, v in stored_scores.items()} == {
+        k: v.value for k, v in live_scores.items() if k != "UniqueSearchRate"}
