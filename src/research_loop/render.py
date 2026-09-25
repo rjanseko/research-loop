@@ -1389,16 +1389,20 @@ async def _load_job(dsn: str, job_id: UUID) -> dict[str, Any]:
 
     async with await psycopg.AsyncConnection.connect(dsn) as conn:
         cursor = await conn.execute(
-            "select objective, status, plan, final_report, verification, evidence_ledger, review_reasons, finished_at"
-            " from research_jobs where id = %s", (job_id,))
+            "select objective, status, plan, final_report, verification, evidence_ledger, review_reasons, finished_at,"
+            # What the job's calls were billed; null when any call had no price.
+            " (select case when bool_and(t.usage ? 'cost' and t.usage->>'cost' is not null)"
+            "  then sum((t.usage->>'cost')::numeric) end from research_tasks t where t.job_id = j.id and t.usage is not null)"
+            " from research_jobs j where id = %s", (job_id,))
         row = await cursor.fetchone()
     if row is None:
         raise LookupError(f"no research job {job_id}")
-    objective, status, plan, report, verification, ledger, reasons, finished = row
+    objective, status, plan, report, verification, ledger, reasons, finished, cost = row
     if status != "succeeded":
         raise LookupError(f"research job {job_id} is {status}; only a finished job has a report to render")
     return {"objective": objective, "plan": plan, "report": report, "verification": verification, "ledger": ledger,
-            "review_reasons": reasons, "job_id": str(job_id), "generated_at": finished.isoformat() if finished else None}
+            "review_reasons": reasons, "job_id": str(job_id), "generated_at": finished.isoformat() if finished else None,
+            "cost_usd": None if cost is None else float(cost)}
 
 
 def _parse_formats(value: str) -> list[str]:
