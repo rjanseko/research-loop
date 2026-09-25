@@ -36,7 +36,7 @@ from .experiment import (
     safe_value,
     write_manifest,
 )
-from .ledger import EvidenceLedger
+from .ledger import EvidenceLedger, sources_markdown, strip_inline_citations
 from .long_horizon_spec import SYNTHESIS_DIR, load_spec
 from .observability import configure_logfire
 from .orchestrator import ResearchLoop
@@ -113,10 +113,13 @@ def _flagged_checks(verification: VerificationReport) -> list[ClaimCheck]:
 
 def render_question_report(report: FinalReport, verification: VerificationReport,
                            ledger: EvidenceLedger | None = None) -> str:
-    """The synthesized answer, its caveats, the verifier's unresolved findings, and quote and source checks."""
+    """The synthesized answer, its caveats, the sources its [sN] citations name, the verifier's
+    unresolved findings, and quote and source checks."""
     lines = [report.answer.rstrip(), ""]
     if report.caveats:
         lines += ["## Caveats", "", *[f"- {caveat}" for caveat in report.caveats], ""]
+    if ledger and (sources := sources_markdown(report, ledger)):
+        lines += [sources.strip(), ""]
     checks = verification.checks
     unsupported = [check for check in checks if not check.supported]
     major = sum(1 for check in unsupported if check.severity == "major")
@@ -675,7 +678,8 @@ def synthesis_prompt(spec: dict[str, Any], evidence: LongHorizonEvidence) -> str
         {
             "id": item.question["id"], "text": item.question["text"],
             "claims": _prompt_claims(item.question["id"], item.report, evidence.claims, works),
-            "caveats": item.report.caveats,
+            # Per-question [sN] citations would clash with this prompt's study-wide source IDs.
+            "caveats": [strip_inline_citations(caveat) for caveat in item.report.caveats],
             "unresolved_questions": list(dict.fromkeys(
                 question for results in item.ledger.values() for result in results
                 for question in result.unresolved_questions

@@ -29,7 +29,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 
 from research_loop import agents
-from research_loop.async_orchestrator import PromptExceedsRetryBudget, ResearchConfig
+from research_loop.async_orchestrator import (
+    JobBudgetExceeded,
+    PromptExceedsRetryBudget,
+    ResearchConfig,
+)
 from research_loop.ledger import EvidenceLedger
 from research_loop.orchestrator import LegacyResearchLoop, ResearchLoop
 from research_loop.policy import ModelPolicy, ModelRoute
@@ -283,6 +287,26 @@ async def test_run_whose_fetches_mostly_reached_no_source_needs_review(workflow,
     assert (unreached in outcome.review_reasons) is (refused == 3)
     assert loop.repository.jobs[outcome.job_id]["review_reasons"] == outcome.review_reasons
     assert loop._source_reach == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore:A `cost_limit` is set but cannot be enforced")  # scripted models are unpriced
+async def test_planner_sees_the_budget_only_when_the_job_has_a_cost_cap(workflow):
+    loop, script = workflow
+    outcome = await run(loop)
+    assert "budget" not in script.prompts["planner"][0]  # uncapped policies send the prompt as before
+    assert [row["id"] for row in outcome.sources] == []  # the scripted evidence cites no sources
+
+    for role in (ResearchRole.SCOUT, ResearchRole.DEEP_DIVE):
+        loop.policy.routes[role] = replace(loop.policy.routes[role], cost_limit=0.8 if role is ResearchRole.SCOUT else 1.25)
+    loop.policy.job_cost_limit, loop.policy.job_reserve_usd = 4.0, 1.5
+    # Scripted models have no prices, so a capped job refuses the call after the planner's.
+    with pytest.raises(JobBudgetExceeded, match="no pricing data"):
+        await run(loop)
+    assert script.prompts["planner"][1]["budget"] == {
+        "total_usd": 4.0, "reserved_for_synthesis_and_verification_usd": 1.5, "research_usd": 2.5,
+        "cost_cap_per_call_usd": {"scout": 0.8, "deep_dive": 1.25},
+    }
 
 
 @pytest.mark.asyncio

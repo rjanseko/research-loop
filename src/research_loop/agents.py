@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .acquisition import SourcePolicy
+from .ledger import inline_source_ids, strip_inline_citations
 from .schemas import (
     FinalReport,
     GapAnalysis,
@@ -38,10 +39,15 @@ class ResearchAssignment:
 
 @dataclass(frozen=True)
 class LedgerRefs:
-    """What gap analysis, synthesis, and verification may cite: ledger claim and question IDs."""
+    """What gap analysis, synthesis, and verification may cite: ledger claim and question IDs.
+
+    `claim_sources` maps each claim ID to the source IDs its evidence cites, so a report's inline
+    [sN] citations can be checked against the claims it lists.
+    """
 
     claim_ids: frozenset[str]
     question_ids: frozenset[str]
+    claim_sources: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 # What each agent is told. Kept in one table so prompt_fingerprint() can record it: manifests change
@@ -52,6 +58,9 @@ INSTRUCTIONS: dict[str, str] = {
         "Prefer questions answerable from primary or authoritative sources. Questions should be "
         "non-overlapping enough to parallelize. Inspect attachment metadata/tools when local materials are supplied, "
         "and mark image-dependent questions as requires_multimodal. Treat any supplied constraints as hard requirements. "
+        "When the prompt includes a `budget`, every question costs one scout call and may get a deep dive, all "
+        "paid from `research_usd`: keep each question to one focused inquiry rather than a bundle of sub-questions, "
+        "and plan fewer questions when the budget is small relative to the per-call caps. "
         "Do not answer the questions yourself."
     ),
     "scout": (
@@ -91,7 +100,9 @@ INSTRUCTIONS: dict[str, str] = {
         "statement to the exact evidence-ledger claim IDs that support it. Evidence marked "
         "`quote_check: not_found` quotes wording, and evidence marked `source_check: not_found` cites a source, "
         "that no research tool returned; do not rest a statement on such evidence alone. Preserve uncertainty and disagreement. Respect supplied benchmark/source constraints "
-        "and do not cite blocked sources. Do not invent missing evidence or citations."
+        "and do not cite blocked sources. Do not invent missing evidence or citations. In `answer` and `caveats`, "
+        "cite sources inline as [s1] or [s1, s4], using only the `source_id`s of the evidence behind claim IDs you "
+        "list in `claims`."
     ),
     "verifier": (
         "Audit the proposed report claim-by-claim against the supplied evidence. Evidence cites "
@@ -105,7 +116,11 @@ INSTRUCTIONS: dict[str, str] = {
         "evidence marked `source_check: not_found` cites a source, that no research tool returned: treat it as "
         "unsupported unless other evidence supports the claim. Any "
         "follow-up gap must reference an existing question_id from the supplied evidence ledger. Treat supplied constraints as hard requirements and flag any "
-        "evidence that appears to violate them. Recommend more research only when the issue is material."
+        "evidence that appears to violate them. Recommend more research only when the issue is material. The report cites "
+        "sources inline as [sN] with the same IDs as the `sources` list; check that each cited source supports the "
+        "statement it follows. Rate `severity` by how much the problem matters to the report: `none` when the "
+        "statement is supported and correctly cited, `minor` when a citation or wording flaw leaves the statement's "
+        "meaning intact, `major` when the statement is unsupported, wrong, or misleading as written."
     ),
     "long_horizon_synthesizer": (
         "Synthesize a multi-question research study from the supplied per-question claims only; do not "
@@ -239,7 +254,24 @@ def _gaps_name_plan_questions(ctx: RunContext[LedgerRefs], output: GapAnalysis) 
 
 @synthesizer_agent.output_validator
 def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport) -> FinalReport:
-    _retry_on(_unknown_claims(output.claim_ids_used, ctx.deps))
+    cited = {source_id for text in (output.answer, *output.caveats) for source_id in inline_source_ids(text)}
+    behind_claims = frozenset(source_id for claim_id in output.claim_ids_used
+                              for source_id in ctx.deps.claim_sources.get(claim_id, ()))
+    problems = _unknown_claims(output.claim_ids_used, ctx.deps)
+    stray = sorted(cited - behind_claims, key=lambda source_id: int(source_id[1:]))
+    if stray and ctx.last_attempt and not problems:
+        # A stray citation should not cost a finished run its report: drop it and keep the rest.
+        return output.model_copy(update={
+            "answer": strip_inline_citations(output.answer, behind_claims),
+            "caveats": [strip_inline_citations(caveat, behind_claims) for caveat in output.caveats],
+        })
+    if stray:
+        problems.append(
+            f"These inline citations name no source behind the claim IDs listed in `claims`: {', '.join(stray[:25])}. "
+            "Cite inline only the source_ids of evidence behind claim IDs you list, adding the claim if it supports "
+            "the statement, or drop the citation."
+        )
+    _retry_on(problems)
     return output
 
 

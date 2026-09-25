@@ -319,3 +319,16 @@ async def test_benchmark_runs_use_the_settings_they_were_given(tmp_path: Path, m
     await run_benchmark(_two_case_suite(tmp_path, ["one"]), policies=["synthetic"], max_concurrency=1,
                         manifest_path=tmp_path / "manifest.json", settings=settings)
     assert seen == [settings]
+
+
+
+@pytest.mark.parametrize(("answer", "expected"), [
+    ("Reasoning [s2].\nExact Answer: 1997 [s4]", "1997"),
+    ("1997 [s4, s5]", "1997"),
+    ("Exact Answer: 1997", "1997"),
+])
+def test_graded_short_answers_drop_inline_source_citations(answer, expected) -> None:
+    from research_loop.benchmark import _extract_exact_answer
+    from research_loop.benchmarks import BenchmarkOutputMode
+
+    assert _extract_exact_answer(answer, BenchmarkOutputMode.SHORT_ANSWER) == expected

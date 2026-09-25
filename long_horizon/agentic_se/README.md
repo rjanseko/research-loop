@@ -31,7 +31,7 @@ A completed question writes `outputs.question_files` to `<output>/<question id>/
 
 | File | Contents |
 |---|---|
-| `report.md` | The answer, caveats, the verifier's unsupported or major findings, and how many quoted passages and cited sources were not found in tool output |
+| `report.md` | The answer, caveats, a "Sources" section for the `[sN]` IDs the answer cites, the verifier's unsupported or major findings, and how many quoted passages and cited sources were not found in tool output |
 | `report.json`, `verification.json` | The final report and the verifier's checks |
 | `evidence_ledger.json` | Every research result, with unique claim IDs such as `q1/c3`; the report and verification cite only these IDs |
 | `bibliography.json` | Distinct sources; preprint and publication records stay separate |
@@ -60,7 +60,7 @@ Completed is not the same as sound. Each completed question records `review_reas
 
 Long-horizon runs also turn on salvage, so a scout or deep dive that exhausts its budget summarizes what it gathered instead of failing the question. The [guide](../../docs/guide.md#how-spending-is-limited) explains the soft cap, the reserve, and salvage. Provider spending caps remain the hard limit.
 
-The current spec gives each question a $5 cap with a $2.50 reserve (about $4 expected per question), scouts of 16 requests, 36 tool calls, and 500k tokens, and up to two deep dives per question at $1.25 each, run one at a time so each budget check sees the previous one's spend. It plans one to three subquestions and skips verification rounds in this first pass.
+The current spec gives each question a $5 cap with a $2.50 reserve (about $4 expected per question), scouts of 16 requests, 36 tool calls, and 500k tokens, and up to two deep dives per question at $1.25 each, run one at a time so each budget check sees the previous one's spend. It plans one to three subquestions and skips verification rounds in this first pass. Because each question has a cap, its planner is told the budget, the reserve, and the scout and deep-dive caps, and to keep subquestions focused; studies run before this change planned without that information. The study-level synthesis prompt drops each question's inline `[sN]` citations from its caveats, because that prompt numbers its own study-wide sources.
 
 ## Calibration pilot
 

@@ -184,3 +184,49 @@ def test_ledger_round_trips_through_json_without_renaming_claims():
     restored = EvidenceLedger.from_json(ledger.to_json())
     assert restored.claim_ids() == ledger.claim_ids() == {"q1/c1", "q1/c1~2"}
     assert [result.conclusion for result in restored.for_question("q1")] == ["scout", "deep dive"]
+
+
+def _cited(question_id: str, *urls: str) -> ResearchResult:
+    from research_loop.schemas import Claim, Evidence, SourceRef
+
+    return ResearchResult(question_id=question_id, question=f"{question_id}?", conclusion="c", confidence=0.8, claims=[
+        Claim(id="c1", statement="s", confidence=0.8,
+              evidence=[Evidence(source=SourceRef(url=url, title=url), excerpt="e", confidence=0.8) for url in urls]),
+    ])
+
+
+def test_source_ids_are_ledger_wide_so_every_prompt_and_the_report_agree():
+    import json
+
+    ledger = EvidenceLedger()
+    # Added q10 first: IDs follow natural question order (q2 before q10), not insertion order.
+    for result in (_cited("q10", "https://c.example"), _cited("q2", "https://a.example", "https://b.example")):
+        ledger.add(result)
+    assert [(row["id"], row["url"]) for row in ledger.source_table()] == [
+        ("s1", "https://a.example/"), ("s2", "https://b.example/"), ("s3", "https://c.example/")]
+
+    # A view of some claims lists only their sources, under the same IDs; before, it renumbered from s1.
+    verifier = ledger.prompt_view("evidence", claim_ids=["q10/c1"])
+    assert [row["id"] for row in verifier["sources"]] == ["s3"]
+    assert verifier["evidence"][0]["claims"][0]["evidence"][0]["source_id"] == "s3"
+    assert ledger.claim_source_ids() == {"q10/c1": frozenset({"s3"}), "q2/c1": frozenset({"s1", "s2"})}
+
+    # Postgres does not keep JSON key order; a reloaded ledger numbers its sources the same way.
+    stored = ledger.to_json()
+    reloaded = EvidenceLedger.from_json(json.loads(json.dumps(dict(reversed(stored.items())))))
+    assert reloaded.source_table() == ledger.source_table()
+
+
+
+def test_contradicting_evidence_does_not_back_an_inline_citation() -> None:
+    from research_loop.schemas import Claim, Evidence, SourceRef
+
+    ledger = EvidenceLedger()
+    ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.7, claims=[
+        Claim(id="c1", statement="X is true", confidence=0.7, evidence=[
+            Evidence(source=SourceRef(url="https://for.example", title="for"), excerpt="yes", confidence=0.7),
+            Evidence(source=SourceRef(url="https://against.example", title="against"), excerpt="no",
+                     confidence=0.7, supports=False),
+        ]),
+    ]))
+    assert ledger.claim_source_ids() == {"q1/c1": frozenset({"s1"})}

@@ -122,7 +122,7 @@ OpenRouter's site is blocked from this environment. Prices come from the copy of
 - **Unpriced models turn off the dollar caps.** PydanticAI prices calls from `genai-prices`, not from
   the cost OpenRouter reports, and `genai-prices` has no entry for Hy4 preview. Its cost is `None`, and
   `_record_spend` then stops tracking the job's spend, so the job cost cap cannot hold.
-  `research-diagnose --smoke` warns about such a route. The script prices Hy4 from its OpenRouter
+  `research-diagnose --prices` flags such a route before any call, and `--smoke` warns again after one. The script prices Hy4 from its OpenRouter
   listing ($0.834 / $0.042 cached / $2.501). Any unpriced model needs a price source before a paid run.
 - **Catalog prices can lag.** The catalog lists GPT-5.6 Sol at $2 / $10. OpenAI lists $4 / $20,
   a promotional price available at least through 2026-11-21. This doc uses OpenAI's price.

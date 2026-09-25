@@ -197,3 +197,30 @@ def test_network_check_is_opt_in() -> None:
     checks = run_diagnose(ResearchSettings.from_env({}), web_probe=lambda: None,
                           writable_probe=lambda _path: None, network_probe=unexpected)
     assert not [check for check in checks if check.name.startswith("network:")]
+
+
+def test_prices_show_each_route_model_once_and_warn_when_unpriced() -> None:
+    from decimal import Decimal
+
+    def lookup(model: str):
+        return None if model.startswith("xai:") else (Decimal(4), Decimal(20))
+
+    def offline() -> None:
+        raise OSError("no network")
+
+    checks = run_diagnose(ResearchSettings.from_env({}), web_probe=lambda: None, writable_probe=lambda _path: None,
+                          profile_probe=lambda _model: {"supports_tools": True},
+                          update_prices=True, price_lookup=lookup, price_updater=offline)
+    prices = {check.name: check for check in checks if check.name.startswith("price")}
+    assert prices["prices"].status == "WARN" and "OSError" in prices["prices"].detail  # bundled prices stay in use
+    sol = prices["price:openai:gpt-5.6-sol"]
+    assert sol.status == "PASS" and sol.detail.startswith("$4.00 in / $20.00 out per million tokens")
+    assert "deep_dive" in sol.detail and "verifier" in sol.detail  # one line per model, naming its roles
+    assert prices["price:xai:grok-4.5"].status == "WARN"
+
+
+def test_model_price_uses_the_base_rate_not_the_long_prompt_tier() -> None:
+    from research_loop.diagnose import _model_price
+
+    assert _model_price("openai:gpt-5.6-sol")[0] < 8  # a million tokens in one request would hit the long-prompt tier
+    assert _model_price("openai:no-such-model-xyz") is None

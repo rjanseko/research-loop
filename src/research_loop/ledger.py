@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
-from .schemas import Claim, Evidence, ResearchResult, SourceRef
+from .schemas import Claim, Evidence, FinalReport, ResearchResult, SourceRef
 
 # Scout bookkeeping. Gap analysis still sees it; synthesis and verification do not.
 _SEARCH_FIELDS = ("search_queries_used", "suggested_followups")
@@ -81,6 +82,43 @@ class EvidenceLedger:
     def claim_count(self) -> int:
         return len(self.claims())
 
+    def _in_source_order(self) -> list[ResearchResult]:
+        """Results by question ID in natural order (q2 before q10), each question's in ledger order.
+
+        Source IDs follow this order, not insertion order, so a ledger reloaded from Postgres,
+        whose JSON does not keep key order, numbers its sources the same way.
+        """
+        return [result for question_id in sorted(self.results, key=_natural_key)
+                for result in self.results[question_id]]
+
+    def _source_numbering(self) -> dict[str, str]:
+        """Every source's ID for this ledger's current contents: s1, s2, ... in `_in_source_order`."""
+        numbering: dict[str, str] = {}
+        for result in self._in_source_order():
+            for claim in result.claims:
+                for item in claim.evidence:
+                    numbering.setdefault(_source_key(item.source)[0], f"s{len(numbering) + 1}")
+        return numbering
+
+    def source_table(self) -> list[dict[str, Any]]:
+        """Every source with the ID prompts and reports cite it by, in ID order.
+
+        IDs are fixed for the ledger's contents: every prompt built from it, and the report written
+        from it, use the same ID for the same source. Adding results can renumber later sources.
+        """
+        table = _SourceTable(self._source_numbering())
+        for result in self._in_source_order():
+            for claim in result.claims:
+                for item in claim.evidence:
+                    table.id_for(item.source)
+        return table.sorted_rows()
+
+    def claim_source_ids(self) -> dict[str, frozenset[str]]:
+        """The source IDs of each claim's supporting evidence, by claim ID; contradicting evidence is left out."""
+        numbering = self._source_numbering()
+        return {claim.id: frozenset(numbering[_source_key(item.source)[0]] for item in claim.evidence if item.supports)
+                for claim in self.claims()}
+
     def to_json(self) -> dict[str, list[dict[str, Any]]]:
         """Results by question, as stored in Postgres and exported as evidence_ledger.json."""
         return {question_id: [result.model_dump(mode="json") for result in results]
@@ -101,8 +139,8 @@ class EvidenceLedger:
     ) -> dict[str, Any]:
         """Compact this ledger for a model prompt. ``to_json`` is unchanged.
 
-        Sources are listed once, in first-seen order, under ``sources``; evidence cites
-        them by ``source_id``. Provider, fetch time, and extra catalog ids are left off
+        Sources are listed once, under ``sources``; evidence cites them by ``source_id``, the
+        ID ``source_table`` gives the source, so a view of some claims keeps the same IDs. Provider, fetch time, and extra catalog ids are left off
         the source row, and sources that differ only in those share a row. Null and empty
         strings and lists are omitted, as is ``supports`` when the evidence supports the
         claim. A ``quote`` replaces the excerpt unless its ``quote_check`` is ``not_found``;
@@ -119,14 +157,14 @@ class EvidenceLedger:
                 claim_id for result in self.all()
                 for contradiction in result.contradictions for claim_id in contradiction.claim_ids
             }
-        sources = _SourceTable()
+        sources = _SourceTable(self._source_numbering())
         records = [
             _project_result(result, sources, include_search=include_search, wanted=wanted)
             for result in self.all()
         ]
         view: dict[str, Any] = {}
         if sources.rows:
-            view["sources"] = sources.rows
+            view["sources"] = sources.sorted_rows()
         view[record_key] = records
         return view
 
@@ -144,20 +182,34 @@ def _omit_empty(value: Any) -> Any:
     return value
 
 
+def _natural_key(text: str) -> list[Any]:
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
+def _source_key(source: SourceRef) -> tuple[str, dict[str, Any]]:
+    """What a model sees of a source, and the key rows share: sources differing only in hidden fields match."""
+    visible = _omit_empty(source.model_dump(mode="json", exclude=_HIDDEN_SOURCE_FIELDS))
+    return json.dumps(visible, sort_keys=True), visible
+
+
 class _SourceTable:
-    def __init__(self) -> None:
-        self._ids: dict[str, str] = {}
+    """The rows one prompt uses, under the ledger-wide IDs in `numbering`."""
+
+    def __init__(self, numbering: dict[str, str]) -> None:
+        self._numbering = numbering
+        self._seen: set[str] = set()
         self.rows: list[dict[str, Any]] = []
 
     def id_for(self, source: SourceRef) -> str:
-        visible = _omit_empty(source.model_dump(mode="json", exclude=_HIDDEN_SOURCE_FIELDS))
-        key = json.dumps(visible, sort_keys=True)
-        source_id = self._ids.get(key)
-        if source_id is None:
-            source_id = f"s{len(self._ids) + 1}"
-            self._ids[key] = source_id
+        key, visible = _source_key(source)
+        source_id = self._numbering[key]
+        if key not in self._seen:
+            self._seen.add(key)
             self.rows.append({"id": source_id, **visible})
         return source_id
+
+    def sorted_rows(self) -> list[dict[str, Any]]:
+        return sorted(self.rows, key=lambda row: int(row["id"][1:]))
 
 
 def _project_evidence(item: Evidence, sources: _SourceTable) -> dict[str, Any]:
@@ -205,3 +257,34 @@ def _project_result(
         projected["claims"] = projected_claims
     projected.update(rest)
     return projected
+
+
+# An inline citation such as [s3] or [s3, s12]; its source IDs are checked against the report's claims.
+_INLINE_CITATION = re.compile(r"\[\s*(s\d+(?:\s*[,;]\s*s\d+)*)\s*\]")
+
+
+def inline_source_ids(text: str) -> list[str]:
+    """The source IDs a text cites inline, in order."""
+    return [source_id for group in _INLINE_CITATION.findall(text) for source_id in re.findall(r"s\d+", group)]
+
+
+def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> str:
+    """`text` without its inline [sN] citations, or with only the IDs in `keep` left in them."""
+    def rewrite(match: re.Match[str]) -> str:
+        kept = [source_id for source_id in re.findall(r"s\d+", match.group(2)) if keep is not None and source_id in keep]
+        return f"{match.group(1)}[{', '.join(kept)}]" if kept else ""
+
+    return re.sub(r"([ \t]*)" + _INLINE_CITATION.pattern, rewrite, text)
+
+
+def sources_markdown(report: FinalReport, ledger: EvidenceLedger) -> str:
+    """A "Sources" section listing what the report's inline [sN] citations name; empty when it cites none."""
+    cited = {source_id for text in (report.answer, *report.caveats) for source_id in inline_source_ids(text)}
+    rows = [row for row in ledger.source_table() if row["id"] in cited]
+    if not rows:
+        return ""
+    lines = ["", "", "## Sources", ""]
+    for row in rows:
+        where = row.get("url") or row.get("attachment_id") or ""
+        lines.append(f"- [{row['id']}] {row.get('title') or ''} {where}".rstrip())
+    return "\n".join(lines) + "\n"
