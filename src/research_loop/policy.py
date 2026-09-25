@@ -242,7 +242,7 @@ DEFAULT_MODELS: dict[str, str] = {
     "RESEARCH_BREADTH_SCOUT_MODEL": "openai:gpt-5.6-luna",
     "RESEARCH_GLM_GAP_MODEL": "zai:glm-5.3",
     "RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3-flash",
-    "RESEARCH_VALUE_PLANNER_MODEL": "anthropic:claude-opus-5-5",
+    "RESEARCH_VALUE_PLANNER_MODEL": "openai:gpt-6-sol",
     "RESEARCH_VALUE_GAP_MODEL": "openai:gpt-6-sol",
     "RESEARCH_VALUE_DEEP_MODEL": "openai:gpt-6-sol",
     "RESEARCH_VALUE_SYNTH_MODEL": "anthropic:claude-opus-5-5",

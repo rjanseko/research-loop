@@ -13,7 +13,7 @@ route, then trial the cheaper options one role at a time:
 
 | Role | Now | Adopt | Trial next | Thinking |
 |---|---|---|---|---|
-| Planner | Opus 5 | `anthropic:claude-opus-5-5` | none: about $0.03 a question on any model | `medium` |
+| Planner | Opus 5 | `openai:gpt-6-sol`, which plans as well as Opus 5.5 did in the settings study's pilots and has not refused a question | none: about $0.03 a question on any model | `high` |
 | Scout | GLM-5.3 | keep `zai:glm-5.3`. Make `zai:glm-5.3-flash` the cheap scout | `zai:glm-5.3-flash` as the main scout | `high` |
 | Gap analyst | GPT-5.6 Sol | `openai:gpt-6-sol` | none: GLM-5.3 would save $0.02 | `medium` |
 | Deep dive | GPT-5.6 Sol | `openai:gpt-6-sol`, with prompt caching | `zai:glm-5.3`, if scout trials show search quality holds | `high` |
@@ -177,8 +177,12 @@ GLM-5.3 and GLM-5.3-Flash, and DeepSeek V4:
 
 `value` has `quality`'s limits, so a comparison changes models, thinking effort, and caching only:
 
-- **Planner and synthesizer:** `anthropic:claude-opus-5-5` at `medium`. Overridden to another provider,
-  they keep `quality`'s `high`, because `medium` is tuned to how much Opus 5.5 thinks.
+- **Planner:** `openai:gpt-6-sol` at `quality`'s `high`. Opus 5.5 planned it from the fifth to the sixth
+  pilot of the settings study, with no better plans at three times the cost, and refused one of its
+  questions (docs/settings-study.md, decision log).
+- **Synthesizer:** `anthropic:claude-opus-5-5` at `medium`. Overridden to another provider, it keeps
+  `quality`'s `high`, because `medium` is tuned to how much Opus 5.5 thinks; a planner set to Opus 5.5
+  gets `medium` the same way. A refused call runs again on `openai:gpt-6-sol`.
 - **Gap analyst, deep dive, and verifier:** `openai:gpt-6-sol`.
 - **Scout:** `quality`'s `zai:glm-5.3`, with its override `RESEARCH_SCOUT_MODEL`.
 - **Cheap scout:** `zai:glm-5.3-flash`, shared with `glm-heavy` through `RESEARCH_GLM_CHEAP_MODEL`.

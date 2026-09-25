@@ -69,7 +69,7 @@ STUDY_QUESTION_RANGE = (3, 8)
 # the preset intends; the verifier stays on another vendor. Verification-round deep dives use the alternate,
 # which needs RESEARCH_ALT_DEEP_MODEL=zai:glm-5.3, since the preset's own alternate is on xAI.
 STUDY_MODELS = {
-    "planner": "anthropic:claude-opus-5-5",
+    "planner": "openai:gpt-6-sol",
     "scout": "zai:glm-5.3",
     "gap_analyst": "openai:gpt-6-sol",
     "deep_dive": "openai:gpt-6-sol",

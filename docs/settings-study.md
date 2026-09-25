@@ -54,8 +54,8 @@ These are the models the configured keys can reach, with list prices in USD per 
 | `zai:glm-5.3-flash` | 0.15 | 0.03 | 0.50 | Scout, deep dive, gap analyst |
 | `zai:glm-5.3-flashx` | 0.37 | 0.075 | 1.25 | Scout, in the [FlashX test](#the-flashx-test) |
 | `zai:glm-5.3` | 1.40 | 0.26 | 4.40 | Every role (the current scout and alternate deep dive) |
-| `openai:gpt-6-sol` | 2.00 | 0.20 | 10.00 | Every role (the current gap analyst, deep dive, and verifier) |
-| `anthropic:claude-opus-5-5` | 4.00 | 0.20 | 20.00 | Planner and synthesizer (the current ones, from the fifth pilot on) |
+| `openai:gpt-6-sol` | 2.00 | 0.20 | 10.00 | Every role (the current planner, gap analyst, deep dive, and verifier) |
+| `anthropic:claude-opus-5-5` | 4.00 | 0.20 | 20.00 | Synthesizer (the current one, from the fifth pilot on), and planner in the fifth and sixth pilots |
 | `openai:gpt-6-astra` | 10.00 | 1.00 | 50.00 | Synthesizer only, on three questions |
 
 `genai-prices` is up to date: its latest data matches the 0.1.8 release the repository pins. But it prices `glm-5.3-flash` at 0.075, 0.015, and 0.25, half of Z.ai's list price, and has no entry for `glm-5.3-flashx`. The 0.1.9 release does not change either. Without a correction, a cap on a Flash route would let through about twice the spend it names, and a FlashX route would have no cost at all, so no cap could hold on it. `src/research_loop/prices.toml` now supplies both prices (see [setup.md](setup.md#model-routing)), so the caps hold.
@@ -251,3 +251,11 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Time.* A salvage call took 1.6 to 2.9 minutes, as long as 12 requests of the loop it summarized, since it writes a whole result: 21,000 to 44,000 characters, 15 to 45% of `glm-5.3`'s output tokens being reasoning. Every research loop in five pilots was salvaged, so salvage is about a third of each research phase.
 - *Preflight.* The finishing prompts, gap analysis at 222,778 characters, fit their 600,000 tokens 3.0 to 4.9 times over.
 - *Next.* The loops cannot see their limits. The sixth pilot turns on budget notes (`--budget-notes scout deep_dive`), which end each loop request with the requests and tool calls left and ask for the result before a limit, so a loop can write its result with its full tool output in context instead of a salvage call writing it from cut-down output. It also runs the salvage and PDF changes, so dead fetches and salvage failures are measured with it; a change in depth is read from the depth curves and whether loops stopped on their own.
+
+**Prompt trials and a planner change, 25 September 2026, during the sixth pilot. $9.46.**
+
+- *Tool.* `scripts/prompt_trial.py` runs the orchestrator's own planner, synthesizer, and verifier calls on the study's inputs with the current and a candidate instruction, and stores nothing in Postgres.
+- *Refusal.* Opus 5.5 refused to plan `task26`, on T-cell exhaustion, as a biological risk, under both prompts. Planner and synthesizer routes now name a `refusal_fallback`, `gpt-6-sol` in `value`, which a refused call runs on once more; `task26` then planned in four questions.
+- *Synthesizer prompt, undecided.* The candidate asked for facts stated no more broadly than their evidence, with unverified, out-of-period, and secondary-source facts marked where they appear. On the ledgers of the first, fourth, and fifth pilots it drew 4 of 26, 11 of 31, and 11 of 55 checked statements unsupported, against 1 of 22, 18 of 42, and 12 of 46 for the current prompt. The fifth pilot's own report, with the same prompt, models, and ledger, drew 21 of 39, so one verification per report varies more than the prompts differ. It waits for step 3's measure of the verifier's variation. The trial cost $7.61: Opus 5.5 syntheses ran $0.32 to $1.61, not the pilots' $0.55 to $0.78.
+- *Planner.* On `task2+`, Opus 5.5 paired countries in all three of its plans. `gpt-6-sol` has now planned one question per country in two of three plans and split by topic in the third, at a third of the cost. A candidate prompt asking for one question per parallel subject made both models plan per country, but on `gpt-6-sol` it also filled the eight-question range on `task2+` and `task17+`, adding a scout each, so it is not adopted; the planner model was the larger effect.
+- *Changed.* `value`'s planner, and the study's, is `gpt-6-sol` at `high`. No reference run exists, so no comparison is lost. Opus 5.5 remains the synthesizer until step 7.

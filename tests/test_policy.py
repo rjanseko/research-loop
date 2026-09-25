@@ -231,9 +231,11 @@ def test_value_preset_caches_every_route_and_thinks_less_on_opus(monkeypatch) ->
     value, quality = get_policy("value"), get_policy("quality")
     routes = [*value.routes.values(), value.cheap_scout, value.multimodal_scout, value.alternate_deep_dive]
     assert all(route.prompt_cache for route in routes)
-    for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
-        assert value.for_role(role).model == "anthropic:claude-opus-5-5"
-        assert value.for_role(role).thinking == "medium"
+    # Opus 5.5 synthesizes at medium; the planner is on gpt-6-sol at quality's effort.
+    assert (value.for_role(ResearchRole.SYNTHESIZER).model, value.for_role(ResearchRole.SYNTHESIZER).thinking) == (
+        "anthropic:claude-opus-5-5", "medium")
+    assert (value.for_role(ResearchRole.PLANNER).model, value.for_role(ResearchRole.PLANNER).thinking) == (
+        "openai:gpt-6-sol", "high")
     for role in ResearchRole:
         # Same limits as quality, so a comparison changes models, effort, and caching only.
         mine, theirs = value.for_role(role), quality.for_role(role)
@@ -252,9 +254,8 @@ def test_value_overrides_leave_quality_alone_and_the_reverse() -> None:
     assert value.for_role(ResearchRole.SYNTHESIZER).prompt_cache
     # Off Anthropic, the planner and synthesizer go back to quality's effort.
     assert value.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
-    assert value.for_role(ResearchRole.PLANNER).thinking == "medium"  # still Opus 5.5
-    planner = get_policy("value", model_overrides={"RESEARCH_VALUE_PLANNER_MODEL": "openai:gpt-6-sol"})
-    assert planner.for_role(ResearchRole.PLANNER).thinking == "high"
+    planner = get_policy("value", model_overrides={"RESEARCH_VALUE_PLANNER_MODEL": "anthropic:claude-opus-5-5"})
+    assert planner.for_role(ResearchRole.PLANNER).thinking == "medium"
     assert value.cheap_scout.model == "zai:cheap"
     quality = get_policy("quality", model_overrides={"RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"})
     assert quality.for_role(ResearchRole.SYNTHESIZER).model != "zai:glm-5.3"
@@ -262,7 +263,7 @@ def test_value_overrides_leave_quality_alone_and_the_reverse() -> None:
 
 def test_value_effort_follows_models_set_in_the_environment(monkeypatch) -> None:
     monkeypatch.setenv("RESEARCH_VALUE_SYNTH_MODEL", "zai:glm-5.3")
-    monkeypatch.delenv("RESEARCH_VALUE_PLANNER_MODEL", raising=False)
+    monkeypatch.setenv("RESEARCH_VALUE_PLANNER_MODEL", "anthropic:claude-opus-5-5")
     value = get_policy("value")
     assert value.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
     assert value.for_role(ResearchRole.PLANNER).thinking == "medium"
