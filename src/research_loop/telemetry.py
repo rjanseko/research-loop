@@ -172,9 +172,11 @@ NETWORK_ERRORS = frozenset(_subclass_names(httpx.TransportError))
 def unreached_source(result: Any) -> str | None:
     """Why a web or scholarly tool result reached no source, or None when it did or failed otherwise.
 
-    A fetch names a network error; a search that failed twice is `SearchUnavailable`; a scholarly
-    call counts only when it returned nothing and a provider failed on the network. HTTP statuses,
-    blocked sources, and empty searches reached their source and are not counted.
+    A fetch names a network error; a search counts when it failed twice on one (`SearchUnavailable
+    (TimeoutException)`); a scholarly call counts only when it returned nothing and a provider failed
+    on the network. HTTP statuses, blocked sources, and empty results reached their source and are
+    not counted. Neither is `SearchUnavailable (DDGSException)`: ddgs raises that both when every
+    engine failed and when a search found nothing, and the result does not say which.
     """
     if isinstance(result, str) and result[:1] == "{":
         try:
@@ -186,7 +188,7 @@ def unreached_source(result: Any) -> str | None:
     error = str(result.get("error") or "")
     if error in NETWORK_ERRORS:
         return error
-    if error.startswith("SearchUnavailable"):
+    if error.startswith("SearchUnavailable (") and error[len("SearchUnavailable ("):-1] in NETWORK_ERRORS:
         return "SearchUnavailable"
     if result.get("works") or result.get("text"):
         return None
@@ -207,7 +209,9 @@ class SourceReach:
     def add(self, events: Iterable[ToolEvent]) -> None:
         for event in events:
             name = event.tool_name.lower()
-            if not event.is_research_tool or "attachment" in name or event.result is None:
+            # scholar_get, scholar_references, and scholar_citations match no research-tool token.
+            web_or_scholarly = event.is_research_tool or name.startswith("scholar_")
+            if not web_or_scholarly or "attachment" in name or event.result is None:
                 continue
             self.calls += 1
             if reason := unreached_source(event.result):
