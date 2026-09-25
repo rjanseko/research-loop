@@ -86,10 +86,10 @@ STUDY_MODELS = {
     # Where the planner and synthesizer go when a model refuses a question, as Opus 5.5 refused task26.
     "refusal_fallback": "openai:gpt-6-sol",
 }
-# `high`, as in pilot 4, which synthesized task2+ in 3 to 4 minutes. At `max` (`xhigh`) Z.ai sent nothing for
-# minutes on task2+'s ledger: pilot 8's call ended after three 600-second read timeouts, and a streamed
-# re-synthesis had received no bytes at 7.8 minutes when it was stopped. The output allowance covers the
-# reasoning as well as the report; pilot 4 wrote up to 27,659 tokens, near the preset's 32,000.
+# `high`, as in pilot 4, which synthesized task2+ in 3 to 4 minutes. At `max` (`xhigh`), unstreamed, pilot 8's
+# call ended after about 30 minutes, three 600-second read timeouts by the timing; whether a streamed `max`
+# synthesis finishes is untested (see the decision log). The output allowance covers the reasoning as well as
+# the report; pilot 4 wrote up to 27,659 tokens, near the preset's 32,000.
 SYNTHESIS_EFFORT = "high"
 SYNTHESIS_MAX_TOKENS = 64_000
 CACHE_MODES = ("record", "reuse", "replay", "off")

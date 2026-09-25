@@ -14,6 +14,9 @@ cost. `--max-usd` caps synthesis and verification, checked before the job starts
 judge's call is not in it, about $0.05. The record goes to benchmark_outputs/settings_study/resynthesis/.
 
     .venv/bin/python scripts/resynthesize.py <job_id> --max-usd 1.50
+
+`--synthesizer MODEL` swaps the synthesizer's model, keeping the study route's limits and fallback; its effort
+is then the model's own under policy.MODEL_EFFORT (Opus 5.5 at `medium`), or the study route's.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +33,7 @@ from uuid import UUID
 
 from research_loop.async_orchestrator import AsyncResearchLoop
 from research_loop.ledger import EvidenceLedger
+from research_loop.policy import apply_model_effort
 from research_loop.schemas import (
     FinalReport,
     ResearchConstraints,
@@ -82,7 +87,7 @@ async def resynthesize(loop: AsyncResearchLoop, budget: Any, prompt_trial: Any, 
     return entry
 
 
-async def run(job_id: UUID, max_usd: float, settings: Any) -> dict[str, Any]:
+async def run(job_id: UUID, max_usd: float, settings: Any, synthesizer_model: str | None = None) -> dict[str, Any]:
     from contextlib import AsyncExitStack
 
     from research_loop.benchmarks import load_suite
@@ -100,6 +105,9 @@ async def run(job_id: UUID, max_usd: float, settings: Any) -> dict[str, Any]:
     constraints = ResearchConstraints(blocked_urls=stored["blocked_urls"], benchmark_id=stored["benchmark_id"],
                                       benchmark_case_id=case_id, benchmark_suite=manifest.name, notes=stored["notes"])
     policy, config = study.build(True, 5.0, 1.0, settings, cache_mode="reuse")
+    if synthesizer_model:
+        policy.routes[ResearchRole.SYNTHESIZER] = replace(policy.routes[ResearchRole.SYNTHESIZER], model=synthesizer_model)
+        apply_model_effort(policy)
     synthesizer = policy.routes[ResearchRole.SYNTHESIZER]
     trial = {"name": "resynthesis", "source_job": str(job_id), "synthesizer": synthesizer.model,
              "thinking": synthesizer.thinking, "verifier": policy.routes[ResearchRole.VERIFIER].model,
@@ -144,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("job_id", type=UUID, help="A stored job with a plan and an evidence ledger")
     parser.add_argument("--max-usd", type=float, required=True, help="Hard cap on synthesis and verification")
+    parser.add_argument("--synthesizer", metavar="MODEL", help="Synthesize on this model in place of the study's")
     parser.add_argument("--output", type=Path, help="Record (default: benchmark_outputs/settings_study/resynthesis/)")
     args = parser.parse_args(argv)
     if args.max_usd <= 0:
@@ -152,7 +161,7 @@ def main(argv: list[str] | None = None) -> None:
     if not settings.database_dsn:
         parser.error("reads the job from Postgres; set DATABASE_URL (see docs/setup.md#postgres)")
     settings = settings.model_copy(update={"benchmark_cache": settings.benchmark_output / "settings_study" / "cache"})
-    record = asyncio.run(run(args.job_id, args.max_usd, settings))
+    record = asyncio.run(run(args.job_id, args.max_usd, settings, args.synthesizer))
     output = args.output or settings.benchmark_output / "settings_study" / "resynthesis" / (
         f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
     output.parent.mkdir(parents=True, exist_ok=True)
