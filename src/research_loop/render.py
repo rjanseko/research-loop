@@ -626,7 +626,7 @@ class _MarkdownToLatex:
 
     def _blocks(self, tokens: Sequence[Token]) -> str:
         out: list[str] = []
-        index, list_depth = 0, 0
+        index, list_depth, enumerate_depth = 0, 0, 0
         while index < len(tokens):
             token = tokens[index]
             kind = token.type
@@ -647,10 +647,19 @@ class _MarkdownToLatex:
                 list_depth += 1
                 env = "itemize" if kind == "bullet_list_open" else "enumerate"
                 out.append(rf"\begin{{{env}}}" + "\n" if list_depth <= 4 else "")
+                if env == "enumerate":
+                    enumerate_depth += 1
+                    # A list that starts past 1: models number items across the bullets between them
+                    # ("3. Taspen", bullets, "4. ASABRI"), which CommonMark parses as a list per number.
+                    start = int(token.attrGet("start") or 1)
+                    if start != 1 and list_depth <= 4 and enumerate_depth <= 4:
+                        counter = "enum" + ("i", "ii", "iii", "iv")[enumerate_depth - 1]
+                        out.append(rf"\setcounter{{{counter}}}{{{start - 1}}}" + "\n")
             elif kind in {"bullet_list_close", "ordered_list_close"}:
                 env = "itemize" if kind == "bullet_list_close" else "enumerate"
                 out.append(rf"\end{{{env}}}" + "\n\n" if list_depth <= 4 else "")
                 list_depth -= 1
+                enumerate_depth -= env == "enumerate"
             elif kind == "list_item_open":
                 out.append(r"\item " if list_depth <= 4 else r"\par\textbullet{} ")
             elif kind == "list_item_close":
@@ -792,7 +801,7 @@ def render_latex(doc: ReportDocument) -> str:
 
     md = _MarkdownToLatex(cite)
     claim_ids = doc.ledger.claim_ids()
-    body: list[str] = [_latex_title(doc), _latex_status(doc)]
+    body: list[str] = [_latex_title(doc, md), _latex_status(doc)]
     body += [r"\section{Findings}", md.block(doc.report.answer) or r"\rlnote{The report has no answer.}", ""]
     if doc.report.claims:
         claim_sources = doc.ledger.claim_source_ids()
@@ -827,11 +836,21 @@ def render_latex(doc: ReportDocument) -> str:
     return preamble + "\n\\begin{document}\n\n" + text + "\n\\end{document}\n"
 
 
-def _latex_title(doc: ReportDocument) -> str:
+# How much of the objective the title shows. A benchmark objective can run to pages, with its task
+# text, formatting, and blocked-source constraints; the plan appendix prints it whole.
+_TITLE_OBJECTIVE_CHARS = 400
+
+
+def _latex_title(doc: ReportDocument, md: _MarkdownToLatex) -> str:
+    first = doc.objective.strip().split("\n\n", 1)[0]
+    shown = _truncate(first, _TITLE_OBJECTIVE_CHARS)
+    more = shown != " ".join(doc.objective.split())
+    where = "the research plan in the appendix" if doc.plan else "the run record"
     return "\n".join([
         r"\begin{center}",
         r"{\LARGE\bfseries Research report\par}\vspace{0.6em}",
-        rf"{{\large {latex_escape(doc.objective)}\par}}\vspace{{0.4em}}",
+        rf"{{\large {md.inline(shown)}\par}}\vspace{{0.4em}}",
+        *([rf"\rlnote{{The full objective is in {where}.}}\par\vspace{{0.2em}}"] if more else []),
         rf"\rlnote{{{latex_escape(' · '.join(doc.metadata()))}}}",
         r"\end{center}",
         "",
@@ -900,7 +919,7 @@ def _latex_source(entry: SourceEntry, claim_ids: set[str]) -> str:
 def _latex_plan(doc: ReportDocument, md: _MarkdownToLatex) -> list[str]:
     if not doc.plan:
         return []
-    lines = [r"\section{Research plan}", rf"\textbf{{Objective:}} {latex_escape(doc.plan.objective)}", ""]
+    lines = [r"\section{Research plan}", r"\textbf{Objective:}", "", md.block(doc.objective), ""]
     if doc.plan.questions:
         lines.append(r"\begin{itemize}")
         for question in doc.plan.questions:
@@ -1050,8 +1069,9 @@ def compile_pdf(tex_path: Path, *, engine: str | None = None, timeout: float = 1
         runs = [[chosen, *flags, name]] * 2
     for command in runs:
         try:
-            done = subprocess.run(command, cwd=workdir, capture_output=True, text=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL, check=False)
+            # pdflatex wraps its output at a fixed width in bytes, which can split a UTF-8 character.
+            done = subprocess.run(command, cwd=workdir, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, check=False)
         except subprocess.TimeoutExpired as exc:
             raise LatexError(f"{chosen} did not finish within {timeout:.0f}s") from exc
         if done.returncode != 0:

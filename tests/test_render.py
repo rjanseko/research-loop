@@ -253,3 +253,39 @@ def test_the_latex_compiles_to_a_pdf(tmp_path) -> None:
     written = render.write_report(_document(), tmp_path, ["pdf"])
     assert written["pdf"].read_bytes().startswith(b"%PDF")
 
+
+
+def test_engine_output_that_is_not_utf8_does_not_stop_the_build(tmp_path, monkeypatch) -> None:
+    # pdflatex wraps output at a byte width, which can split a UTF-8 character, as in a 72-page report.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    engine = bin_dir / "pdflatex"
+    engine.write_text("#!/bin/sh\nprintf 'Overfull \\326\\n'\nfor a; do f=$a; done\n"
+                      "printf '%%PDF-1.5\\n' > \"${f%.tex}.pdf\"\n")
+    engine.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    tex = tmp_path / "doc.tex"
+    tex.write_text("x", encoding="utf-8")
+    assert render.compile_pdf(tex, engine="pdflatex").read_bytes().startswith(b"%PDF")
+
+
+def test_a_numbered_list_split_by_bullets_keeps_its_numbers() -> None:
+    to_latex = render._MarkdownToLatex(lambda ids: "")
+    tex = to_latex.block("3. Taspen\n- Type: DB\n\n4. ASABRI\n- Type: DB\n\n1. Back to one\n\n"
+                         "- outer\n\n  2. nested second")
+    assert tex.count(r"\setcounter{enumi}{2}") == 1 and tex.count(r"\setcounter{enumi}{3}") == 1
+    assert r"\setcounter{enumi}{0}" not in tex
+    assert tex.count(r"\setcounter{enumi}{1}") == 1  # the nested list is the first enumerate in its itemize
+
+
+def test_a_long_objective_is_cut_on_the_title_page_and_printed_whole_in_the_plan() -> None:
+    from dataclasses import replace as replace_field
+
+    tail = "BENCHMARK CONSTRAINT: do not open https://example.org/blocked"
+    doc = replace_field(_document(), objective="Compare **pension** schemes. " + "Detail. " * 80 + "\n\n" + tail)
+    tex = render_latex(doc)
+    title = tex[tex.index(r"{\LARGE\bfseries Research report"):tex.index(r"\section{Findings}")]
+    assert r"\textbf{pension}" in title and "**" not in title
+    assert tail.split(":")[0] not in title and "The full objective is in the research plan" in title
+    plan = tex[tex.index(r"\section{Research plan}"):]
+    assert "BENCHMARK CONSTRAINT" in plan
