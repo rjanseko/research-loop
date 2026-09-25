@@ -124,3 +124,17 @@ def test_without_a_landscape_the_planner_prompt_is_unchanged() -> None:
     with planner_agent.override(model=FunctionModel(planner)):
         asyncio.run(run())
     assert "landscape" not in seen[0]
+
+
+def test_entity_agreement_ignores_wording_and_keeps_topic_splits_apart() -> None:
+    entities = plan_trial.ENTITIES["task2+"]
+    pairs = ["What did Indonesia's and Malaysia's pension rules establish?", "What did Thai pension rules establish?"]
+    reworded = ["As of early 2025, what are the schemes of Indonesia and Malaysia?", "What are Thailand's schemes?"]
+    assert plan_trial.entity_agreement(pairs, reworded, entities) == 1.0
+    regrouped = ["What are the schemes of Indonesia?", "What are the schemes of Malaysia and Thailand?"]
+    assert plan_trial.entity_agreement(pairs, regrouped, entities) == 0.0
+    topics = ["What contribution rates apply across the seven countries?", "What retirement ages apply across them?"]
+    other_topics = ["Which schemes are mandatory in the seven countries?", "How are benefits indexed?"]
+    assert plan_trial.entity_agreement(topics, topics, entities) == 1.0
+    assert plan_trial.entity_agreement(topics, other_topics, entities) < 0.5
+    assert plan_trial.entity_coverage(pairs, entities) == 3 / 7 and plan_trial.entity_coverage(topics, entities) == 0.0

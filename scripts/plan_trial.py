@@ -51,6 +51,22 @@ LANDSCAPE = "zai:glm-5.3-flash"
 LANDSCAPE_LIMITS = {"max_requests": 8, "max_tool_calls": 16}
 # Plans of a case that match this well, question by question, count as the same split (plan_agreement).
 MATCH_THRESHOLD = 0.35
+# The entities each case's objective names, with the forms plans use for them, written down before the
+# follow-up trial ran. Two questions naming the same entities split a case the same way, whatever their
+# wording, which word overlap missed in the first trial (docs/settings-study.md).
+ENTITIES: dict[str, dict[str, tuple[str, ...]]] = {
+    "task2+": {
+        "indonesia": ("indonesia",), "malaysia": ("malaysia",), "pakistan": ("pakistan",),
+        "philippines": ("philippine", "filipino"), "sri lanka": ("sri lanka",), "thailand": ("thailand", "thai"),
+        "vietnam": ("vietnam", "viet nam"),
+    },
+    "task17+": {
+        "outsystems": ("outsystems",), "mendix": ("mendix",), "power apps": ("power apps", "powerapps"),
+        "ui bakery": ("ui bakery",), "appcube": ("appcube",), "appmaster": ("appmaster",), "retool": ("retool",),
+        "new oriental": ("new oriental",), "mercedes-benz": ("mercedes",), "mdec": ("mdec",),
+        "masshousing": ("masshousing",),
+    },
+}
 
 _STOPWORDS = frozenset(
     ["the", "and", "for", "with", "that", "this", "from", "what", "which", "are", "was", "were", "have", "has", "how", "does", "into", "over", "under", "their", "its", "about", "each", "other", "than", "then", "them", "they", "these", "those", "such", "when", "where", "while", "also", "into", "more", "most", "early", "late", "as", "of", "in", "on", "to", "by", "or", "an", "be", "is", "it", "at", "a"])
@@ -114,6 +130,42 @@ def plan_agreement(a: list[str], b: list[str]) -> float:
     return matched / max(len(a), len(b))
 
 
+def entities_in(question: str, entities: dict[str, tuple[str, ...]]) -> frozenset[str]:
+    """The case's entities a question names, by any of their forms, as whole words."""
+    text = question.lower()
+    return frozenset(name for name, forms in entities.items()
+                     if any(re.search(rf"\b{re.escape(form)}", text) for form in forms))
+
+
+def entity_agreement(a: list[str], b: list[str], entities: dict[str, tuple[str, ...]]) -> float:
+    """How alike two plans' splits are by the entities each question names, over the larger plan.
+
+    A question naming entities matches one in the other plan naming exactly the same ones. Questions
+    naming none, such as a topic across every country, match by shared words as plan_agreement does.
+    """
+    if not a or not b:
+        return 0.0
+    left = [entities_in(q, entities) for q in a]
+    right = [entities_in(q, entities) for q in b]
+    matched = 0
+    unused = list(range(len(b)))
+    for i, names in enumerate(left):
+        if names and (j := next((j for j in unused if right[j] == names), None)) is not None:
+            unused.remove(j)
+            matched += 1
+    rest_a = [q for q, names in zip(a, left, strict=True) if not names]
+    rest_b = [b[j] for j in unused if not right[j]]
+    if rest_a and rest_b:
+        matched += round(plan_agreement(rest_a, rest_b) * max(len(rest_a), len(rest_b)))
+    return matched / max(len(a), len(b))
+
+
+def entity_coverage(questions: list[str], entities: dict[str, tuple[str, ...]]) -> float:
+    """Share of the case's entities that some question names."""
+    named = set().union(*(entities_in(q, entities) for q in questions)) if questions else set()
+    return len(named) / len(entities)
+
+
 def named_entities(objective: str) -> set[str]:
     """Capitalized words the objective names mid-sentence: its countries, programmes, and products."""
     names = set()
@@ -162,7 +214,8 @@ async def plan_arm(arm: str, loop: AsyncResearchLoop, selector_route: Any, objec
     return {"plan": chosen, "choice": selection.choice, "candidates": [len(p.questions) for p in plans]}
 
 
-async def run_trial(settings: Any, max_usd: float, case_ids: tuple[str, ...]) -> dict[str, Any]:
+async def run_trial(settings: Any, max_usd: float, case_ids: tuple[str, ...], arms: tuple[str, ...] = ARMS,
+                    repeats: int = REPEATS) -> dict[str, Any]:
     prompt_trial = _load("prompt_trial", _SCRIPTS / "prompt_trial.py")
     study = _load("settings_study", _STUDY)
     from research_loop.benchmarks import load_suite
@@ -186,27 +239,35 @@ async def run_trial(settings: Any, max_usd: float, case_ids: tuple[str, ...]) ->
                 objective=objective, trial={"name": "plan", "started": started, "arm": arm, "repeat": repeat,
                                             "case_id": case.case_id})
             questions = [q.question for q in done.result["plan"].questions] if done.result else []
+            covered = (entity_coverage(questions, ENTITIES[case.case_id]) if case.case_id in ENTITIES
+                       else coverage(questions, objective))
             return {"case_id": case.case_id, "arm": arm, "repeat": repeat, "job_id": done.job_id, "error": done.error,
-                    "cost_usd": done.cost, "questions": questions, "coverage": coverage(questions, objective),
+                    "cost_usd": done.cost, "questions": questions, "coverage": covered,
                     **{k: v for k, v in (done.result or {}).items() if k != "plan"}}
 
-        rows = list(await asyncio.gather(*(unit(case, arm, repeat) for case in cases for arm in ARMS
-                                           for repeat in range(1, REPEATS + 1))))
+        rows = list(await asyncio.gather(*(unit(case, arm, repeat) for case in cases for arm in arms
+                                           for repeat in range(1, repeats + 1))))
     return {"started": started, "max_usd": max_usd, "spent_usd": budget.spent, "rows": rows,
-            "summary": summarize(rows)}
+            "summary": summarize(rows, arms)}
 
 
-def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per arm: mean agreement between a case's plans, mean coverage, mean question count, and cost."""
+def summarize(rows: list[dict[str, Any]], arms: tuple[str, ...] = ARMS) -> dict[str, dict[str, Any]]:
+    """Per arm: mean agreement between a case's plans, mean coverage, mean question count, and cost.
+
+    Agreement is by named entities (entity_agreement) for a case in ENTITIES, else by words; `same_split`
+    is the share of a case's plan pairs that agree fully.
+    """
     summary = {}
-    for arm in ARMS:
+    for arm in arms:
         mine = [row for row in rows if row["arm"] == arm and not row["error"]]
         by_case: dict[str, list[list[str]]] = {}
         for row in mine:
             by_case.setdefault(row["case_id"], []).append(row["questions"])
-        agreements = [plan_agreement(a, b) for plans in by_case.values() for a, b in combinations(plans, 2)]
+        agreements = [entity_agreement(a, b, ENTITIES[case]) if case in ENTITIES else plan_agreement(a, b)
+                      for case, plans in by_case.items() for a, b in combinations(plans, 2)]
         summary[arm] = {
             "agreement": sum(agreements) / len(agreements) if agreements else None,
+            "same_split": sum(value == 1.0 for value in agreements) / len(agreements) if agreements else None,
             "coverage": sum(row["coverage"] for row in mine) / len(mine) if mine else None,
             "questions": sum(len(row["questions"]) for row in mine) / len(mine) if mine else None,
             "cost_usd": sum(row["cost_usd"] for row in rows if row["arm"] == arm),
@@ -216,10 +277,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def render(record: dict[str, Any]) -> str:
-    lines = ["arm         agreement  coverage  questions  cost_usd  failed"]
+    lines = ["arm         agreement same_split  coverage  questions  cost_usd  failed"]
     for arm, s in record["summary"].items():
         fmt = lambda value, spec: format(value, spec) if value is not None else "-"
-        lines.append(f"{arm:<11} {fmt(s['agreement'], '9.2f')} {fmt(s['coverage'], '9.2f')} "
+        lines.append(f"{arm:<11} {fmt(s['agreement'], '9.2f')} {fmt(s.get('same_split'), '10.2f')} {fmt(s['coverage'], '9.2f')} "
                      f"{fmt(s['questions'], '10.1f')} {s['cost_usd']:9.3f} {s['failed']:7}")
     lines.append(f"spent ${record['spent_usd']:.2f} of the ${record['max_usd']:.2f} cap")
     return "\n".join(lines)
@@ -231,6 +292,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--max-usd", type=float, required=True, help="Hard cap on the trial's spend")
     parser.add_argument("--cases", nargs="+", default=list(DEFAULT_CASES), help="Study cases to plan")
+    parser.add_argument("--arms", nargs="+", choices=ARMS, default=list(ARMS), help="Arms to run (default all)")
+    parser.add_argument("--repeats", type=int, default=REPEATS, help=f"Plans per case and arm (default {REPEATS})")
     parser.add_argument("--output", type=Path, help="Trial record (default: benchmark_outputs/settings_study/plan-trial/)")
     args = parser.parse_args(argv)
     if args.max_usd <= 0:
@@ -239,7 +302,9 @@ def main(argv: list[str] | None = None) -> None:
     if not settings.database_dsn:
         parser.error("trials store their jobs in Postgres; set DATABASE_URL (see docs/setup.md#postgres)")
     settings = settings.model_copy(update={"benchmark_cache": settings.benchmark_output / "settings_study" / "cache"})
-    record = asyncio.run(run_trial(settings, args.max_usd, tuple(args.cases)))
+    if args.repeats < 2:
+        parser.error("--repeats must be at least 2: agreement compares a case's plans with each other")
+    record = asyncio.run(run_trial(settings, args.max_usd, tuple(args.cases), tuple(args.arms), args.repeats))
     output = args.output or settings.benchmark_output / "settings_study" / "plan-trial" / f"{record['started']}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(record, indent=2, default=str) + "\n", encoding="utf-8")
