@@ -92,6 +92,7 @@ class ScoutLimits(BaseModel):
     scout_productive_calls: int = Field(16, ge=1)
     scout_misses: int = Field(12, ge=1)
     scout_tokens: int = Field(400_000, ge=1_000)
+    guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
     deadline_seconds: float = Field(360, gt=0, description="Wall-clock limit for the whole run")

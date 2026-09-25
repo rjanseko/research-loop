@@ -112,7 +112,9 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
                                 "judge_model": "openai:gpt-6-sol", "judge_thinking": "high", "judge_version": 2,
                                 "rubric_version": "1", "status": "succeeded", "score": 0.5,
                                 "points": [{"category": "analysis", "point": 1, "met": True}],
-                                "usage": {"requests": 1}, "cost_usd": Decimal("0.02"), "messages": None, "error": None})
+                                "usage": {"requests": 1}, "cost_usd": Decimal("0.02"), "messages": None, "error": None,
+                                "budget_cap_usd": Decimal("0.10"), "reserved_usd": Decimal("0.08"),
+                                "budget_policy": "byte-reserve-v1"})
         row = await load_run(pool, run_id)
         (call,) = await load_calls(pool, run_id)
     assert (row["status"], row["question"], row["parent_run_id"], row["report"], row["cost_usd"]) == (

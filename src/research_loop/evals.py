@@ -9,6 +9,7 @@ Grading calls a paid model; it runs from `research grade`, never from the tests.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -29,6 +30,7 @@ from .evidence import EvidenceLedger, inline_source_ids
 from .models import build_model
 from .schemas import FinalReport
 from .store import error_record, transcript, usage_record
+from .study_budget import StudyBudget, StudyBudgetModel
 
 # Recorded with every rubric score; bump when JUDGE_INSTRUCTIONS or the verdict schema changes, since
 # scores are comparable only under one judge prompt. 1: one call per report, a verdict for every point,
@@ -53,6 +55,7 @@ JUDGE_MODEL = "openai:gpt-6-sol"
 JUDGE_THINKING = "high"
 # Longer than a model request in a run: the judge's reply is not streamed.
 _JUDGE_TIMEOUT_SECONDS = 600
+_GUARDED_JUDGE_MAX_OUTPUT_TOKENS = 16_000
 
 
 class StudyCase(BaseModel):
@@ -64,6 +67,7 @@ class StudyCase(BaseModel):
     rubric_version: str
     answer: list[str] = Field(default_factory=list)
     rubrics: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_urls: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -81,6 +85,21 @@ def find_case(key: str) -> StudyCase:
     if len(matches) != 1:
         raise KeyError(f"no single study case {key!r}; choose from {', '.join(cases)}")
     return matches[0]
+
+
+def case_identity(case: StudyCase) -> dict[str, str]:
+    """Identity recorded on a frozen case run, independently of its report."""
+    return {"id": case.id, "rubric_version": case.rubric_version,
+            "sha256": hashlib.sha256(case.model_dump_json().encode()).hexdigest(),
+            "dataset_revision": str(case.metadata.get("dataset_revision") or "")}
+
+
+def matches_frozen_case(row: dict[str, Any], case: StudyCase) -> bool:
+    """Reject older or differently configured runs before judging an external case."""
+    config = row.get("config") or {}
+    return (row.get("question") == case.objective and config.get("notes") == []
+            and config.get("blocked_urls") == case.blocked_urls
+            and config.get("case") == case_identity(case))
 
 
 def reader_text(report: FinalReport, ledger: EvidenceLedger) -> str:
@@ -125,6 +144,8 @@ class GradeRecord:
     usage: RunUsage | None = None
     messages: list[ModelMessage] = field(default_factory=list)
     error: BaseException | None = None
+    budget_cap_usd: Decimal | None = None
+    reserved_usd: Decimal | None = None
     id: UUID = field(default_factory=uuid4)
 
     @property
@@ -136,7 +157,7 @@ class GradeRecord:
 
 
 async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Settings,
-                model: Model | None = None) -> GradeRecord:
+                model: Model | None = None, budget: StudyBudget | None = None) -> GradeRecord:
     """Grade `report_text` against `case`'s rubric with one judge call; a failure is returned, not raised.
 
     `model` replaces the judge's model, for tests.
@@ -163,18 +184,26 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     }, ensure_ascii=False)
     usage = RunUsage()
     messages: list[ModelMessage] = []
+    chosen = model or build_model(JUDGE_MODEL, "scout", settings, sdk_retries=0 if budget else None)
+    if budget is not None:
+        chosen = StudyBudgetModel(chosen, JUDGE_MODEL, budget)
+    model_settings = {"thinking": JUDGE_THINKING, "timeout": _JUDGE_TIMEOUT_SECONDS}
+    if budget is not None:
+        model_settings["max_tokens"] = _GUARDED_JUDGE_MAX_OUTPUT_TOKENS
     try:
         with capture_run_messages() as messages:
-            # The scout role's model carries no output cap, as the judge's did; the run settings set its effort.
-            result = await agent.run(prompt, model=model or build_model(JUDGE_MODEL, "scout", settings), usage=usage,
-                                     model_settings={"thinking": JUDGE_THINKING, "timeout": _JUDGE_TIMEOUT_SECONDS})
+            result = await agent.run(prompt, model=chosen, usage=usage, model_settings=model_settings)
     except Exception as exc:  # noqa: BLE001 - a failed grade is recorded with what it cost, then reported
-        return GradeRecord(run_id, case, "failed", usage=usage, messages=list(messages), error=exc)
+        return GradeRecord(run_id, case, "failed", usage=usage, messages=list(messages), error=exc,
+                           budget_cap_usd=budget.cap_usd if budget else None,
+                           reserved_usd=budget.reserved_usd if budget else None)
     met = {(v.category, v.point): v.met for v in result.output.verdicts}
     points = [{"category": category, "point": number, "met": met[(category, number)]}
               for category, number in sorted(expected)]
     return GradeRecord(run_id, case, "succeeded", points=points, score=sum(met.values()) / len(met),
-                       usage=usage, messages=result.all_messages())
+                       usage=usage, messages=result.all_messages(),
+                       budget_cap_usd=budget.cap_usd if budget else None,
+                       reserved_usd=budget.reserved_usd if budget else None)
 
 
 def grade_row(grade: GradeRecord) -> dict[str, Any]:
@@ -186,6 +215,8 @@ def grade_row(grade: GradeRecord) -> dict[str, Any]:
         "usage": usage_record(grade.usage) if grade.usage else None, "cost_usd": grade.cost_usd,
         "messages": transcript(grade.messages) if grade.messages else None,
         "error": error_record(grade.error) if grade.error else None,
+        "budget_cap_usd": grade.budget_cap_usd, "reserved_usd": grade.reserved_usd,
+        "budget_policy": "byte-reserve-v1" if grade.budget_cap_usd is not None else None,
     }
 
 
@@ -206,13 +237,14 @@ class RubricJudge(Evaluator[StoredReport, StoredReport]):
     settings: Settings
     model: Model | None = None
     grades: list[GradeRecord] = field(default_factory=list)
+    budget: StudyBudget | None = None
 
     def get_default_evaluation_name(self) -> str:
         return "rubric"
 
     async def evaluate(self, ctx: EvaluatorContext[StoredReport, StoredReport]) -> dict[str, Any]:
         report = ctx.output
-        grade = await judge(report.text, report.case, report.run_id, self.settings, self.model)
+        grade = await judge(report.text, report.case, report.run_id, self.settings, self.model, self.budget)
         self.grades.append(grade)
         if grade.status != "succeeded":
             return {}
@@ -228,9 +260,9 @@ class RubricJudge(Evaluator[StoredReport, StoredReport]):
 
 
 async def grade_reports(reports: list[StoredReport], settings: Settings,
-                        model: Model | None = None) -> tuple[Any, list[GradeRecord]]:
+                        model: Model | None = None, budget: StudyBudget | None = None) -> tuple[Any, list[GradeRecord]]:
     """Grade stored reports one at a time as a Pydantic Evals experiment; return its report and every judge call."""
-    evaluator = RubricJudge(settings, model)
+    evaluator = RubricJudge(settings, model, budget=budget)
     dataset = Dataset[StoredReport, StoredReport, None](
         name="scout-study", cases=[Case(name=f"{r.case.id}:{r.run_id}", inputs=r) for r in reports],
         evaluators=[evaluator])

@@ -90,7 +90,7 @@ from .models import (
 )
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
-from .rate_limit import RATE_LIMIT_POLICY_VERSION
+from .rate_limit import RATE_LIMIT_POLICY_VERSION, ScoutRateLimitModel
 from .schemas import (
     EVIDENCE_VERSION,
     FinalReport,
@@ -160,6 +160,7 @@ class RunChecks(BaseModel):
     review_reasons: list[str] = Field(default_factory=list)
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
+    study_budget_reserved_usd: Decimal | None = None
 
 
 @dataclass
@@ -288,10 +289,11 @@ class _Attempt:
 class _Run:
     def __init__(self, question: str, settings: Settings, store: RunStore, notes: Sequence[str],
                  blocked_urls: Sequence[str], parent_run_id: UUID | None, study: StudyLabels | None,
-                 follow_up: bool = False) -> None:
+                 follow_up: bool = False, budget: StudyBudget | None = None,
+                 case_identity: dict[str, Any] | None = None) -> None:
         self.question, self.settings, self.store, self.study = question, settings, store, study
         self.limits: ScoutLimits = settings.limits
-        self.follow_up = follow_up
+        self.follow_up, self.budget, self.case_identity = follow_up, budget, case_identity
         self.workflow_version = FOLLOWUP_VERSION if follow_up else WORKFLOW_VERSION
         self.notes_in, self.blocked_urls, self.parent_run_id = list(notes), list(blocked_urls), parent_run_id
         self.run_id = uuid4()
@@ -306,7 +308,14 @@ class _Run:
 
     def _model(self, role: Role) -> Model:
         if role not in self.models:
-            self.models[role] = role_model(role, self.settings)
+            if self.budget is None:
+                self.models[role] = role_model(role, self.settings)
+            else:
+                model_id = getattr(self.settings.models, role)
+                guarded = StudyBudgetModel(build_model(model_id, role, self.settings, sdk_retries=0),
+                                           model_id, self.budget)
+                # The guard is inside the 429 wrapper, so every retry reserves a new request.
+                self.models[role] = ScoutRateLimitModel(guarded) if role == "scout" else guarded
         return self.models[role]
 
     def _spend(self, usage: RunUsage) -> None:
@@ -336,7 +345,10 @@ class _Run:
             with capture_run_messages() as messages:
                 if attempt is not None:
                     attempt.messages = messages
+                output_cap = (16_000 if role == "planner" else self.limits.guarded_scout_max_output_tokens
+                              if role == "scout" else self.limits.synthesis_max_output_tokens)
                 result = await agent.run(prompt, model=self._model(role), deps=deps, usage_limits=limits, usage=usage,
+                                         model_settings={"max_tokens": output_cap} if self.budget else None,
                                          capabilities=capabilities, toolsets=toolsets,
                                          event_stream_handler=_ignore_events if stream else None)
             output = finish(result) if finish else result.output
@@ -518,6 +530,12 @@ class _Run:
     async def execute(self) -> ScoutRun:
         config = run_config(self.settings, self.notes_in, self.blocked_urls, follow_up=self.follow_up)
         config["follow_up"] = self.follow_up
+        if self.budget:
+            config["study_budget"] = {"cap_usd": str(self.budget.cap_usd), "policy": "byte-reserve-v1",
+                                      "sdk_retries": 0, "fallback": False,
+                                      "scout_max_output_tokens": self.limits.guarded_scout_max_output_tokens}
+        if self.case_identity:
+            config["case"] = self.case_identity
         await self.store.start_run(self.run_id, mode="scout", workflow_version=self.workflow_version,
                                    question=self.question, config=config, parent_run_id=self.parent_run_id,
                                    input_hash=input_hash(self.question, self.notes_in, self.blocked_urls),
@@ -556,6 +574,7 @@ class _Run:
                 checks = _checks(plan, ledger, report, self.unpriced)
                 checks.gap_analysis = analysis
                 checks.follow_up_unresolved = follow_up_unresolved
+                checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
                 if follow_up_unresolved:
                     checks.review_reasons.append("the material gap follow-up did not establish a complete answer"
                                                  if analysis else "gap analysis did not finish")
@@ -563,9 +582,11 @@ class _Run:
                 span.set_attributes({"status": status, "cost_usd": float(self.cost)})
         except BaseException as exc:
             status = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
+            failure_checks = (RunChecks(study_budget_reserved_usd=self.budget.reserved_usd)
+                              if self.budget else None)
             await _record(self.store.finish_run(self.run_id, status=status, plan=plan, ledger=ledger.to_json(),
-                                                cost_usd=self.cost, error=_error(exc), trace_id=span_trace,
-                                                cache=self._cache_counts()))
+                                                checks=failure_checks, cost_usd=self.cost, error=_error(exc),
+                                                trace_id=span_trace, cache=self._cache_counts()))
             raise
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
         await self.store.finish_run(self.run_id, status=status, plan=plan, report=report, ledger=ledger.to_json(),
@@ -658,19 +679,21 @@ def _status(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
 async def scout(question: str, *, settings: Settings | None = None, store: RunStore | None = None,
                 notes: Sequence[str] = (), blocked_urls: Sequence[str] = (),
                 parent_run_id: UUID | None = None, study: StudyLabels | None = None,
-                follow_up: bool = False) -> ScoutRun:
+                follow_up: bool = False, budget: StudyBudget | None = None,
+                case_identity: dict[str, Any] | None = None) -> ScoutRun:
     """Research `question` and return a cited answer within the configured limits.
 
     `notes` are requirements every role follows, such as "prefer peer-reviewed sources". `blocked_urls` are
     sources no tool may fetch and no evidence may cite. Without a `store`, the run is kept in memory.
     `study` labels the run as one arm and repetition of a study, so its records can be paired.
     `follow_up` adds one material-gap analysis and at most one targeted research pass.
+    `budget` reserves a conservative upper charge across all model requests before dispatch.
     Raises ConfigError, before any call, when the configured models cannot run or cannot be priced.
     """
     settings = settings or Settings()
     check_config(settings)
     run = _Run(question.strip(), settings, store or MemoryStore(), notes, blocked_urls, parent_run_id, study,
-               follow_up=follow_up)
+               follow_up=follow_up, budget=budget, case_identity=case_identity)
     return await run.execute()
 
 

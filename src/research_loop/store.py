@@ -223,7 +223,8 @@ async def load_calls(pool: Any, run_id: UUID) -> list[dict[str, Any]]:
 
 
 _GRADE_COLUMNS = ("id", "run_id", "case_id", "judge_model", "judge_thinking", "judge_version", "rubric_version",
-                  "status", "score", "points", "usage", "cost_usd", "messages", "error")
+                  "status", "score", "points", "usage", "cost_usd", "messages", "error", "budget_cap_usd",
+                  "reserved_usd", "budget_policy")
 _GRADE_JSON = frozenset({"points", "usage", "messages", "error"})
 
 

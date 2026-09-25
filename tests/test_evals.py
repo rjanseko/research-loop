@@ -1,8 +1,10 @@
 """Grading stored reports, offline: the judge is a scripted model, and nothing is stored."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -15,14 +17,17 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from research_loop.acquisition import SourcePolicy
 from research_loop.breakdown import breakdown
 from research_loop.config import Settings
 from research_loop.evals import (
     JUDGE_VERSION,
     StoredReport,
+    case_identity,
     find_case,
     grade_reports,
     grade_row,
+    matches_frozen_case,
     reader_text,
     study_cases,
 )
@@ -35,17 +40,50 @@ from research_loop.schemas import (
     ResearchResult,
     SourceRef,
 )
+from research_loop.study_budget import StudyBudget, StudyBudgetRefusal
 
 pytestmark = pytest.mark.filterwarnings("ignore::pydantic_ai.exceptions.CostNotFoundWarning")
 
 
 def test_the_study_cases_ship_frozen_and_are_found_by_short_id() -> None:
     cases = study_cases()
-    assert [case_id.split("-")[0] for case_id in cases] == [f"st0{n}" for n in range(1, 8)]
+    assert [case_id.split("-")[0] for case_id in list(cases)[:7]] == [f"st0{n}" for n in range(1, 8)]
+    assert set(cases) == {*(f"st0{n}-{suffix}" for n, suffix in enumerate((
+        "transformer-venue", "resnet-author", "swebv-annotators", "ilsvrc-captioning",
+        "scaling-table", "cot-small-models", "swebench-trust"), 1)),
+        "drb2-task8", "drb2-task68-plus"}
     st05 = find_case("st05")
     assert st05.rubric_version == "1" and sum(len(points) for points in st05.rubrics.values()) == 11
     with pytest.raises(KeyError):
         find_case("st99")
+
+
+def test_expert_cases_keep_official_tasks_rubrics_and_blocks_separate() -> None:
+    expected = {"drb2-task8": ("task8", 52, 5, "840c63bd8195a546bbd3ee4bee15ba24aae4fee7e34f06b7461651d641ad4367"),
+                "drb2-task68-plus": ("task68+", 54, 4, "2ef645b6ab3c877e82eaca77463f873fceaebe3d4f274f53dc4552f5a3208500")}
+    for case_id, (official_id, points, blocks, digest) in expected.items():
+        case = find_case(case_id)
+        assert case.metadata["official_id"] == official_id
+        assert case.metadata["dataset_revision"] == "b38f360603db9531b102aef8c166cedb8509b6f6"
+        assert case.metadata["license"] == "CC BY 4.0"
+        assert len(case.blocked_urls) == blocks and sum(map(len, case.rubrics.values())) == points
+        assert all(url not in case.objective for url in case.blocked_urls)
+        canonical = json.dumps({"task": case.objective, "rubric": case.rubrics,
+                                "blocked_urls": case.blocked_urls}, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":"))
+        assert hashlib.sha256(canonical.encode()).hexdigest() == digest
+        policy = SourcePolicy(tuple(case.blocked_urls))
+        assert all(policy.blocks(url) for url in case.blocked_urls)
+
+
+def test_frozen_case_match_rejects_old_context_and_changed_sources() -> None:
+    case = find_case("drb2-task8")
+    row = {"question": case.objective,
+           "config": {"case": case_identity(case), "notes": [], "blocked_urls": case.blocked_urls}}
+    assert matches_frozen_case(row, case)
+    assert not matches_frozen_case({**row, "config": {**row["config"], "notes": ["old context"]}}, case)
+    assert not matches_frozen_case({**row, "config": {**row["config"], "blocked_urls": []}}, case)
+    assert not matches_frozen_case({**row, "config": {**row["config"], "case": {"id": case.id}}}, case)
 
 
 def _report_and_ledger() -> tuple[FinalReport, EvidenceLedger]:
@@ -119,6 +157,23 @@ async def test_a_failed_grade_is_returned_with_what_it_cost(monkeypatch) -> None
                                       model=_judge(never_complete, []))
     assert grade.status == "failed" and grade.score is None and grade.usage.requests == 2
     assert grade_row(grade)["error"]["type"] == "UnexpectedModelBehavior"
+
+
+async def test_guarded_rubric_grade_refuses_before_model_dispatch() -> None:
+    calls: list[list[ModelMessage]] = []
+
+    def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        calls.append(messages)
+        return ModelResponse(parts=[])
+
+    budget = StudyBudget(Decimal("0.0001"))
+    _, (grade,) = await grade_reports([StoredReport(find_case("drb2-task8"), uuid4(), "report")], Settings(),
+                                      model=FunctionModel(respond), budget=budget)
+    assert grade.status == "failed" and isinstance(grade.error, StudyBudgetRefusal)
+    assert not calls and budget.reserved_usd == 0
+    row = grade_row(grade)
+    assert row["budget_cap_usd"] == Decimal("0.0001") and row["reserved_usd"] == 0
+    assert row["budget_policy"] == "byte-reserve-v1"
 
 
 def test_a_breakdown_shows_each_calls_time_cost_and_stop_reason() -> None:

@@ -34,25 +34,25 @@ also marks several numerical claims `unresolved` because packet v1 contains only
 that is a packet-coverage limit, not proof those claims are false. Both assessments used one request.
 Their combined actual charge was $0.096314, below the combined $3.75 ceiling.
 
-## External hard-case candidates
+## Frozen external hard cases
 
 Two English, CC BY 4.0 cases from [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II)
-would add expert-authored breadth to the next study, while retaining st04 and st07 as diagnostics:
+are now frozen as `drb2-task8` and `drb2-task68-plus` in `study_cases.jsonl`, while st04 and st07 remain diagnostics:
 
 | Official ID | Domain | Expert rubric points | What it tests |
 |---|---|---:|---|
 | `task8` (idx 16) | Materials inverse design | 52 | Synthesis of three method families, their limits, and source-backed database comparison. |
 | `task68+` (idx 46) | Cloud auto-scaling | 54 | Reactive versus proactive methods and evidence for five practical challenges. |
 
-Selection is based on the official English tasks' topic and scope, before any Scout output on these
+Selection was based on the official English tasks' topic and scope, before any Scout output on these
 cases was read. The dataset snapshot was `imlrz/DeepResearch-Bench-II` commit
 `b38f360603db9531b102aef8c166cedb8509b6f6` (download SHA-256
-`263aaabb8c279fb16cbe7c9499afe82d657a8ab3ccfb07ace084387e367d921a`). Before paid runs,
-freeze each exact `content.task` and its blocked source URLs, as-of date, and rubric. Send only the task
-to the research workflow; keep the rubric and blocked expert report out of its research context.
+`263aaabb8c279fb16cbe7c9499afe82d657a8ab3ccfb07ace084387e367d921a`). Each case now preserves the exact `content.task`, expert rubric, blocked source URLs, license, official ID and index, and dataset revision. The case content digests are `840c63bd8195a546bbd3ee4bee15ba24aae4fee7e34f06b7461651d641ad4367` and `2ef645b6ab3c877e82eaca77463f873fceaebe3d4f274f53dc4552f5a3208500`. The Scout case command sends only the task to research agents; the rubric and blocked expert report remain out of research context. Grading requires the saved run to match the frozen case and has a separate enforced pre-dispatch ceiling.
 
 These are stress cases: a bounded Scout run may return partial coverage of a rubric drawn from a long
 expert report. Report task coverage, unresolved sections, cost, and deadline behavior separately from
 overall reader quality. The existing seven-country pension case (`task2+`, 72 points) is an extreme
 stress diagnostic if the first two cases show the workflow can finish useful research. No hard-case
-research call or grading call is authorized by this calibration.
+research or grading call has run as part of this integration. The next useful paid stage is one
+`drb2-task8` baseline Scout run, inspected for coverage, source access, duration, and cost before
+grading or trying the follow-up mode on the same case. Give that stage its own approved ceiling.

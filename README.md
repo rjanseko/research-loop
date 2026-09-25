@@ -22,16 +22,22 @@ research doctor --smoke     # also makes one small paid call per model
 research scout "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
 research scout "..." --note "Keep preprints and published papers distinct." --out report/
 research scout "Is SWE-bench Verified trustworthy?" --follow-up --study gap-pilot --arm follow-up
+research scout --case drb2-task8 --max-usd 5.00 --study drb2-pilot --arm baseline
+research scout --case drb2-task68-plus --max-usd 5.00 --follow-up --study drb2-pilot --arm follow-up
 research show <run id>      # render a stored run again, as Markdown or --format json
 research breakdown <run id> # where its money and time went, call by call, and why each call stopped
-research grade <run id> --case st05   # historical point rubric (paid)
+research grade <run id> --case drb2-task8 --max-usd 1.00  # expert point rubric (paid)
 research assess <run id> --case st07 --max-usd 1.00  # overall quality and source-based fact checks (paid)
 research synthesize <run id> --model openai:gpt-6-sol --max-usd 1.00 --study synthesis --arm sol --replicate 1
 ```
 
-The `scout`, `synthesize`, `grade`, and `assess` commands call paid models. Scout prints its models and limits before it starts. It prints the report when it finishes, and with `--out` it also writes `report.md` and `run.json`. When `DATABASE_URL` is set the run is stored, including every model call's messages. `--study NAME --arm ARM --replicate N` labels a run as part of a study, so runs can be paired later.
+The `scout`, `synthesize`, `grade`, and `assess` commands call paid models. Scout prints its models and limits before it starts. It prints the report when it finishes, and with `--out` it also writes `report.md` and `run.json`. When `DATABASE_URL` is set the run is stored, including every model call's messages. `--study NAME --arm ARM --replicate N` labels a run as part of a study, so runs can be paired later. The dollar amounts in these examples are ceilings, not recommended spending or approval for a study.
 
-The study cases are in `src/research_loop/study_cases.jsonl`. `research grade` uses the first design's rubric judge, version 2, unchanged: `gpt-6-sol` at high effort with one verdict per rubric point. Each grade is stored with its judge and rubric versions and what the judge call cost, including a grade that failed. `research assess` uses versioned, independently reviewed source summaries in `quality_packets.jsonl` to judge five report-quality dimensions and specific factual targets. It stores dimension reasons, report passages, source IDs, factual verdicts, omissions, full judge messages, and cost in `quality_assessments`. These model judgments still need human review when a model choice turns on them. Both new paid commands require `--max-usd`: they reserve a conservative upper charge before each request, including a validation retry, and refuse one that would exceed that command cap. SDK retries and fallback are disabled for these guarded study calls; an attempted request keeps its reservation even if it fails. The packets currently cover st04 and st07. Run `research db migrate` to add the assessment table before using either new paid command.
+The study cases are in `src/research_loop/study_cases.jsonl`. `drb2-task8` and `drb2-task68-plus` preserve the exact English tasks, expert rubrics, and blocked expert-report URLs from the pinned [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II) snapshot. `research scout --case` sends only the task to the research agents, applies the blocked URLs as source policy, records the case identity, and requires Postgres and `--max-usd`. It cannot add notes or override blocks. The rubric is supplied later to `research grade`; grading checks the stored task, case digest, notes, and blocked URLs before sending it to the judge. The two cases have 52 and 54 rubric points, respectively.
+
+`research grade` uses the first design's rubric judge, version 2: `gpt-6-sol` at high effort with one verdict per rubric point. The judge prompt and verdict rules remain unchanged. Each grade is stored with its judge and rubric versions, call cost, cap, reservation, and messages, including a grade that failed. `research assess` uses versioned, independently reviewed source summaries in `quality_packets.jsonl` to judge five report-quality dimensions and specific factual targets. It stores dimension reasons, report passages, source IDs, factual verdicts, omissions, full judge messages, and cost in `quality_assessments`. Those source packets currently cover st04 and st07; the expert rubric scores for the new cases are a separate measure of coverage, not an overall quality score. Human review is needed when a model choice turns on a score.
+
+`grade`, `assess`, and `synthesize` require `--max-usd`. Frozen-case Scout runs require it too; ordinary Scout runs may use it. The guarded paths reserve a conservative upper charge before every request and refuse a request that would exceed the command cap. This includes validation retries and the scouts' timed 429 retries. SDK retries and fallback are disabled; an attempted request keeps its reservation even if it fails. Guarded Scout requests cap planner output at 16,000 tokens, scout output at `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` (24,000 by default), and synthesis output at `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS` (32,000 by default). The grade judge caps output at 16,000 tokens. Guarded runs record the cap and policy in run configuration and final checks. Run `research db migrate` to add the assessment and grade budget columns before using these commands.
 
 From Python:
 
@@ -88,6 +94,7 @@ A run has a fixed budget, set in `.env` or the environment:
 | Research phase | 4.5 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
 | Research questions | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Per scout | 12 requests, 16 useful tool calls, 12 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
+| Guarded scout output | 24,000 tokens per request | `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` |
 
 Both time limits count from the start of the run. Planning counts against the research phase and gets at most 90 seconds. The synthesizer gets whatever time is left once research ends, so when a scout runs to the research deadline it has at most 1.5 minutes. Each model request times out after 120 seconds (`RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS`). A scout does not retry a request that hits that timeout. The provider client would otherwise send it again twice, and one slow first reply would fill the research window. When a provider returns a token rate limit with an explicit retry time, the scouts share that pause and retry the same request up to twice. An exhausted balance or a 429 without a retry time still fails the call. Scout enables Python fault tracing, so a native parser crash prints its Python call stack to stderr.
 
@@ -125,7 +132,7 @@ Traces include prompts and tool results, and they are sent only when `LOGFIRE_TO
 | Module in `src/research_loop/` | What it does |
 |---|---|
 | `scout.py` | The workflow: allocate the budget, plan, scout, check, optionally analyze a gap and deep dive, synthesize |
-| `agents.py`, `prompts.py` | The three agents, their instructions, and the checks their outputs must pass |
+| `agents.py`, `prompts.py` | The planner, scout, gap analyzer, and synthesizer, their instructions, and output checks |
 | `tools.py`, `web.py`, `scholar.py`, `acquisition.py` | Research tools, page and PDF extraction, the public-HTTPS download guard, and the cache |
 | `evidence.py`, `schemas.py` | The evidence ledger, the quote and source checks, and the data types |
 | `budget_notes.py` | The per-request budget note and tool withdrawal for scouts |

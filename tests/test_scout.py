@@ -419,3 +419,32 @@ async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> Non
     assert run.report is not None and run.status == "partial"
     assert run.checks.follow_up_unresolved
     assert "The follow-up did not fully resolve this gap." in render_markdown(run.to_record())
+
+
+async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, monkeypatch) -> None:
+    from pydantic_ai import UsageLimits
+
+    from research_loop.agents import PlanLimits
+    from research_loop.rate_limit import ScoutRateLimitModel
+    from research_loop.scout import _Run
+    from research_loop.study_budget import StudyBudgetModel, StudyBudgetRefusal
+
+    dispatched = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        dispatched.append(messages)
+        return _output(info, {"questions": [{"id": "q1", "question": "Q?"}]})
+
+    monkeypatch.setattr("research_loop.scout.build_model", lambda *_args, **_kwargs: FunctionModel(respond))
+    budget = StudyBudget(Decimal("0.0001"))
+    store = MemoryStore()
+    runner = _Run("Q?", settings, store, [], [], None, None, budget=budget)
+    model = runner._model("scout")
+    assert isinstance(model, ScoutRateLimitModel)
+    assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
+    with pytest.raises(StudyBudgetRefusal):
+        await runner._call(role="planner", agent=planner_agent, prompt='{"question":"Q?"}',
+                           deps=PlanLimits(1), limits=UsageLimits(request_limit=2, cost_limit=Decimal(1)))
+    assert not dispatched and budget.reserved_usd == 0
+    call = next(iter(store.calls.values()))
+    assert call["role"] == "planner" and call["error"]["type"] == "StudyBudgetRefusal"

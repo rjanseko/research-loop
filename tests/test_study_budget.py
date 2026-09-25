@@ -49,3 +49,22 @@ async def test_output_bound_is_required() -> None:
     with pytest.raises(StudyBudgetRefusal, match="max_tokens"):
         await budget.reserve("openai:gpt-6-sol", [ModelRequest(parts=[UserPromptPart("hi")])],
                              None, ModelRequestParameters())
+
+
+async def test_parallel_reservations_share_one_ceiling() -> None:
+    import asyncio
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    messages = [ModelRequest(parts=[UserPromptPart("one question")])]
+    settings = {"max_tokens": 1000}
+    probe = StudyBudget(Decimal(10))
+    one = await probe.reserve("openai:gpt-6-luna", messages, settings, ModelRequestParameters())
+    shared = StudyBudget(one * Decimal("1.5"))
+    results = await asyncio.gather(
+        shared.reserve("openai:gpt-6-luna", messages, settings, ModelRequestParameters()),
+        shared.reserve("openai:gpt-6-luna", messages, settings, ModelRequestParameters()),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(item, StudyBudgetRefusal) for item in results) == 1
+    assert shared.reserved_usd == one

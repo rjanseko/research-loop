@@ -36,13 +36,20 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     import faulthandler
 
     from .db import open_migrated_pool
+    from .evals import case_identity as frozen_case_identity
+    from .evals import find_case
     from .render import render_markdown
     from .scout import ConfigError, StudyLabels, check_config, scout
     from .store import MemoryStore, PostgresStore
+    from .study_budget import StudyBudget
     from .telemetry import configure_logfire
 
     try:
+        case = find_case(args.case) if args.case else None
         check_config(settings)
+    except KeyError as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
@@ -50,10 +57,17 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     faulthandler.enable(file=sys.stderr, all_threads=True)
     configure_logfire(settings)
     limits, models = settings.limits, settings.models
+    budget = StudyBudget(args.max_usd) if args.max_usd is not None else None
+    question = case.objective if case else args.question
+    blocked = case.blocked_urls if case else args.block
+    case_identity = None
+    if case:
+        case_identity = frozen_case_identity(case)
     cost = limits.followup_cost_usd if args.follow_up else limits.cost_usd
     seconds = limits.followup_deadline_seconds if args.follow_up else limits.deadline_seconds
     mode = "Scout with gap analysis and one deep dive" if args.follow_up else "Scout"
-    print(f"{mode}: up to ${cost:.2f} and {seconds / 60:.0f} minutes; planner {models.planner}, "
+    guard = f"; ${budget.cap_usd:.2f} pre-dispatch cap" if budget else ""
+    print(f"{mode}: soft limit ${cost:.2f}{guard}, {seconds / 60:.0f} minutes; planner {models.planner}, "
           f"scouts {models.scout}, synthesizer {models.synthesizer}.", file=sys.stderr)
     async with AsyncExitStack() as stack:
         if settings.database_dsn and not args.no_persist:
@@ -61,8 +75,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
         else:
             store = MemoryStore()
         study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
-        run = await scout(args.question, settings=settings, store=store, notes=args.note, blocked_urls=args.block,
-                          study=study, follow_up=args.follow_up)
+        run = await scout(question, settings=settings, store=store, notes=args.note, blocked_urls=blocked,
+                          study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity)
     record = run.to_record()
     markdown = render_markdown(record)
     print(markdown)
@@ -160,11 +174,13 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
         find_case,
         grade_reports,
         grade_row,
+        matches_frozen_case,
         reader_text,
     )
     from .evidence import EvidenceLedger
     from .schemas import FinalReport
     from .store import load_run, save_grade
+    from .study_budget import StudyBudget
 
     try:
         case = find_case(args.case)
@@ -180,10 +196,14 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
         if row is None or not row.get("report"):
             print(f"Run {args.run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
             return 1
+        if case.id.startswith("drb2-") and not matches_frozen_case(row, case):
+            print(f"Run {args.run_id} was not recorded for frozen case {case.id}.", file=sys.stderr)
+            return 2
         text = reader_text(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}))
+        budget = StudyBudget(args.max_usd)
         print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {JUDGE_MODEL}, "
-              f"judge v{JUDGE_VERSION}; this is a paid call.", file=sys.stderr)
-        _, grades = await grade_reports([StoredReport(case, args.run_id, text)], settings)
+              f"judge v{JUDGE_VERSION}, ${budget.cap_usd:.2f} pre-dispatch cap; this is a paid call.", file=sys.stderr)
+        _, grades = await grade_reports([StoredReport(case, args.run_id, text)], settings, budget=budget)
         for grade in grades:
             await save_grade(pool, grade_row(grade))
     for grade in grades:
@@ -276,7 +296,9 @@ def main(argv: list[str] | None = None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("scout", help="Research a question and print a cited answer (calls paid models)")
-    run.add_argument("question")
+    run.add_argument("question", nargs="?", help="Research question, unless --case is given")
+    run.add_argument("--case", help="Run a frozen study case by ID; uses its exact task and blocked sources")
+    run.add_argument("--max-usd", type=Decimal, help="Hard pre-dispatch cap shared by every model call")
     run.add_argument("--note", action="append", default=[], help="A requirement every role follows; repeat for more")
     run.add_argument("--block", action="append", default=[], metavar="URL",
                      help="A source no tool may fetch and no evidence may cite; repeat for more")
@@ -306,7 +328,8 @@ def main(argv: list[str] | None = None) -> None:
 
     grade = commands.add_parser("grade", help="Grade a stored run's report against a study case's rubric (paid)")
     grade.add_argument("run_id", type=UUID)
-    grade.add_argument("--case", required=True, help="The study case, such as st05 or st07-swebench-trust")
+    grade.add_argument("--case", required=True, help="The study case, such as st05 or drb2-task8")
+    grade.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
     assess = commands.add_parser("assess", help="Assess a stored report's quality and facts against a source packet (paid)")
     assess.add_argument("run_id", type=UUID)
@@ -324,8 +347,21 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     settings = _settings(parser)
+    if args.command == "scout":
+        if bool(args.question) == bool(args.case):
+            parser.error("scout needs exactly one of a question or --case")
+        if args.case and (args.note or args.block or args.no_persist):
+            parser.error("a frozen --case cannot add notes or blocks or disable persistence")
+        if args.case and args.max_usd is None:
+            parser.error("a frozen --case needs --max-usd for a hard stage ceiling")
+        if args.case and not settings.database_dsn:
+            parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
+        if args.max_usd is not None and args.max_usd <= 0:
+            parser.error("--max-usd must be positive")
     if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "db") and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
+    if args.command in ("grade", "assess", "synthesize") and args.max_usd <= 0:
+        parser.error("--max-usd must be positive")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
     try:
