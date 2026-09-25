@@ -208,7 +208,10 @@ The loop never checks vendor names. It asks the policy for a route, and a route 
 | `quality` | The default for paid runs | 6–10 |
 | `breadth` | Many questions, scouted on the cheap route | 16–24 |
 | `glm-heavy` | Moves gap analysis and cheap scouting to GLM | 8–12 |
+| `value` | Newer models at `quality`'s limits, with prompt caching; see [model-routing.md](model-routing.md) | 6–10 |
 | `synthetic` | Scripted outputs with no provider calls | 1 |
+
+A route with `prompt_cache=True` asks its provider to cache the prompt prefix that a scout's or deep dive's history resends on every request. Anthropic caches only when asked, and OpenAI caches more reliably with a stable key; the route picks the setting from its model, so an override keeps it working. Other providers cache on their own. Only `value` sets it.
 
 <details>
 <summary>Default routes and per-call limits for the <code>quality</code> policy</summary>
@@ -366,7 +369,7 @@ To compare two runs fairly, hold these fixed. When you are deliberately comparin
 | What to hold fixed | Current version | Defined in |
 |---|---|---|
 | Graph topology | `research-graph-v1` | `graph.py` |
-| Model policy | `quality`, `breadth`, `glm-heavy`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
+| Model policy | `quality`, `breadth`, `glm-heavy`, `value`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
 | Evidence schema | `evidence_version` 4: an `excerpt`, plus a verbatim `quote` and cited source that code checks against tool output, and every role's output checked against the run's plan, ledger, and attachments | `schemas.py`, `quotes.py`, `agents.py` |
 | Fetch behavior | `fetch_version` 4: paged fetches, a per-job document memo, refusal of the task's forbidden sources, and year bounds on every scholarly search provider | `acquisition.py` |
 | Tool mode | `normalized` for benchmarks and studies, `adaptive` as the library default | `tools.py` |

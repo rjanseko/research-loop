@@ -14,6 +14,8 @@ PROVIDER_KEY_ENV = {
     "google": "GOOGLE_API_KEY",
     "xai": "XAI_API_KEY",
     "zai": "ZAI_API_KEY",
+    # One key for the models OpenRouter serves, as `openrouter:vendor/model`.
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 MODEL_OVERRIDE_ENV = (
@@ -29,6 +31,11 @@ MODEL_OVERRIDE_ENV = (
     "RESEARCH_BREADTH_SCOUT_MODEL",
     "RESEARCH_GLM_GAP_MODEL",
     "RESEARCH_GLM_CHEAP_MODEL",
+    "RESEARCH_VALUE_PLANNER_MODEL",
+    "RESEARCH_VALUE_GAP_MODEL",
+    "RESEARCH_VALUE_DEEP_MODEL",
+    "RESEARCH_VALUE_SYNTH_MODEL",
+    "RESEARCH_VALUE_VERIFY_MODEL",
 )
 
 

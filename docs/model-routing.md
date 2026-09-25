@@ -8,8 +8,8 @@ every dollar figure here.
 
 ## Recommendation
 
-Adopt now (configuration plus a small `policy.py` edit), then trial the cheaper options one role
-at a time:
+Adopt the `value` preset, which carries the "Adopt" column below with prompt caching on every
+route, then trial the cheaper options one role at a time:
 
 | Role | Now | Adopt | Trial next | Thinking |
 |---|---|---|---|---|
@@ -24,8 +24,8 @@ Cost per question on the p01 profile:
 
 | | As the pilot ran (little loop caching outside GLM) | With prompt caching configured |
 |---|---:|---:|
-| A current defaults | $3.20 | $2.32 |
-| **B adopt** | **$2.03 (−37%)** | **$1.61 (−50%)** |
+| A `quality` preset | $3.20 | $2.32 |
+| **B `value` preset** | **$2.03 (−37%)** | **$1.61 (−50%)** |
 | F all trials pass (Z.ai-heavy) | $0.59 (−82%) | $0.61 (−74%) |
 
 B moves no role to a weaker model: each change is a successor that is as cheap or cheaper and
@@ -85,8 +85,8 @@ synthesizer moves to GLM, the verifier must stay off GLM.
 
 | Lineup | Planner | Scout | Gap | Deep dive | Synthesizer | Verifier | Total | Cached |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| A current defaults | 0.04 | 0.56 | 0.12 | **1.70** | 0.47 | 0.31 | **3.20** | 2.32 |
-| B adopt | 0.03 | 0.56 | 0.06 | 0.85 | 0.38 | 0.16 | **2.03** | 1.61 |
+| A `quality` preset | 0.04 | 0.56 | 0.12 | **1.70** | 0.47 | 0.31 | **3.20** | 2.32 |
+| B `value` preset | 0.03 | 0.56 | 0.06 | 0.85 | 0.38 | 0.16 | **2.03** | 1.61 |
 | C B, GLM-5.3-Flash scouts | 0.03 | 0.03 | 0.06 | 0.85 | 0.38 | 0.16 | 1.51 | 1.05 |
 | D B, GLM-5.3 synthesizer | 0.03 | 0.56 | 0.06 | 0.85 | 0.09 | 0.16 | 1.74 | 1.32 |
 | E B, GLM-5.3 deep dives | 0.03 | 0.56 | 0.06 | 0.25 | 0.38 | 0.16 | 1.44 | 1.49 |
@@ -114,16 +114,16 @@ OpenRouter's site is blocked from this environment. Prices come from the copy of
   and verifier, no open model has published results that challenge Opus 5.5 and GPT-6 Sol. For deep
   dives, the one open model with a frontier BrowseComp score, Kimi K3 (91.2%), costs as much as GPT-6 Sol.
 - **Its top tool-calling models by usage** are GLM-5.3 Flash, DeepSeek V4.1 Flash, and Tencent
-  Hy4 preview. Usage measures adoption, not quality. GLM-5.3 Flash is reachable today through `zai`;
-  the other two need an OpenRouter provider (lineup G).
-- **Using OpenRouter needs code.** `settings.py` accepts only `openai`, `anthropic`, `google`,
-  `xai`, and `zai`, and rejects an `openrouter:` override before any job starts. PydanticAI 2.48
-  supports `openrouter:` ids, so the change is an `OPENROUTER_API_KEY` entry in `PROVIDER_KEY_ENV`,
-  a diagnose endpoint, and docs.
-- **Unpriced models turn off the dollar caps.** `genai-prices` has no entry for Hy4 preview, so
-  PydanticAI reports its cost as `None`. `_record_spend` then stops tracking the job's spend, so
-  the job cost cap cannot hold. The script prices Hy4 from its OpenRouter listing ($0.834 /
-  $0.042 cached / $2.501). Any unpriced model needs a price source before a paid run.
+  Hy4 preview. Usage measures adoption, not quality. GLM-5.3 Flash is reachable through `zai`;
+  the other two through `openrouter` (lineup G).
+- **OpenRouter is a provider.** Set `OPENROUTER_API_KEY` and write a route as
+  `openrouter:vendor/model`, for example `RESEARCH_VALUE_DEEP_MODEL=openrouter:tencent/hy4-preview`.
+  `research-diagnose --network` checks that `openrouter.ai` is reachable.
+- **Unpriced models turn off the dollar caps.** PydanticAI prices calls from `genai-prices`, not from
+  the cost OpenRouter reports, and `genai-prices` has no entry for Hy4 preview. Its cost is `None`, and
+  `_record_spend` then stops tracking the job's spend, so the job cost cap cannot hold.
+  `research-diagnose --smoke` warns about such a route. The script prices Hy4 from its OpenRouter
+  listing ($0.834 / $0.042 cached / $2.501). Any unpriced model needs a price source before a paid run.
 - **Catalog prices can lag.** The catalog lists GPT-5.6 Sol at $2 / $10. OpenAI lists $4 / $20,
   a promotional price available at least through 2026-11-21. This doc uses OpenAI's price.
 
@@ -163,40 +163,52 @@ GLM-5.3 and GLM-5.3-Flash, and DeepSeek V4:
   thinks more than Opus 5 did. Keeping `high` would spend more output tokens than modeled here.
 - **GPT-6 Sol and Luna have reasoning effort and prompt-cache breakpoints.** Like GPT-5.6, they
   do not accept `minimal`, which no route uses.
+- **Checked on the wire, offline.** PydanticAI's own Anthropic and OpenAI clients were run on a
+  local mock transport with `value`'s routes. The synthesizer request to Opus 5.5 carried
+  `cache_control`, adaptive thinking with `effort: medium`, and a JSON-schema output format with
+  no forced `tool_choice`. The deep-dive request to GPT-6 Sol carried `prompt_cache_key` and `high`
+  reasoning, on both the Responses and Chat Completions APIs.
 - **Check new IDs first.** Run `research-diagnose --smoke` on each new ID before a paid run. GPT-6
   Sol and Opus 5.5 are three days old.
 
-## What to change
+## Using the value preset
 
-1. **Models (configuration only).** In `.env`:
+`value` has `quality`'s limits, so a comparison changes models, thinking effort, and caching only:
 
-   ```
-   RESEARCH_PLANNER_MODEL=anthropic:claude-opus-5-5
-   RESEARCH_SYNTH_MODEL=anthropic:claude-opus-5-5
-   RESEARCH_GAP_MODEL=openai:gpt-6-sol
-   RESEARCH_DEEP_MODEL=openai:gpt-6-sol
-   RESEARCH_VERIFY_MODEL=openai:gpt-6-sol
-   RESEARCH_CHEAP_SCOUT_MODEL=zai:glm-5.3-flash
-   ```
+- **Planner and synthesizer:** `anthropic:claude-opus-5-5` at `medium`.
+- **Gap analyst, deep dive, and verifier:** `openai:gpt-6-sol`.
+- **Scout:** `quality`'s `zai:glm-5.3`, with its override `RESEARCH_SCOUT_MODEL`.
+- **Cheap scout:** `zai:glm-5.3-flash`, shared with `glm-heavy` through `RESEARCH_GLM_CHEAP_MODEL`.
+  It only takes low-difficulty questions that do not need primary sources, so moving it off GPT-5.6
+  Luna is low risk.
+- **Prompt caching** on every route. A route's `prompt_cache` flag sends `anthropic_cache` to
+  Anthropic and a stable `openai_prompt_cache_key` to OpenAI, chosen from the model at call time,
+  so an override to another provider keeps working. Z.ai, Google, xAI, and OpenRouter cache on
+  their own.
 
-   The cheap scout only takes low-difficulty questions that do not need primary sources, so moving
-   it from GPT-5.6 Luna to GLM-5.3-Flash is low risk. `RESEARCH_ALT_DEEP_MODEL` (`xai:grok-4.5`)
-   returned HTTP 403 in the v4 rerun. Point it at a provider you have, or leave verification rounds
-   at 0 as the study does.
-2. **Thinking effort (code).** Environment overrides replace only the model. Opus 5.5's `medium`
-   effort needs `policy.py` edits to the planner and synthesizer routes.
-3. **Prompt caching (code).** Add `{"anthropic_cache": True}` to Anthropic routes and a per-route
-   `openai_prompt_cache_key` to OpenAI routes. Then compare deep dives' `usage.cache_read_tokens`
-   before and after. Caching changes what is billed, not what the model sees, so `prompts_sha256`
-   stays the same. The policy snapshot and config fingerprint change.
-4. **OpenRouter (code, only if lineup G is wanted).** See [OpenRouter](#openrouter).
+Its planner, gap analyst, deep dive, synthesizer, and verifier have their own overrides
+(`RESEARCH_VALUE_*_MODEL`, in [setup.md](setup.md#model-routing)), so the trials change one role of
+`value` without touching `quality`:
+
+```
+RESEARCH_VALUE_SYNTH_MODEL=zai:glm-5.3     # trial D
+RESEARCH_VALUE_DEEP_MODEL=zai:glm-5.3      # trial E
+```
+
+The scout trial (C) sets `RESEARCH_SCOUT_MODEL=zai:glm-5.3-flash`, which `quality` shares. Run it
+as its own `--policies value` run.
+
+`RESEARCH_ALT_DEEP_MODEL` (`xai:grok-4.5`) returned HTTP 403 in the v4 rerun. Point it at a provider
+you have, or leave verification rounds at 0 as the study does. After the first paid run, compare the
+deep dives' `usage.cache_read_tokens` against `quality`'s to confirm caching took effect.
 
 ## How to confirm it
 
-Run A against B first, then B against one role change at a time, in order of expected saving:
-C (Flash scouts), D (GLM synthesizer), E (GLM deep dives). Keep the core suite and graph version
-fixed. Each lineup is a separate `research-bench` run with its own `.env`, and the manifest's policy
-snapshot records the routes.
+Run A against B first, in one run: `research-bench examples/benchmark_suite.toml --policies
+quality value --paid`. Then run B against one role change at a time, in order of expected saving:
+C (Flash scouts), D (GLM synthesizer), E (GLM deep dives). Each trial is a `--policies value` run
+with one override, and the manifest's policy snapshot records the routes. Keep the core suite and
+graph version fixed.
 
 | Role changed | Lane | Watch |
 |---|---|---|

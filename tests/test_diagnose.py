@@ -51,7 +51,7 @@ def test_diagnosis_checks_configured_model_with_injected_smoke() -> None:
 
 def test_diagnosis_fails_a_route_whose_model_names_no_known_provider() -> None:
     # from_env refuses this override, so build the settings directly.
-    settings = ResearchSettings(model_overrides={"RESEARCH_GAP_MODEL": "openrouter:openai/gpt-5.6-sol"})
+    settings = ResearchSettings(model_overrides={"RESEARCH_GAP_MODEL": "together:openai/gpt-5.6-sol"})
     checks = run_diagnose(settings, web_probe=lambda: None, writable_probe=lambda _path: None)
     (gap,) = [check for check in checks if check.name == "model:gap_analyst"]
     assert gap.status == "FAIL"

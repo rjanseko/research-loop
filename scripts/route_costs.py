@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from genai_prices import Usage, calc_price
 
+from research_loop.policy import DEFAULT_MODELS
 from research_loop.settings import PROVIDER_KEY_ENV
 
 ROLES = ("planner", "scout", "gap", "deep_dive", "synthesizer", "verifier")
@@ -57,17 +58,15 @@ OPUS_55 = "anthropic:claude-opus-5-5"
 GPT6_SOL = "openai:gpt-6-sol"
 GLM = "zai:glm-5.3"
 GLM_FLASH = "zai:glm-5.3-flash"
-RECOMMENDED = {
-    "planner": OPUS_55, "scout": GLM, "gap": GPT6_SOL,
-    "deep_dive": GPT6_SOL, "synthesizer": OPUS_55, "verifier": GPT6_SOL,
-}
+# A and B are the `quality` and `value` presets' default models, so they follow policy.py.
+_ROUTE_ENV = {"planner": "PLANNER", "gap": "GAP", "deep_dive": "DEEP", "synthesizer": "SYNTH", "verifier": "VERIFY"}
+CURRENT = {role: DEFAULT_MODELS[f"RESEARCH_{name}_MODEL"] for role, name in _ROUTE_ENV.items()}
+CURRENT["scout"] = DEFAULT_MODELS["RESEARCH_SCOUT_MODEL"]
+RECOMMENDED = {role: DEFAULT_MODELS[f"RESEARCH_VALUE_{name}_MODEL"] for role, name in _ROUTE_ENV.items()}
+RECOMMENDED["scout"] = DEFAULT_MODELS["RESEARCH_SCOUT_MODEL"]
 LINEUPS = {
-    "A current defaults": {
-        "planner": "anthropic:claude-opus-5", "scout": GLM, "gap": "openai:gpt-5.6-sol",
-        "deep_dive": "openai:gpt-5.6-sol", "synthesizer": "anthropic:claude-opus-5",
-        "verifier": "openai:gpt-5.6-sol",
-    },
-    "B recommended": RECOMMENDED,
+    "A quality preset": CURRENT,
+    "B value preset": RECOMMENDED,
     "C B, GLM Flash scouts": {**RECOMMENDED, "scout": GLM_FLASH},
     "D B, GLM synthesizer": {**RECOMMENDED, "synthesizer": GLM},
     "E B, GLM deep dives": {**RECOMMENDED, "deep_dive": GLM},
