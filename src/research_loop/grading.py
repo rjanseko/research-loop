@@ -183,6 +183,12 @@ def grade_rows(report: EvaluationReport, judges: Sequence[RubricJudge]) -> list[
     return rows
 
 
+def jobs_from_record(path: Path) -> list[tuple[str, UUID]]:
+    """(case ID, job ID) for each succeeded run in a study step record; failed runs have no job to grade."""
+    record = json.loads(path.read_text(encoding="utf-8"))
+    return [(run["case_id"], UUID(run["job_id"])) for run in record["runs"] if run.get("status") == "succeeded"]
+
+
 def _parse_job(value: str) -> tuple[str, UUID]:
     case_id, sep, job_id = value.partition("=")
     if not sep or not case_id:
@@ -214,13 +220,21 @@ def main(argv: list[str] | None = None) -> None:
         description="Grade finished research jobs stored in Postgres against a suite's cases, without rerunning them",
     )
     parser.add_argument("suite", type=Path, help="Suite TOML whose cases the jobs answered")
-    parser.add_argument("--job", type=_parse_job, action="append", required=True, metavar="CASE_ID=JOB_ID",
+    parser.add_argument("--job", type=_parse_job, action="append", default=[], metavar="CASE_ID=JOB_ID",
                         help="A stored job and the case it answered; repeat for more")
+    parser.add_argument("--jobs-from", type=Path, action="append", default=[], metavar="RECORD",
+                        help="A study step record (examples/settings_study.py) whose succeeded runs to grade")
     parser.add_argument("--judge", type=parse_judge, action="append", default=[], metavar="[NAME=]MODEL",
                         help="Add a rubric judge (calls the model); NAME keeps a second judge's scores apart")
     parser.add_argument("--repeat", type=int, default=1, help="Grade each job this many times (default 1)")
     parser.add_argument("--output", type=Path, help="JSONL of scores (default: benchmark_outputs/grades/<time>.jsonl)")
     args = parser.parse_args(argv)
+    try:
+        args.job += [pair for record in args.jobs_from for pair in jobs_from_record(record)]
+    except (OSError, ValueError, KeyError) as exc:
+        parser.error(f"cannot read a step record: {type(exc).__name__}: {exc}")
+    if not args.job:
+        parser.error("name jobs to grade with --job or --jobs-from")
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
     if len({judge.name for judge in args.judge}) != len(args.judge):
