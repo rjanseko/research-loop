@@ -158,3 +158,42 @@ def test_scholar_live_probes_openalex_search_and_explains_rate_limit(monkeypatch
     assert openalex.status == "WARN"
     assert "OPENALEX_API_KEY" in openalex.detail
     assert all(check.status == "PASS" for check in checks if check.name in {"scholar:crossref", "scholar:arxiv"})
+
+
+def test_network_check_separates_providers_scholarly_search_and_general_web() -> None:
+    probed: list[str] = []
+
+    def allowlist(urls: list[str]) -> dict[str, str | None]:
+        probed.extend(urls)
+        reached = {"https://api.anthropic.com", "https://api.openalex.org", "https://en.wikipedia.org"}
+        return {url: None if url in reached else "refused by the proxy" for url in urls}
+
+    settings = ResearchSettings.from_env({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o"})
+    checks = run_diagnose(
+        settings,
+        web_probe=lambda: None,
+        writable_probe=lambda _path: None,
+        profile_probe=lambda _model: {"supports_tools": True},
+        network=True,
+        network_probe=allowlist,
+    )
+    network = {check.name: check for check in checks if check.name.startswith("network:")}
+    assert len(probed) == len(set(probed))
+    assert network["network:anthropic"].status == "PASS"
+    # A provider with a key fails; one the run cannot use anyway only warns.
+    assert network["network:openai"].status == "FAIL"
+    assert "api.openai.com unreachable (refused by the proxy)" in network["network:openai"].detail
+    assert network["network:zai"].status == "WARN"
+    assert network["network:scholarly"].status == network["network:search"].status == "WARN"
+    assert "api.crossref.org (refused by the proxy)" in network["network:scholarly"].detail
+    assert network["network:web"].status == "FAIL"
+    assert "web_fetch will fail" in network["network:web"].detail
+
+
+def test_network_check_is_opt_in() -> None:
+    def unexpected(urls: list[str]) -> dict[str, str | None]:
+        raise AssertionError("probed without --network")
+
+    checks = run_diagnose(ResearchSettings.from_env({}), web_probe=lambda: None,
+                          writable_probe=lambda _path: None, network_probe=unexpected)
+    assert not [check for check in checks if check.name.startswith("network:")]

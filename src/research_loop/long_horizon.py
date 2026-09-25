@@ -221,7 +221,7 @@ def _write_question_outputs(folder: Path, outcome: ResearchOutcome, objective: s
             "claim_count": outcome.ledger.claim_count(),
             "source_count": len(bibliography), "status": "completed",
             "cost_usd": None if outcome.cost_usd is None else str(outcome.cost_usd),
-            "review_reasons": review_reasons(outcome.report, outcome.verification, outcome.ledger),
+            "review_reasons": review_reasons(outcome.report, outcome.verification, outcome.ledger, outcome.reach),
         }
         # run.json marks the folder as a completed, attributable run.
         _write_json(staging / "run.json", record | {

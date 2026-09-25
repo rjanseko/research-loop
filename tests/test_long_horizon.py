@@ -107,7 +107,7 @@ async def _complete_questions(monkeypatch, output: Path, question_ids: list[str]
                 answer=f"Draft report {question_id}", caveats=["Thin"])
             return SimpleNamespace(job_id=uuid4(), report=report,
                                    ledger=_ledger(question_id), verification=verification or VerificationReport(),
-                                   cost_usd=Decimal("1.25"))
+                                   cost_usd=Decimal("1.25"), reach=None)
 
     monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", FakeLoop)
     return await run_long_horizon(
@@ -174,7 +174,7 @@ def _loop_failing_on(failing: set[str]):
             if question_id in failing:
                 raise JobBudgetExceeded("job cost cap reached")
             return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer=f"Draft {question_id}"),
-                                   ledger=_ledger(question_id), verification=VerificationReport(), cost_usd=None)
+                                   ledger=_ledger(question_id), verification=VerificationReport(), cost_usd=None, reach=None)
 
     return PartlyFailingLoop
 
@@ -487,7 +487,7 @@ async def test_long_horizon_applies_reserve_scout_tokens_salvage_and_notes(monke
         async def run(self, _objective, *, constraints):
             seen["notes"] = constraints.notes
             return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Draft"), ledger=_ledger("q01"),
-                                   verification=VerificationReport(), cost_usd=None)
+                                   verification=VerificationReport(), cost_usd=None, reach=None)
 
     monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", RecordingLoop)
     settings = ResearchSettings.from_env({})
@@ -573,7 +573,7 @@ async def test_synthesis_prompt_marks_quotes_not_found(monkeypatch, tmp_path: Pa
                     ReportClaim(statement="Verified size", claim_ids=["q1/c1"]),
                     ReportClaim(statement="Invented size", claim_ids=["q1/c2"]),
                 ]),
-                ledger=_quoted_ledger(), verification=VerificationReport(), cost_usd=None,
+                ledger=_quoted_ledger(), verification=VerificationReport(), cost_usd=None, reach=None,
             )
 
     monkeypatch.setattr("research_loop.long_horizon.ResearchLoop", QuotingLoop)
@@ -817,7 +817,7 @@ async def test_interrupted_rerun_leaves_the_previous_outputs_intact(monkeypatch,
 
         async def run(self, _objective, **_kwargs):
             return SimpleNamespace(job_id=uuid4(), report=FinalReport(answer="Rerun report q01"),
-                                   ledger=_ledger("q01"), verification=VerificationReport(), cost_usd=None)
+                                   ledger=_ledger("q01"), verification=VerificationReport(), cost_usd=None, reach=None)
 
     monkeypatch.setattr(long_horizon, "ResearchLoop", RerunLoop)
     monkeypatch.setattr(long_horizon, "_write_json", failing_write_json)

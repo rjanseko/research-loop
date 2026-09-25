@@ -104,10 +104,14 @@ Semantic Scholar is used because its records carry references for arXiv preprint
 
 ## Telemetry and privacy
 
+A tool that cannot reach its source returns the error to the model and the run continues, so a blocked network does not fail a run on its own. Each job therefore counts its web and scholarly tool calls that reached no source: a fetch that failed on the network (an httpx transport error, such as `ProxyError` or `ConnectTimeout`), a search that failed twice (`SearchUnavailable`), or a scholarly call that returned nothing because a provider failed on the network. HTTP statuses, blocked sources, and empty results reached their source and do not count. When at least three calls, and at least half of them, reached no source, the job's `review_reasons` say so, for example `9 of 12 web and scholarly tool calls reached no source (ProxyError)`. Attachment tools are local and are not counted.
+
 Persisted tool events keep hashes, IDs, counts, and errors, not article text (a fetch's error code and HTTP status are kept; its content is hashed): scholarly results keep work IDs, result counts, cache hits, and content hashes, and fetch results keep hashes and sizes. Text in tool arguments is stored as hashes and lengths. Benchmark evaluation keeps raw arguments in process memory only long enough to audit blocked URLs and benchmark-aware queries.
 
 ## Diagnostics
 
 `research-diagnose` checks that the tools construct. `research-diagnose --scholar-live` probes five public metadata endpoints without model calls; it is a reachability check, not a guarantee that every query or full text is available. OpenAlex rate-limits anonymous search separately from other requests (HTTP 429 under load), so the probe runs a search, and a free `OPENALEX_API_KEY` makes search reliable. `CROSSREF_MAILTO` identifies the client to Crossref.
+
+`research-diagnose --network` checks, without model calls, that the scholarly APIs, the search engines the web search tool uses, and ordinary public sites can be reached, separating a proxy's refusal from other failures; see [setup.md](setup.md#checking-readiness).
 
 Provider documentation: [OpenAlex API](https://help.openalex.org/api/), [Crossref REST](https://api.crossref.org/), [arXiv API](https://info.arxiv.org/help/api/user-manual.html), [ACL Anthology](https://aclanthology.org/), [OpenCitations Index v2](https://api.opencitations.net/index/v2), and [GROBID service](https://grobid.readthedocs.io/en/latest/Grobid-service/).

@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 from .acquisition import AcquisitionCache, read_capped, wait_rate_slot
 
 PROVIDER = "semanticscholar"
-_API = "https://api.semanticscholar.org/graph/v1"
+SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org"
+_API = SEMANTIC_SCHOLAR_API + "/graph/v1"
 _FIELDS = ",".join(
     ["paperId", "title", "year", "externalIds", "citationCount", "venue"]
     + [f"references.{name}" for name in ("paperId", "title", "year", "externalIds", "citationCount", "venue")]

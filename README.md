@@ -154,7 +154,7 @@ The `EvidenceLedger` (`ledger.py`) collects every `ResearchResult` from a run, i
 
 **Outputs are checked against the run, not just parsed.** Validators reject a plan with duplicate question IDs, a result filed under the wrong question, or a report citing a claim that doesn't exist. A failing output gets one retry with the problem explained, then the run fails. Separately, plain code marks each quote `verified` if it appears in what the tools actually returned, and each source `observed` if its URL or DOI appeared there. The model can't set these marks.
 
-**A finished run isn't a correct run.** Check `review_reasons`. It lists missing evidence, unchecked claims, unsupported claims, and research the verifier still wanted.
+**A finished run isn't a correct run.** Check `review_reasons`. It lists missing evidence, unchecked claims, unsupported claims, research the verifier still wanted, and web and scholarly tools that mostly could not reach their sources.
 
 **Models and budgets are configuration.** A `ModelPolicy` (`policy.py`) maps each role to a model and per-call limits on requests, tool calls, tokens, and dollars. Presets are `quality`, `breadth`, `glm-heavy`, and `synthetic`. A `ResearchConfig` sets how much work the loop does: parallelism, deep dives per round, verification rounds, and deadline. The only built-in spending limit is per call; set `job_cost_limit` if you want a cap per run.
 

@@ -6,8 +6,9 @@ import importlib.util
 import io
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,14 @@ import httpx
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
-from .acquisition import AcquisitionCache
+from .acquisition import AcquisitionCache, shared_ssl_context
+from .citations import SEMANTIC_SCHOLAR_API
 from .db import pending_migrations
 from .graph import get_research_graph
 from .observability import configure_logfire
 from .policy import ModelRoute, get_policy
 from .schemas import ResearchRole
-from .scholar import ScholarClient, build_scholar_toolset
+from .scholar import SCHOLAR_HOSTS, ScholarClient, build_scholar_toolset
 from .settings import PROVIDER_KEY_ENV, ResearchSettings, model_provider
 from .tools import ResearchToolMode, build_research_capabilities
 from .web import WebAcquisition, build_web_toolset
@@ -43,6 +45,57 @@ def _web_probe() -> None:
     request = urllib.request.Request("https://pydantic.dev/", method="HEAD")
     with urllib.request.urlopen(request, timeout=3):
         pass
+
+
+# The API host each model provider is called at.
+PROVIDER_HOSTS = {
+    "anthropic": "https://api.anthropic.com",
+    "openai": "https://api.openai.com",
+    "google": "https://generativelanguage.googleapis.com",
+    "xai": "https://api.x.ai",
+    "zai": "https://api.z.ai",
+}
+# Engines the web search tool (ddgs with its "auto" backend) tries in turn.
+SEARCH_HOSTS = (
+    "https://en.wikipedia.org", "https://html.duckduckgo.com", "https://search.brave.com",
+    "https://www.google.com", "https://www.mojeek.com", "https://search.yahoo.com",
+)
+# Ordinary public sites. web_fetch follows links to any site, so a network that reaches the APIs
+# but none of these allows only listed domains, and fetching evidence will fail.
+GENERAL_WEB_HOSTS = ("https://www.bbc.com", "https://www.who.int", "https://www.nature.com")
+
+
+def _network_probe(urls: list[str]) -> dict[str, str | None]:
+    """Why each URL could not be reached, or None when its server answered with any HTTP status."""
+    async def probe(client: httpx.AsyncClient, url: str) -> tuple[str, str | None]:
+        try:
+            await client.head(url)
+            return url, None
+        except httpx.ProxyError:
+            return url, "refused by the proxy"
+        except httpx.TransportError as exc:
+            return url, type(exc).__name__
+
+    async def probe_all() -> dict[str, str | None]:
+        # Like the research tools' clients, this uses HTTPS_PROXY when one is set.
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False, verify=shared_ssl_context()) as client:
+            return dict(await asyncio.gather(*(probe(client, url) for url in urls)))
+
+    return asyncio.run(probe_all())
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlsplit(url).hostname or url
+
+
+def _reach_check(name: str, what: str, urls: Iterable[str], failures: dict[str, str | None], consequence: str) -> Check:
+    urls = list(urls)
+    unreached = [f"{_host(url)} ({failures[url]})" for url in urls if failures[url]]
+    if not unreached:
+        return Check(name, "PASS", f"All {len(urls)} {what} reachable")
+    if len(unreached) == len(urls):
+        return Check(name, "FAIL", f"None of {len(urls)} {what} reachable ({failures[urls[0]]}); {consequence}")
+    return Check(name, "WARN", f"Unreachable: {', '.join(unreached)}")
 
 
 def _writable_probe(path: Path) -> None:
@@ -144,6 +197,8 @@ def run_diagnose(
     multimodal: bool = False,
     smoke: bool = False,
     scholar_live: bool = False,
+    network: bool = False,
+    network_probe: Callable[[list[str]], dict[str, str | None]] = _network_probe,
     web_probe: Callable[[], None] = _web_probe,
     writable_probe: Callable[[Path], None] = _writable_probe,
     database_probe: Callable[[str], list[str]] = _database_probe,
@@ -288,6 +343,39 @@ def run_diagnose(
             if needs_image:
                 detail = "Image input needs a live check; run --smoke"
             checks.append(Check(name, "WARN", detail))
+    if network:
+        checks.extend(_network_checks(settings, routes, network_probe))
+    return checks
+
+
+def _network_checks(
+    settings: ResearchSettings,
+    routes: list[tuple[str, ModelRoute, bool, bool]],
+    network_probe: Callable[[list[str]], dict[str, str | None]],
+) -> list[Check]:
+    """Whether the policy's providers and the research tools' sources are reachable, without model calls."""
+    providers = sorted({provider for _, route, _, _ in routes if (provider := model_provider(route.model))})
+    scholarly = [*SCHOLAR_HOSTS.values(), SEMANTIC_SCHOLAR_API]
+    urls = [*(PROVIDER_HOSTS[provider] for provider in providers), *scholarly, *SEARCH_HOSTS, *GENERAL_WEB_HOSTS]
+    failures = network_probe(list(dict.fromkeys(urls)))
+    checks = []
+    for provider in providers:
+        url = PROVIDER_HOSTS[provider]
+        if not failures[url]:
+            checks.append(Check(f"network:{provider}", "PASS", f"{_host(url)} reachable"))
+            continue
+        # A provider the run cannot use anyway is only a warning.
+        usable = settings.provider_enabled(provider) and settings.has_credential(provider)
+        checks.append(Check(
+            f"network:{provider}", "FAIL" if usable else "WARN",
+            f"{_host(url)} unreachable ({failures[url]}); allow it in the network settings",
+        ))
+    checks.append(_reach_check("network:scholarly", "scholarly APIs", scholarly, failures,
+                               "scholarly tools will fail; allow these hosts"))
+    checks.append(_reach_check("network:search", "search engines", SEARCH_HOSTS, failures,
+                               "web search will fail; allow these hosts"))
+    checks.append(_reach_check("network:web", "general web sites", GENERAL_WEB_HOSTS, failures,
+                               "web_fetch will fail on most pages; allow general web access"))
     return checks
 
 
@@ -298,12 +386,14 @@ def main() -> None:
     parser.add_argument("--multimodal", action="store_true", help="Check image input route and dependencies")
     parser.add_argument("--smoke", action="store_true", help="Make bounded, paid model calls for each unique configured model")
     parser.add_argument("--scholar-live", action="store_true", help="Probe public scholarly metadata endpoints without model calls")
+    parser.add_argument("--network", action="store_true",
+                        help="Check that model providers, scholarly APIs, search engines, and general web sites are reachable, without model calls")
     args = parser.parse_args()
     try:
         settings = ResearchSettings.from_env()
         if args.smoke:
             configure_logfire(settings)
-        checks = run_diagnose(settings, policy_name=args.policy, attachments=args.attachments, multimodal=args.multimodal, smoke=args.smoke, scholar_live=args.scholar_live)
+        checks = run_diagnose(settings, policy_name=args.policy, attachments=args.attachments, multimodal=args.multimodal, smoke=args.smoke, scholar_live=args.scholar_live, network=args.network)
     except (ValueError, RuntimeError) as exc:
         parser.error(str(exc))
     for check in checks:

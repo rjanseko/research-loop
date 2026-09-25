@@ -148,7 +148,9 @@ Sandboxed environments often allow only some hosts. Each provider you use must b
 | xAI | `api.x.ai` |
 | Z.ai | `api.z.ai` |
 
-The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, `api.crossref.org`, `api.opencitations.net`, `aclanthology.org`, `doi.org`, and `api.semanticscholar.org` for basis papers), DuckDuckGo for web search, and whatever pages `web_fetch` follows. Since those pages can be on any site, a domain allowlist makes evidence gathering fail in ways that are hard to see; for real research runs, use a level of network access that allows general public web access. A blocked host usually shows up as a refused connection or an HTTP 403 from the proxy, not from the provider. `curl -sS -o /dev/null -w '%{http_code}\n' https://api.openai.com/` tells you quickly whether a host is reachable.
+The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, `api.crossref.org`, `api.opencitations.net`, `aclanthology.org`, and `api.semanticscholar.org` for basis papers), the search engines the web search tool tries in turn (the `ddgs` library queries Wikipedia, DuckDuckGo, Brave, Google, Mojeek, Yahoo, and others, not only DuckDuckGo), and whatever pages `web_fetch` follows. Those pages can be on any site, so under a domain allowlist most fetches fail. For real research runs, use a level of network access that allows general public web access.
+
+`research-diagnose --network` checks all of this without model calls; see [Checking readiness](#checking-readiness). If a run's web and scholarly tools still mostly fail to reach their sources, its `review_reasons` say so.
 
 ### Before the first query
 
@@ -160,7 +162,7 @@ Then run a single case before you run more:
 
 ```bash
 make setup
-research-diagnose --policy quality --smoke
+research-diagnose --policy quality --network --smoke
 research-bench examples/benchmark_suite.toml --policies quality --paid --max-concurrency 1
 ```
 
@@ -169,10 +171,13 @@ research-bench examples/benchmark_suite.toml --policies quality --paid --max-con
 ```bash
 research-diagnose                                    # local checks only; no provider calls
 research-diagnose --scholar-live                     # also probe the public scholarly endpoints
+research-diagnose --network                          # also check the network reaches providers, tools, and the web
 research-diagnose --policy quality --attachments --smoke   # bounded paid calls to each configured model
 ```
 
 Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
+
+`--network` sends one HEAD request to each host a run needs, through `HTTPS_PROXY` when one is set, and counts any HTTP response as reachable. It checks the API host of each provider the policy routes to (`FAIL` for a provider with a credential, `WARN` otherwise), then three groups: the scholarly APIs, the search engines, and three ordinary sites standing in for the pages `web_fetch` follows. A group fails when none of its hosts answer and warns when some do not. A proxy that refuses a host is reported as `refused by the proxy`. Providers passing while the ordinary sites fail means the network allows only listed domains: models will answer, but evidence gathering will not work.
 
 Failed smoke checks give a short reason without the provider's response body. A credit-balance failure, including HTTP 402, needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
 

@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
 
+import httpx
 import pytest
 from pydantic_ai.exceptions import (
     ModelHTTPError,
@@ -22,6 +23,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     RetryPromptPart,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import FunctionModel
@@ -110,6 +112,7 @@ class Script:
         self.relabel_results = False  # research results name another question ID and text
         self.cite_attachment: str | None = None  # "listed", or "invented" until a retry asks to fix it
         self.cite_url: str | None = None  # research evidence cites this URL until a retry asks to fix it
+        self.fetch_urls: list[str] = []  # the scout calls web_fetch on these before it answers
         self.prompts: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.retries: dict[str, list[str]] = defaultdict(list)  # retry prompts each role received
 
@@ -135,6 +138,10 @@ class Script:
             if role == "planner":
                 questions = self.plans.pop(0) if self.plans else self.questions
                 output = {"objective": payload["objective"], "questions": questions}
+            elif role == "scout" and self.fetch_urls and not any(
+                isinstance(part, ToolReturnPart) for message in messages for part in message.parts
+            ):
+                return ModelResponse(parts=[ToolCallPart("web_fetch", {"url": url}) for url in self.fetch_urls])
             elif role in {"scout", "deep_dive"}:
                 question = payload["question"]
                 evidence = []
@@ -250,6 +257,32 @@ async def test_happy_path_persists_report_and_releases_job_resources(workflow):
     cited = set(FinalReport.model_validate(job["final_report"]).claim_ids_used)
     cited |= {claim_id for check in outcome.verification.checks for claim_id in check.claim_ids}
     assert cited and cited <= stored.claim_ids() == outcome.ledger.claim_ids()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused", [3, 2])
+async def test_run_whose_fetches_mostly_reached_no_source_needs_review(workflow, monkeypatch, refused):
+    from research_loop import web
+
+    loop, script = workflow
+    script.fetch_urls = [f"https://site{index}.example/page" for index in range(4)]
+
+    async def download(self, url: str) -> dict[str, Any]:
+        if int(url[len("https://site")]) < refused:
+            raise httpx.ProxyError("CONNECT refused")
+        return {"text": "The measurement is approximate.", "extraction": "trafilatura", "content_sha256": "0"}
+
+    async def public(url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web, "public_url", public)
+    monkeypatch.setattr(web.WebAcquisition, "_extract", download)
+    outcome = await run(loop)
+
+    unreached = "3 of 4 web and scholarly tool calls reached no source (ProxyError)"
+    assert (unreached in outcome.review_reasons) is (refused == 3)
+    assert loop.repository.jobs[outcome.job_id]["review_reasons"] == outcome.review_reasons
+    assert loop._source_reach == {}
 
 
 @pytest.mark.asyncio

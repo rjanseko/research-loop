@@ -353,7 +353,7 @@ Tracing through Logfire is optional. With `RESEARCH_LOGFIRE_ENABLED=true`, each 
 
 Quality is checked at three levels. Within a single call, the output is validated against the run's IDs and the quotes and sources are checked against tool output. Across a report, the verifier checks each claim. Across many runs, benchmark metrics are computed and the configuration is saved so the comparison can be interpreted later.
 
-Every finished run gets `review_reasons`, which flag a run with no evidence, a report that is uncited or unchecked, unsupported or major verifier findings, or a verifier still asking for more research. An empty list means none of these checks found a problem; it isn't an independent guarantee of correctness. Benchmark records, study `run.json` files, and Postgres job rows all include it.
+Every finished run gets `review_reasons`, which flag a run with no evidence, a report that is uncited or unchecked, unsupported or major verifier findings, a verifier still asking for more research, or web and scholarly tool calls that mostly reached no source, as happens behind a network that allows only listed domains ([acquisition.md](acquisition.md#telemetry-and-privacy)). An empty list means none of these checks found a problem; it isn't an independent guarantee of correctness. Benchmark records, study `run.json` files, and Postgres job rows all include it.
 
 The benchmark lanes test different skills. BrowseComp tests hard retrieval, DeepResearch Bench II tests synthesis against expert rubrics with forbidden sources, and GAIA tests mixed tool use with attachments. The original DeepResearch Bench, FutureSearch, and generic JSONL cases are supported too.
 
