@@ -36,11 +36,17 @@ CACHE_VERSION = 1
 FETCH_VERSION = 4
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
-CacheMode = Literal["off", "live", "record", "replay"]
+# settings.py and long_horizon_spec.py list the same modes; tests/test_acquisition.py keeps them equal.
+CacheMode = Literal["off", "live", "record", "replay", "reuse"]
 
 
 class AcquisitionCache:
-    """Small per-request cache; benchmark mode defaults to off."""
+    """Small per-request cache; benchmark mode defaults to off.
+
+    `live` reads entries up to `ttl_seconds` old and writes; `record` only writes; `replay` reads
+    entries of any age and never writes, so its callers treat a miss as an error; `reuse` reads
+    entries of any age and writes, so a miss goes live and is recorded. `off` does neither.
+    """
 
     def __init__(self, root: Path, mode: CacheMode = "live", ttl_seconds: int = 86400) -> None:
         self.root, self.mode, self.ttl_seconds = root, mode, ttl_seconds
@@ -50,19 +56,19 @@ class AcquisitionCache:
         return self.root / provider / f"{digest}.json"
 
     def get(self, provider: str, key: str) -> Any | None:
-        if self.mode not in ("live", "replay"):
+        if self.mode not in ("live", "replay", "reuse"):
             return None
         path = self._path(provider, key)
         try:
             payload = json.loads(path.read_text())
-            if self.mode == "replay" or time.time() - payload["created_at"] <= self.ttl_seconds:
+            if self.mode != "live" or time.time() - payload["created_at"] <= self.ttl_seconds:
                 return payload["value"]
         except (OSError, ValueError, KeyError, TypeError):
             pass
         return None
 
     def put(self, provider: str, key: str, value: Any) -> None:
-        if self.mode not in ("live", "record"):
+        if self.mode not in ("live", "record", "reuse"):
             return
         encoded = json.dumps({"created_at": time.time(), "value": value}, ensure_ascii=False)
         if len(encoded) > 128_000:

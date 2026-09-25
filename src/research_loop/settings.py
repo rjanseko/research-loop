@@ -56,7 +56,7 @@ class ResearchSettings(BaseModel):
     benchmark_output: Path = Path("benchmark_outputs")
     benchmark_concurrency: int = Field(default=1, ge=1)
     logfire_enabled: bool = False
-    scholarly_cache_mode: Literal["off", "live", "record", "replay"] = "live"
+    scholarly_cache_mode: Literal["off", "live", "record", "replay", "reuse"] = "live"
     openalex_api_key: SecretStr | None = None
     crossref_mailto: str | None = None
     semantic_scholar_api_key: SecretStr | None = None

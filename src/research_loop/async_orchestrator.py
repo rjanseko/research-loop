@@ -690,7 +690,12 @@ class AsyncResearchLoop:
                             f"above its {route.total_tokens_limit} token limit"
                         )
                 capabilities = (
-                    build_research_capabilities(self.config.tool_mode) if research_tools else None
+                    build_research_capabilities(
+                        self.config.tool_mode,
+                        search_cache=AcquisitionCache(self.settings.benchmark_cache / "search",
+                                                      mode=self.config.scholarly_cache_mode),
+                    )
+                    if research_tools else None
                 )
                 if trimmer is not None and capabilities is not None:
                     capabilities.append(ProcessHistory(trimmer))

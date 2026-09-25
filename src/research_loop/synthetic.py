@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from .orchestrator import ResearchLoop
@@ -65,7 +66,8 @@ class SyntheticResearchLoop(ResearchLoop):
                     confidence=1.0,
                 )
                 await self.repository.record_tool_events(task_id, [
-                    ToolEvent(tool_name="synthetic_search", args={"query": "synthetic fixture"}, result={"count": 1}, outcome="ok")
+                    ToolEvent(tool_name="synthetic_search", args={"query": "synthetic fixture"}, result={"count": 1},
+                              outcome="ok", called_at=datetime.now(UTC), returned_at=datetime.now(UTC), cache_hit=False)
                 ])
             elif role is ResearchRole.GAP_ANALYST:
                 output = GapAnalysis()

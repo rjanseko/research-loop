@@ -117,8 +117,11 @@ async def test_a_synthetic_run_persists_every_record(dsn: str, tmp_path: Path) -
     tasks = _rows(dsn, "select role, status, finished_at from research_tasks where job_id = %s", (outcome.job_id,))
     assert {"planner", "scout", "synthesizer", "verifier"} <= {role for role, _, _ in tasks}
     assert all(state == "succeeded" and done is not None for _, state, done in tasks)
-    assert _rows(dsn, """select count(*) from research_tool_events e join research_tasks t on t.id = e.task_id
-                          where t.job_id = %s""", (outcome.job_id,))[0][0] > 0
+    ((events, started, cache_misses),) = _rows(
+        dsn, """select count(*), count(e.called_at), count(*) filter (where e.cache_hit is false)
+                  from research_tool_events e join research_tasks t on t.id = e.task_id where t.job_id = %s""",
+        (outcome.job_id,))
+    assert events > 0 and started == events == cache_misses  # timing and cache columns are stored
     ((name, sha256),) = _rows(dsn, "select name, sha256 from research_attachments where job_id = %s", (outcome.job_id,))
     assert name == "notes.txt" and sha256 == outcome.attachments.records[0].sha256
 
