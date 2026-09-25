@@ -386,3 +386,20 @@ def test_plain_text_headings_become_markdown_headings() -> None:
     tidy = render.plain_headings_as_markdown(text)
     assert "# SECTION 1 - PROFILES" in tidy and "## INDONESIA\n\n1. JP" in tidy and "=====" not in tidy
     assert "## NOT A HEADING" not in tidy
+
+
+def test_bullets_right_after_a_numbered_item_nest_under_it() -> None:
+    text = "1. Jaminan Pensiun (JP)\n- Type: DB\n- Coverage: all\n\n2. JHT\n- Type: DC\n\n- a later list\n10. Ten\n- detail"
+    tidy = render.bullets_under_numbered_items(text)
+    assert "1. **Jaminan Pensiun (JP)**\n   - Type: DB\n   - Coverage: all\n\n2. **JHT**\n   - Type: DC" in tidy
+    assert "\n\n- a later list" in tidy and "10. **Ten**\n    - detail" in tidy
+    tex = render._MarkdownToLatex(lambda ids: "").block(tidy)
+    assert tex.count(r"\begin{enumerate}") == 2 and tex.index(r"\begin{itemize}") < tex.index(r"\item \textbf{JHT}")
+
+
+def test_nested_bullets_under_a_numbered_item_keep_their_levels() -> None:
+    text = "=== SECTION 1. PROFILES ===\n\n1. INDONESIA\n- JHT: MDC.\n  - Coverage: employees.\n- JP: MDB.\n  - Rate: 3%.\n\n2. MALAYSIA\n- EPF"
+    tidy = render.tidy_answer(text)
+    assert tidy.startswith("# SECTION 1. PROFILES")
+    assert "1. **INDONESIA**\n   - JHT: MDC.\n     - Coverage: employees.\n   - JP: MDB.\n     - Rate: 3%." in tidy
+    assert "2. **MALAYSIA**\n   - EPF" in tidy

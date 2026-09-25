@@ -515,6 +515,8 @@ def _cells(text: str) -> list[str]:
 
 
 _RULE_LINE = re.compile(r"^\s*(=|-){3,}\s*$")
+# A heading written on one line between runs of "=": "=== SECTION 1. PROFILES ===".
+_FENCED_HEADING = re.compile(r"^\s*={2,}\s*(\S.*?\S)\s*={2,}\s*$")
 # A short line of capitals, digits, and joining punctuation: "INDONESIA", "SRI LANKA", "SECTION 2".
 _CAPS_LINE = re.compile(r"^[A-Z][A-Z0-9 &'/,.()-]{1,58}[A-Z0-9)]$")
 
@@ -522,8 +524,8 @@ _CAPS_LINE = re.compile(r"^[A-Z][A-Z0-9 &'/,.()-]{1,58}[A-Z0-9)]$")
 def plain_headings_as_markdown(markdown: str) -> str:
     """`markdown` with the headings models write as plain text made into Markdown headings.
 
-    A line between two rules of `=` or `-` ("=====", "SECTION 1 - PROFILES", "=====") becomes a
-    top-level heading, and a line of capitals standing alone after a blank line ("INDONESIA") a
+    A line between two rules of `=` or `-` ("=====", "SECTION 1 - PROFILES", "====="), or between runs of
+    `=` on one line ("=== SECTION 1 ==="), becomes a top-level heading, and a line of capitals standing alone after a blank line ("INDONESIA") a
     second-level one. The fifth pilot's report marked all of its sections and countries this way.
     """
     lines = markdown.split("\n")
@@ -536,6 +538,10 @@ def plain_headings_as_markdown(markdown: str) -> str:
             out += ["# " + lines[index + 1].strip(), ""]
             index += 3
             continue
+        if match := _FENCED_HEADING.match(line):
+            out += ["# " + match.group(1), ""]
+            index += 1
+            continue
         if _CAPS_LINE.match(line.strip()) and (not out or not out[-1].strip()) and any(c.isalpha() for c in line):
             out += ["## " + line.strip(), ""]
             index += 1
@@ -545,9 +551,46 @@ def plain_headings_as_markdown(markdown: str) -> str:
     return "\n".join(out)
 
 
+_NUMBERED_ITEM = re.compile(r"^(\d{1,3}[.)]\s+)\S")
+_BULLET = re.compile(r"^[-*+]\s+\S")
+_ITEM_HEADING_CHARS = 120
+
+
+def bullets_under_numbered_items(markdown: str) -> str:
+    """`markdown` with the bullets that directly follow a numbered item indented under it.
+
+    Models write "1. Jaminan Pensiun (JP)" and then its "- Type: ..." bullets at the left margin, which
+    Markdown reads as a new list after a one-line numbered one, so the details lose their item and
+    every number starts a list of its own. Indented, they nest under the item and the numbering runs on.
+    Bullets that follow a blank line are left alone. An item that gets bullets is a heading for them,
+    so its text is set in bold when it is short and has no emphasis of its own.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    indent = ""
+    item = -1
+    for line in lines:
+        if match := _NUMBERED_ITEM.match(line):
+            indent = " " * len(match.group(1))
+            item = len(out)
+        elif indent and (_BULLET.match(line) or (line[:1].isspace() and line.strip())):
+            # A bullet at the margin, or a line already indented under one (a sub-bullet or its
+            # continuation), keeps its place relative to the item.
+            if item >= 0 and _BULLET.match(line):
+                marker, text = out[item][:len(indent)], out[item][len(indent):].strip()
+                if len(text) <= _ITEM_HEADING_CHARS and "*" not in text and "[" not in text:
+                    out[item] = f"{marker}**{text}**"
+                item = -1
+            line = indent + line
+        else:
+            indent, item = "", -1
+        out.append(line)
+    return "\n".join(out)
+
+
 def tidy_answer(markdown: str) -> str:
-    """A model's answer with its plain-text headings and bullet tables made into Markdown ones."""
-    return pipe_rows_as_tables(plain_headings_as_markdown(markdown))
+    """A model's answer with its plain-text headings, numbered items' bullets, and bullet tables made Markdown."""
+    return pipe_rows_as_tables(bullets_under_numbered_items(plain_headings_as_markdown(markdown)))
 
 
 def pipe_rows_as_tables(markdown: str) -> str:
