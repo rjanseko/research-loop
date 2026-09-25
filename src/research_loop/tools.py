@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai.capabilities import WebFetch, WebSearch
+
+if TYPE_CHECKING:
+    from .acquisition import AcquisitionCache
 
 
 class ResearchToolMode(StrEnum):
@@ -18,13 +21,13 @@ class ResearchToolMode(StrEnum):
     NORMALIZED = "normalized"
 
 
-def build_research_capabilities(mode: ResearchToolMode) -> list[Any]:
+def build_research_capabilities(mode: ResearchToolMode, *, search_cache: AcquisitionCache | None = None) -> list[Any]:
     from .web import resilient_duckduckgo_tool
 
     if mode is ResearchToolMode.NORMALIZED:
-        return [WebSearch(native=False, local=resilient_duckduckgo_tool())]
+        return [WebSearch(native=False, local=resilient_duckduckgo_tool(cache=search_cache))]
 
     return [
-        WebSearch(local=resilient_duckduckgo_tool()),
+        WebSearch(local=resilient_duckduckgo_tool(cache=search_cache)),
         WebFetch(local=True),
     ]

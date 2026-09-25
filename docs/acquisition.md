@@ -21,7 +21,7 @@ Scholarly tools are added in both modes unless `ResearchConfig.scholarly_tools` 
 
 ## Web search
 
-`duckduckgo_search` keeps PydanticAI's tool name, description, and results. DuckDuckGo drops connections and rate-limits under load, so searches share a process-wide slot of one per second, and a failed search is retried once. A second failure returns a `SearchUnavailable` result to the model, which can switch to scholarly tools or another query; the run continues.
+`duckduckgo_search` keeps PydanticAI's tool name, description, and results. DuckDuckGo drops connections and rate-limits under load, so searches share a process-wide slot of one per second, and a failed search is retried once. A second failure returns a `SearchUnavailable` result to the model, which can switch to scholarly tools or another query; the run continues. Successful searches are [cached](#caching) by exact query and served unchanged, so a replayed search gives the model the same results a live one did; failures are never cached.
 
 ## Scholarly tools
 
@@ -79,16 +79,17 @@ Search results can still show blocked sources; seeing one is not a violation. Th
 
 ## Caching
 
-`AcquisitionCache` stores metadata responses and fetch windows on disk under `RESEARCH_BENCHMARK_CACHE`:
+`AcquisitionCache` stores searches, metadata responses, and fetch windows on disk under `RESEARCH_BENCHMARK_CACHE`, all in the mode `RESEARCH_SCHOLAR_CACHE_MODE` or a study's `scholarly_cache_mode` names:
 
 | Mode | Reads | Writes | Used by |
 |---|---|---|---|
 | `live` | Entries up to one day old | Yes | Library runs (the `RESEARCH_SCHOLAR_CACHE_MODE` default) |
 | `record` | No | Yes | Long-horizon runs and the metadata pilot, so later runs can replay them |
 | `replay` | Any age; a miss is an error | No | Offline reproduction |
+| `reuse` | Any age | Yes | Replays that change a model or a limit: recorded calls are served, and a call the recording lacks, such as a new query, goes live and is recorded |
 | `off` | No | No | Benchmarks, so no result depends on an earlier run |
 
-Entries are versioned and capped at 128 KB. Fetch windows are keyed by URL, `max_chars`, and `start`; a window from the start keeps its original key, so older recordings still replay. Fetches check the cache after the blocked-source check and before the DNS check, so `replay` works offline and never serves a blocked source.
+Entries are versioned and capped at 128 KB. Searches are keyed by the query as search engines read it: Unicode-normalized, case-folded, with whitespace collapsed, so `SWE-bench  Verified` and `swe-bench verified` share an entry. Quotes, operators such as `site:`, punctuation, and word order are kept, because they change results. Nothing looser, such as matching similar wording, is used: that would give a model results for a query it never made. Each entry also keeps the query as the model wrote it. Fetch windows are keyed by URL, `max_chars`, and `start`; a window from the start keeps its original key, so older recordings still replay. Fetches check the cache after the blocked-source check and before the DNS check, so `replay` works offline and never serves a blocked source.
 
 ## Citation snowballing (basis papers)
 
@@ -106,7 +107,7 @@ Semantic Scholar is used because its records carry references for arXiv preprint
 
 A tool that cannot reach its source returns the error to the model and the run continues, so a blocked network does not fail a run on its own. Each job therefore counts its web and scholarly tool calls that reached no source: a fetch that failed on the network (an httpx transport error, such as `ProxyError` or `ConnectTimeout`), a search that failed twice on a timeout (`SearchUnavailable`), or a scholarly call (any `scholar_*` tool) that returned nothing because a provider failed on the network. HTTP statuses, blocked sources, and empty results reached their source and do not count. Nor does `SearchUnavailable (DDGSException)`: the search library raises it both when every engine failed and when a search found nothing, and the result does not say which, so a blocked search shows up in `research-diagnose --network` rather than here. When at least three calls, and at least half of them, reached no source, the job's `review_reasons` say so, for example `9 of 12 web and scholarly tool calls reached no source (ProxyError)`. Attachment tools are local and are not counted.
 
-Persisted tool events keep hashes, IDs, counts, and errors, not article text (a fetch's error code and HTTP status are kept; its content is hashed): scholarly results keep work IDs, result counts, cache hits, and content hashes, and fetch results keep hashes and sizes. Text in tool arguments is stored as hashes and lengths. Benchmark evaluation keeps raw arguments in process memory only long enough to audit blocked URLs and benchmark-aware queries. Runs that opt in to [full transcripts](setup.md#full-transcripts) also store the real arguments and results, in `research_task_messages`; benchmarks never do.
+Each persisted tool event records when the model response that issued it arrived (`called_at`) and when its result returned (`returned_at`), so a task's time splits into model and tool time. It also records whether a search or fetch was served from the cache (`cache_hit`). A search reports that in PydanticAI metadata that is never sent to the model, so the model sees the same result whether it was served or live. Persisted tool events keep hashes, IDs, counts, and errors, not article text (a fetch's error code and HTTP status are kept; its content is hashed): scholarly results keep work IDs, result counts, cache hits, and content hashes, and fetch results keep hashes and sizes. Text in tool arguments is stored as hashes and lengths. Benchmark evaluation keeps raw arguments in process memory only long enough to audit blocked URLs and benchmark-aware queries. Runs that opt in to [full transcripts](setup.md#full-transcripts) also store the real arguments and results, in `research_task_messages`; benchmarks never do.
 
 ## Diagnostics
 

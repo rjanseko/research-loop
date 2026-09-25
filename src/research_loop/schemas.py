@@ -231,6 +231,8 @@ class ToolEvent(BaseModel):
     outcome: str | None = None
     called_at: datetime | None = None
     returned_at: datetime | None = None
+    # Whether a search or fetch was served from the acquisition cache; None for other tools.
+    cache_hit: bool | None = None
 
     @property
     def is_research_tool(self) -> bool:

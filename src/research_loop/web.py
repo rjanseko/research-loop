@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic_ai import FunctionToolset, Tool
+from pydantic_ai import FunctionToolset, Tool, ToolReturn
 
 from .acquisition import (
     MAX_FETCH_CHARS,
@@ -28,27 +29,52 @@ from .acquisition import (
 _MAX_PAGE_BYTES = 5_000_000
 
 
-def resilient_duckduckgo_tool(*, retry_delay: float = 2.0) -> Tool:
+def search_cache_key(query: str) -> str:
+    """A query as search engines read it: Unicode-normalized, case-folded, whitespace collapsed.
+
+    Engines ignore case and spacing, so queries differing only in those get the same results. Quotes,
+    operators such as `site:`, punctuation, and word order change results and are kept.
+    """
+    return " ".join(unicodedata.normalize("NFKC", query).casefold().split())
+
+
+def resilient_duckduckgo_tool(*, retry_delay: float = 2.0, cache: AcquisitionCache | None = None) -> Tool:
     """PydanticAI's DuckDuckGo search under the same name, with a shared rate slot and one retry.
 
     A search failure is returned to the model as an error result instead of failing the run.
+    With a cache, results are stored under `search_cache_key` with the query as the model wrote it,
+    and served unchanged, so the model sees the same result a live search gave; failures are never
+    stored. Each return says in its metadata, which the model never sees, whether the result came
+    from the cache.
     """
     from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
 
     inner = duckduckgo_search_tool()
 
     async def duckduckgo_search(query: str) -> Any:
+        key = search_cache_key(query)
+        if cache is not None:
+            cached = cache.get("duckduckgo", key)
+            if cached is not None:
+                return ToolReturn(cached["results"], metadata={"cache_hit": True})
+            if cache.mode == "replay":
+                # As a fetch reports a window the recording lacks.
+                return ToolReturn({"error": "CacheMiss"}, metadata={"cache_hit": False})
         error = "unknown"
         for attempt in range(2):
             await wait_rate_slot("duckduckgo")
             try:
-                return await inner.function(query=query)
+                results = await inner.function(query=query)
+                if cache is not None:
+                    cache.put("duckduckgo", key, {"query": query, "results": results})
+                return ToolReturn(results, metadata={"cache_hit": False})
             except Exception as exc:  # noqa: BLE001 - the search client raises its own types on rate limits and drops
                 error = type(exc).__name__
                 if attempt == 0:
                     await asyncio.sleep(retry_delay)
-        return {"error": f"SearchUnavailable ({error})",
-                "hint": "Web search failed twice; continue with scholar tools or a different query."}
+        return ToolReturn({"error": f"SearchUnavailable ({error})",
+                           "hint": "Web search failed twice; continue with scholar tools or a different query."},
+                          metadata={"cache_hit": False})
 
     return Tool(duckduckgo_search, name=inner.name, description=inner.description)
 

@@ -39,7 +39,7 @@ class Question(_Spec):
 class Execution(_Spec):
     # Long-horizon runs use the normalized tool stack only; these two record that in the spec.
     normalized_web: Literal[True] = True
-    scholarly_cache_mode: Literal["off", "live", "record", "replay"] = "record"
+    scholarly_cache_mode: Literal["off", "live", "record", "replay", "reuse"] = "record"
     # Notes for the operator; nothing reads them.
     model_budget_gate: str | None = None
     first_run: str | None = None

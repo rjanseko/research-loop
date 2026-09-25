@@ -60,9 +60,20 @@ def usage_snapshot(usage: Any) -> dict[str, Any]:
     return {name: jsonable(getattr(usage, name)) for name in fields if hasattr(usage, name)}
 
 
-def _parts(messages: Iterable[Any]) -> Iterable[Any]:
+def _cache_hit(metadata: Any, result: Any) -> bool | None:
+    """Search reports a cache hit in metadata the model never sees; fetch reports it in its result."""
+    for source in (metadata, result):
+        if isinstance(source, dict) and isinstance(source.get("cache_hit"), bool):
+            return source["cache_hit"]
+    return None
+
+
+def _parts_with_response_time(messages: Iterable[Any]) -> Iterable[tuple[Any, Any]]:
+    """Each message part, with its message's timestamp when the message is a model response."""
     for message in messages:
-        yield from getattr(message, "parts", ())
+        arrived = getattr(message, "timestamp", None) if getattr(message, "kind", None) == "response" else None
+        for part in getattr(message, "parts", ()):
+            yield part, arrived
 
 
 def safe_tool_result(tool_name: str, value: Any) -> Any:
@@ -131,7 +142,7 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
     calls: dict[str, ToolEvent] = {}
     order: list[str] = []
 
-    for part in _parts(messages):
+    for part, arrived in _parts_with_response_time(messages):
         if isinstance(part, (ToolCallPart, NativeToolCallPart)):
             call_id = part.tool_call_id
             if call_id not in calls:
@@ -142,7 +153,9 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
                 tool_kind=getattr(part, "tool_kind", None),
                 provider_name=getattr(part, "provider_name", None),
                 args=jsonable(part.args),
-                called_at=getattr(part, "timestamp", None),
+                # A call part has no timestamp of its own. The response carrying it arrived when
+                # the call became known, which is when a local tool starts running.
+                called_at=getattr(part, "timestamp", None) or arrived,
             )
         elif isinstance(part, (ToolReturnPart, NativeToolReturnPart)):
             call_id = part.tool_call_id
@@ -154,6 +167,7 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
             event.result = jsonable(part.content)
             event.outcome = getattr(part, "outcome", None)
             event.returned_at = getattr(part, "timestamp", None)
+            event.cache_hit = _cache_hit(getattr(part, "metadata", None), event.result)
             if not event.provider_name:
                 event.provider_name = getattr(part, "provider_name", None)
 

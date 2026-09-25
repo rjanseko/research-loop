@@ -120,3 +120,49 @@ def test_transcript_keeps_messages_whole_and_cuts_only_oversized_strings() -> No
     assert dumped[1]["parts"][0]["args"] == {"url": "https://a.example/page"}  # real arguments, not hashes
     fetched = dumped[2]["parts"][0]["content"]["text"]
     assert fetched == "x" * 100 + " [truncated 20 chars]"
+
+
+def test_a_tool_call_starts_when_the_response_carrying_it_arrived() -> None:
+    from datetime import UTC, datetime
+
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from research_loop.telemetry import extract_tool_events
+
+    sent, arrived, returned = (datetime(2026, 9, 25, 12, 0, s, tzinfo=UTC) for s in (0, 7, 9))
+    messages = [
+        ModelRequest(parts=[UserPromptPart("q")], timestamp=sent),
+        ModelResponse(parts=[ToolCallPart("web_fetch", {"url": "https://example.org"}, tool_call_id="c1")],
+                      timestamp=arrived),
+        ModelRequest(parts=[ToolReturnPart("web_fetch", "text", tool_call_id="c1", timestamp=returned)]),
+    ]
+    [event] = extract_tool_events(messages)
+    # Model time is arrived - sent; tool time is returned - arrived.
+    assert (event.called_at, event.returned_at) == (arrived, returned)
+
+
+def test_cache_hits_come_from_search_metadata_or_the_fetch_result() -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from research_loop.telemetry import extract_tool_events
+
+    calls = [("duckduckgo_search", "s"), ("web_fetch", "f"), ("scholar_search", "o")]
+    returns = [
+        ToolReturnPart("duckduckgo_search", [{"title": "t"}], tool_call_id="s", metadata={"cache_hit": True}),
+        ToolReturnPart("web_fetch", {"url": "https://example.org", "text": "t", "cache_hit": False}, tool_call_id="f"),
+        ToolReturnPart("scholar_search", '{"works": [], "cache_hits": 2}', tool_call_id="o"),
+    ]
+    messages = [ModelResponse(parts=[ToolCallPart(name, {}, tool_call_id=i) for name, i in calls]),
+                ModelRequest(parts=returns)]
+    assert [event.cache_hit for event in extract_tool_events(messages)] == [True, False, None]

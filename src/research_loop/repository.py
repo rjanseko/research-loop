@@ -303,8 +303,8 @@ class PostgresResearchRepository:
                     """
                     insert into research_tool_events
                         (id, task_id, call_index, tool_name, tool_call_id, tool_kind,
-                         provider_name, args, result, outcome, called_at, returned_at)
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         provider_name, args, result, outcome, called_at, returned_at, cache_hit)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         uuid4(),
@@ -319,6 +319,7 @@ class PostgresResearchRepository:
                         event.outcome,
                         event.called_at,
                         event.returned_at,
+                        event.cache_hit,
                     ),
                 )
 
