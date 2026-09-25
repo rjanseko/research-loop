@@ -18,6 +18,7 @@ from research_loop.schemas import (
     ResearchRole,
     SourceRef,
 )
+from research_loop.settings import ResearchSettings
 
 _SPEC = importlib.util.spec_from_file_location("study_preflight", Path(__file__).parents[1] / "scripts" / "study_preflight.py")
 study_preflight = importlib.util.module_from_spec(_SPEC)
@@ -25,6 +26,8 @@ sys.modules["study_preflight"] = study_preflight  # its dataclasses look their m
 _SPEC.loader.exec_module(study_preflight)
 
 _PLAN = ResearchPlan(objective="o", questions=[])
+# The study's alternate deep dive is on Z.ai, set by override as in its .env.
+_SETTINGS = ResearchSettings.from_env({"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3"})
 
 
 def _ledger(claims: int, excerpt_chars: int = 300) -> EvidenceLedger:
@@ -42,13 +45,13 @@ def test_a_ledger_the_preset_refuses_fits_the_study_limits() -> None:
     ledger = _ledger(claims=60)
     preset = study_preflight.check_job(get_policy("value"), "o", _PLAN, ledger, {}, None)
     assert not preset[0].fits and preset[0].role is ResearchRole.GAP_ANALYST
-    study = study_preflight.check_job(study_preflight.study_policy("value"), "o", _PLAN, ledger, {}, None)
+    study = study_preflight.check_job(study_preflight.study_policy("value", _SETTINGS), "o", _PLAN, ledger, {}, None)
     assert all(check.fits for check in study)
     assert "NO" in study_preflight.render(preset) and "NO" not in study_preflight.render(study)
 
 
 def test_verification_without_a_report_is_bounded_by_every_claim_and_a_full_answer() -> None:
-    policy = study_preflight.study_policy("value")
+    policy = study_preflight.study_policy("value", _SETTINGS)
     ledger = _ledger(claims=3)
     report = FinalReport(answer="a" * 2000, claims=[ReportClaim(statement="s", claim_ids=["q0/c0"])])
     bound = study_preflight.check_job(policy, "o", _PLAN, ledger, {}, None)[2]

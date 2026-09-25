@@ -64,6 +64,20 @@ DEEP_DIVE_LIMITS = {"max_requests": 12, "max_tool_calls": 80, "total_tokens_limi
 FINISHING_TOKENS = 600_000
 FINISHING_ROLES = (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER)
 STUDY_QUESTION_RANGE = (3, 8)
+# The models every paid `value` step runs on, whatever the environment's RESEARCH_*_MODEL overrides say, so
+# changing .env for everyday runs cannot change the study partway through. Opus 5.5 plans and synthesizes, as
+# the preset intends; the verifier stays on another vendor. Verification-round deep dives use the alternate,
+# which needs RESEARCH_ALT_DEEP_MODEL=zai:glm-5.3, since the preset's own alternate is on xAI.
+STUDY_MODELS = {
+    "planner": "anthropic:claude-opus-5-5",
+    "scout": "zai:glm-5.3",
+    "gap_analyst": "openai:gpt-6-sol",
+    "deep_dive": "openai:gpt-6-sol",
+    "synthesizer": "anthropic:claude-opus-5-5",
+    "verifier": "openai:gpt-6-sol",
+    "cheap_scout": "zai:glm-5.3-flash",
+    "alternate_deep_dive": "zai:glm-5.3",
+}
 CACHE_MODES = ("record", "reuse", "replay", "off")
 
 
@@ -99,6 +113,13 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
     policy.alternate_deep_dive = _limited(policy.alternate_deep_dive, DEEP_DIVE_LIMITS)
     for role in FINISHING_ROLES:
         policy.routes[role] = _limited(policy.routes[role], {"total_tokens_limit": FINISHING_TOKENS})
+    if policy_name == "value":
+        lineup = {role.value: route.model for role, route in policy.routes.items()} | {
+            "cheap_scout": policy.cheap_scout.model, "alternate_deep_dive": policy.alternate_deep_dive.model}
+        if moved := [f"{role} is {lineup[role]}, not {model}" for role, model in STUDY_MODELS.items()
+                     if lineup[role] != model]:
+            raise ValueError("the environment moves the study's models; unset or change its RESEARCH_*_MODEL "
+                             "overrides: " + "; ".join(moved))
     policy.validate()
     return policy, config
 

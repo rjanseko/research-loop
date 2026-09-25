@@ -54,14 +54,14 @@ class Check:
         return self.needed <= self.limit
 
 
-def study_policy(policy_name: str) -> ModelPolicy:
-    """The policy examples/settings_study.py runs paid steps with."""
+def study_policy(policy_name: str, settings: Any = None) -> ModelPolicy:
+    """The policy examples/settings_study.py runs paid steps with; `settings` defaults to the environment's."""
     from research_loop.settings import ResearchSettings
 
     spec = importlib.util.spec_from_file_location("settings_study", _STUDY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    policy, _config = module.build(True, 5.0, 1.0, ResearchSettings.from_env(), policy_name=policy_name)
+    policy, _config = module.build(True, 5.0, 1.0, settings or ResearchSettings.from_env(), policy_name=policy_name)
     return policy
 
 

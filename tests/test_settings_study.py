@@ -23,6 +23,10 @@ _SPEC.loader.exec_module(settings_study)
 _DRB2_PICKS = {1: "task2+", 7: "task8", 20: "task17+", 31: "task26"}
 
 
+# The study's alternate deep dive is on Z.ai, set by override as in its .env.
+_STUDY_ENV = ResearchSettings.from_env({"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3"})
+
+
 @pytest.fixture(autouse=True)
 def drb2_offline(tmp_path, monkeypatch):
     """A stand-in for DRB-II's tasks file in the benchmark cache, so loading the suite never downloads it."""
@@ -42,7 +46,7 @@ def drb2_offline(tmp_path, monkeypatch):
 
 def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar_caps() -> None:
     preset = settings_study.get_policy("value")
-    policy, config = settings_study.build(True, 4.0, 1.5, ResearchSettings.from_env({}), cache_mode="reuse")
+    policy, config = settings_study.build(True, 4.0, 1.5, _STUDY_ENV, cache_mode="reuse")
     assert (policy.name, policy.job_cost_limit, policy.job_reserve_usd, policy.planner_question_range) == (
         "value", 4.0, 1.5, (3, 8))
     for route, preset_route in ((policy.routes[ResearchRole.SCOUT], preset.routes[ResearchRole.SCOUT]),
@@ -58,6 +62,15 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
 
+
+
+def test_a_paid_step_refuses_an_environment_that_moves_the_study_models() -> None:
+    env = {"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3", "RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"}
+    with pytest.raises(ValueError, match="synthesizer is zai:glm-5.3, not anthropic:claude-opus-5-5"):
+        settings_study.build(True, 5.0, 1.0, ResearchSettings.from_env(env))
+    with pytest.raises(ValueError, match="alternate_deep_dive is xai:grok-4.5"):
+        settings_study.build(True, 5.0, 1.0, ResearchSettings.from_env({}))
+    settings_study.build(False, 5.0, 1.0, ResearchSettings.from_env({}))  # the synthetic rehearsal has no models to move
 
 @pytest.mark.asyncio
 async def test_a_synthetic_step_records_each_case_and_carries_on_past_a_failure(tmp_path, monkeypatch) -> None:

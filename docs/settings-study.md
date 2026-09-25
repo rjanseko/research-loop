@@ -46,15 +46,16 @@ The `st05` rubric was checked against primary sources in step 0; see the [Decisi
 
 ## Models
 
-These are the models the configured keys can reach, with list prices in USD per million tokens. The OpenAI prices and `glm-5.3` come from `genai-prices`. The two Flash prices come from [Z.ai's pricing page](https://docs.z.ai/guides/overview/pricing), checked on 25 September 2026:
+These are the models the configured keys can reach, with list prices in USD per million tokens. The OpenAI and Anthropic prices and `glm-5.3` come from `genai-prices`. The two Flash prices come from [Z.ai's pricing page](https://docs.z.ai/guides/overview/pricing), checked on 25 September 2026:
 
 | Model | Input | Cached input | Output | Tried for |
 |---|---:|---:|---:|---|
 | `openai:gpt-6-luna` | 0.10 | 0.01 | 0.50 | Scout, deep dive, planner, synthesizer; the fixed synthesizer |
 | `zai:glm-5.3-flash` | 0.15 | 0.03 | 0.50 | Scout, deep dive, gap analyst |
 | `zai:glm-5.3-flashx` | 0.37 | 0.075 | 1.25 | Scout, in the [FlashX test](#the-flashx-test) |
-| `zai:glm-5.3` | 1.40 | 0.26 | 4.40 | Every role (the current scout and synthesizer) |
-| `openai:gpt-6-sol` | 2.00 | 0.20 | 10.00 | Every role (the current planner, gap analyst, deep dive, and verifier) |
+| `zai:glm-5.3` | 1.40 | 0.26 | 4.40 | Every role (the current scout and alternate deep dive) |
+| `openai:gpt-6-sol` | 2.00 | 0.20 | 10.00 | Every role (the current gap analyst, deep dive, and verifier) |
+| `anthropic:claude-opus-5-5` | 4.00 | 0.20 | 20.00 | Planner and synthesizer (the current ones, from the fifth pilot on) |
 | `openai:gpt-6-astra` | 10.00 | 1.00 | 50.00 | Synthesizer only, on three questions |
 
 `genai-prices` is up to date: its latest data matches the 0.1.8 release the repository pins. But it prices `glm-5.3-flash` at 0.075, 0.015, and 0.25, half of Z.ai's list price, and has no entry for `glm-5.3-flashx`. The 0.1.9 release does not change either. Without a correction, a cap on a Flash route would let through about twice the spend it names, and a FlashX route would have no cost at all, so no cap could hold on it. `src/research_loop/prices.toml` now supplies both prices (see [setup.md](setup.md#model-routing)), so the caps hold.
@@ -102,7 +103,7 @@ Four rules make this adaptive without letting it drift:
 | 4. Depth | How deep should scouts and deep dives search? | Salvage replays of every research task at the cut points step 2 suggests, one fixed-synthesizer report per question and depth | $5 |
 | 5. Research models | Can cheaper models scout and deep-dive? | Scouts replayed on `glm-5.3-flash` and `gpt-6-luna`, deep dives on `glm-5.3` and `gpt-6-luna`, at the depth step 4 chose, one fixed-synthesizer report per variant. Only if steps 1 and 2 show deep dives getting worse late in long loops: two or three deep dives replayed on `gpt-6-astra` too, as an upper bound, about $10 to $15 more | $3 |
 | 6. FlashX | Is FlashX the same model as Flash, and is its speed worth 2.5 times the price here? | See [The FlashX test](#the-flashx-test) | $1.50 |
-| 7. Finishing models | Which planner and synthesizer? | Planner on four models, synthesizer on `glm-5.3`, `gpt-6-sol`, and `gpt-6-luna` for every question, plus `gpt-6-astra` on three, all on the step 2 ledgers, graded by both judges | $5 |
+| 7. Finishing models | Which planner and synthesizer? | Planner on four models, synthesizer on `glm-5.3`, `gpt-6-sol`, and `gpt-6-luna` against the reference's Opus 5.5 for every question, plus `gpt-6-astra` on three, all on the step 2 ledgers, graded by both judges | $5 |
 | 8. Check | Do the chosen settings hold up in a normal run? | All questions once with the chosen settings | About step 2's cost |
 | 9. BrowseComp | Do the chosen settings beat the current preset on hard retrieval, on questions the study never saw? | Only if the study chooses settings worth confirming: the chosen settings and the current preset on 50 to 100 BrowseComp cases with `research-bench`, in memory, with no transcripts or recorded calls, as BrowseComp's encrypted questions require. Needs three changes to `research-bench`, none built yet: a per-case cap (`--job-budget`), since it caps only single calls; salvage on, since its benchmark settings leave `salvage_exhausted_research` off, so a loop that reaches a limit fails the whole case instead of answering from what it found; and a way to pass it the chosen settings | About $150 to $300 |
 
@@ -218,3 +219,10 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Ran.* DRB-II `task2+` with plans of three to eight questions, job `974042de`. The planner gave each of the seven countries its own question. Four scouts ran for about 200 seconds, reaching 16 to 20 requests, when the Z.ai credit balance ran out: one scout's request got HTTP 429, and the job cancelled the rest and failed. `research-diagnose --smoke` then failed every GLM route with an exhausted balance and passed every OpenAI route.
 - *Found.* The wider range works as intended: one subject per scout. The scouts were stopped before their own limits, so whether one-country scouts stop by themselves is still open.
 - *Changes.* None. The pilot reruns once the balance is topped up.
+
+**Model change, 25 September 2026, before the fifth pilot.**
+
+- *Changed.* With Anthropic enabled, the study runs `value` as the preset intends: `claude-opus-5-5` plans and synthesizes, at `medium` effort, in place of `gpt-6-sol` and `glm-5.3`. The verifier stays on `gpt-6-sol`, from another vendor than the synthesizer. No reference run existed yet, so nothing already measured loses its comparison; the four pilots stay as pilots.
+- *Why.* Both reports `glm-5.3` synthesized drew heavy verifier findings, with claims stronger than their sources: 4 major in the first pilot and 25 of 56 statements unsupported in the fourth. The fourth pilot's evidence was thin, so this does not show the synthesizer was at fault; step 7 compares synthesizers on the same ledgers, now with `glm-5.3` as a candidate against Opus 5.5.
+- *Guard.* `examples/settings_study.py` names the study's model for every route and refuses a paid `value` step when the environment's `RESEARCH_*_MODEL` overrides move any of them, so a change to `.env` for everyday runs cannot change the study partway through.
+- *Next.* The pilot reruns on `task2+` with Opus 5.5 once the Anthropic account has credits; `research-diagnose --smoke` found its balance empty.
