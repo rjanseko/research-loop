@@ -17,6 +17,9 @@ build/
 
 # Benchmark/runtime artifacts
 benchmark_outputs/
+# Run analyses and transcript exports hold fetched content; keep them in benchmark_outputs/.
+/transcripts*.json
+/analysis*.txt
 report/
 .cache/
 *.log

@@ -1,0 +1,24 @@
+# Model prices that genai-prices lacks or gets wrong, in USD per million tokens.
+# research_loop.prices applies them over genai-prices' data, so cost caps hold on these models.
+# Each entry names its source and when it was checked. tests/test_prices.py fails once
+# genai-prices' own data matches an entry, so a correction is dropped when upstream catches up.
+
+[[model]]
+provider = "zai"
+model = "glm-5.3-flash"
+input = "0.15"
+cached_input = "0.03"
+output = "0.50"
+source = "https://docs.z.ai/guides/overview/pricing"
+checked = 2026-09-25
+note = "genai-prices 0.1.8 and 0.1.9 list half these prices."
+
+[[model]]
+provider = "zai"
+model = "glm-5.3-flashx"
+input = "0.37"
+cached_input = "0.075"
+output = "1.25"
+source = "https://docs.z.ai/guides/overview/pricing"
+checked = 2026-09-25
+note = "Missing from genai-prices 0.1.8 and 0.1.9."

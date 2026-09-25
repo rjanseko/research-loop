@@ -1,7 +1,8 @@
 """Price model candidates for each research role on one question's measured token profile.
 
-No model call and no network: prices come from the installed `genai-prices` table, the same
-data PydanticAI uses to put a cost on each run, including its copy of OpenRouter's catalog.
+No model call and no network: prices come from the installed `genai-prices` table with the
+corrections in `src/research_loop/prices.toml`, the same data a run puts a cost on each call
+with, including its copy of OpenRouter's catalog.
 The token profile is the p01 calibration question (long_horizon/agentic_se/PROMPT_SIZES.md).
 docs/model-routing.md explains the candidates, the lineups, and the caveats.
 
@@ -16,6 +17,7 @@ from datetime import UTC, datetime
 from genai_prices import Usage, calc_price
 
 from research_loop.policy import DEFAULT_MODELS
+from research_loop.prices import install_price_overrides
 from research_loop.settings import PROVIDER_KEY_ENV
 
 ROLES = ("planner", "scout", "gap", "deep_dive", "synthesizer", "verifier")
@@ -147,6 +149,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--date", help="price date, YYYY-MM-DD (default: today)")
     args = parser.parse_args()
+    install_price_overrides()
     when = datetime.fromisoformat(args.date).replace(tzinfo=UTC) if args.date else datetime.now(UTC)
     print(f"USD per question on the p01 token profile, list prices on {when:%Y-%m-%d}")
     for caching in ("observed", "configured"):

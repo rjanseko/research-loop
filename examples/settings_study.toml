@@ -1,0 +1,7 @@
+# The settings study (docs/settings-study.md): seven questions with reference answers or rubrics.
+name = "settings-study"
+
+[[sources]]
+name = "settings-study"
+kind = "jsonl"
+path = "settings_study_cases.jsonl"

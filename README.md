@@ -488,6 +488,7 @@ The code is layered: each layer uses only the layers below it.
 - [docs/acquisition.md](docs/acquisition.md) and [docs/attachments.md](docs/attachments.md): tools, caching, and file handling
 - [docs/benchmarks.md](docs/benchmarks.md): benchmark lanes and metrics
 - [docs/model-routing.md](docs/model-routing.md): which model to run each role on, by cost and quality
+- [docs/settings-study.md](docs/settings-study.md): the planned study of search depth, response size, and models per role
 - [long_horizon/agentic_se/README.md](long_horizon/agentic_se/README.md): the first long-horizon study
 - [AGENTS.md](AGENTS.md): rules for changing the code
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to send a pull request

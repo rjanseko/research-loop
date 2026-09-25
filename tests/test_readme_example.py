@@ -36,11 +36,27 @@ def test_paid_setup_caps_the_quality_policy_and_trims_the_run() -> None:
         assert (route.max_tool_calls, route.total_tokens_limit, route.cost_limit) == (80, 400_000, 5.0)
 
 
+@pytest.mark.parametrize("name", ["breadth", "glm-heavy", "value"])
+def test_paid_setup_applies_the_same_caps_to_another_preset(name) -> None:
+    policy, config = readme_example.build(True, 4.0, 1.5, ResearchSettings.from_env({}), name)
+    assert (policy.name, policy.job_cost_limit, policy.planner_question_range) == (name, 4.0, (3, 5))
+    assert policy.routes[ResearchRole.DEEP_DIVE].max_tool_calls == 80
+    assert config.max_deep_dives_per_round == 2
+
+
+def test_paid_setup_uses_the_presets_own_model_overrides() -> None:
+    settings = ResearchSettings.from_env({"RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"})
+    policy, _ = readme_example.build(True, 4.0, 1.5, settings, "value")
+    assert policy.routes[ResearchRole.SYNTHESIZER].model == "zai:glm-5.3"
+
+
 @pytest.mark.parametrize("argv", [
     ["--paid", "--budget", "1", "--reserve", "1.5"],  # the reserve must stay below the cap
     ["--paid", "--budget", "0"],
     ["--persist"],  # no DATABASE_URL
     ["--capture"],  # transcripts go to Postgres, so capture needs --persist
+    ["--policy", "value"],  # a preset only runs with --paid
+    ["--paid", "--policy", "synthetic"],
 ])
 def test_unrunnable_options_are_refused_before_any_run(argv, monkeypatch) -> None:
     monkeypatch.setattr(readme_example, "ResearchSettings", _empty_settings)

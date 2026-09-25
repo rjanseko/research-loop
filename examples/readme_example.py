@@ -3,8 +3,8 @@
 The question and notes are the ones "Example: one question through the graph" in the README
 shows. Without --paid, the synthetic policy runs the real graph with scripted outputs and no
 model or web calls, which checks the script end to end for free. With --paid, the quality
-policy runs under a total USD cap, with fewer questions, deep dives, and verification rounds
-than its defaults. Every run writes a JSON record (question, date, policy snapshot with each
+policy, or the one --policy names, runs under a total USD cap, with fewer questions, deep dives,
+and verification rounds than its defaults. Every run writes a JSON record (question, date, policy snapshot with each
 route's model and the caps, run configuration, report, verification, review reasons, cost,
 and job ID) under RESEARCH_BENCHMARK_OUTPUT, which git ignores.
 """
@@ -38,17 +38,20 @@ SCOUT_TOKENS = 400_000
 # requests and were salvaged every time. These let one reach its own result.
 DEEP_DIVE_TOOL_CALLS = 80
 DEEP_DIVE_TOKENS = 400_000
+# The presets --policy accepts; synthetic is what runs without --paid.
+PAID_POLICIES = ("quality", "breadth", "glm-heavy", "value")
 NOTES = [
     "Keep preprints and published papers distinct.",
     "Label scores a vendor reports about its own model as vendor claims.",
 ]
 
 
-def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings) -> tuple[Any, ResearchConfig]:
-    """The capped quality policy and trimmed run configuration, or the synthetic policy unchanged."""
+def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
+          policy_name: str = "quality") -> tuple[Any, ResearchConfig]:
+    """The capped paid policy and trimmed run configuration, or the synthetic policy unchanged."""
     if not paid:
         return get_policy("synthetic"), ResearchConfig(scholarly_cache_mode=settings.scholarly_cache_mode)
-    policy = get_policy("quality", model_overrides=settings.model_overrides)
+    policy = get_policy(policy_name, model_overrides=settings.model_overrides)
     # The built-in policies set no total cap; this one keeps the whole run near `budget`.
     policy.job_cost_limit = budget
     # Held back from research so synthesis and verification can still run once it is spent.
@@ -83,8 +86,8 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings)
 
 
 async def run(*, paid: bool, persist: bool, capture: bool, budget: float, reserve: float,
-              settings: ResearchSettings, output: Path) -> dict[str, Any]:
-    policy, config = build(paid, budget, reserve, settings)
+              settings: ResearchSettings, output: Path, policy_name: str = "quality") -> dict[str, Any]:
+    policy, config = build(paid, budget, reserve, settings, policy_name)
     configure_logfire(settings)
     started = datetime.now(UTC)
     async with AsyncExitStack() as stack:
@@ -128,7 +131,9 @@ async def run(*, paid: bool, persist: bool, capture: bool, budget: float, reserv
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the README's example question under a capped budget")
-    parser.add_argument("--paid", action="store_true", help="Call real models (the quality policy, capped)")
+    parser.add_argument("--paid", action="store_true", help="Call real models (the --policy preset, capped)")
+    parser.add_argument("--policy", choices=PAID_POLICIES, default="quality",
+                        help="Preset to run with --paid (default quality)")
     parser.add_argument("--budget", type=float, default=4.0, help="Total USD cap for the run (default 4.00)")
     parser.add_argument("--reserve", type=float, default=1.5,
                         help="USD of the budget held for synthesis and verification (default 1.50)")
@@ -143,14 +148,17 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--persist needs DATABASE_URL; see docs/setup.md#postgres")
     if args.capture and not args.persist:
         parser.error("--capture stores transcripts in Postgres; add --persist")
+    if args.policy != "quality" and not args.paid:
+        parser.error("--policy chooses the paid preset; add --paid")
     try:
-        build(args.paid, args.budget, args.reserve, settings)
+        build(args.paid, args.budget, args.reserve, settings, args.policy)
     except ValueError as exc:  # a budget or reserve no policy can run under
         parser.error(str(exc))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or settings.benchmark_output / "readme_example" / f"{stamp}.json"
     record = asyncio.run(run(paid=args.paid, persist=args.persist, capture=args.capture, budget=args.budget,
-                             reserve=args.reserve, settings=settings, output=output))
+                             reserve=args.reserve, settings=settings, output=output,
+                             policy_name=args.policy))
 
     print(record["report_markdown"])
     print(f"\njob_id={record['job_id']} cost_usd={record['cost_usd']}")

@@ -45,7 +45,7 @@ research-long-horizon = "research_loop.long_horizon:main"
 research-report = "research_loop.render:main"
 
 [tool.setuptools.package-data]
-research_loop = ["migrations/*.sql"]
+research_loop = ["migrations/*.sql", "prices.toml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

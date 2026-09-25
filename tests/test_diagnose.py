@@ -224,3 +224,14 @@ def test_model_price_uses_the_base_rate_not_the_long_prompt_tier() -> None:
 
     assert _model_price("openai:gpt-5.6-sol")[0] < 8  # a million tokens in one request would hit the long-prompt tier
     assert _model_price("openai:no-such-model-xyz") is None
+
+
+def test_prices_name_a_correction_from_prices_toml() -> None:
+    from research_loop.diagnose import _model_price
+
+    checks = run_diagnose(ResearchSettings.from_env({}), policy_name="glm-heavy", prices=True,
+                          web_probe=lambda: None, writable_probe=lambda _path: None,
+                          profile_probe=lambda _model: {"supports_tools": True})
+    flash = next(check for check in checks if check.name == "price:zai:glm-5.3-flash")
+    assert flash.detail.startswith("$0.15 in / $0.50 out") and "from prices.toml, checked 2026-09-25" in flash.detail
+    assert _model_price("zai:glm-5.3-flashx") is not None  # absent from genai-prices itself
