@@ -43,6 +43,7 @@ from .attachments import (
     build_attachment_toolset,
     build_multimodal_prompt,
 )
+from .budget_notes import BudgetNotes
 from .ledger import EvidenceLedger
 from .observability import job_span
 from .policy import ModelPolicy, ModelRoute, retry_token_budget
@@ -98,6 +99,10 @@ class ResearchConfig:
     # whole and a short stub for older ones it has read (tool_history.py). This changes what the
     # model is sent, so compare runs with it on against runs without before relying on it.
     keep_recent_tool_results: int | None = None
+    # Experimental, off by default: scouts or deep dives, named here by role, end each model
+    # request with a note of the requests and tool calls they have left (budget_notes.py). This
+    # changes what the model is sent, so compare runs with it on against runs without.
+    budget_notes: tuple[ResearchRole, ...] = ()
 
     def __post_init__(self) -> None:
         # Zero deep dives or verification rounds disables that step; zero parallel slots would hang.
@@ -111,7 +116,23 @@ class ResearchConfig:
             raise ValueError("max_run_seconds must be positive when set")
         if self.keep_recent_tool_results is not None and self.keep_recent_tool_results < 0:
             raise ValueError("keep_recent_tool_results must be at least 0 when set")
+        object.__setattr__(self, "budget_notes", tuple(dict.fromkeys(ResearchRole(role) for role in self.budget_notes)))
+        if unsupported := [role.value for role in self.budget_notes if role not in _TOOL_LOOP_ROLES]:
+            raise ValueError(f"budget_notes takes scout and deep_dive only, not {', '.join(unsupported)}")
 
+    def snapshot(self) -> dict[str, Any]:
+        """The configuration as recorded in jobs and manifests."""
+        record = jsonable(asdict(self))
+        if not self.budget_notes:
+            # Recorded only when set, so runs without it keep their earlier config fingerprint.
+            del record["budget_notes"]
+        else:
+            record["budget_notes"] = [role.value for role in self.budget_notes]
+        return record
+
+
+# Roles that run tool loops, the only ones a budget note applies to.
+_TOOL_LOOP_ROLES = frozenset({ResearchRole.SCOUT, ResearchRole.DEEP_DIVE})
 
 # How long recording a failed or cancelled task or job may take before the run gives up on it.
 _FAILURE_WRITE_SECONDS = 10.0
@@ -381,7 +402,7 @@ class AsyncResearchLoop:
             policy_name=self.policy.name,
             config={
                 "orchestrator": {"kind": kind, "graph_version": graph_version},
-                "loop": jsonable(asdict(self.config)),
+                "loop": self.config.snapshot(),
                 "policy": self.policy.snapshot(),
                 "constraints": {
                     "blocked_urls": constraints.blocked_urls,
@@ -634,6 +655,9 @@ class AsyncResearchLoop:
         keep_recent = self.config.keep_recent_tool_results if research_tools else None
         if keep_recent is not None:
             effective_config["keep_recent_tool_results"] = keep_recent
+        budget_notes = research_tools and not salvage and role in self.config.budget_notes
+        if budget_notes:
+            effective_config["budget_notes"] = True
         hold = await self._admit(job_id, route, self.policy.job_reserve_for(role, salvage=salvage))
         remaining_budget = hold.amount if hold else None
         try:
@@ -667,6 +691,8 @@ class AsyncResearchLoop:
                 )
                 if trimmer is not None and capabilities is not None:
                     capabilities.append(ProcessHistory(trimmer))
+                if budget_notes and capabilities is not None:
+                    capabilities.append(ProcessHistory(BudgetNotes(route.max_requests, route.max_tool_calls)))
                 toolsets = []
                 memo = self._fetch_memos.get(job_id)
                 policy = self._source_policies.get(job_id)

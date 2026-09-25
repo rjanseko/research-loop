@@ -243,9 +243,36 @@ the previous request. `value`'s loop models, USD per question:
 - **Fewer turns save money under any caching.** Each turn saved removes one whole resend. The levers
   are telling the loop its remaining budget and letting it make several tool calls per turn. The
   loop gathering less in fewer turns is the risk to measure.
+- **`keep_recent_tool_results` is per-turn masking.** The existing experimental option trims
+  results as they age out of its window, so under working caching the model above expects it to
+  cost more, not less. Leave it off for cached routes unless a run shows otherwise.
 - **The savings are a model, not a result.** Per-turn sizes are solved from the profile's totals
   with an assumed 2,500-token starting prompt. Fetches are larger than searches in practice. Run
   `--hit-rate 0.8` for imperfect caching and `--lineup` for other models.
+
+### Budget notes experiment
+
+`ResearchConfig.budget_notes` tests the fewer-turns lever. The named loops end every model
+request with a note like this one (`budget_notes.py`):
+
+> [Research budget] 14 of 20 model requests and 31 of 40 tool calls left, this request included.
+> Put independent searches and fetches in one turn as parallel tool calls. Return your result while
+> a request is left: a run that reaches either limit is cut off, and its result is written from
+> truncated tool output.
+
+The note goes on the newest request only and later requests resend it unchanged, so caching still
+works. PydanticAI already runs parallel tool calls concurrently, and each call counts against
+`max_tool_calls`. Compare one run with and one without, on the same policy and cases:
+
+```
+research-bench examples/benchmark_suite.toml --policies value --paid --max-cases 10
+research-bench examples/benchmark_suite.toml --policies value --paid --max-cases 10 --budget-notes deep_dive
+```
+
+Watch the deep dives' requests per task, tool calls per request, and salvage count, then cost per
+correct answer on BrowseComp and the rubric score on DRB-II. Notes change what the model sees, so
+the two runs have different config fingerprints, and each deep-dive task's `effective_config`
+records `budget_notes`. Try `--budget-notes scout deep_dive` after the deep dive holds up.
 
 ## Caveats
 
