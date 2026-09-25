@@ -351,7 +351,7 @@ def _evidence_marks(item: Any) -> list[str]:
 def render_markdown(doc: ReportDocument) -> str:
     lines = ["# Research report", "", f"**Objective:** {doc.objective}", "", f"_{' · '.join(doc.metadata())}_", ""]
     lines += [f"> **{label}:** {text}  " for label, text in doc.status_lines()]
-    lines += ["", "## Findings", "", _shift_headings(pipe_rows_as_tables(doc.report.answer.strip()), 2), ""]
+    lines += ["", "## Findings", "", _shift_headings(tidy_answer(doc.report.answer.strip()), 2), ""]
     if doc.report.claims:
         lines += ["## Key statements", ""]
         claim_sources = doc.ledger.claim_source_ids()
@@ -514,6 +514,42 @@ def _cells(text: str) -> list[str]:
     return [cell.strip() for cell in text.split(" | ")]
 
 
+_RULE_LINE = re.compile(r"^\s*(=|-){3,}\s*$")
+# A short line of capitals, digits, and joining punctuation: "INDONESIA", "SRI LANKA", "SECTION 2".
+_CAPS_LINE = re.compile(r"^[A-Z][A-Z0-9 &'/,.()-]{1,58}[A-Z0-9)]$")
+
+
+def plain_headings_as_markdown(markdown: str) -> str:
+    """`markdown` with the headings models write as plain text made into Markdown headings.
+
+    A line between two rules of `=` or `-` ("=====", "SECTION 1 - PROFILES", "=====") becomes a
+    top-level heading, and a line of capitals standing alone after a blank line ("INDONESIA") a
+    second-level one. The fifth pilot's report marked all of its sections and countries this way.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if (_RULE_LINE.match(line) and index + 2 < len(lines) and lines[index + 1].strip()
+                and not _RULE_LINE.match(lines[index + 1]) and _RULE_LINE.match(lines[index + 2])):
+            out += ["# " + lines[index + 1].strip(), ""]
+            index += 3
+            continue
+        if _CAPS_LINE.match(line.strip()) and (not out or not out[-1].strip()) and any(c.isalpha() for c in line):
+            out += ["## " + line.strip(), ""]
+            index += 1
+            continue
+        out.append(line)
+        index += 1
+    return "\n".join(out)
+
+
+def tidy_answer(markdown: str) -> str:
+    """A model's answer with its plain-text headings and bullet tables made into Markdown ones."""
+    return pipe_rows_as_tables(plain_headings_as_markdown(markdown))
+
+
 def pipe_rows_as_tables(markdown: str) -> str:
     """`markdown` with each run of bullets written as table rows turned into a Markdown table.
 
@@ -550,6 +586,32 @@ def pipe_rows_as_tables(markdown: str) -> str:
                 *("| " + " | ".join(map(escape, row)) + " |" for row in run), ""]
         index = end
     return "\n".join(out)
+
+
+# The request phrasing an objective opens with, which a title leaves out: "I need a detailed report on X",
+# "I am researching X", "Please compile an overview of X".
+_REQUEST_OPENING = re.compile(
+    r"^(?:(?:i|we)\s+(?:need|want|would like|'d like|am|are|'m|'re)\s+(?:researching\s+|to\s+(?:know|understand)\s+)?"
+    r"|please\s+|can you\s+|could you\s+)?(?:(?:write|compile|prepare|produce|provide|create|give me|research)\s+)?"
+    r"(?:(?:a|an|the)\s+)?(?:(?:detailed|comprehensive|thorough|short|brief|full|in-depth)\s+)*"
+    r"(?:(?:report|overview|analysis|review|study|summary)\s+(?:on|of|about|into|covering)\s+)?",
+    re.IGNORECASE)
+_TITLE_CHARS = 110
+
+
+def report_title(doc: ReportDocument) -> str:
+    """The report's title: the synthesizer's when it gave one, else the objective's opening sentence,
+    without its request phrasing and cut before any list of particulars."""
+    given = getattr(doc.report, "title", None)
+    if isinstance(given, str) and given.strip():
+        return " ".join(given.split())
+    first = " ".join(doc.objective.strip().split("\n\n", 1)[0].split())
+    sentence = re.split(r"(?<=[.?!])\s", first, maxsplit=1)[0]
+    subject = _REQUEST_OPENING.sub("", sentence, count=1) or sentence
+    subject = re.split(r"\s*(?::|;|,\s+(?:including|such as|namely|for example)\b|\()", subject, maxsplit=1)[0]
+    subject = subject.rstrip(".").strip() or first
+    subject = subject[0].upper() + subject[1:]
+    return _truncate(subject, _TITLE_CHARS)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -901,6 +963,7 @@ _LATEX_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \IfFileExists{enumitem.sty}{\usepackage{enumitem}\setlist{itemsep=2pt,topsep=4pt}}{}
 \usepackage[hyphens]{url}
 \usepackage{hyperref}
+\IfFileExists{lastpage.sty}{\usepackage{lastpage}\newcommand{\rlpageof}{ of \pageref*{LastPage}}}{\newcommand{\rlpageof}{}}
 \definecolor{rlaccent}{HTML}{1D4ED8}
 \definecolor{rlok}{HTML}{15803D}
 \definecolor{rlwarn}{HTML}{B45309}
@@ -915,6 +978,19 @@ _LATEX_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \urlstyle{same}
 \newcommand{\rlbadge}[2]{{\setlength{\fboxsep}{1.5pt}\colorbox{#1!12}{\textcolor{#1}{\footnotesize\sffamily #2}}}}
 \newcommand{\rlnote}[1]{{\small\color{rlmuted}#1}}
+\newcommand{\rlshorttitle}{%(short_title)s}
+\IfFileExists{titlesec.sty}{\usepackage{titlesec}
+  \titleformat{\section}{\Large\bfseries\color{rlaccent}}{\thesection}{0.8em}{}[{\color{rlaccent!35}\titlerule}]
+  \titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+  \titlespacing*{\section}{0pt}{1.6em}{0.9em}}{}
+\IfFileExists{fancyhdr.sty}{\usepackage{fancyhdr}
+  \pagestyle{fancy}\fancyhf{}
+  \fancyhead[L]{\small\color{rlmuted}\rlshorttitle}
+  \fancyhead[R]{\small\color{rlmuted}Research report}
+  \fancyfoot[C]{\small\color{rlmuted}\thepage\rlpageof}
+  \renewcommand{\headrulewidth}{0.4pt}
+  \setlength{\headheight}{14pt}}{}
+\setcounter{tocdepth}{1}
 \newenvironment{rlsources}{\begin{list}{}{\setlength{\leftmargin}{3.6em}\setlength{\labelwidth}{3.2em}%%
   \setlength{\labelsep}{0.4em}\setlength{\itemsep}{0.5em}\setlength{\parsep}{0.2em}\setlength{\topsep}{0.3em}}}%%
   {\end{list}}
@@ -931,8 +1007,9 @@ def render_latex(doc: ReportDocument) -> str:
 
     md = _MarkdownToLatex(cite)
     claim_ids = doc.ledger.claim_ids()
-    body: list[str] = [_latex_title(doc, md), _latex_status(doc)]
-    body += [r"\section{Findings}", md.block(pipe_rows_as_tables(doc.report.answer)) or r"\rlnote{The report has no answer.}", ""]
+    body: list[str] = [_latex_title(doc, md)]
+    body += [r"\section{Findings}", md.block(tidy_answer(doc.report.answer)) or r"\rlnote{The report has no answer.}", ""]
+    body += _latex_disputed(doc, md, claim_ids)
     if doc.report.claims:
         claim_sources = doc.ledger.claim_source_ids()
         body += [r"\section{Key statements}", r"\begin{enumerate}"]
@@ -961,7 +1038,8 @@ def render_latex(doc: ReportDocument) -> str:
     preamble = _LATEX_PREAMBLE % {
         "pdftex_chars": pdftex_chars,
         "unicode_chars": unicode_chars,
-        "title": latex_escape(_truncate(doc.objective, 120)),
+        "title": latex_escape(report_title(doc)),
+        "short_title": _mark_scripts(latex_escape(_truncate(report_title(doc), 70))),
         "script_fonts": _SCRIPT_FONTS,
     }
     return preamble + "\n\\begin{document}\n\n" + text + "\n\\end{document}\n"
@@ -973,36 +1051,79 @@ _TITLE_OBJECTIVE_CHARS = 400
 
 
 def _latex_title(doc: ReportDocument, md: _MarkdownToLatex) -> str:
+    """The title page: the title, the objective's opening, a verification scorecard, and the run's details."""
     first = doc.objective.strip().split("\n\n", 1)[0]
     shown = _truncate(first, _TITLE_OBJECTIVE_CHARS)
     more = shown != " ".join(doc.objective.split())
     where = "the research plan in the appendix" if doc.plan else "the run record"
+    details = [("Generated", doc.generated_at.strftime("%d %B %Y, %H:%M UTC"))]
+    if doc.job_id:
+        details.append(("Job", rf"\texttt{{{latex_escape(doc.job_id)}}}"))
+    if doc.cost_usd is not None:
+        details.append(("Cost", latex_escape(f"${doc.cost_usd:.2f}")))
     return "\n".join([
-        r"\begin{center}",
-        r"{\LARGE\bfseries Research report\par}\vspace{0.6em}",
-        rf"{{\large {md.inline(shown)}\par}}\vspace{{0.4em}}",
-        *([rf"\rlnote{{The full objective is in {where}.}}\par\vspace{{0.2em}}"] if more else []),
-        rf"\rlnote{{{latex_escape(' · '.join(doc.metadata()))}}}",
-        r"\end{center}",
+        r"\begin{titlepage}",
+        r"\noindent{\color{rlaccent}\rule{\linewidth}{2pt}}\par\vspace{1.4em}",
+        r"\noindent{\small\sffamily\bfseries\color{rlaccent}RESEARCH REPORT}\par\vspace{0.9em}",
+        rf"\noindent{{\huge\bfseries\raggedright {md.inline(report_title(doc))}\par}}\vspace{{1.4em}}",
+        rf"\noindent{{\color{{rlmuted}}{md.inline(shown)}\par}}",
+        *([rf"\noindent\rlnote{{The full objective is in {where}.}}\par"] if more else []),
+        r"\vfill",
+        _latex_scorecard(doc),
+        r"\vspace{1.6em}",
+        r"\noindent{\small\begin{tabular}{@{}l@{\hspace{1.2em}}l@{}}",
+        *(rf"\textcolor{{rlmuted}}{{{label}}} & {value} \\" for label, value in details),
+        r"\end{tabular}}\par",
+        r"\vspace{0.8em}\noindent{\color{rlaccent}\rule{\linewidth}{0.6pt}}",
+        r"\end{titlepage}",
+        r"\tableofcontents",
+        r"\clearpage",
         "",
     ])
 
 
-def _latex_status(doc: ReportDocument) -> str:
+def _latex_scorecard(doc: ReportDocument) -> str:
+    """Verification and evidence as four figures, then what needs review."""
     checks = doc.verification.checks
-    clean = not doc.review_reasons
-    color = "rlok" if clean else "rlbad" if any(not check.supported for check in checks) else "rlwarn"
-    lines = [rf"\noindent\fcolorbox{{{color}}}{{{color}!5}}{{\parbox{{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}}{{%"]
-    for label, text in doc.status_lines():
-        if label == "Review" and doc.review_reasons:
-            lines.append(r"\textbf{Needs review:}")
-            lines.append(r"\begin{itemize}")
-            lines += [rf"\item {latex_escape(reason)}" for reason in doc.review_reasons]
-            lines.append(r"\end{itemize}")
-        else:
-            lines.append(rf"\textbf{{{label}:}} {latex_escape(text)}\par")
-    lines += ["}}", ""]
+    supported = sum(check.supported for check in checks)
+    major = sum(check.severity == "major" for check in checks)
+    share = supported / len(checks) if checks else 0.0
+    support_color = "rlmuted" if not checks else "rlok" if share >= 0.9 else "rlwarn" if share >= 0.7 else "rlbad"
+    figures = [
+        (f"{supported}/{len(checks)}" if checks else "--", support_color, "statements the verifier supported"),
+        (str(major), "rlbad" if major else "rlok", "rated major"),
+        (str(len(doc.sources)), "rlaccent", "sources in the ledger"),
+        (str(len(doc.ledger.results)), "rlaccent", "research questions"),
+    ]
+    cells = [rf"{{\LARGE\bfseries\color{{{color}}}{latex_escape(value)}}}\newline{{\footnotesize\color{{rlmuted}}{label}}}"
+             for value, color, label in figures]
+    lines = [r"\noindent\begin{tabular}{@{}*{4}{>{\raggedright\arraybackslash}p{0.225\linewidth}}@{}}",
+             " & ".join(cells) + r" \\", r"\end{tabular}\par\vspace{1em}"]
+    color = "rlok" if not doc.review_reasons else "rlbad" if any(not check.supported for check in checks) else "rlwarn"
+    lines.append(rf"\noindent\fcolorbox{{{color}}}{{{color}!5}}{{\parbox{{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}}{{\small%")
+    if doc.review_reasons:
+        lines += [r"\textbf{Needs review}", r"\begin{itemize}"]
+        lines += [rf"\item {latex_escape(reason)}" for reason in doc.review_reasons]
+        lines.append(r"\end{itemize}")
+    else:
+        lines.append(r"\textbf{No check flagged a problem.}")
+    lines.append("}}")
     return "\n".join(lines)
+
+
+def _latex_disputed(doc: ReportDocument, md: _MarkdownToLatex, claim_ids: set[str]) -> list[str]:
+    """The statements the verifier rated major, with its reasons, placed before the evidence behind them."""
+    major = [check for check in doc.verification.checks if check.severity == "major"]
+    if not major:
+        return []
+    lines = [r"\section{Statements the verifier disputed}",
+             (rf"The verifier rated {len(major)} of the report's statements a major problem: unsupported, wrong, or "
+              r"misleading as written. Read the findings above with these in mind."), r"\begin{enumerate}"]
+    for check in major:
+        refs = ", ".join(_claim_ref(claim_id, claim_ids) for claim_id in check.claim_ids)
+        lines.append(rf"\item {md.inline(check.statement)}" + (rf" \rlnote{{({refs})}}" if refs else "")
+                     + rf"\newline{{\small\color{{rlbad}}{md.inline(check.explanation)}}}")
+    return [*lines, r"\end{enumerate}", ""]
 
 
 def _latex_sources(doc: ReportDocument, claim_ids: set[str]) -> list[str]:

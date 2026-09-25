@@ -334,8 +334,9 @@ The two checks tell you different things. An observed source means the citation 
 
 `render.py` turns a finished run into a document for people to read. It is presentation only: no model is called, and the run is not changed. A `ReportDocument` holds the objective, plan, report, verification, ledger, and review reasons, from a `ResearchOutcome` (`ReportDocument.from_outcome`), a saved record (`from_record`), or a job in Postgres (`research-report --job-id`). Every format has the same parts:
 
-- **Status**: how many report statements the verifier supported, how much evidence there is, and the review reasons.
-- **Findings**: the report's answer, with Markdown headings, lists, tables, and links carried over, and each inline `[sN]` citation linked to its source.
+- **Status**: how many report statements the verifier supported, how much evidence there is, and the review reasons. In the PDF this is a title page: the report's title, the objective's opening paragraph, the verifier's figures, the review reasons, and the run's date, job, and cost, followed by a table of contents. The title is the synthesizer's when its report has one, and otherwise the objective's first sentence, without its request phrasing ("I need a detailed report on") and cut before any list of particulars.
+- **Findings**: the report's answer, with Markdown headings, lists, tables, and links carried over, and each inline `[sN]` citation linked to its source. Two layouts models write in plain text are converted first: a line between two rules of `=` or `-`, or a line of capitals standing alone, becomes a heading, and a run of bullets of ` | `-separated cells, under an optional `(Columns: ...)` line, becomes a table.
+- **Statements the verifier disputed** (PDF): the statements it rated major, with its reasons, right after the findings.
 - **Key statements**: each statement the report makes, the verifier's verdict on it, and the ledger claims and sources behind it.
 - **Caveats**.
 - **Sources**: every source in the ledger, not only the cited ones, under the `sN` ID the report cites it by. Scholarly works (a DOI, an arXiv ID, a paper, or a scholarly publication status) are listed apart from web and other sources and from attachments. Each entry says whether the report cites it, which claims rest on it, and whether it was retracted or never returned by a tool (`source_check: not_found`).
@@ -349,7 +350,7 @@ The two checks tell you different things. An observed source means the citation 
 | `bib` | Every source as a BibTeX entry keyed by its `sN` ID, for a reference manager |
 | `json` | A record that `research-report` renders again |
 
-pdfLaTeX gets a definition for every character beyond Latin Extended-A in the text: math symbols and Greek become math, and a character with no definition prints as its code point, such as `[U+4E2D]`. XeLaTeX and LuaLaTeX print characters from the font, so compile with one of them, and a font that covers the script, for reports in non-Latin scripts. Sources carry titles, identifiers, and dates but no authors, because `SourceRef` records none.
+pdfLaTeX gets a definition for every character beyond Latin Extended-A in the text: math symbols and Greek become math, and a character with no definition prints as its code point, such as `[U+4E2D]`. Thai and CJK text is set in the first installed Noto font for its script under XeLaTeX or LuaLaTeX, and XeTeX breaks its lines by the script's locale; without `--engine`, a report with such text compiles with XeLaTeX when it is installed. LuaLaTeX needs `luaotfload` (Debian's `texlive-luatex`) to load system fonts. PDF tables size each column by its text and longest word, and use smaller type when they have four or more columns. Sources carry titles, identifiers, and dates but no authors, because `SourceRef` records none.
 
 ## What gets stored
 

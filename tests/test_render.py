@@ -286,7 +286,7 @@ def test_a_long_objective_is_cut_on_the_title_page_and_printed_whole_in_the_plan
     tail = "BENCHMARK CONSTRAINT: do not open https://example.org/blocked"
     doc = replace_field(_document(), objective="Compare **pension** schemes. " + "Detail. " * 80 + "\n\n" + tail)
     tex = render_latex(doc)
-    title = tex[tex.index(r"{\LARGE\bfseries Research report"):tex.index(r"\section{Findings}")]
+    title = tex[tex.index(r"\begin{titlepage}"):tex.index(r"\end{titlepage}")]
     assert r"\textbf{pension}" in title and "**" not in title
     assert tail.split(":")[0] not in title and "The full objective is in the research plan" in title
     plan = tex[tex.index(r"\section{Research plan}"):]
@@ -363,3 +363,26 @@ def test_table_columns_fit_their_longest_word_and_wide_tables_use_smaller_type()
     wide = "| " + " | ".join(f"c{i}" for i in range(6)) + " |\n|" + "---|" * 6 + "\n| " + " | ".join("x/y" for _ in range(6)) + " |"
     tex = render._MarkdownToLatex(lambda ids: "").block(wide)
     assert tex.startswith(r"{\footnotesize") and r"x/\allowbreak{}y" in tex
+
+
+def test_the_title_page_has_a_title_a_scorecard_and_the_disputed_statements_follow_the_findings() -> None:
+    from dataclasses import replace as replace_field
+
+    doc = replace_field(_document(), objective="I need a detailed report on pension gaps in Asia, including: Indonesia.")
+    tex = render_latex(doc)
+    page = tex[tex.index(r"\begin{titlepage}"):tex.index(r"\end{titlepage}")]
+    assert r"\huge\bfseries\raggedright Pension gaps in Asia" in page
+    checks = doc.verification.checks
+    assert f"{sum(c.supported for c in checks)}/{len(checks)}" in page and "rated major" in page
+    assert r"\tableofcontents" in tex and r"\newcommand{\rlshorttitle}{Pension gaps in Asia}" in tex
+    if any(c.severity == "major" for c in checks):
+        assert tex.index(r"\section{Findings}") < tex.index(r"\section{Statements the verifier disputed}") \
+            < tex.index(r"\section{Key statements}")
+
+
+def test_plain_text_headings_become_markdown_headings() -> None:
+    text = ("Scope note.\n\n=====\nSECTION 1 - PROFILES\n=====\n\nINDONESIA\n1. JP\n- Type: DB\n\n"
+            "A sentence with CAPS inside.\nNOT A HEADING, it follows text")
+    tidy = render.plain_headings_as_markdown(text)
+    assert "# SECTION 1 - PROFILES" in tidy and "## INDONESIA\n\n1. JP" in tidy and "=====" not in tidy
+    assert "## NOT A HEADING" not in tidy
