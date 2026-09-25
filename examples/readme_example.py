@@ -34,6 +34,10 @@ from research_loop.tools import ResearchToolMode
 
 QUESTION = "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
 SCOUT_TOKENS = 400_000
+# Deep dives call 8-9 tools per request; at quality's 40 tool calls they stopped after 6 of 20
+# requests and were salvaged every time. These let one reach its own result.
+DEEP_DIVE_TOOL_CALLS = 80
+DEEP_DIVE_TOKENS = 400_000
 NOTES = [
     "Keep preprints and published papers distinct.",
     "Label scores a vendor reports about its own model as vendor claims.",
@@ -55,6 +59,13 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings)
     policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], total_tokens_limit=SCOUT_TOKENS)
     if policy.cheap_scout:
         policy.cheap_scout = replace(policy.cheap_scout, total_tokens_limit=SCOUT_TOKENS)
+    # Their dollar caps are unchanged, as is the job's total.
+    policy.routes[ResearchRole.DEEP_DIVE] = replace(policy.routes[ResearchRole.DEEP_DIVE],
+                                                    max_tool_calls=DEEP_DIVE_TOOL_CALLS,
+                                                    total_tokens_limit=DEEP_DIVE_TOKENS)
+    if policy.alternate_deep_dive:
+        policy.alternate_deep_dive = replace(policy.alternate_deep_dive, max_tool_calls=DEEP_DIVE_TOOL_CALLS,
+                                             total_tokens_limit=DEEP_DIVE_TOKENS)
     policy.validate()
     config = ResearchConfig(
         max_verification_rounds=1,
