@@ -34,7 +34,7 @@ from research_loop.benchmarks import BenchmarkCaseSpec, load_suite
 from research_loop.db import open_migrated_pool
 from research_loop.experiment import git_state
 from research_loop.observability import configure_logfire
-from research_loop.policy import ModelPolicy, ModelRoute
+from research_loop.policy import ModelPolicy, ModelRoute, apply_model_effort
 from research_loop.repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
@@ -75,8 +75,7 @@ STUDY_MODELS = {
     # Flash, as the scout trial decided (docs/settings-study.md), and glm-5.3 synthesizing at SYNTHESIS_EFFORT,
     # both chosen 25 September 2026. The value preset keeps glm-5.3 scouting and Opus 5.5 synthesizing until a
     # pilot confirms them, so build() sets these two routes itself.
-    # Flash still thinks at the copied scout effort, `high`. The intended default, not yet applied, is max
-    # (`xhigh`, Z.ai's `reasoning_effort: max`) whenever a route specifies Flash. See the decision log.
+    # Flash thinks at max (`xhigh`), as every Flash route does (policy.MODEL_EFFORT), since 25 September 2026.
     "scout": "zai:glm-5.3-flash",
     "gap_analyst": "openai:gpt-6-sol",
     "deep_dive": "openai:gpt-6-sol",
@@ -129,8 +128,8 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
     for role in FINISHING_ROLES:
         policy.routes[role] = _limited(policy.routes[role], {"total_tokens_limit": FINISHING_TOKENS})
     if policy_name == "value":
-        scout = replace(policy.routes[ResearchRole.SCOUT], model=STUDY_MODELS["scout"])
-        policy.routes[ResearchRole.SCOUT] = scout
+        policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], model=STUDY_MODELS["scout"])
+        apply_model_effort(policy)  # the scout is now on Flash
         synthesizer = policy.routes[ResearchRole.SYNTHESIZER]
         policy.routes[ResearchRole.SYNTHESIZER] = replace(
             synthesizer, model=STUDY_MODELS["synthesizer"], thinking=SYNTHESIS_EFFORT,

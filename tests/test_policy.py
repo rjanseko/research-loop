@@ -335,3 +335,14 @@ def test_anthropic_planners_and_synthesizers_fall_back_to_the_gap_model() -> Non
             assert route.snapshot()["refusal_fallback"] == route.refusal_fallback
     with pytest.raises(ValueError, match="refusal_fallback"):
         ModelRoute("m", 1, 0, 1, refusal_fallback=" ")
+
+
+def test_every_flash_route_thinks_at_max_and_a_route_moved_off_flash_keeps_its_preset_effort() -> None:
+    for name in ("glm-heavy", "value"):
+        assert get_policy(name).cheap_scout.thinking == "xhigh"
+    flash = get_policy("quality", model_overrides={"RESEARCH_SCOUT_MODEL": "zai:glm-5.3-flash"})
+    assert flash.for_role(ResearchRole.SCOUT).thinking == "xhigh"
+    assert get_policy("quality").for_role(ResearchRole.SCOUT).thinking == "high"
+    moved = get_policy("value", model_overrides={"RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3"})
+    assert moved.cheap_scout.thinking == "low"
+

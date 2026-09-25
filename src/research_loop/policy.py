@@ -389,6 +389,25 @@ def _value_policy() -> ModelPolicy:
     )
 
 
+# The effort a route on one of these models runs at, whatever effort the preset gave the route. Decided
+# 25 September 2026 for Flash: its routes had been copied from glm-5.3's at `high` or `low`. `xhigh` is
+# Z.ai's `reasoning_effort: max`. A route moved off one of these models keeps its preset's effort.
+MODEL_EFFORT: dict[str, ThinkingEffort] = {"zai:glm-5.3-flash": "xhigh"}
+
+
+def apply_model_effort(policy: ModelPolicy) -> ModelPolicy:
+    """Set every route on a MODEL_EFFORT model to that model's effort; run once a policy's models are final."""
+    def fixed(route: ModelRoute | None) -> ModelRoute | None:
+        if route is None or route.model not in MODEL_EFFORT:
+            return route
+        return replace(route, thinking=MODEL_EFFORT[route.model])
+    policy.routes = {role: fixed(route) for role, route in policy.routes.items()}
+    policy.cheap_scout = fixed(policy.cheap_scout)
+    policy.multimodal_scout = fixed(policy.multimodal_scout)
+    policy.alternate_deep_dive = fixed(policy.alternate_deep_dive)
+    return policy
+
+
 def _synthetic_policy() -> ModelPolicy:
     route = ModelRoute("synthetic:fake", 5, 5, 5_000)
     return ModelPolicy("synthetic", {role: route for role in ResearchRole}, planner_question_range=(1, 1))
@@ -402,7 +421,7 @@ _POLICY_FACTORIES = {
     "synthetic": _synthetic_policy,
 }
 # Built at import from the environment at that time; get_policy() builds fresh routes.
-POLICY_PRESETS: dict[str, ModelPolicy] = {name: factory() for name, factory in _POLICY_FACTORIES.items()}
+POLICY_PRESETS: dict[str, ModelPolicy] = {name: apply_model_effort(factory()) for name, factory in _POLICY_FACTORIES.items()}
 
 
 def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -> ModelPolicy:
@@ -412,7 +431,7 @@ def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -
     except KeyError as exc:
         raise ValueError(f"unknown policy {name!r}; choose from {sorted(_POLICY_FACTORIES)}") from exc
     if not model_overrides or name == "synthetic":
-        return policy
+        return apply_model_effort(policy)
 
     route_names = {
         ResearchRole.PLANNER: "RESEARCH_PLANNER_MODEL",
@@ -449,4 +468,4 @@ def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -
         policy.multimodal_scout = replace(policy.multimodal_scout, model=model)
     if policy.alternate_deep_dive and (model := model_overrides.get("RESEARCH_ALT_DEEP_MODEL")):
         policy.alternate_deep_dive = replace(policy.alternate_deep_dive, model=model)
-    return policy
+    return apply_model_effort(policy)
