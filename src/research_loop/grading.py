@@ -184,7 +184,7 @@ def grade_rows(report: EvaluationReport, judges: Sequence[RubricJudge]) -> list[
 
 
 def jobs_from_record(path: Path) -> list[tuple[str, UUID]]:
-    """(case ID, job ID) for each succeeded run in a study step record; failed runs have no job to grade."""
+    """(case ID, job ID) for each succeeded run in a study step record; failed runs have no report to grade."""
     record = json.loads(path.read_text(encoding="utf-8"))
     return [(run["case_id"], UUID(run["job_id"])) for run in record["runs"] if run.get("status") == "succeeded"]
 

@@ -7,7 +7,8 @@ record naming the job each case produced, which `research-grade --jobs-from` rea
 Every paid run is set up the way the study's replays and depth analysis need it:
 
 - Scouts and deep dives get generous limits (below), so where searching stops paying off shows in
-  their transcripts instead of being cut off; a loop that still reaches a limit is salvaged.
+  their transcripts instead of being cut off; a loop that still reaches a limit is salvaged. Gap
+  analysis, synthesis, and verification get token limits that fit the larger ledgers this makes.
 - Each case runs under a total USD cap (--budget, $5), $1 of it held for synthesis and verification.
 - The job is stored in Postgres with every agent's full messages (research_task_messages).
 - Every search, fetch, and scholarly response is recorded in the study's own cache directory, in
@@ -26,6 +27,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from research_loop import ResearchConfig, ResearchConstraints, ResearchLoop, get_policy
 from research_loop.benchmarks import BenchmarkCaseSpec, load_suite
@@ -54,6 +56,14 @@ SCOUT_LIMITS = {"max_requests": 24, "max_tool_calls": 48, "total_tokens_limit": 
 # The pilot's deep dives had every source they cited by request 3 but ran on to 13; 12 requests leaves
 # four times that to confirm the plateau without paying for the preset's 20.
 DEEP_DIVE_LIMITS = {"max_requests": 12, "max_tool_calls": 80, "total_tokens_limit": STUDY_TOKENS}
+# The roles that read the research. Deeper research makes a larger ledger, and a finishing call refuses a
+# prompt that could not fit one validation retry (about 2 x prompt + 3 x answer) in its token limit: the
+# second pilot's five scouts made a 139,000-character gap-analysis prompt, which the preset's 70k refused.
+# 600k covers ledgers several times that; dollars, not tokens, bound these calls. scripts/study_preflight.py
+# checks a stored run's research against them before a paid step.
+FINISHING_TOKENS = 600_000
+FINISHING_ROLES = (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER)
+STUDY_QUESTION_RANGE = (3, 8)
 CACHE_MODES = ("record", "reuse", "replay", "off")
 
 
@@ -65,8 +75,8 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
           policy_name: str = "value", cache_mode: str = "record") -> tuple[ModelPolicy, ResearchConfig]:
     """The study's policy and run configuration; without `paid`, the synthetic policy with the same run setup."""
     config = ResearchConfig(
-        # The same trimmed run as examples/readme_example.py, which fits the budget: three to five
-        # questions, two deep dives a round, one verification round.
+        # The README example's trimmed run, which fits the budget: two deep dives a round and one
+        # verification round. Its three to five questions are widened below.
         max_verification_rounds=1,
         max_deep_dives_per_round=2,
         salvage_exhausted_research=True,
@@ -78,20 +88,43 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
     policy = get_policy(policy_name, model_overrides=settings.model_overrides)
     policy.job_cost_limit = budget
     policy.job_reserve_usd = reserve
-    policy.planner_question_range = (3, 5)
+    # Three to eight questions: the second pilot's seven-country task got five, so three scouts each covered
+    # two countries and ran into their request limit, while the one-country scout stopped by itself at 15.
+    # A plan too small to give each scout one subject makes breadth look like depth. Scouts cost about $0.25
+    # each and grow linearly with their number, where a longer loop grows with the square of its requests.
+    policy.planner_question_range = STUDY_QUESTION_RANGE
     policy.routes[ResearchRole.SCOUT] = _limited(policy.routes[ResearchRole.SCOUT], SCOUT_LIMITS)
     policy.cheap_scout = _limited(policy.cheap_scout, SCOUT_LIMITS)
     policy.routes[ResearchRole.DEEP_DIVE] = _limited(policy.routes[ResearchRole.DEEP_DIVE], DEEP_DIVE_LIMITS)
     policy.alternate_deep_dive = _limited(policy.alternate_deep_dive, DEEP_DIVE_LIMITS)
+    for role in FINISHING_ROLES:
+        policy.routes[role] = _limited(policy.routes[role], {"total_tokens_limit": FINISHING_TOKENS})
     policy.validate()
     return policy, config
+
+
+class _JobRecorder:
+    """The repository the loop writes to, noting each job it creates, so a failed case still names its job."""
+
+    def __init__(self, repo: Any) -> None:
+        self._repo = repo
+        self.job_ids: list[UUID] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._repo, name)
+
+    async def create_job(self, **kwargs: Any) -> UUID:
+        job_id = await self._repo.create_job(**kwargs)
+        self.job_ids.append(job_id)
+        return job_id
 
 
 async def run_case(case: BenchmarkCaseSpec, *, paid: bool, policy: ModelPolicy, config: ResearchConfig,
                    settings: ResearchSettings, repo: Any, suite_name: str) -> dict[str, Any]:
     """One case's entry in the step record: its job, cost, and review reasons, or the error type."""
     loop_class = ResearchLoop if paid else SyntheticResearchLoop
-    loop = loop_class(policy, config, repository=repo, settings=settings)
+    recorder = _JobRecorder(repo)
+    loop = loop_class(policy, config, repository=recorder, settings=settings)
     started = datetime.now(UTC)
     entry: dict[str, Any] = {"case_id": case.case_id, "started_at": started.isoformat()}
     try:
@@ -99,7 +132,10 @@ async def run_case(case: BenchmarkCaseSpec, *, paid: bool, policy: ModelPolicy, 
             blocked_urls=case.blocked_urls, benchmark_id=case.benchmark_id, benchmark_case_id=case.case_id,
             benchmark_suite=suite_name))
     except Exception as exc:  # noqa: BLE001 - one failed case must not stop the step; the type only, as bodies can leak
-        return entry | {"status": "failed", "error": type(exc).__name__, "finished_at": datetime.now(UTC).isoformat()}
+        # The job, if one was created, keeps the research spent before the failure for scripts/study_preflight.py.
+        job = {"job_id": str(recorder.job_ids[-1])} if recorder.job_ids else {}
+        return entry | {"status": "failed", "error": type(exc).__name__, **job,
+                        "finished_at": datetime.now(UTC).isoformat()}
     return entry | {
         "status": "succeeded",
         "job_id": str(outcome.job_id),

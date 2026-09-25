@@ -44,13 +44,17 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
     preset = settings_study.get_policy("value")
     policy, config = settings_study.build(True, 4.0, 1.5, ResearchSettings.from_env({}), cache_mode="reuse")
     assert (policy.name, policy.job_cost_limit, policy.job_reserve_usd, policy.planner_question_range) == (
-        "value", 4.0, 1.5, (3, 5))
+        "value", 4.0, 1.5, (3, 8))
     for route, preset_route in ((policy.routes[ResearchRole.SCOUT], preset.routes[ResearchRole.SCOUT]),
                                 (policy.cheap_scout, preset.cheap_scout)):
         assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (24, 48, 2_000_000)
         assert route.cost_limit == preset_route.cost_limit and route.model == preset_route.model
     for route in (policy.routes[ResearchRole.DEEP_DIVE], policy.alternate_deep_dive):
         assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (12, 80, 2_000_000)
+    for role in (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER):
+        route = policy.routes[role]
+        assert route.total_tokens_limit == 600_000 and route.model == preset.routes[role].model
+        assert route.settings == preset.routes[role].settings  # e.g. the synthesizer's max_tokens stays
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
 
@@ -61,9 +65,10 @@ async def test_a_synthetic_step_records_each_case_and_carries_on_past_a_failure(
     original = settings_study.SyntheticResearchLoop.run
 
     async def fail_one(self, objective, **kwargs):
+        outcome = await original(self, objective, **kwargs)
         if kwargs["constraints"].benchmark_case_id == specs[0].case_id:
             raise RuntimeError("provider body that must not be recorded")
-        return await original(self, objective, **kwargs)
+        return outcome
 
     monkeypatch.setattr(settings_study.SyntheticResearchLoop, "run", fail_one)
     output = tmp_path / "step.json"
@@ -74,6 +79,7 @@ async def test_a_synthetic_step_records_each_case_and_carries_on_past_a_failure(
     assert json.loads(output.read_text()) == json.loads(json.dumps(record, default=str))
     assert [run["status"] for run in record["runs"]] == ["failed", "succeeded", "succeeded"]
     assert record["runs"][0]["error"] == "RuntimeError" and "provider body" not in output.read_text()
+    assert record["runs"][0]["job_id"] not in {run["job_id"] for run in record["runs"][1:]}  # the failed run's own job
     assert record["step"] == "rehearsal" and record["cache"]["mode"] == "record" and record["git"]["commit"]
     # research-grade --jobs-from takes the succeeded runs only.
     assert [case for case, _ in jobs_from_record(output)] == [specs[1].case_id, specs[2].case_id]

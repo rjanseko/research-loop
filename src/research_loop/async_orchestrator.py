@@ -350,6 +350,44 @@ class PromptExceedsRetryBudget(RuntimeError):
     """A finishing prompt cannot fit one validation retry inside its token limit."""
 
 
+# The finishing roles' prompts, shared with scripts/study_preflight.py so it measures the prompts a run sends.
+def gap_analysis_prompt(objective: str, plan: ResearchPlan, ledger: EvidenceLedger,
+                        constraints: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "objective": objective,
+            "plan": plan.model_dump(mode="json"),
+            **ledger.prompt_view("results", include_search=True),
+            "constraints": constraints,
+        },
+        ensure_ascii=False,
+    )
+
+
+def synthesis_prompt(objective: str, ledger: EvidenceLedger, constraints: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "objective": objective,
+            **ledger.prompt_view("evidence"),
+            "constraints": constraints,
+        },
+        ensure_ascii=False,
+    )
+
+
+def verification_prompt(objective: str, report: FinalReport, ledger: EvidenceLedger,
+                        constraints: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "objective": objective,
+            "report": report.model_dump(mode="json"),
+            **ledger.prompt_view("evidence", claim_ids=report.claim_ids_used),
+            "constraints": constraints,
+        },
+        ensure_ascii=False,
+    )
+
+
 class AsyncResearchLoop:
     """Legacy v4-style plain-async orchestration kept for parity/regression."""
 
@@ -978,15 +1016,7 @@ class AsyncResearchLoop:
             agent=gap_agent,
             role=ResearchRole.GAP_ANALYST,
             route=self.policy.for_role(ResearchRole.GAP_ANALYST),
-            prompt=json.dumps(
-                {
-                    "objective": objective,
-                    "plan": plan.model_dump(mode="json"),
-                    **ledger.prompt_view("results", include_search=True),
-                    "constraints": self._constraints_payload(constraints, attachments),
-                },
-                ensure_ascii=False,
-            ),
+            prompt=gap_analysis_prompt(objective, plan, ledger, self._constraints_payload(constraints, attachments)),
             task_ids=task_ids,
             deps=self._ledger_refs(ledger),
             require_retry_room=True,
@@ -1010,14 +1040,7 @@ class AsyncResearchLoop:
             route=route,
             deps=self._ledger_refs(ledger, sources=True),
             require_retry_room=True,
-            prompt=json.dumps(
-                {
-                    "objective": objective,
-                    **ledger.prompt_view("evidence"),
-                    "constraints": self._constraints_payload(constraints, attachments),
-                },
-                ensure_ascii=False,
-            ),
+            prompt=synthesis_prompt(objective, ledger, self._constraints_payload(constraints, attachments)),
         )
 
     async def _verify(
@@ -1038,15 +1061,7 @@ class AsyncResearchLoop:
             role=ResearchRole.VERIFIER,
             route=route,
             deps=self._ledger_refs(ledger),
-            prompt=json.dumps(
-                {
-                    "objective": objective,
-                    "report": report.model_dump(mode="json"),
-                    **ledger.prompt_view("evidence", claim_ids=report.claim_ids_used),
-                    "constraints": self._constraints_payload(constraints, attachments),
-                },
-                ensure_ascii=False,
-            ),
+            prompt=verification_prompt(objective, report, ledger, self._constraints_payload(constraints, attachments)),
             task_ids=task_ids,
             require_retry_room=True,
         )

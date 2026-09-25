@@ -121,11 +121,16 @@ def retry_token_budget(
     provider = route.model.partition(":")[0]
     ratio = _CHARS_PER_INPUT_TOKEN.get(provider, _DEFAULT_CHARS_PER_INPUT_TOKEN)
     prompt_tokens = math.ceil(len(prompt) / ratio)
+    return 2 * prompt_tokens + 3 * retry_output_tokens(route, role, output_allowance=output_allowance)
+
+
+def retry_output_tokens(route: ModelRoute, role: ResearchRole, *, output_allowance: int | None = None) -> int:
+    """The answer size `retry_token_budget` assumes: the role's allowance, or a lower route ``max_tokens``."""
     output_tokens = _RETRY_OUTPUT_ALLOWANCE[role] if output_allowance is None else output_allowance
     cap = route.settings.get("max_tokens")
     if cap is not None:
         output_tokens = min(output_tokens, int(cap))
-    return 2 * prompt_tokens + 3 * output_tokens
+    return output_tokens
 
 
 class ModelPolicy:
