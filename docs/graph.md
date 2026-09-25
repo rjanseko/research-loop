@@ -6,22 +6,25 @@
 
 ```mermaid
 flowchart TB
-    start(["Objective"]) --> plan["Plan research<br/><i>planner</i>"]
+    start(["Start"]) --> plan["Plan research<br/><i>planner</i>"]
     plan -->|"one work item per question"| scout[["Scout question<br/><i>scout</i>"]]
-    scout --> record1["Record scout evidence<br/><i>join, then add to the ledger in plan order</i>"]
-    record1 --> gaps["Analyze evidence gaps<br/><i>gap_analyst, plus a low-confidence check</i>"]
-    gaps --> gapdecision{"Material gaps?"}
-    gapdecision -->|"material gaps"| deep[["Initial deep dive<br/><i>deep_dive, most severe gaps first</i>"]]
-    deep --> record2["Record initial deep-dive evidence"]
-    record2 --> synth
-    gapdecision -->|"evidence sufficient"| synth["Synthesize report<br/><i>synthesizer</i>"]
-    synth --> verify["Verify report<br/><i>verifier</i>"]
-    verify --> route{"Follow-ups and<br/>rounds left?"}
-    route -->|"complete"| finalize["Finalize research"]
-    finalize --> done(["Report, verification, ledger"])
-    route -->|"research follow-ups"| vdeep[["Verification deep dive<br/><i>deep_dive, attempt 1 and up</i>"]]
-    vdeep --> record3["Record verification evidence"]
-    record3 --> synth
+    scout -->|"join"| record_scouts["Record scout evidence<br/><i>in plan order</i>"]
+    record_scouts --> analyze_gaps["Analyze evidence gaps<br/><i>gap_analyst</i>"]
+    analyze_gaps --> initial_gap_decision{"Resolve material gaps<br/>before synthesis"}
+    initial_gap_decision -->|"material gaps"| prepare_initial["Prepare initial deep dives"]
+    prepare_initial -->|"one work item per gap"| initial_deep_dive[["Initial deep dive<br/><i>deep_dive</i>"]]
+    initial_deep_dive -->|"join"| record_initial["Record initial deep-dive evidence<br/><i>in plan order</i>"]
+    record_initial --> synthesize
+    initial_gap_decision -->|"evidence sufficient"| synthesize["Synthesize report<br/><i>synthesizer</i>"]
+    synthesize --> verify["Verify report<br/><i>verifier</i>"]
+    verify --> route["Route verification result"]
+    route --> verification_decision{"Finish or research<br/>verifier follow-ups"}
+    verification_decision -->|"complete"| finalize["Finalize research"]
+    finalize --> finish(["End"])
+    verification_decision -->|"research follow-ups"| prepare_verification["Prepare verification deep dives"]
+    prepare_verification -->|"one work item per follow-up"| verification_deep_dive[["Verification deep dive<br/><i>deep_dive</i>"]]
+    verification_deep_dive -->|"join"| record_verification["Record verification evidence<br/><i>in plan order</i>"]
+    record_verification --> synthesize
 
     classDef planner stroke:#6366f1,stroke-width:2px
     classDef scout stroke:#14b8a6,stroke-width:2px
@@ -33,15 +36,15 @@ flowchart TB
     classDef done stroke:#eab308,stroke-width:2px
     class plan planner
     class scout scout
-    class record1,record2,record3 join
-    class gaps gap
-    class deep,vdeep deep
-    class synth synth
+    class record_scouts,record_initial,record_verification,prepare_initial,prepare_verification,route join
+    class analyze_gaps gap
+    class initial_deep_dive,verification_deep_dive deep
+    class synthesize synth
     class verify verify
-    class start,finalize,done done
+    class start,finalize,finish done
 ```
 
-Double-edged boxes run once per question or gap, in parallel. The steps that prepare each batch of deep dives are folded into the deep-dive boxes. The [README example](../README.md#example-one-question-through-the-graph) follows one question through this graph.
+Each box is named after its step in `graph.py`. Double-edged boxes run once per question or gap, in parallel. The [README example](../README.md#example-one-question-through-the-graph) follows one question through this graph.
 
 The authoritative diagram comes from the executable graph:
 
