@@ -409,6 +409,31 @@ class PromptExceedsRetryBudget(RuntimeError):
     """A finishing prompt cannot fit one validation retry inside its token limit."""
 
 
+# A survey of the objective before it is planned, by the ordinary scout agent: an experiment (docs/settings-study.md),
+# not yet a step of either graph. Its result reaches the planner only, not the evidence ledger, since the
+# ledger's questions are the plan's.
+LANDSCAPE_QUESTION_ID = "landscape"
+
+
+def landscape_question(objective: str) -> ResearchQuestion:
+    return ResearchQuestion(
+        id=LANDSCAPE_QUESTION_ID, priority=3, expected_difficulty="low",
+        question=("Before this objective is planned, survey what it covers: the entities, jurisdictions, programmes, "
+                  "or items it asks about, each named as its authoritative sources name it, and which sources "
+                  "describe each. Map breadth, not depth: do not answer the objective's questions. Objective: "
+                  + objective))
+
+
+def landscape_payload(result: ResearchResult) -> dict[str, Any]:
+    """What the planner is shown of a landscape survey: its conclusion and claim statements, not its evidence."""
+    return {
+        "landscape": {"summary": result.conclusion, "findings": [claim.statement for claim in result.claims]},
+        "landscape_guidance": ("`landscape` is a quick survey of the objective by a research agent. Use it to "
+                               "name the entities the questions should cover and to split the questions along "
+                               "them; it is not evidence, and the questions must still be researched."),
+    }
+
+
 # The finishing roles' prompts, shared with scripts/study_preflight.py so it measures the prompts a run sends.
 def gap_analysis_prompt(objective: str, plan: ResearchPlan, ledger: EvidenceLedger,
                         constraints: dict[str, Any]) -> str:
@@ -1009,7 +1034,12 @@ class AsyncResearchLoop:
         objective: str,
         constraints: ResearchConstraints,
         attachments: AttachmentCorpus | None,
+        landscape: ResearchResult | None = None,
     ) -> ResearchPlan:
+        """Plan the objective; `landscape`, a scout's survey of it (landscape_question), goes to the planner too.
+
+        Without a landscape the prompt is unchanged.
+        """
         qmin, qmax = self.policy.planner_question_range
         plan: ResearchPlan = await self._run_agent(
             job_id=job_id,
@@ -1025,6 +1055,7 @@ class AsyncResearchLoop:
                         "is broad enough. Use fewer when additional questions would be artificial or redundant."
                     ),
                     **self._budget_payload(),
+                    **(landscape_payload(landscape) if landscape is not None else {}),
                 },
                 ensure_ascii=False,
             ),

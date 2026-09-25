@@ -274,3 +274,27 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Decision rules.* Flash replaces `glm-5.3` as the scout if the baseline's grade lies within the spread of the three Flash runs' grades and Flash's share of quotes not found in tool output is no higher. Three merged Flash runs are an option if they grade above the baseline at under half its scouting cost. `glm-5.3` at `low` replaces `high` if its grade lies within the Flash spread of the baseline's and it costs less. Otherwise nothing changes. The baseline and `low` are one sample each, so a result near a boundary is recorded as undecided rather than repeated.
 - *Cap.* $3.50 on scouting and synthesis; the judge adds about $0.05 a report.
 - *Storage.* This first run keeps its results in memory and writes only its JSON record, as the prompt trials did; it has no transcripts. Trials run after it store every unit as a Postgres job marked with its trial and arm, with transcripts and costs, so they can be profiled, graded, and rendered afterwards and a crash cannot lose their spend.
+
+**Scout trial, ran 25 September 2026. $1.80 of the $3.50 cap, and $0.47 for the judge.**
+
+- *Ran.* On the seventh pilot's five-question plan, from the code before the search and fetch fixes, and before trials were stored, so the arms have no transcripts. Grades are the judge's share of `task2+`'s rubric points met by a report `gpt-6-luna` wrote from the arm's scout results alone, one grading each. Scout-only reports score low, and 0 on the rubric's analysis points, which ask for a comparison no scout was asked to write; only differences between arms matter.
+
+| Arm | Questions answered | Claims | Cited sources | Quotes not found | Scouting cost | Grade |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline, `glm-5.3` at `high` (the pilot's scouts) | 5 of 5 | 72 | 51 | 8 of 122 | $1.84 | 0.21 |
+| `glm-5.3-flash`, run 1 | 5 of 5 | 66 | 48 | 3 of 72 | $0.17 | 0.22 |
+| `glm-5.3-flash`, run 2 | 5 of 5 | 66 | 52 | 3 of 105 | $0.15 | 0.22 |
+| `glm-5.3-flash`, run 3 | 4 of 5 | 57 | 39 | 6 of 95 | $0.19 | 0.12 |
+| The three Flash runs merged | 5 of 5 | 189 | 119 | 12 of 272 | $0.51 | 0.26 |
+| `glm-5.3` at `low` | 5 of 5 | 62 | 42 | 6 of 69 | $1.23 | 0.18 |
+
+- *Decided, by the rules set before the run.* **Flash replaces `glm-5.3` as the scout**: the baseline's 0.21 lies within Flash's 0.12 to 0.22, and Flash's quotes not found in tool output, 12 of 272 (4%), are fewer than the baseline's 8 of 122 (7%), at about a tenth of the cost. **Three merged Flash runs pass as an option**: 0.26 against 0.21, at $0.51 against $1.84. **`glm-5.3` at `low` passes too** (0.18, $1.23), and is moot while Flash scouts.
+- *Caveats.* One grading per report, and step 3 has not yet measured the judge's variation, so 0.26 against 0.21 is a small margin. Flash's third run lost a question: its two-country scout reached its limit and salvage returned no claims, taking two countries out of the report, which is the whole of its low grade; Flash is less steady than its mean suggests on broad questions. Flash's dead tool calls were 29 to 39% of its calls, as `glm-5.3`'s were, since the fixes came after.
+- *Next.* Flash is the study's scout from the next run. Running three Flash scouts per question and merging them is a change to how scouts are dispatched, with a larger ledger for synthesis and verification to pay for, so it is a separate decision.
+
+**Planner trial, planned 25 September 2026, before it ran.**
+
+- *Question.* Do several planner calls, or a landscape survey before planning, give steadier plans than one call? The planner split `task2+` four ways across runs.
+- *Method.* `scripts/plan_trial.py` plans each deep case (`task2+`, `task8`, `task17+`, `task26`) twice in each of three arms: `single`, today's call; `best-of-3`, three calls and a `gpt-6-luna` selector choosing against fixed criteria; and `landscape`, a Flash scout survey (8 requests, 16 tool calls) whose summary and findings the planner is given. Measured without a model: agreement, how alike a case's two plans are, question by question by shared words; and coverage, the share of the entities the objective names that some question names.
+- *Decision rules.* An arm is adopted if its mean agreement exceeds `single`'s by at least 0.15 and its mean coverage is no more than 0.02 below. If both pass, the one with the higher agreement goes into the next pilot, and the other is tried with it only if that pilot's plan still varies. Otherwise planning stays as it is.
+- *Cap.* $2.50.
