@@ -30,6 +30,9 @@ postgres = ["psycopg[binary,pool]>=3.2"]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17"]
 all = ["research-loop[eval,postgres,test]"]
 
+[project.scripts]
+research = "research_loop.cli:main"
+
 [tool.setuptools.package-data]
 research_loop = ["migrations/*.sql", "prices.toml"]
 

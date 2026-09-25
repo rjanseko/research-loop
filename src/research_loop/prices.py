@@ -109,3 +109,21 @@ class OverridingUpdatePrices(UpdatePrices):
             current = get_snapshot()
             return current if isinstance(current, _OverriddenSnapshot) else with_overrides(current)
         return with_overrides(fetched)
+
+
+def price_per_million(model_id: str) -> tuple[Decimal, Decimal] | None:
+    """USD per million input and output tokens for a `provider:model` ID, corrections included; None when
+    the price data has none, in which case calls have no cost and no cost cap can hold on them.
+
+    Priced at 100k tokens and scaled, so a price tier for long prompts does not set the rate.
+    """
+    from genai_prices import calc_price
+    from pydantic_ai.usage import RequestUsage
+
+    install_price_overrides()
+    provider, _, name = model_id.partition(":")
+    try:
+        return tuple(calc_price(usage, name, provider_id=provider).total_price * 10  # type: ignore[return-value]
+                     for usage in (RequestUsage(input_tokens=100_000), RequestUsage(output_tokens=100_000)))
+    except LookupError:
+        return None

@@ -1,4 +1,4 @@
-.PHONY: setup skills lock test lint graph diagnose postgres-up postgres-down db-status migrate
+.PHONY: setup skills lock test lint doctor postgres-up postgres-down db-status migrate
 
 VENV := .venv/bin
 
@@ -21,14 +21,11 @@ test:
 lint:
 	$(VENV)/ruff check .
 
-graph:
-	$(VENV)/research-graph
-
-diagnose:
-	$(VENV)/research-diagnose
+doctor:
+	$(VENV)/research doctor
 
 db-status:
-	$(VENV)/research-db status
+	$(VENV)/research db status
 
 # --wait blocks until the healthcheck passes, so `make postgres-up migrate` works.
 postgres-up:
@@ -38,4 +35,4 @@ postgres-down:
 	docker compose down
 
 migrate:
-	$(VENV)/research-db migrate
+	$(VENV)/research db migrate
