@@ -252,6 +252,13 @@ def _gaps_name_plan_questions(ctx: RunContext[LedgerRefs], output: GapAnalysis) 
     return output
 
 
+# Added to a report whose inline citations named sources that none of its listed claims rest on.
+DROPPED_CITATIONS_CAVEAT = (
+    "Inline citations to {ids} were removed, because none of the evidence claims this report lists rests on "
+    "those sources; the statements they followed may have less support than first cited."
+)
+
+
 @synthesizer_agent.output_validator
 def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport) -> FinalReport:
     cited = {source_id for text in (output.answer, *output.caveats) for source_id in inline_source_ids(text)}
@@ -259,11 +266,15 @@ def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport
                               for source_id in ctx.deps.claim_sources.get(claim_id, ()))
     problems = _unknown_claims(output.claim_ids_used, ctx.deps)
     stray = sorted(cited - behind_claims, key=lambda source_id: int(source_id[1:]))
-    if stray and ctx.last_attempt and not problems:
-        # A stray citation should not cost a finished run its report: drop it and keep the rest.
+    if stray and not problems:
+        # Dropped rather than retried: a retry resends the whole ledger, and the sixth settings-study
+        # pilot's one retry for five stray citations doubled its synthesis cost, to $1.12, which left too
+        # little of the job's cap to verify the report. Dropping a citation never makes a statement look
+        # better supported than it is; a caveat says which were dropped, so a reader and the verifier know.
         return output.model_copy(update={
             "answer": strip_inline_citations(output.answer, behind_claims),
-            "caveats": [strip_inline_citations(caveat, behind_claims) for caveat in output.caveats],
+            "caveats": [*(strip_inline_citations(caveat, behind_claims) for caveat in output.caveats),
+                        DROPPED_CITATIONS_CAVEAT.format(ids=", ".join(stray))],
         })
     if stray:
         problems.append(
