@@ -13,7 +13,9 @@ from dataclasses import replace
 from typing import Any
 
 from pydantic_ai import RunContext
+from pydantic_ai.capabilities import PrepareTools
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.tools import ToolDefinition
 
 NOTE_PREFIX = "[Research budget] "
 NOTE = (
@@ -56,3 +58,24 @@ class BudgetNotes:
             return messages  # already noted
         note = budget_note(ctx.usage.requests, ctx.usage.tool_calls, self.max_requests, self.max_tool_calls)
         return [*messages[:-1], replace(last, parts=[*last.parts, UserPromptPart(note)])]
+
+
+# How far past a route's max_tool_calls a loop with budget notes may go: its tools are withdrawn once it
+# has used max_tool_calls, but a parallel batch asked for just before then still runs, instead of the
+# whole loop failing on the limit and a salvage call writing its result. The sixth settings-study pilot's
+# broad scout failed that way, on a batch that took it past 48 tool calls at request 17.
+TOOL_BATCH_SLACK = 12
+
+
+def withdraw_tools_when_spent(max_requests: int, max_tool_calls: int) -> PrepareTools[Any]:
+    """Offer no tools on a loop's last request, or once its tool calls are spent, so it returns its result.
+
+    The model then writes its result with its whole history in view, where a salvage call after a limit
+    sees tool output cut to fit, and costs a call of its own. The budget note says the same thing in words.
+    """
+    async def prepare(ctx: RunContext[Any], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+        if max_requests - ctx.usage.requests <= 1 or ctx.usage.tool_calls >= max_tool_calls:
+            return []
+        return tool_defs
+
+    return PrepareTools(prepare)

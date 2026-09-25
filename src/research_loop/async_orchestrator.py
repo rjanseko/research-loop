@@ -48,7 +48,7 @@ from .attachments import (
     build_attachment_toolset,
     build_multimodal_prompt,
 )
-from .budget_notes import BudgetNotes
+from .budget_notes import TOOL_BATCH_SLACK, BudgetNotes, withdraw_tools_when_spent
 from .ledger import EvidenceLedger
 from .observability import job_span
 from .policy import ModelPolicy, ModelRoute, retry_token_budget
@@ -606,11 +606,11 @@ class AsyncResearchLoop:
         return outcome
 
     @staticmethod
-    def _limits(route: ModelRoute, remaining_budget: float | None = None) -> UsageLimits:
+    def _limits(route: ModelRoute, remaining_budget: float | None = None, *, tool_slack: int = 0) -> UsageLimits:
         caps = [cap for cap in (route.cost_limit, remaining_budget) if cap is not None]
         return UsageLimits(
             request_limit=route.max_requests,
-            tool_calls_limit=route.max_tool_calls,
+            tool_calls_limit=route.max_tool_calls + tool_slack,
             total_tokens_limit=route.total_tokens_limit,
             cost_limit=min(caps) if caps else None,
         )
@@ -827,6 +827,7 @@ class AsyncResearchLoop:
                     capabilities.append(ProcessHistory(trimmer))
                 if budget_notes and capabilities is not None:
                     capabilities.append(ProcessHistory(BudgetNotes(route.max_requests, route.max_tool_calls)))
+                    capabilities.append(withdraw_tools_when_spent(route.max_requests, route.max_tool_calls))
                 toolsets = []
                 memo = self._fetch_memos.get(job_id)
                 policy = self._source_policies.get(job_id)
@@ -871,7 +872,8 @@ class AsyncResearchLoop:
                             user_prompt,
                             model=route.model,
                             model_settings=route.model_settings(),
-                            usage_limits=self._limits(route, remaining_budget),
+                            usage_limits=self._limits(route, remaining_budget,
+                                                      tool_slack=TOOL_BATCH_SLACK if budget_notes else 0),
                             usage=usage,
                             deps=deps,
                             capabilities=capabilities,

@@ -281,6 +281,9 @@ correct answer on BrowseComp and the rubric score on DRB-II. Notes change what t
 the two runs have different config fingerprints, and each deep-dive task's `effective_config`
 records `budget_notes`. Try `--budget-notes scout deep_dive` after the deep dive holds up.
 
+
+Since 25 September 2026, a loop with budget notes is also offered no tools on its last request or once its tool calls are spent, so it writes its result with its whole history in view instead of a salvage call writing it from cut-down tool output. Its tool-call limit has a slack of 12 (`TOOL_BATCH_SLACK`), so a parallel batch asked for just before the limit finishes. In the sixth settings-study pilot, with notes but without these, nine of ten loops returned on their own; the tenth, a broad scout, failed on a batch that crossed its 48 tool calls.
+
 ## Caveats
 
 - **The cost model checks tokens, not prices.** The p01 costs in PROMPT_SIZES.md are PydanticAI

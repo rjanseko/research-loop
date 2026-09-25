@@ -116,3 +116,65 @@ async def test_benchmark_manifest_records_budget_notes(tmp_path: Path) -> None:
                         budget_notes=(ResearchRole.DEEP_DIVE,))
     manifest = json.loads(output.read_text())
     assert manifest["run_config"]["budget_notes"] == ["deep_dive"]
+
+
+async def _run_spending(max_requests: int, max_tool_calls: int, calls_per_turn: int):
+    """A loop that fetches `calls_per_turn` pages whenever it is offered tools, recording the tools offered."""
+    offered: list[list[str]] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        offered.append(sorted(tool.name for tool in info.function_tools))
+        if info.function_tools:
+            return ModelResponse(parts=[ToolCallPart("fetch_page", {"n": i}) for i in range(calls_per_turn)])
+        return ModelResponse(parts=[TextPart("result")])
+
+    route = ModelRoute("test", max_requests, max_tool_calls, 1_000_000)
+    config = ResearchConfig(budget_notes=("deep_dive",), scholarly_tools=False, tool_mode=ResearchToolMode.NORMALIZED)
+    loop = AsyncResearchLoop(ModelPolicy("p", {r: route for r in ResearchRole}), config,
+                             repository=InMemoryResearchRepository())
+    agent = Agent(output_type=str)
+
+    @agent.tool_plain
+    def fetch_page(n: int) -> str:
+        return f"page {n}"
+
+    with agent.override(model=FunctionModel(respond)):
+        output = await loop._run_agent(job_id=uuid4(), agent=agent, role=ResearchRole.DEEP_DIVE, route=route,
+                                       prompt="research", research_tools=True)
+    return output, offered
+
+
+@pytest.mark.asyncio
+async def test_the_last_request_offers_no_tools_so_the_loop_returns_its_result() -> None:
+    output, offered = await _run_spending(max_requests=3, max_tool_calls=100, calls_per_turn=1)
+    assert output == "result"
+    assert ["fetch_page" in tools for tools in offered] == [True, True, False]
+    assert len(offered[0]) > 1 and offered[-1] == []  # the capability's web search is withdrawn too
+
+
+@pytest.mark.asyncio
+async def test_a_batch_past_the_tool_call_limit_finishes_and_then_tools_are_withdrawn() -> None:
+    # Four calls a turn against a limit of six: the second batch takes the loop to eight, within the slack.
+    output, offered = await _run_spending(max_requests=10, max_tool_calls=6, calls_per_turn=4)
+    assert output == "result"
+    assert ["fetch_page" in tools for tools in offered] == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_without_budget_notes_a_loop_keeps_its_tools_to_the_limit() -> None:
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    route = ModelRoute("test", 2, 100, 1_000_000)
+    loop = AsyncResearchLoop(ModelPolicy("p", {r: route for r in ResearchRole}),
+                             ResearchConfig(scholarly_tools=False, tool_mode=ResearchToolMode.NORMALIZED),
+                             repository=InMemoryResearchRepository())
+    agent = Agent(output_type=str)
+
+    @agent.tool_plain
+    def fetch_page(n: int) -> str:
+        return f"page {n}"
+
+    always = FunctionModel(lambda messages, info: ModelResponse(parts=[ToolCallPart("fetch_page", {"n": 1})]))
+    with agent.override(model=always), pytest.raises(UsageLimitExceeded):
+        await loop._run_agent(job_id=uuid4(), agent=agent, role=ResearchRole.DEEP_DIVE, route=route,
+                              prompt="research", research_tools=True)
