@@ -44,6 +44,14 @@ RESEARCH_TEST_DATABASE_URL=postgresql://research:research@127.0.0.1:5432/researc
 
 ## Configuration
 
+For Python callers, `ResearchConfig` validates limits when it is constructed, before any
+research runs. Scout and deep-dive concurrency must be positive integers. Deep dives per
+round, verification rounds, and `keep_recent_tool_results` must be non-negative integers;
+booleans and floats are rejected for all these counts. Zero disables deep dives or extra
+verification rounds; `keep_recent_tool_results=0` trims all eligible older tool results,
+while `None` leaves trimming off. The optional `max_run_seconds` deadline must be a finite,
+positive number (fractional seconds are allowed, booleans are not), or `None` for no deadline.
+
 The CLIs read an ignored `.env` in the current directory; exported environment variables take precedence. Start from the template and keep it private:
 
 ```bash
