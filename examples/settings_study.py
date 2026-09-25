@@ -52,7 +52,9 @@ PAID_POLICIES = ("value", "quality", "breadth", "glm-heavy")
 # the pilot's loops at 14 to 17 requests, well before their request limits. 2M lets the request and
 # tool-call limits bind; the dollar caps, which caching keeps well below token counts, bound the cost.
 STUDY_TOKENS = 2_000_000
-SCOUT_LIMITS = {"max_requests": 24, "max_tool_calls": 48, "total_tokens_limit": STUDY_TOKENS}
+# Pilot 8's two-country scouts spent all 48 tool calls, most of them empty searches and 404s.
+# max_tool_calls now counts only calls that return something. max_misses ends the loop on its own.
+SCOUT_LIMITS = {"max_requests": 12, "max_tool_calls": 16, "max_misses": 12, "total_tokens_limit": STUDY_TOKENS}
 # The pilot's deep dives had every source they cited by request 3 but ran on to 13; 12 requests leaves
 # four times that to confirm the plateau without paying for the preset's 20.
 DEEP_DIVE_LIMITS = {"max_requests": 12, "max_tool_calls": 80, "total_tokens_limit": STUDY_TOKENS}
@@ -73,6 +75,8 @@ STUDY_MODELS = {
     # Flash, as the scout trial decided (docs/settings-study.md), and glm-5.3 synthesizing at SYNTHESIS_EFFORT,
     # both chosen 25 September 2026. The value preset keeps glm-5.3 scouting and Opus 5.5 synthesizing until a
     # pilot confirms them, so build() sets these two routes itself.
+    # Flash still thinks at the copied scout effort, `high`. The intended default, not yet applied, is max
+    # (`xhigh`, Z.ai's `reasoning_effort: max`) whenever a route specifies Flash. See the decision log.
     "scout": "zai:glm-5.3-flash",
     "gap_analyst": "openai:gpt-6-sol",
     "deep_dive": "openai:gpt-6-sol",
@@ -220,6 +224,31 @@ async def run(*, cases: list[BenchmarkCaseSpec], paid: bool, persist: bool, budg
     return record
 
 
+def format_policy(snapshot: dict[str, Any]) -> str:
+    """The study policy as text: each route's model and the limits that stop it."""
+    question_range = snapshot["planner_question_range"]
+    lines = [(
+        f"policy {snapshot['name']}: ${snapshot['job_cost_limit']} cap, "
+        f"${snapshot['job_reserve_usd']} held back, "
+        f"plans of {question_range[0]} to {question_range[1]} questions"
+    )]
+    routes = dict(snapshot["routes"])
+    for name in ("cheap_scout", "alternate_deep_dive"):
+        if snapshot.get(name):
+            routes[name] = snapshot[name]
+    for name, route in routes.items():
+        if "max_misses" in route:
+            tools = f"{route['max_tool_calls']} productive tool calls, {route['max_misses']} misses"
+        else:
+            tools = f"{route['max_tool_calls']} tool calls"
+        lines.append(
+            f"  {name}: {route['model']} — {route['max_requests']} requests, {tools}, "
+            f"{route['total_tokens_limit']} tokens"
+            + (f", ${route['cost_limit']} per call" if route.get("cost_limit") is not None else "")
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the settings study's questions and record their jobs")
     parser.add_argument("--step", required=True, help="Study step this run belongs to, such as step1-pilot")
@@ -262,10 +291,11 @@ def main(argv: list[str] | None = None) -> None:
         "benchmark_cache": args.cache_dir or settings.benchmark_output / "settings_study" / "cache"})
     budget_notes = tuple(ResearchRole(role) for role in args.budget_notes)
     try:
-        build(args.paid, args.budget, args.reserve, settings, policy_name=args.policy, cache_mode=args.cache_mode,
-              budget_notes=budget_notes)
+        policy, _config = build(args.paid, args.budget, args.reserve, settings, policy_name=args.policy,
+                                cache_mode=args.cache_mode, budget_notes=budget_notes)
     except ValueError as exc:  # a budget or reserve no policy can run under
         parser.error(str(exc))
+    print(format_policy(policy.snapshot()))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or settings.benchmark_output / "settings_study" / args.step / f"{stamp}.json"
     record = asyncio.run(run(cases=cases, paid=args.paid, persist=persist, budget=args.budget,

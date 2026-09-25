@@ -143,6 +143,7 @@ def test_quality_finishing_routes_fit_a_retry_of_prompts_nearly_twice_p01() -> N
         ({"model": " "}, "needs a model"),
         ({"max_requests": 0}, "max_requests"),
         ({"max_tool_calls": -1}, "max_tool_calls"),
+        ({"max_misses": -1}, "max_misses"),
         ({"total_tokens_limit": 0}, "total_tokens_limit"),
         ({"total_tokens_limit": 1.5}, "total_tokens_limit"),
         ({"cost_limit": 0.0}, "cost_limit"),

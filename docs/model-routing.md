@@ -20,6 +20,8 @@ route, then trial the cheaper options one role at a time:
 | Synthesizer | Opus 5 | `anthropic:claude-opus-5-5` | `zai:glm-5.3`, then `anthropic:claude-sonnet-5` | `medium` |
 | Verifier | GPT-5.6 Sol | `openai:gpt-6-sol` | none. Keep it from a different vendor than the synthesizer | `high` |
 
+The Flash scouts in the table think at `high`, which is what the stored runs used. The intended default, noted 25 September 2026 and not yet applied, is max (`xhigh`, Z.ai's `reasoning_effort: max`) whenever a route specifies `zai:glm-5.3-flash`.
+
 Cost per question on the p01 profile:
 
 | | As the pilot ran (little loop caching outside GLM) | With prompt caching configured |
@@ -283,6 +285,8 @@ records `budget_notes`. Try `--budget-notes scout deep_dive` after the deep dive
 
 
 Since 25 September 2026, a loop with budget notes is also offered no tools on its last request or once its tool calls are spent, so it writes its result with its whole history in view instead of a salvage call writing it from cut-down tool output. Its tool-call limit has a slack of 12 (`TOOL_BATCH_SLACK`), so a parallel batch asked for just before the limit finishes. In the sixth settings-study pilot, with notes but without these, nine of ten loops returned on their own; the tenth, a broad scout, failed on a batch that crossed its 48 tool calls.
+
+A route may set `max_misses`. Then `max_tool_calls` counts only calls that return something: a search with results, a fetch with text, or a further window of a page already fetched. Empty searches, HTTP errors, timeouts, and blocked or unsafe URLs count against `max_misses` instead, and either budget withdraws the tools. The note reports both amounts left and how the last batch did. After a batch that mostly missed, it asks for one or two broader searches and for fetches only of addresses a search returned. The framework cap is the two budgets plus the slack of 12, so the batch that crosses a budget still finishes.
 
 ## Caveats
 

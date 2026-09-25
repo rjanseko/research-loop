@@ -32,6 +32,10 @@ class ModelRoute:
     # A model to run the call on when this route's model refuses it (ContentFilterError). Providers'
     # filters can refuse ordinary research: Opus 5.5 refused to plan a question on T-cell exhaustion.
     refusal_fallback: str | None = None
+    # With budget notes, max_tool_calls counts only calls that returned something (a search with
+    # results, a fetch with text, a further window of a page). This many empty searches, 4xxs,
+    # timeouts, and blocked URLs end the loop on their own. Unset, every call counts the same.
+    max_misses: int | None = None
 
     def __post_init__(self) -> None:
         # Frozen, so this also checks every replace(), including salvage and study overrides.
@@ -46,6 +50,9 @@ class ModelRoute:
             raise ValueError(f"{self.model}: refusal_fallback must name a model when set")
         if self.cost_limit is not None and not _positive_finite(self.cost_limit):
             raise ValueError(f"{self.model}: cost_limit must be a positive finite number when set")
+        if self.max_misses is not None and (isinstance(self.max_misses, bool) or not isinstance(self.max_misses, int)
+                                            or self.max_misses < 0):
+            raise ValueError(f"{self.model}: max_misses must be an integer of at least 0 when set")
         if not (self.thinking is None or isinstance(self.thinking, bool) or self.thinking in _THINKING_EFFORTS):
             raise ValueError(f"{self.model}: thinking must be one of {_THINKING_EFFORTS}, a bool, or None")
         max_tokens = self.settings.get("max_tokens")
@@ -78,6 +85,7 @@ class ModelRoute:
             # Recorded only when set, so presets without caching keep their earlier fingerprint.
             **({"prompt_cache": True} if self.prompt_cache else {}),
             **({"refusal_fallback": self.refusal_fallback} if self.refusal_fallback else {}),
+            **({"max_misses": self.max_misses} if self.max_misses is not None else {}),
         }
 
     def salvage(self) -> ModelRoute:

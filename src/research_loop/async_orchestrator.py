@@ -639,9 +639,12 @@ class AsyncResearchLoop:
     @staticmethod
     def _limits(route: ModelRoute, remaining_budget: float | None = None, *, tool_slack: int = 0) -> UsageLimits:
         caps = [cap for cap in (route.cost_limit, remaining_budget) if cap is not None]
+        # Slack is passed only for a budget-note loop. A miss ceiling widens that loop's framework
+        # cap by the same amount; the note withdraws tools once either budget is spent.
+        misses = (route.max_misses or 0) if tool_slack else 0
         return UsageLimits(
             request_limit=route.max_requests,
-            tool_calls_limit=route.max_tool_calls + tool_slack,
+            tool_calls_limit=route.max_tool_calls + misses + tool_slack,
             total_tokens_limit=route.total_tokens_limit,
             cost_limit=min(caps) if caps else None,
         )
@@ -857,8 +860,10 @@ class AsyncResearchLoop:
                 if trimmer is not None and capabilities is not None:
                     capabilities.append(ProcessHistory(trimmer))
                 if budget_notes and capabilities is not None:
-                    capabilities.append(ProcessHistory(BudgetNotes(route.max_requests, route.max_tool_calls)))
-                    capabilities.append(withdraw_tools_when_spent(route.max_requests, route.max_tool_calls))
+                    capabilities.append(ProcessHistory(BudgetNotes(
+                        route.max_requests, route.max_tool_calls, route.max_misses)))
+                    capabilities.append(withdraw_tools_when_spent(
+                        route.max_requests, route.max_tool_calls, route.max_misses))
                 toolsets = []
                 memo = self._fetch_memos.get(job_id)
                 policy = self._source_policies.get(job_id)

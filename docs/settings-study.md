@@ -335,3 +335,14 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Decided, by the rules set before the run.* `best-of-3` is not adopted: its agreement is below `single`'s. Planning stays one call.
 - *By case.* On `task2+`, `best-of-3` split the seven countries the same way all three times (three alone, two pairs), where `single` split them into three or four groups with different pairings (agreement 0.6, 0.6, 1.0); every plan in both arms split by country this time, none by topic. On `task17+`, `best-of-3`'s three plans each grouped the platforms differently (0.2 each), while `single`'s agreed more (0.8, 0.6, 0.6). So the selector steadied the case it was built for and unsettled the other, and pooled it did worse. Both arms named every entity in every plan.
 - *Reading.* Across both trials, one `gpt-6-sol` call has varied in how it groups entities but, in the follow-up, always split by entity; a different grouping changes which subjects share a scout, not whether they are researched. The next pilots' reports show whether that matters; the planner trials stop here.
+
+**Scout budgets, 25 September 2026, before the next pilot.**
+
+- *Found, in pilot 8.* The two-country scouts used all 48 tool calls in 14 to 17 requests. Most calls were empty searches or failed fetches: q2 had 8 of 9 searches empty and 28 of 36 fetches failed, then returned a conclusion and no claims. q4, one country, stopped itself at 33 calls with 14 claims. The note was telling them to batch calls, and a miss counted the same as a page.
+- *Changed.* A study scout now has 12 requests, 16 productive tool calls, and 12 misses. A productive call is a search with results, a fetch with text, or a further window of a page already fetched. An empty search, an HTTP error, a timeout, or a blocked or unsafe URL is a miss. Either budget withdraws the tools, and after a batch that mostly missed the note asks for one or two broader searches. Deep dives stay at 12 requests and 80 tool calls. The running pilot 8 job keeps the old limits.
+
+**Flash effort, 25 September 2026. Noted, not yet applied.**
+
+- *Intent.* When a route specifies `zai:glm-5.3-flash`, its default reasoning effort is max. In this code that is `thinking="xhigh"`, which PydanticAI sends to Z.ai as `reasoning_effort: max`, the same setting `SYNTHESIS_EFFORT` already uses for `glm-5.3`.
+- *What ran.* The 16 stored Flash scouts, eleven in the scout trial and five in pilot 8, were at `high`. The scout route was copied from the `glm-5.3` scout and only the model name was changed. Max has been used twice, both on `glm-5.3` synthesis.
+- *Not changed yet.* The study scout and the cheap-scout preset still think at `high`. The next time a route is set to Flash, set its effort to max with that change.

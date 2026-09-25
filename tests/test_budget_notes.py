@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,13 +12,22 @@ from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from research_loop.async_orchestrator import AsyncResearchLoop, ResearchConfig
 from research_loop.benchmark import run_benchmark
-from research_loop.budget_notes import LAST_REQUEST_NOTE, NOTE_PREFIX, budget_note
+from research_loop.budget_notes import (
+    LAST_REQUEST_NOTE,
+    NOTE_PREFIX,
+    budget_note,
+    call_yield,
+    tool_yield,
+    withdraw_tools_when_spent,
+    yield_note,
+)
 from research_loop.policy import ModelPolicy, ModelRoute
 from research_loop.repository import InMemoryResearchRepository
 from research_loop.schemas import ResearchRole
@@ -92,6 +102,41 @@ async def test_notes_apply_only_to_the_roles_named() -> None:
     assert seen == [[], [], []]
 
 
+def test_a_miss_is_an_empty_search_or_a_failed_fetch_and_a_page_window_is_productive() -> None:
+    assert tool_yield([
+        ModelRequest(parts=[
+            ToolReturnPart(tool_name="duckduckgo_search", content={"results": [], "hint": "none"}, tool_call_id="a"),
+            ToolReturnPart(tool_name="web_fetch", content={"url": "https://example.test", "error": "HTTPStatusError", "status": 404}, tool_call_id="b"),
+            ToolReturnPart(tool_name="web_fetch", content={"url": "https://example.test/law", "text": "article", "start": 12000}, tool_call_id="c"),
+            ToolReturnPart(tool_name="final_result", content="ok", tool_call_id="d"),
+        ])
+    ]) == tool_yield([
+        ModelRequest(parts=[
+            ToolReturnPart(tool_name="duckduckgo_search", content=[], tool_call_id="a"),
+            ToolReturnPart(tool_name="web_fetch", content={"error": "HTTPStatusError"}, tool_call_id="b"),
+            ToolReturnPart(tool_name="web_fetch", content={"text": "article", "start": 12000}, tool_call_id="c"),
+        ])
+    ])
+    spent = tool_yield([
+        ModelRequest(parts=[
+            ToolReturnPart(tool_name="duckduckgo_search", content={"results": []}, tool_call_id="a"),
+            ToolReturnPart(tool_name="web_fetch", content={"error": "HTTPStatusError"}, tool_call_id="b"),
+            ToolReturnPart(tool_name="web_fetch", content={"text": "article"}, tool_call_id="c"),
+        ])
+    ])
+    assert (spent.productive, spent.misses, spent.last_productive, spent.last_total) == (1, 2, 1, 3)
+    note = yield_note(1, spent, 12, 16, 12)
+    assert "11 of 12 model requests" in note
+    assert "15 of 16 productive tool calls and 10 of 12 misses" in note
+    assert "Last batch: 1 of 3 returned something" in note
+    assert "one or two broader searches" in note
+    assert yield_note(1, tool_yield([]), 12, 16, 12).count("Last batch") == 0
+    assert "No productive tool calls are left" in yield_note(1, replace(spent, productive=16), 12, 16, 12)
+    assert "The miss limit is spent" in yield_note(1, replace(spent, misses=12), 12, 16, 12)
+    assert call_yield("duckduckgo_search", [{"title": "a"}]) == "productive"
+    assert call_yield("final_result", {"claims": []}) == "ignore"
+
+
 def test_note_asks_for_the_result_when_a_limit_is_reached() -> None:
     assert budget_note(5, 0, 6, 10) == LAST_REQUEST_NOTE
     assert "No tool calls are left, and 3 of 6" in budget_note(3, 10, 6, 10)
@@ -158,6 +203,23 @@ async def test_a_batch_past_the_tool_call_limit_finishes_and_then_tools_are_with
     output, offered = await _run_spending(max_requests=10, max_tool_calls=6, calls_per_turn=4)
     assert output == "result"
     assert ["fetch_page" in tools for tools in offered] == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_misses_withdraw_tools_while_productive_calls_remain() -> None:
+    request = ModelRequest(parts=[
+        ToolReturnPart(tool_name="web_fetch", content={"error": "HTTPStatusError", "status": 404}, tool_call_id=str(i))
+        for i in range(4)
+    ])
+    ctx = type("Ctx", (), {"usage": type("Usage", (), {"requests": 2, "tool_calls": 4})(), "messages": [request]})()
+    prepare = withdraw_tools_when_spent(12, 16, 3).prepare_func
+    assert await prepare(ctx, [type("Tool", (), {"name": "web_fetch"})()]) == []
+    # Four pages against a productive budget of 6 stay available: the batch that crosses it has not happened.
+    pages = ModelRequest(parts=[
+        ToolReturnPart(tool_name="web_fetch", content={"text": "page"}, tool_call_id=str(i)) for i in range(4)
+    ])
+    ctx.messages = [pages]
+    assert await prepare(ctx, [type("Tool", (), {"name": "web_fetch"})()]) != []
 
 
 @pytest.mark.asyncio

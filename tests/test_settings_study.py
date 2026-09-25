@@ -51,7 +51,8 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
         "value", 4.0, 1.5, (3, 8))
     for route, preset_route in ((policy.routes[ResearchRole.SCOUT], preset.routes[ResearchRole.SCOUT]),
                                 (policy.cheap_scout, preset.cheap_scout)):
-        assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (24, 48, 2_000_000)
+        assert (route.max_requests, route.max_tool_calls, route.max_misses, route.total_tokens_limit) == (
+            12, 16, 12, 2_000_000)
         assert route.cost_limit == preset_route.cost_limit and route.model == "zai:glm-5.3-flash"
     for route in (policy.routes[ResearchRole.DEEP_DIVE], policy.alternate_deep_dive):
         assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (12, 80, 2_000_000)
