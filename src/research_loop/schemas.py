@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    HttpUrl,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 # Recorded in manifests. 1: one `excerpt` field, excerpt or paraphrase.
@@ -56,6 +63,17 @@ class SourceRef(BaseModel):
     provider: str | None = None
     full_text_url: HttpUrl | None = None
     is_retracted: bool | None = None
+
+    @field_validator("source_type", "publication_status", mode="before")
+    @classmethod
+    def _unlisted_label_is_unknown(cls, value: Any, info: ValidationInfo) -> Any:
+        """A label outside the field's list, such as source_type "dataset" (a publication status), is "unknown".
+
+        Rejecting it would redo the whole research or salvage call for one mislabel; the schema
+        the model sees is unchanged.
+        """
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed or not isinstance(value, str) else "unknown"
 
     @model_validator(mode="after")
     def validate_source_identity(self) -> SourceRef:
