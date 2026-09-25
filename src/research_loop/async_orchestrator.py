@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
@@ -180,6 +180,10 @@ async def _gather_or_cancel(awaitables: Iterable[Awaitable[Any]]) -> list[Any]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def _ignore_events(_: Any, events: AsyncIterable[Any]) -> None:
+    """An event stream handler that only makes a run stream its model requests; `Agent.run` drains the events."""
 
 
 # Tool output replayed to a salvage call: a total bound, and the least each kept result gets.
@@ -760,17 +764,25 @@ class AsyncResearchLoop:
                           claim_sources=ledger.claim_source_ids() if sources else {})
 
     async def _run_agent(self, **kwargs: Any) -> Any:
-        """Run one agent as a persisted task, once more on the route's `refusal_fallback` if its model refuses.
+        """Run one agent as a persisted task, once more on the route's `refusal_fallback` if its model
+        refuses or its provider fails.
 
         A refusal (ContentFilterError) is the provider's filter declining the prompt, which a retry on
-        the same model would repeat; the refused call stays recorded as a failed task.
+        the same model would repeat. A provider error (ModelAPIError) is one the SDK's own retries did
+        not clear: a timeout, a 5xx, or an exhausted balance. Either way the failed call stays recorded
+        as a failed task; a provider error also leaves a job note, since another model wrote the output.
         """
         try:
             return await self._run_agent_once(**kwargs)
-        except ContentFilterError:
+        except (ContentFilterError, ModelAPIError) as exc:
             route: ModelRoute = kwargs["route"]
             if route.refusal_fallback is None or route.refusal_fallback == route.model:
                 raise
+            if isinstance(exc, ModelAPIError):
+                status = getattr(exc, "status_code", None)
+                self._notes.setdefault(kwargs["job_id"], []).append(
+                    f"the {kwargs['role'].value} on {route.model} ended on a provider error "
+                    f"({type(exc).__name__}{f' {status}' if status else ''}) and ran again on {route.refusal_fallback}")
             return await self._run_agent_once(
                 **kwargs | {"route": replace(route, model=route.refusal_fallback, refusal_fallback=None)})
 
@@ -796,6 +808,7 @@ class AsyncResearchLoop:
         task_ids: list[UUID] | None = None,
         quote_texts: list[str] | None = None,
         require_retry_room: bool = False,
+        stream: bool = False,
     ) -> Any:
         """Run one agent as a persisted task.
 
@@ -803,7 +816,8 @@ class AsyncResearchLoop:
         the run's messages. A ResearchResult's quotes and cited sources are checked against this
         run's tool output plus `quote_texts` (a salvage call passes the output of the run it summarizes).
         `require_retry_room` refuses the call, before any model request, when one validation retry
-        would not fit the route's token limit.
+        would not fit the route's token limit. `stream` makes each model request a streamed one, so the
+        HTTP client's read timeout (600 s in PydanticAI) applies between chunks, not to the whole reply.
         """
         effective_config = route.snapshot() | {
             "tool_mode": self.config.tool_mode.value,
@@ -914,6 +928,7 @@ class AsyncResearchLoop:
                             deps=deps,
                             capabilities=capabilities,
                             toolsets=toolsets or None,
+                            event_stream_handler=_ignore_events if stream else None,
                         )
                 finally:
                     # Spend and the released allowance change together, so no call sees both or neither.
@@ -1185,6 +1200,9 @@ class AsyncResearchLoop:
                 route=route,
                 deps=self._ledger_refs(ledger, sources=True),
                 require_retry_room=True,
+                # A long report at high reasoning effort can outlast the 600 s read timeout unstreamed,
+                # as glm-5.3 at max appears to have in pilot 8: three timed-out attempts, 30 minutes, no report.
+                stream=True,
                 prompt=synthesis_prompt(objective, ledger, self._constraints_payload(constraints, attachments)),
             )
 

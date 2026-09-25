@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
 from pydantic_ai.messages import ModelResponse, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from research_loop.agents import scout_agent
 from research_loop.async_orchestrator import AsyncResearchLoop, ResearchConfig
@@ -78,9 +79,9 @@ def test_an_arm_is_one_stored_job_of_its_scouts_and_the_fixed_synthesizers_repor
         result = _result("q1").model_dump(mode="json") | {"question_id": "q1"}
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, result)])
 
-    def synthesize(messages, info: AgentInfo) -> ModelResponse:
+    async def synthesize(messages, info: AgentInfo):  # synthesis streams
         report = {"title": "T", "answer": "Findings [s1].", "claims": [{"statement": "s", "claim_ids": ["q1/c1"]}]}
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, report)])
+        yield {0: DeltaToolCall(info.output_tools[0].name, json.dumps(report))}
 
     route = ModelRoute("test", 3, 4, 100_000)
     repo = CapturingResearchRepository(InMemoryResearchRepository())
@@ -88,7 +89,7 @@ def test_an_arm_is_one_stored_job_of_its_scouts_and_the_fixed_synthesizers_repor
                              ResearchConfig(scholarly_tools=False), repo, settings=ResearchSettings.from_env({}))
     plan = ResearchPlan(objective="o", questions=[ResearchQuestion(id="q1", question="q", priority=3)])
     trial = {"name": "scout", "arm": "flash-1", "model": "zai:glm-5.3-flash"}
-    with scout_agent.override(model=FunctionModel(scout)), synthesizer_agent.override(model=FunctionModel(synthesize)):
+    with scout_agent.override(model=FunctionModel(scout)), synthesizer_agent.override(model=FunctionModel(stream_function=synthesize)):
         unit, metrics = asyncio.run(scout_trial.scout_arm(
             loop, prompt_trial.TrialBudget(1.0), prompt_trial, plan, "o", ResearchConstraints(), trial))
     assert unit.error is None and [r.question_id for r in unit.result[0]] == ["q1"]

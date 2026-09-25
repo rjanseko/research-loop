@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from research_loop import agents
 from research_loop.async_orchestrator import (
@@ -192,7 +192,13 @@ class Script:
                 raise AssertionError(role)
             return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
 
-        return FunctionModel(respond)
+        async def stream(messages, info):
+            # A streamed call (synthesis) gets the same scripted answer, as one delta per tool call.
+            response = await respond(messages, info)
+            for index, part in enumerate(response.parts):
+                yield {index: DeltaToolCall(part.tool_name, part.args_as_json_str())}
+
+        return FunctionModel(respond, stream_function=stream)
 
 
 @pytest.fixture(params=[ResearchLoop, LegacyResearchLoop], ids=["graph", "legacy"])

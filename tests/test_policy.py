@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ContentFilterError
+from pydantic_ai.exceptions import ContentFilterError, ModelAPIError
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -270,23 +270,28 @@ def test_value_effort_follows_models_set_in_the_environment(monkeypatch) -> None
     assert value.for_role(ResearchRole.PLANNER).thinking == "medium"
 
 
-def _refusing_then_answering(calls: list[int]):
-    """A model whose first response is a content-filter refusal and whose later ones answer."""
+def _refusing_then_answering(calls: list[int], *, provider_error: bool = False):
+    """A model whose first call is refused by the content filter, or fails at the provider, and whose later ones answer."""
     def respond(messages, info):
         calls.append(1)
         if len(calls) == 1:
+            if provider_error:
+                raise ModelAPIError("primary", "Request timed out.")
             return ModelResponse(parts=[], finish_reason="content_filter")
         return ModelResponse(parts=[TextPart("answer")])
     return FunctionModel(respond)
 
 
-async def _run_refused(route: ModelRoute):
+async def _run_refused(route: ModelRoute, *, provider_error: bool = False, notes: list[str] | None = None):
     loop = AsyncResearchLoop(ModelPolicy("p", {role: route for role in ResearchRole}),
                              repository=InMemoryResearchRepository())
     agent = Agent(output_type=str)
-    with agent.override(model=_refusing_then_answering([])):
-        output = await loop._run_agent(job_id=uuid4(), agent=agent, role=ResearchRole.PLANNER, route=route,
+    job_id = uuid4()
+    with agent.override(model=_refusing_then_answering([], provider_error=provider_error)):
+        output = await loop._run_agent(job_id=job_id, agent=agent, role=ResearchRole.SYNTHESIZER, route=route,
                                        prompt="plan")
+    if notes is not None:
+        notes += loop._notes.get(job_id, [])
     return output, list(loop.repository.tasks.values())
 
 
@@ -302,6 +307,23 @@ def test_a_refused_call_runs_again_on_the_routes_refusal_fallback() -> None:
 def test_a_refusal_without_a_fallback_fails_the_call() -> None:
     with pytest.raises(ContentFilterError):
         asyncio.run(_run_refused(ModelRoute("test:primary", 2, 0, 10_000)))
+
+
+def test_a_provider_error_runs_again_on_the_fallback_and_leaves_a_note() -> None:
+    # As pilot 8's synthesis did, timing out at Z.ai: the job keeps its research and gets a report.
+    route = ModelRoute("test:primary", 2, 0, 10_000, refusal_fallback="test:fallback")
+    notes: list[str] = []
+    output, tasks = asyncio.run(_run_refused(route, provider_error=True, notes=notes))
+    assert output == "answer"
+    assert [(t["model_id"], t["status"]) for t in tasks] == [("test:primary", "failed"), ("test:fallback", "succeeded")]
+    assert tasks[0]["error"]["type"] == "ModelAPIError"
+    assert notes == [("the synthesizer on test:primary ended on a provider error (ModelAPIError) "
+                      "and ran again on test:fallback")]
+
+
+def test_a_provider_error_without_a_fallback_fails_the_call() -> None:
+    with pytest.raises(ModelAPIError):
+        asyncio.run(_run_refused(ModelRoute("test:primary", 2, 0, 10_000), provider_error=True))
 
 
 def test_anthropic_planners_and_synthesizers_fall_back_to_the_gap_model() -> None:

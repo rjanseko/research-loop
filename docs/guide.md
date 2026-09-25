@@ -213,7 +213,9 @@ The loop never checks vendor names. It asks the policy for a route, and a route 
 
 A route with `prompt_cache=True` asks its provider to cache the prompt prefix that a scout's or deep dive's history resends on every request. Anthropic caches only when asked, and OpenAI caches more reliably with a stable key; the route picks the setting from its model, so an override keeps it working. Other providers cache on their own. Only `value` sets it.
 
-A route with `refusal_fallback` runs a call once more on that model when its own model refuses it (`ContentFilterError`), as Opus 5.5 refused to plan a DRB-II question on T-cell exhaustion. A retry on the same model would be refused again. The refused call stays recorded as a failed task, and the fallback call is a task of its own on the fallback model. The `quality`-based presets set it on the planner and synthesizer, to the preset's gap-analysis model.
+A route with `refusal_fallback` runs a call once more on that model when its own model refuses it (`ContentFilterError`), as Opus 5.5 refused to plan a DRB-II question on T-cell exhaustion. A retry on the same model would be refused again. Since 25 September 2026 it does the same when the provider fails (`ModelAPIError`) after the SDK's own retries: a timeout, a server error, or an exhausted balance. The failed call stays recorded as a failed task, and the fallback call is a task of its own on the fallback model; after a provider error the job also gets a note naming both models. The `quality`-based presets set it on the planner and synthesizer, to the preset's gap-analysis model.
+
+The synthesizer's calls are streamed. PydanticAI's HTTP client times a read out after 600 seconds, and the OpenAI SDK, which several providers use, tries a request three times. A synthesis at high reasoning effort can write for longer than that before its reply begins, and unstreamed it then fails after 30 minutes; streamed, the timeout applies between chunks. Other roles are not streamed.
 
 <details>
 <summary>Default routes and per-call limits for the <code>quality</code> policy</summary>

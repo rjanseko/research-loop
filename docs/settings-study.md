@@ -346,3 +346,10 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Intent.* When a route specifies `zai:glm-5.3-flash`, its default reasoning effort is max. In this code that is `thinking="xhigh"`, which PydanticAI sends to Z.ai as `reasoning_effort: max`, the same setting `SYNTHESIS_EFFORT` already uses for `glm-5.3`.
 - *What ran.* The 16 stored Flash scouts, eleven in the scout trial and five in pilot 8, were at `high`. The scout route was copied from the `glm-5.3` scout and only the model name was changed. Max has been used twice, both on `glm-5.3` synthesis.
 - *Not changed yet.* The study scout and the cheap-scout preset still think at `high`. The next time a route is set to Flash, set its effort to max with that change.
+
+**Pilot 8, ran 25 September 2026. Failed at synthesis; $0.75, no report.**
+
+- *What happened.* `task2+` planned four questions, and its scouts, gap analysis, and two deep dives all finished by 16:02. The synthesizer, `glm-5.3` at `max` with a 64,000-token output allowance, sent its request and ended 1,802 seconds later with `ModelAPIError`. No response was stored. The job's evidence ledger was kept.
+- *Cause, inferred from the timing.* Nothing in this code set a model timeout, so PydanticAI's 600-second read timeout applied, and the OpenAI SDK, which the Z.ai provider uses, retries a timed-out request twice: three attempts of 600 seconds. At `high`, `glm-5.3` synthesized `task2+` in 180 to 256 seconds, writing about 110 tokens a second; at that rate most of a 64,000-token allowance takes about ten minutes, and an unstreamed reply arrives only when it is complete. Only the error's type was stored, not its message, so a provider that held the connection without answering would look the same.
+- *Also.* The `gpt-6-sol` fallback did not run, because it answered refusals only. The scouts ran with the old limits (48 tool calls), since the budget change came after this job started.
+- *Changed.* Synthesis is streamed, so the read timeout applies between chunks. A route's `refusal_fallback` also takes a call that ends on a provider error, and the job's notes name both models.
