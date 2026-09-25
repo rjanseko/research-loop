@@ -57,7 +57,17 @@ def test_sources_are_dated_by_the_request_whose_tools_returned_them() -> None:
 
 
 def test_render_marks_unmatched_sources_and_draws_the_curve() -> None:
-    profiles = [depth_profile.LoopProfile("scout", "q1", 3, True, [1, 2, None], 19.0, 7.0, 30.0)]
+    profiles = [depth_profile.LoopProfile("scout", "q1", 3, True, [1, 2, None], 19.0, 7.0, 30.0, "tokens")]
     text = depth_profile.render(profiles)
-    assert "1, 2, -" in text and "yes" in text
+    assert "1, 2, -" in text and "tokens" in text
     assert "k=1:0.33  k=2:0.67  k=3:0.67" in text and "(1 not matched)" in text
+
+
+def test_a_stopped_loop_names_the_limit_it_was_closest_to() -> None:
+    config = {"total_tokens_limit": 400_000, "max_requests": 24, "max_tool_calls": 48, "cost_limit": 0.8}
+    # The first pilot's scout q3: 17 of 24 requests, 31 of 48 tool calls, $0.19 of $0.80, but 424k tokens.
+    assert depth_profile.stopping_limit({"total_tokens": 424_351, "requests": 17, "tool_calls": 31,
+                                         "cost": 0.19}, config) == "tokens"
+    assert depth_profile.stopping_limit({"total_tokens": 900_000, "requests": 24, "tool_calls": 30},
+                                        config | {"total_tokens_limit": 2_000_000}) == "requests"
+    assert depth_profile.stopping_limit({}, {}) == "unknown"

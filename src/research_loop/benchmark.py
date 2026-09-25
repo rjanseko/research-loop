@@ -264,6 +264,19 @@ async def _run_policy_case(
     )
 
 
+def reader_text(report: FinalReport, ledger: EvidenceLedger) -> str:
+    """The report as a reader reads it, in Markdown: answer, key statements, caveats, and cited sources.
+
+    Leaves out the verifier's verdicts, so a grader judges what the report says, not how it was checked.
+    """
+    parts = [report.answer]
+    if report.claims:
+        parts.append("## Key statements\n\n" + "\n".join(f"{n}. {c.statement}" for n, c in enumerate(report.claims, 1)))
+    if report.caveats:
+        parts.append("## Caveats\n\n" + "\n".join(f"- {caveat}" for caveat in report.caveats))
+    return "\n\n".join(parts) + sources_markdown(report, ledger)
+
+
 def benchmark_output(
     case: BenchmarkCaseSpec,
     *,
@@ -334,7 +347,7 @@ def benchmark_output(
         sources=len(source_checks),
         sources_not_found=source_checks.count("not_found"),
         review_reasons=review_reasons,
-        sources_text=sources_markdown(report, ledger),
+        report_text=reader_text(report, ledger),
         tool_args_known=tool_args_known,
     )
 

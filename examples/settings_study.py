@@ -8,7 +8,7 @@ Every paid run is set up the way the study's replays and depth analysis need it:
 
 - Scouts and deep dives get generous limits (below), so where searching stops paying off shows in
   their transcripts instead of being cut off; a loop that still reaches a limit is salvaged.
-- Each case runs under a total USD cap (--budget), part of it held for synthesis and verification.
+- Each case runs under a total USD cap (--budget, $5), $1 of it held for synthesis and verification.
 - The job is stored in Postgres with every agent's full messages (research_task_messages).
 - Every search, fetch, and scholarly response is recorded in the study's own cache directory, in
   `record` mode by default, so later replays can reuse exactly what these runs saw.
@@ -45,8 +45,15 @@ from research_loop.tools import ResearchToolMode
 SUITE = Path(__file__).with_name("settings_study.toml")
 PAID_POLICIES = ("value", "quality", "breadth", "glm-heavy")
 # The reference runs' research limits (docs/settings-study.md, step 1). Dollar caps stay the preset's.
-SCOUT_LIMITS = {"max_requests": 24, "max_tool_calls": 48, "total_tokens_limit": 400_000}
-DEEP_DIVE_LIMITS = {"max_tool_calls": 80, "total_tokens_limit": 400_000}
+# The token limit counts every request's input, cached or not, plus output, summed over the loop; each
+# request resends the loop's history, so it grows with the square of the requests. At 400k it stopped
+# the pilot's loops at 14 to 17 requests, well before their request limits. 2M lets the request and
+# tool-call limits bind; the dollar caps, which caching keeps well below token counts, bound the cost.
+STUDY_TOKENS = 2_000_000
+SCOUT_LIMITS = {"max_requests": 24, "max_tool_calls": 48, "total_tokens_limit": STUDY_TOKENS}
+# The pilot's deep dives had every source they cited by request 3 but ran on to 13; 12 requests leaves
+# four times that to confirm the plateau without paying for the preset's 20.
+DEEP_DIVE_LIMITS = {"max_requests": 12, "max_tool_calls": 80, "total_tokens_limit": STUDY_TOKENS}
 CACHE_MODES = ("record", "reuse", "replay", "off")
 
 
@@ -89,7 +96,8 @@ async def run_case(case: BenchmarkCaseSpec, *, paid: bool, policy: ModelPolicy, 
     entry: dict[str, Any] = {"case_id": case.case_id, "started_at": started.isoformat()}
     try:
         outcome = await loop.run(case.render_objective(), constraints=ResearchConstraints(
-            benchmark_id=case.benchmark_id, benchmark_case_id=case.case_id, benchmark_suite=suite_name))
+            blocked_urls=case.blocked_urls, benchmark_id=case.benchmark_id, benchmark_case_id=case.case_id,
+            benchmark_suite=suite_name))
     except Exception as exc:  # noqa: BLE001 - one failed case must not stop the step; the type only, as bodies can leak
         return entry | {"status": "failed", "error": type(exc).__name__, "finished_at": datetime.now(UTC).isoformat()}
     return entry | {
@@ -139,12 +147,15 @@ async def run(*, cases: list[BenchmarkCaseSpec], paid: bool, persist: bool, budg
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the settings study's questions and record their jobs")
     parser.add_argument("--step", required=True, help="Study step this run belongs to, such as step1-pilot")
-    parser.add_argument("--cases", nargs="+", metavar="CASE_ID", help="Cases to run (default: every case)")
+    parser.add_argument("--cases", nargs="+", metavar="CASE_ID",
+                        help="Cases to run (default: every case not marked retired)")
     parser.add_argument("--paid", action="store_true", help="Call real models; otherwise run the synthetic policy")
     parser.add_argument("--policy", choices=PAID_POLICIES, default="value", help="Preset to run with --paid (default value)")
-    parser.add_argument("--budget", type=float, default=4.0, help="Total USD cap per case (default 4.00)")
-    parser.add_argument("--reserve", type=float, default=1.5,
-                        help="USD of each case's budget held for synthesis and verification (default 1.50)")
+    # The pilot's planning, synthesis, and verification cost $0.30-0.60, so $1.00 is held back and research
+    # gets $4.00, above a deep question's projected $3.50: the cap guards against a runaway run.
+    parser.add_argument("--budget", type=float, default=5.0, help="Total USD cap per case (default 5.00)")
+    parser.add_argument("--reserve", type=float, default=1.0,
+                        help="USD of each case's budget held for synthesis and verification (default 1.00)")
     parser.add_argument("--cache-mode", choices=CACHE_MODES, default="record",
                         help="Acquisition cache mode (default record: store every call, read none)")
     parser.add_argument("--cache-dir", type=Path,
@@ -165,7 +176,8 @@ def main(argv: list[str] | None = None) -> None:
     by_id = {spec.case_id: spec for spec in specs}
     if unknown := sorted(set(args.cases or ()) - set(by_id)):
         parser.error(f"not in {SUITE.name}: {', '.join(unknown)}")
-    cases = [by_id[case_id] for case_id in args.cases] if args.cases else specs
+    cases = [by_id[case_id] for case_id in args.cases] if args.cases else [
+        spec for spec in specs if not spec.metadata.get("retired")]
     settings = settings.model_copy(update={
         "benchmark_cache": args.cache_dir or settings.benchmark_output / "settings_study" / "cache"})
     try:

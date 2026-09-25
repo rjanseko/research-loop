@@ -19,6 +19,26 @@ settings_study = importlib.util.module_from_spec(_SPEC)
 sys.modules["settings_study"] = settings_study
 _SPEC.loader.exec_module(settings_study)
 
+# The suite's DRB-II tasks, by their position among the English tasks (examples/settings_study.toml).
+_DRB2_PICKS = {1: "task2+", 7: "task8", 20: "task17+", 31: "task26"}
+
+
+@pytest.fixture(autouse=True)
+def drb2_offline(tmp_path, monkeypatch):
+    """A stand-in for DRB-II's tasks file in the benchmark cache, so loading the suite never downloads it."""
+    rows = []
+    for position in range(32):
+        task_id = _DRB2_PICKS.get(position, f"filler{position}")
+        rows.append({"id": task_id, "idx": position, "language": "en", "prompt": f"Research task {task_id}",
+                     "content": {"rubric": {"info_recall": [f"{task_id} point"]},
+                                 "blocked": {"urls": [f"https://example.org/{task_id}"]}}})
+        rows.append({"id": f"zh{position}", "idx": 100 + position, "language": "zh", "prompt": "x",
+                     "content": {"rubric": {}}})
+    cache = tmp_path / "benchmark-cache"
+    cache.mkdir()
+    (cache / "drb2_tasks_and_rubrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    monkeypatch.setenv("RESEARCH_BENCHMARK_CACHE", str(cache))
+
 
 def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar_caps() -> None:
     preset = settings_study.get_policy("value")
@@ -27,10 +47,10 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
         "value", 4.0, 1.5, (3, 5))
     for route, preset_route in ((policy.routes[ResearchRole.SCOUT], preset.routes[ResearchRole.SCOUT]),
                                 (policy.cheap_scout, preset.cheap_scout)):
-        assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (24, 48, 400_000)
+        assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (24, 48, 2_000_000)
         assert route.cost_limit == preset_route.cost_limit and route.model == preset_route.model
     for route in (policy.routes[ResearchRole.DEEP_DIVE], policy.alternate_deep_dive):
-        assert (route.max_tool_calls, route.total_tokens_limit) == (80, 400_000)
+        assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (12, 80, 2_000_000)
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
 
@@ -84,3 +104,21 @@ def test_research_grade_needs_jobs_and_reads_step_records(tmp_path, capsys) -> N
     record.write_text(json.dumps({"runs": [{"case_id": "st07", "status": "succeeded", "job_id": str(job)},
                                            {"case_id": "st05", "status": "failed", "error": "X"}]}))
     assert jobs_from_record(record) == [("st07", job)]
+
+
+def test_default_step_skips_retired_cases_and_passes_blocked_urls(tmp_path, monkeypatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    async def record(self, objective, **kwargs):
+        constraints = kwargs["constraints"]
+        seen[constraints.benchmark_case_id] = constraints.blocked_urls
+        raise RuntimeError("stop before running")
+
+    monkeypatch.setattr(settings_study.SyntheticResearchLoop, "run", record)
+    monkeypatch.setattr(settings_study, "ResearchSettings",
+                        SimpleNamespace(from_env=lambda: ResearchSettings.from_env({"RESEARCH_BENCHMARK_OUTPUT": str(tmp_path)})))
+    settings_study.main(["--step", "s", "--output", str(tmp_path / "step.json")])
+    assert "st07-swebench-trust" not in seen and "st06-cot-small-models" not in seen
+    assert "st01-transformer-venue" in seen and seen["st01-transformer-venue"] == []
+    drb2 = [case for case in seen if not case.startswith("st")]
+    assert set(drb2) == {"task2+", "task8", "task17+", "task26"} and all(seen[case] for case in drb2)

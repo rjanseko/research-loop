@@ -237,7 +237,7 @@ async def test_a_stored_job_grades_like_the_live_run_that_made_it(dsn: str) -> N
     stored = await load_stored_output(dsn, case, UUID(live.job_id))
 
     same = ("answer", "root_run_id", "total_claims", "unsupported_claims", "tool_calls", "research_tool_calls",
-            "total_tokens", "cost_usd", "source_urls", "quotes", "sources", "review_reasons", "sources_text")
+            "total_tokens", "cost_usd", "source_urls", "quotes", "sources", "review_reasons", "report_text")
     assert {name: getattr(stored, name) for name in same} == {name: getattr(live, name) for name in same}
     # No transcript was kept, so the checks that need real tool arguments are skipped, not scored from hashes.
     assert live.search_queries and not stored.tool_args_known and not stored.search_queries
