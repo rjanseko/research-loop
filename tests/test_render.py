@@ -233,12 +233,19 @@ def test_cli_will_not_overwrite_the_record_it_renders(tmp_path) -> None:
     assert json.loads((tmp_path / "copy.json").read_text(encoding="utf-8"))["objective"] == _document().objective
 
 
-def test_cli_refuses_a_record_without_a_ledger(tmp_path) -> None:
+def test_cli_refuses_a_record_without_a_ledger(tmp_path, capsys) -> None:
     record = tmp_path / "run.json"
     record.write_text(json.dumps({"report": {"answer": "x"}, "verification": {}}), encoding="utf-8")
     with pytest.raises(SystemExit) as exit_info:
         render.main([str(record)])
     assert exit_info.value.code == 2
+    assert "rerun it" in capsys.readouterr().err
+    job_id = "00000000-0000-0000-0000-000000000001"
+    record.write_text(json.dumps({"report": {"answer": "x"}, "verification": {}, "persisted": True,
+                                  "job_id": job_id}), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        render.main([str(record)])
+    assert f"research-report --job-id {job_id}" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(render.find_engine() is None, reason="no LaTeX engine installed")

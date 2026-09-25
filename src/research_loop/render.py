@@ -1168,7 +1168,14 @@ def main(argv: list[str] | None = None) -> None:
     try:
         doc = ReportDocument.from_record(record)
     except ValueError as exc:
-        parser.error(str(exc))
+        message = str(exc)
+        if record.get("ledger") is None and record.get("report") is not None:
+            # readme_example records written before it saved the ledger; Postgres kept it if persisted.
+            if record.get("persisted") and record.get("job_id"):
+                message += f"; the job was persisted, so try: research-report --job-id {record['job_id']}"
+            else:
+                message += "; records from before readme_example saved the ledger can't be rendered, so rerun it"
+        parser.error(message)
     if args.record and "json" in args.format and (Path(out_dir) / f"{stem}.json").resolve() == args.record.resolve():
         if set(args.format) != set(FORMATS):
             parser.error("the json output would overwrite the record; pass --stem or --output-dir")
