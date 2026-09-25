@@ -86,7 +86,8 @@ def _limited(route: ModelRoute | None, limits: dict[str, int]) -> ModelRoute | N
 
 
 def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings, *,
-          policy_name: str = "value", cache_mode: str = "record") -> tuple[ModelPolicy, ResearchConfig]:
+          policy_name: str = "value", cache_mode: str = "record",
+          budget_notes: tuple[ResearchRole, ...] = ()) -> tuple[ModelPolicy, ResearchConfig]:
     """The study's policy and run configuration; without `paid`, the synthetic policy with the same run setup."""
     config = ResearchConfig(
         # The README example's trimmed run, which fits the budget: two deep dives a round and one
@@ -96,6 +97,7 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
         salvage_exhausted_research=True,
         tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode=cache_mode,
+        budget_notes=budget_notes,
     )
     if not paid:
         return get_policy("synthetic"), config
@@ -168,8 +170,9 @@ async def run_case(case: BenchmarkCaseSpec, *, paid: bool, policy: ModelPolicy, 
 
 async def run(*, cases: list[BenchmarkCaseSpec], paid: bool, persist: bool, budget: float, reserve: float,
               settings: ResearchSettings, policy_name: str, cache_mode: str, step: str,
-              output: Path, suite_name: str) -> dict[str, Any]:
-    policy, config = build(paid, budget, reserve, settings, policy_name=policy_name, cache_mode=cache_mode)
+              output: Path, suite_name: str, budget_notes: tuple[ResearchRole, ...] = ()) -> dict[str, Any]:
+    policy, config = build(paid, budget, reserve, settings, policy_name=policy_name, cache_mode=cache_mode,
+                           budget_notes=budget_notes)
     configure_logfire(settings)
     record: dict[str, Any] = {
         "step": step,
@@ -219,6 +222,10 @@ def main(argv: list[str] | None = None) -> None:
                         help="The study's cache directory (default: benchmark_outputs/settings_study/cache)")
     parser.add_argument("--persist", action="store_true",
                         help="Store synthetic runs in Postgres too, to try grading them (paid runs always are)")
+    # Scouts and deep dives cannot see their limits, so every one in the pilots ran into them and was salvaged.
+    parser.add_argument("--budget-notes", nargs="+", default=[],
+                        choices=[ResearchRole.SCOUT.value, ResearchRole.DEEP_DIVE.value],
+                        help="These tool loops end each request with the requests and tool calls they have left")
     parser.add_argument("--output", type=Path, help="Step record (default: benchmark_outputs/settings_study/<step>/<time>.json)")
     args = parser.parse_args(argv)
     settings = ResearchSettings.from_env()
@@ -237,15 +244,18 @@ def main(argv: list[str] | None = None) -> None:
         spec for spec in specs if not spec.metadata.get("retired")]
     settings = settings.model_copy(update={
         "benchmark_cache": args.cache_dir or settings.benchmark_output / "settings_study" / "cache"})
+    budget_notes = tuple(ResearchRole(role) for role in args.budget_notes)
     try:
-        build(args.paid, args.budget, args.reserve, settings, policy_name=args.policy, cache_mode=args.cache_mode)
+        build(args.paid, args.budget, args.reserve, settings, policy_name=args.policy, cache_mode=args.cache_mode,
+              budget_notes=budget_notes)
     except ValueError as exc:  # a budget or reserve no policy can run under
         parser.error(str(exc))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or settings.benchmark_output / "settings_study" / args.step / f"{stamp}.json"
     record = asyncio.run(run(cases=cases, paid=args.paid, persist=persist, budget=args.budget,
                              reserve=args.reserve, settings=settings, policy_name=args.policy,
-                             cache_mode=args.cache_mode, step=args.step, output=output, suite_name=suite_name))
+                             cache_mode=args.cache_mode, step=args.step, output=output, suite_name=suite_name,
+                             budget_notes=budget_notes))
     for entry in record["runs"]:
         detail = f"job_id={entry['job_id']} cost_usd={entry['cost_usd']}" if entry["status"] == "succeeded" \
             else f"failed ({entry['error']})"

@@ -61,6 +61,13 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
         assert route.settings == preset.routes[role].settings  # e.g. the synthesizer's max_tokens stays
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
+    assert config.budget_notes == ()
+
+
+def test_budget_notes_reach_the_run_config() -> None:
+    _policy, config = settings_study.build(True, 4.0, 1.5, _STUDY_ENV,
+                                           budget_notes=(ResearchRole.SCOUT, ResearchRole.DEEP_DIVE))
+    assert config.budget_notes == (ResearchRole.SCOUT, ResearchRole.DEEP_DIVE)
 
 
 
