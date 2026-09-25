@@ -141,6 +141,7 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
     # A salvage call is a child of the loop it wrote the result for, with the same role and question.
     salvage = {row[4]: row for row in rows if row[4] in tasks and tasks[row[4]][1] == row[1] and tasks[row[4]][2] == row[2]}
     profiles = []
+    skipped: list[str] = []
     scout_texts: dict[str, list[str]] = {}
     for task_id, role, question_id, _status, _parent, _output, _started, _finished, messages, _usage, _config in rows:
         if role == "scout" and messages is not None and task_id not in {row[0] for row in salvage.values()}:
@@ -150,7 +151,12 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
         if task_id in {row[0] for row in salvage.values()}:
             continue
         if messages is None:
-            raise SystemExit(f"task {task_id} has no transcript; run the job with --capture")
+            # A job run without --capture has none; one task can also lack it when storing it failed, as
+            # a transcript with a NUL character did before the repository stripped them.
+            if not any(row[8] is not None for row in rows):
+                raise SystemExit(f"job {job_id} has no transcripts; run it with --capture")
+            skipped.append(f"{role} {question_id or '-'}")
+            continue
         child = salvage.get(task_id)
         final = child[5] if child else (output if status == "succeeded" else None)
         result = ResearchResult.model_validate(final) if final else None
@@ -166,6 +172,8 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
             stopped_by=stopping_limit(usage or {}, config or {}) if child else None,
             from_scout=from_scout,
         ))
+    if skipped:
+        print(f"skipped, no transcript: {', '.join(skipped)}")
     return profiles
 
 
