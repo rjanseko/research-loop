@@ -8,6 +8,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.usage import RequestUsage
 
 from research_loop.study_budget import StudyBudget, StudyBudgetModel, StudyBudgetRefusal
 
@@ -28,18 +29,64 @@ async def test_tiny_cap_refuses_before_dispatch() -> None:
     assert not calls and budget.reserved_usd == 0
 
 
-async def test_reservation_is_kept_after_dispatch() -> None:
-    calls = []
+async def test_returned_request_settles_to_its_actual_charge() -> None:
+    from genai_prices import calc_price
+
+    responses = []
 
     def respond(messages: list[ModelMessage], _info) -> ModelResponse:
-        calls.append(messages)
-        return ModelResponse(parts=[TextPart("ok")])
+        responses.append(ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=1000, output_tokens=10)))
+        return responses[-1]
 
     budget = StudyBudget(Decimal(10))
     model = StudyBudgetModel(FunctionModel(respond), "openai:gpt-6-sol", budget)
     result = await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 100})
-    assert result.output == "ok" and len(calls) == 1
-    assert Decimal(0) < budget.reserved_usd <= budget.cap_usd
+    assert result.output == "ok" and len(responses) == 1
+    actual = calc_price(responses[-1].usage, "gpt-6-sol", provider_id="openai").total_price
+    assert Decimal(0) < budget.reserved_usd == actual
+
+
+async def test_failed_request_keeps_its_reservation() -> None:
+    def respond(_messages: list[ModelMessage], _info) -> ModelResponse:
+        raise RuntimeError("connection reset after send")
+
+    budget = StudyBudget(Decimal(10))
+    model = StudyBudgetModel(FunctionModel(respond), "openai:gpt-6-sol", budget)
+    with pytest.raises(RuntimeError):
+        await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 100})
+    assert budget.reserved_usd > 0
+
+
+async def test_settled_requests_leave_room_for_a_later_one() -> None:
+    # Under byte-reserve-v2, returned scouts kept their reservations, so synthesis was refused
+    # with most of the cap held by requests that had cost a few cents.
+    def respond(_messages: list[ModelMessage], _info) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=100, output_tokens=5))
+
+    probe = StudyBudget(Decimal(10))
+    model = StudyBudgetModel(FunctionModel(respond), "openai:gpt-6-sol", probe)
+    await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 1000})
+    one = await probe.reserve("openai:gpt-6-sol", [], {"max_tokens": 1000}, ModelRequestParameters())
+    budget = StudyBudget(one * Decimal("1.5"))
+    model = StudyBudgetModel(FunctionModel(respond), "openai:gpt-6-sol", budget)
+    for _ in range(3):
+        await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 1000})
+    assert budget.reserved_usd < one
+
+
+async def test_streamed_request_settles_after_the_stream_ends() -> None:
+    from pydantic_ai.models.function import AgentInfo
+
+    async def stream(_messages: list[ModelMessage], _info: AgentInfo):
+        yield "ok"
+
+    budget = StudyBudget(Decimal(10))
+    model = StudyBudgetModel(FunctionModel(stream_function=stream), "openai:gpt-6-sol", budget)
+    reserve = await StudyBudget(Decimal(10)).reserve("openai:gpt-6-sol", [], {"max_tokens": 100},
+                                                     ModelRequestParameters())
+    async with Agent(model, output_type=str).run_stream("hello", model_settings={"max_tokens": 100}) as run:
+        assert await run.get_output() == "ok"
+    assert Decimal(0) < budget.reserved_usd < reserve
 
 
 async def test_output_bound_is_required() -> None:

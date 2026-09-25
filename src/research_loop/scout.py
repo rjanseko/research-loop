@@ -323,12 +323,13 @@ class _Run:
                 self.models[role] = ScoutRateLimitModel(guarded) if role == "scout" else guarded
         return self.models[role]
 
-    def _spend(self, usage: RunUsage) -> None:
+    def _spend(self, usage: RunUsage, *, refused: bool = False) -> None:
         if not usage.requests:
             return
         if usage.cost is None:
-            # A pre-dispatch budget refusal sends no request and has no provider price to report.
-            if usage.requests:
+            # PydanticAI counts a request before the budget guard refuses it; a refusal that is the
+            # call's only request sent nothing and has no price to report.
+            if not (refused and not usage.input_tokens and not usage.output_tokens):
                 self.unpriced = True
         else:
             self.cost += usage.cost
@@ -360,7 +361,7 @@ class _Run:
                                          event_stream_handler=_ignore_events if stream else None)
             output = finish(result) if finish else result.output
         except BaseException as exc:
-            self._spend(usage)
+            self._spend(usage, refused=isinstance(exc, StudyBudgetRefusal))
             if isinstance(exc, asyncio.CancelledError):
                 status, reason = "cancelled", cancelled() if cancelled else "the run was cancelled"
             else:

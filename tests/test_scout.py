@@ -427,8 +427,11 @@ async def test_undispatched_budget_refusal_is_not_an_unpriced_call(settings) -> 
     from research_loop.scout import _Run
 
     runner = _Run("Q?", settings, MemoryStore(), [], [], None, None, budget=StudyBudget(Decimal("0.01")))
-    runner._spend(RunUsage())
+    # PydanticAI counts the refused request, so the usage has one request and no tokens.
+    runner._spend(RunUsage(requests=1), refused=True)
     assert not runner.unpriced and runner.cost == 0
+    runner._spend(RunUsage(requests=1))
+    assert runner.unpriced
 
 
 async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, monkeypatch) -> None:
@@ -455,6 +458,6 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     with pytest.raises(StudyBudgetRefusal):
         await runner._call(role="planner", agent=planner_agent, prompt='{"question":"Q?"}',
                            deps=PlanLimits(1), limits=UsageLimits(request_limit=2, cost_limit=Decimal(1)))
-    assert not dispatched and budget.reserved_usd == 0
+    assert not dispatched and budget.reserved_usd == 0 and not runner.unpriced
     call = next(iter(store.calls.values()))
     assert call["role"] == "planner" and call["error"]["type"] == "StudyBudgetRefusal"

@@ -1,8 +1,10 @@
 """Conservative per-command reservation before a paid study model request.
 
 The new study commands disable SDK retries and fallback. PydanticAI validation may still make a
-second request; this wrapper reserves before each one, retaining reservations even on failure.
-A generous byte-to-token upper bound includes serialized messages, tool schemas, and framing.
+second request; this wrapper reserves before each one. A generous byte-to-token upper bound includes
+serialized messages, tool schemas, and framing. When a response returns with priced usage, its
+reservation is replaced by the actual charge; a request that fails, or whose usage cannot be priced,
+keeps its full reservation because the provider may still have charged for it.
 """
 from __future__ import annotations
 
@@ -24,7 +26,9 @@ from .prices import install_price_overrides
 # A serialized UTF-8 byte can account for at most one text token. Doubling the byte count
 # allows for provider framing and serialization differences; another 16k covers fixed overhead.
 # The former factor of four falsely refused observed ~100k-token Scout requests as >1M tokens.
-BUDGET_POLICY_VERSION = "byte-reserve-v2"
+# v3 settles each returned request to its actual charge; v2 kept every reservation, so parallel
+# scouts could hold most of the cap and leave no room for synthesis.
+BUDGET_POLICY_VERSION = "byte-reserve-v3"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 
@@ -69,6 +73,16 @@ class StudyBudget:
             self.reserved_usd += charge
         return charge
 
+    def settle(self, model_id: str, charge: Decimal, usage: RequestUsage) -> None:
+        """Replace a returned request's reservation with its actual charge, if it can be priced."""
+        provider, _, name = model_id.partition(":")
+        try:
+            actual = calc_price(usage, name, provider_id=provider).total_price
+        except LookupError:
+            return
+        # No await, so this cannot interleave with a reservation.
+        self.reserved_usd += actual - charge
+
 
 class StudyBudgetModel(WrapperModel):
     """Reserve a conservative maximum before every provider request, including validation retries."""
@@ -80,15 +94,19 @@ class StudyBudgetModel(WrapperModel):
     async def request(self, messages: list[ModelMessage], model_settings: ModelSettings | None,
                       model_request_parameters: ModelRequestParameters) -> ModelResponse:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
-        await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
-        return await self.wrapped.request(messages, model_settings, model_request_parameters)
+        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
+        response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        self.budget.settle(self._priced_model_id, charge, response.usage)
+        return response
 
     @asynccontextmanager
     async def request_stream(self, messages: list[ModelMessage], model_settings: ModelSettings | None,
                              model_request_parameters: ModelRequestParameters,
                              run_context: Any = None) -> AsyncGenerator[StreamedResponse]:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
-        await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
+        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
         async with self.wrapped.request_stream(messages, model_settings, model_request_parameters,
                                                run_context) as stream:
             yield stream
+        # Reached only when the stream was consumed without error.
+        self.budget.settle(self._priced_model_id, charge, stream.usage)

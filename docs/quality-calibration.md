@@ -74,3 +74,21 @@ refusals as unpriced calls. An offline regression checks a 300,000-byte history 
 as above the million-token range. The next paid step is one separately approved baseline retry of the
 same frozen case under the same $3.00 ceiling. Inspect its coverage and final report before paying to
 grade it or comparing gap follow-up. No follow-up or grading call has yet been made on these cases.
+
+## Baseline retry and settled reservations
+
+The user approved one retry of the same frozen case under `byte-reserve-v2`. Run
+`d106c122-a47b-422a-9ab1-48def7b6e700` took 181 seconds and charged $0.05925755. All four scouts
+returned claims, with 62 of 71 quotes verified and 66 items read as full text. Synthesis was again not
+dispatched: the scouts had charged about $0.05 but still held $1.8206 of reservations, and the
+synthesizer's $1.1972 reservation would have crossed the $3.00 ceiling. The run is partial with no
+report, so it is a second guard diagnostic rather than a quality result. Its `unpriced call` flag was
+also still wrong: PydanticAI counts a request before the guard refuses it, so v2's zero-request check
+never applied to a real refusal.
+
+The guard now uses `byte-reserve-v3`. It still reserves the same conservative maximum before dispatch,
+then replaces the reservation with the priced charge when the response returns. A failed request, or
+one whose usage cannot be priced, keeps its full reservation. A refusal that was a call's only request
+is no longer reported as an unpriced call. Offline tests cover settling, a kept reservation after
+failure, streamed responses, and sequential requests that v2 would have refused. The next paid step
+is again one separately approved retry of `drb2-task8` under the $3.00 ceiling.
