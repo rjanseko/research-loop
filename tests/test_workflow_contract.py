@@ -46,14 +46,19 @@ from research_loop.tools import ResearchToolMode
     ("field", "value"),
     [
         ("max_parallel_scouts", 0),  # a zero-slot semaphore would wait forever
+        ("max_parallel_scouts", None),
         ("max_parallel_deep_dives", 0),
+        ("max_parallel_deep_dives", None),
         ("max_deep_dives_per_round", -1),
+        ("max_deep_dives_per_round", None),
         ("max_verification_rounds", -1),
+        ("max_verification_rounds", None),
         ("min_scout_confidence", 1.5),
         ("max_run_seconds", 0),
+        ("keep_recent_tool_results", -1),
     ],
 )
-def test_research_config_rejects_values_that_cannot_run(field: str, value: float) -> None:
+def test_research_config_rejects_values_that_cannot_run(field: str, value: float | None) -> None:
     with pytest.raises(ValueError, match=field):
         ResearchConfig(**{field: value})
 
@@ -61,6 +66,34 @@ def test_research_config_rejects_values_that_cannot_run(field: str, value: float
 def test_research_config_allows_disabling_deep_dives_and_verification_rounds() -> None:
     config = ResearchConfig(max_deep_dives_per_round=0, max_verification_rounds=0)
     assert (config.max_deep_dives_per_round, config.max_verification_rounds) == (0, 0)
+
+
+@pytest.mark.parametrize("field", [
+    "max_parallel_scouts", "max_parallel_deep_dives", "max_deep_dives_per_round",
+    "max_verification_rounds", "keep_recent_tool_results",
+])
+@pytest.mark.parametrize("value", [True, False, 1.5, 2.0, "2", float("nan"), float("inf")])
+def test_research_config_requires_integer_counts(field: str, value: Any) -> None:
+    with pytest.raises(ValueError, match=field):
+        ResearchConfig(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, False, -1, float("inf"), float("-inf"), float("nan"), "30"])
+def test_research_config_requires_a_finite_positive_deadline(value: Any) -> None:
+    with pytest.raises(ValueError, match="max_run_seconds"):
+        ResearchConfig(max_run_seconds=value)
+
+
+@pytest.mark.parametrize("deadline", [None, 1, 0.5])
+@pytest.mark.parametrize("recent_results", [None, 0, 1])
+def test_research_config_accepts_valid_limits(deadline: float | None, recent_results: int | None) -> None:
+    config = ResearchConfig(
+        max_parallel_scouts=1, max_parallel_deep_dives=1,
+        max_deep_dives_per_round=0, max_verification_rounds=0,
+        max_run_seconds=deadline, keep_recent_tool_results=recent_results,
+    )
+    assert config.max_run_seconds == deadline
+    assert config.keep_recent_tool_results == recent_results
 
 
 class YieldingRepository(InMemoryResearchRepository):

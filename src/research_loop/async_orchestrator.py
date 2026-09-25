@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass, field
@@ -101,15 +102,21 @@ class ResearchConfig:
     def __post_init__(self) -> None:
         # Zero deep dives or verification rounds disables that step; zero parallel slots would hang.
         for name, minimum in (("max_parallel_scouts", 1), ("max_parallel_deep_dives", 1),
-                              ("max_deep_dives_per_round", 0), ("max_verification_rounds", 0)):
-            if getattr(self, name) < minimum:
-                raise ValueError(f"{name} must be at least {minimum}")
+                              ("max_deep_dives_per_round", 0), ("max_verification_rounds", 0),
+                              ("keep_recent_tool_results", 0)):
+            value = getattr(self, name)
+            if name == "keep_recent_tool_results" and value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer of at least {minimum}")
         if not 0.0 <= self.min_scout_confidence <= 1.0:
             raise ValueError("min_scout_confidence must be between 0 and 1")
-        if self.max_run_seconds is not None and not self.max_run_seconds > 0:
-            raise ValueError("max_run_seconds must be positive when set")
-        if self.keep_recent_tool_results is not None and self.keep_recent_tool_results < 0:
-            raise ValueError("keep_recent_tool_results must be at least 0 when set")
+        deadline = self.max_run_seconds
+        if deadline is not None and (
+            isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+            or not math.isfinite(deadline) or deadline <= 0
+        ):
+            raise ValueError("max_run_seconds must be a finite positive number when set")
 
 
 # How long recording a failed or cancelled task or job may take before the run gives up on it.
