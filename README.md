@@ -63,6 +63,218 @@ Six agents take turns, each with one job:
 
 If the verifier asks for more research and rounds remain, the follow-ups become deep dives, and the synthesizer and verifier run again.
 
+### The graph
+
+This is `research-graph-v1` as `graph.py` builds it. Double-edged boxes run once per question or gap, in parallel; every other step runs once. Diamonds are decisions, and the edge labels are the branch names in the code.
+
+```mermaid
+flowchart TB
+    start(["Objective"]) --> plan["Plan research<br/><i>planner</i>"]
+    plan -->|"one work item per question"| scout[["Scout question<br/><i>scout</i>"]]
+    scout --> record1["Record scout evidence<br/><i>join, then add to the ledger in plan order</i>"]
+    record1 --> gaps["Analyze evidence gaps<br/><i>gap_analyst, plus a low-confidence check</i>"]
+    gaps --> gapdecision{"Material gaps?"}
+    gapdecision -->|"material gaps"| deep[["Initial deep dive<br/><i>deep_dive, most severe gaps first</i>"]]
+    deep --> record2["Record initial deep-dive evidence"]
+    record2 --> synth
+    gapdecision -->|"evidence sufficient"| synth["Synthesize report<br/><i>synthesizer</i>"]
+    synth --> verify["Verify report<br/><i>verifier</i>"]
+    verify --> route{"Follow-ups and<br/>rounds left?"}
+    route -->|"complete"| finalize["Finalize research"]
+    finalize --> done(["Report, verification, ledger"])
+    route -->|"research follow-ups"| vdeep[["Verification deep dive<br/><i>deep_dive, attempt 1 and up</i>"]]
+    vdeep --> record3["Record verification evidence"]
+    record3 --> synth
+
+    classDef planner stroke:#6366f1,stroke-width:2px
+    classDef scout stroke:#14b8a6,stroke-width:2px
+    classDef join stroke:#64748b,stroke-width:2px
+    classDef gap stroke:#8b5cf6,stroke-width:2px
+    classDef deep stroke:#0ea5e9,stroke-width:2px
+    classDef synth stroke:#ec4899,stroke-width:2px
+    classDef verify stroke:#10b981,stroke-width:2px
+    classDef done stroke:#eab308,stroke-width:2px
+    class plan planner
+    class scout scout
+    class record1,record2,record3 join
+    class gaps gap
+    class deep,vdeep deep
+    class synth synth
+    class verify verify
+    class start,finalize,done done
+```
+
+`research-graph` prints the executable graph, including the small steps that prepare each batch of deep dives. [docs/graph.md](docs/graph.md) explains every step.
+
+## Example: one question through the graph
+
+The question below shows the loop at full stretch. It needs scholarly search. Its sources mix preprints, published papers, and vendor posts. And its evidence disagrees, so it takes every branch of the graph. The outputs are illustrative and shortened, but every ID, route, and decision shown is what the code does with them.
+
+```python
+outcome = await ResearchLoop(get_policy("quality")).run(
+    "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?",
+    constraints=ResearchConstraints(notes=[
+        "Keep preprints and published papers distinct.",
+        "Label scores a vendor reports about its own model as vendor claims.",
+    ]),
+)
+```
+
+```mermaid
+flowchart TB
+    objective(["Is SWE-bench Verified still a trustworthy<br/>measure of coding-agent progress?"])
+    objective --> plan["Plan research<br/><i>four questions</i>"]
+    plan --> s1[["Scout q1<br/>how Verified was built"]]
+    plan --> s2[["Scout q2<br/>leakage and weak tests"]]
+    plan --> s3[["Scout q3<br/>vendor vs. independent scores"]]
+    plan --> s4[["Scout q4 on cheap_scout<br/>newer benchmarks"]]
+    s1 -->|"confidence 0.90"| record1
+    s2 -->|"0.55, sources disagree"| record1
+    s3 -->|"0.75, vendor posts only"| record1
+    s4 -->|"0.80, finished first"| record1
+    record1["Record in plan order<br/>q1/c1 … q4/c2"] --> gaps["Analyze evidence gaps"]
+    gaps -->|"q2: contradiction, severity 5"| d2[["Deep dive q2"]]
+    gaps -->|"q3: missing primary source, severity 4"| d3[["Deep dive q3"]]
+    d2 --> record2["Record<br/>q2/c1~2, q2/c2~2, q3/c1~2"]
+    d3 --> record2
+    record2 --> synth1["Synthesize<br/>cites q1/c1, q2/c1~2, q3/c2, …"]
+    synth1 --> verify1["Verify<br/>q3/c2 unsupported, major"]
+    verify1 -->|"follow-up on q3, round 1 of 2"| d3b[["Deep dive q3, attempt 1<br/>on alternate_deep_dive"]]
+    d3b --> record3["Record q3/c1~3"]
+    record3 --> synth2["Synthesize<br/>cites q3/c1~3 instead of q3/c2"]
+    synth2 --> verify2["Verify<br/>every check supported"]
+    verify2 -->|"complete"| outcome(["Report, verification, ledger<br/>review_reasons = []"])
+
+    classDef planner stroke:#6366f1,stroke-width:2px
+    classDef scout stroke:#14b8a6,stroke-width:2px
+    classDef join stroke:#64748b,stroke-width:2px
+    classDef gap stroke:#8b5cf6,stroke-width:2px
+    classDef deep stroke:#0ea5e9,stroke-width:2px
+    classDef synth stroke:#ec4899,stroke-width:2px
+    classDef verify stroke:#10b981,stroke-width:2px
+    classDef done stroke:#eab308,stroke-width:2px
+    class plan planner
+    class s1,s2,s3,s4 scout
+    class record1,record2,record3 join
+    class gaps gap
+    class d2,d3,d3b deep
+    class synth1,synth2 synth
+    class verify1,verify2 verify
+    class objective,outcome done
+```
+
+| Step | Agent | What happens to this question |
+|---|---|---|
+| Plan research | `planner` | Splits the objective into four questions; the `quality` policy aims for six to ten, shortened here. q1 and q2 require primary sources. q4 is marked `expected_difficulty: "low"` and doesn't require them. |
+| Scout question, four at once | `scout`; q4 on `cheap_scout` | All four start together (there are eight slots). q4 goes to the cheaper model because it is easy and needs no primary sources, and it finishes first. q2 finds two analyses that disagree, records the contradiction, and reports confidence 0.55. q3 finds only vendor launch posts, and one quote it gives appears in nothing its tools returned, so code marks it `quote_check: not_found`. |
+| Record scout evidence | Code | Adds the four results in plan order, whatever order they finished in, and names their claims `q1/c1` to `q4/c2`. |
+| Analyze evidence gaps | `gap_analyst`, then code | The analyst names two gaps: the contradiction on q2 (severity 5) and missing primary sources on q3 (severity 4). Code adds a `low_confidence` gap for q2, because 0.55 is below `min_scout_confidence` (0.70). It keeps one gap per question, the most severe or, on a tie, the first. Both gaps fit under `max_deep_dives_per_round` (4), so both are material. |
+| Initial deep dive, two at once | `deep_dive` | Each deep dive gets its question and its gap. Both workers number their claims from `c1` again, so the ledger renames them `q2/c1~2`, `q2/c2~2`, and `q3/c1~2`, and nothing is overwritten. Each task records the gap-analysis task as its parent. |
+| Synthesize report | `synthesizer` | Writes the report from the ledger. Every statement cites claim IDs, and a citation to an ID that isn't in the ledger gets one retry. |
+| Verify report | `verifier` | Sees the report and the claims it cites. The statement about vendor scores rests only on `q3/c2`, whose quote was not found, so the verifier rates it unsupported and major and asks for more research on q3. |
+| Route verification result | Code | The follow-up names a planned question and round 1 of `max_verification_rounds` (2) is still open, so the run goes back to research. |
+| Verification deep dive | `deep_dive` on `alternate_deep_dive` | A different model looks for an independent run of the same models. Its claim becomes `q3/c1~3`, and the verifier task is its parent. |
+| Synthesize, verify, finalize | `synthesizer`, `verifier` | The new report cites `q3/c1~3` instead of `q3/c2`. Every check is supported and nothing more is requested, so the run finishes with an empty `review_reasons`. |
+
+<details>
+<summary>The plan (<code>ResearchPlan</code>, defaults left out)</summary>
+
+```json
+{
+  "objective": "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?",
+  "questions": [
+    {"id": "q1", "question": "How was SWE-bench Verified built from SWE-bench, and what does it measure?",
+     "priority": 5, "requires_primary_sources": true},
+    {"id": "q2", "question": "What independent evidence shows solution leakage, weak tests, or training-data contamination in SWE-bench tasks?",
+     "priority": 5, "requires_primary_sources": true},
+    {"id": "q3", "question": "How do scores vendors report for their own models compare with independent runs of the same models?",
+     "priority": 4},
+    {"id": "q4", "question": "Which newer benchmarks were proposed to address these problems?",
+     "priority": 2, "expected_difficulty": "low"}
+  ]
+}
+```
+
+</details>
+
+<details>
+<summary>Two claims in the ledger (<code>Claim</code>): one clean, one whose quote was not found</summary>
+
+The first cites the SWE-bench paper as the preprint it is. The second cites a vendor post the scout did fetch, so its source is `observed`, but the quoted words appear in nothing the tools returned, so its quote is `not_found`. Code sets both marks; the model can't.
+
+```json
+{
+  "id": "q1/c2",
+  "statement": "SWE-bench builds its tasks from real GitHub issues and the pull requests that resolved them.",
+  "confidence": 0.9,
+  "evidence": [{
+    "source": {"url": "https://arxiv.org/abs/2310.06770", "arxiv_id": "2310.06770",
+               "title": "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?",
+               "source_type": "paper", "publication_status": "preprint"},
+    "excerpt": "Each task pairs an issue with the repository at that commit; the tests from the resolving pull request judge a fix.",
+    "confidence": 0.9,
+    "source_check": "observed"
+  }]
+}
+```
+
+```json
+{
+  "id": "q3/c2",
+  "statement": "Vendor-reported scores run ahead of independent runs of the same models.",
+  "confidence": 0.7,
+  "evidence": [{
+    "source": {"url": "https://vendor.example/blog/model-launch", "title": "Model launch post",
+               "source_type": "official", "publication_status": "vendor_technical_report"},
+    "excerpt": "The vendor reports a higher score than public leaderboards show.",
+    "quote": "resolves more issues than any model we have tested",
+    "confidence": 0.7,
+    "quote_check": "not_found",
+    "source_check": "observed"
+  }]
+}
+```
+
+</details>
+
+<details>
+<summary>Gap selection before the first deep dives</summary>
+
+| Question | Reason | Severity | Raised by | Deep dive? |
+|---|---|---|---|---|
+| q2 | `contradiction` | 5 | Gap analyst | Yes: kept first on the tie |
+| q2 | `low_confidence` | 5 | Code: 0.55 < 0.70 | No: one gap per question |
+| q3 | `missing_primary_source` | 4 | Gap analyst | Yes |
+
+</details>
+
+<details>
+<summary>The first verification (<code>VerificationReport</code>, passing checks left out)</summary>
+
+```json
+{
+  "needs_research": true,
+  "checks": [
+    {"statement": "Vendor-reported scores run ahead of independent runs of the same models.",
+     "claim_ids": ["q3/c2"], "supported": false, "severity": "major",
+     "explanation": "The only evidence is a quote no research tool returned."}
+  ],
+  "followups": [
+    {"question_id": "q3", "reason": "missing_evidence", "severity": 4,
+     "followup": "Find an independent run of the same models under matched conditions."}
+  ]
+}
+```
+
+</details>
+
+Why this question makes a good showcase:
+
+- **It splits cleanly.** Four independent questions run in parallel, and the easy one goes to a cheaper model.
+- **Its sources are uneven.** Papers, preprints, and vendor posts sit side by side, so publication status and the quote and source checks matter.
+- **Its evidence disagrees.** The contradiction and the low confidence both become deep dives, most severe first.
+- **Its weakest claim gets caught.** A quote no tool returned sinks a report statement, and a verification round with a different model replaces it.
+
 ## The data
 
 Everything an agent returns is a typed Pydantic model (`schemas.py`). These are the ones that matter:

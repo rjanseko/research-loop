@@ -5,23 +5,43 @@
 ## Topology
 
 ```mermaid
-flowchart LR
-    START --> PLAN
-    PLAN --> SCOUTS{Map scouts}
-    SCOUTS --> SCOUT_JOIN[Join scout results]
-    SCOUT_JOIN --> GAP[Gap analysis]
-    GAP --> INITIAL{Material gaps?}
-    INITIAL -->|yes| DEEP1{Map initial deep dives}
-    DEEP1 --> DEEP1_JOIN[Join deep dives]
-    DEEP1_JOIN --> SYNTH[Synthesize]
-    INITIAL -->|no| SYNTH
-    SYNTH --> VERIFY[Verify]
-    VERIFY --> VDEC{More research and rounds remain?}
-    VDEC -->|no| END
-    VDEC -->|yes| DEEP2{Map verification deep dives}
-    DEEP2 --> DEEP2_JOIN[Join verification research]
-    DEEP2_JOIN --> SYNTH
+flowchart TB
+    start(["Objective"]) --> plan["Plan research<br/><i>planner</i>"]
+    plan -->|"one work item per question"| scout[["Scout question<br/><i>scout</i>"]]
+    scout --> record1["Record scout evidence<br/><i>join, then add to the ledger in plan order</i>"]
+    record1 --> gaps["Analyze evidence gaps<br/><i>gap_analyst, plus a low-confidence check</i>"]
+    gaps --> gapdecision{"Material gaps?"}
+    gapdecision -->|"material gaps"| deep[["Initial deep dive<br/><i>deep_dive, most severe gaps first</i>"]]
+    deep --> record2["Record initial deep-dive evidence"]
+    record2 --> synth
+    gapdecision -->|"evidence sufficient"| synth["Synthesize report<br/><i>synthesizer</i>"]
+    synth --> verify["Verify report<br/><i>verifier</i>"]
+    verify --> route{"Follow-ups and<br/>rounds left?"}
+    route -->|"complete"| finalize["Finalize research"]
+    finalize --> done(["Report, verification, ledger"])
+    route -->|"research follow-ups"| vdeep[["Verification deep dive<br/><i>deep_dive, attempt 1 and up</i>"]]
+    vdeep --> record3["Record verification evidence"]
+    record3 --> synth
+
+    classDef planner stroke:#6366f1,stroke-width:2px
+    classDef scout stroke:#14b8a6,stroke-width:2px
+    classDef join stroke:#64748b,stroke-width:2px
+    classDef gap stroke:#8b5cf6,stroke-width:2px
+    classDef deep stroke:#0ea5e9,stroke-width:2px
+    classDef synth stroke:#ec4899,stroke-width:2px
+    classDef verify stroke:#10b981,stroke-width:2px
+    classDef done stroke:#eab308,stroke-width:2px
+    class plan planner
+    class scout scout
+    class record1,record2,record3 join
+    class gaps gap
+    class deep,vdeep deep
+    class synth synth
+    class verify verify
+    class start,finalize,done done
 ```
+
+Double-edged boxes run once per question or gap, in parallel. The steps that prepare each batch of deep dives are folded into the deep-dive boxes. The [README example](../README.md#example-one-question-through-the-graph) follows one question through this graph.
 
 The authoritative diagram comes from the executable graph:
 
