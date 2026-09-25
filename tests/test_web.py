@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from research_loop.acquisition import AcquisitionCache, FetchMemo
-from research_loop.web import WebAcquisition, build_web_toolset
+from research_loop.web import NO_RESULTS_HINT, WebAcquisition, build_web_toolset
 
 
 @pytest.mark.asyncio
@@ -69,15 +69,30 @@ async def test_duckduckgo_failures_become_tool_results(monkeypatch) -> None:
 
     monkeypatch.setattr("research_loop.web.wait_rate_slot", no_wait)
     monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: FlakySearch(1))
-    tool = resilient_duckduckgo_tool(retry_delay=0)
+    tool = resilient_duckduckgo_tool(retry_delays=(0, 0))
     assert tool.name == "duckduckgo_search"
     assert (await tool.function(query="SWE-bench")).return_value[0]["title"] == "SWE-bench"
 
     calls.clear()
     monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: FlakySearch(2))
-    result = (await resilient_duckduckgo_tool(retry_delay=0).function(query="SWE-bench")).return_value
-    assert result["error"] == "SearchUnavailable (RuntimeError)"
-    assert len(calls) == 2
+    assert (await resilient_duckduckgo_tool(retry_delays=(0, 0)).function(query="SWE-bench")).return_value[0]
+    assert len(calls) == 3  # the third attempt answered
+
+    calls.clear()
+    monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: FlakySearch(3))
+    result = (await resilient_duckduckgo_tool(retry_delays=(0, 0)).function(query="SWE-bench")).return_value
+    assert result["error"] == "SearchUnavailable (RuntimeError)" and "3 times" in result["hint"]
+    assert len(calls) == 3
+
+    class Empty(FlakySearch):
+        async def function(self, query: str):
+            calls.append(query)
+            raise RuntimeError("No results found.")
+
+    calls.clear()
+    monkeypatch.setattr("pydantic_ai.common_tools.duckduckgo.duckduckgo_search_tool", lambda: Empty(0))
+    result = (await resilient_duckduckgo_tool(retry_delays=(0, 0)).function(query='"too narrow"')).return_value
+    assert result == {"results": [], "hint": NO_RESULTS_HINT} and len(calls) == 1  # no retry
 
 
 def test_research_capabilities_use_resilient_search() -> None:
@@ -267,13 +282,13 @@ async def test_searches_are_recorded_then_replayed_unchanged(counted_search, tmp
     from research_loop.web import resilient_duckduckgo_tool
 
     calls = counted_search()
-    record = resilient_duckduckgo_tool(retry_delay=0, cache=AcquisitionCache(tmp_path, "record"))
+    record = resilient_duckduckgo_tool(retry_delays=(0, 0), cache=AcquisitionCache(tmp_path, "record"))
     live = await record.function(query="SWE-bench Verified")
     await record.function(query="SWE-bench Verified")  # record mode never reads
     assert calls == ["SWE-bench Verified", "SWE-bench Verified"]
     assert live.metadata == {"cache_hit": False}
 
-    replay = resilient_duckduckgo_tool(retry_delay=0, cache=AcquisitionCache(tmp_path, "replay"))
+    replay = resilient_duckduckgo_tool(retry_delays=(0, 0), cache=AcquisitionCache(tmp_path, "replay"))
     served = await replay.function(query="SWE-bench Verified")
     assert served.return_value == live.return_value and served.metadata == {"cache_hit": True}
     missed = await replay.function(query="SWE-bench Lite")
@@ -287,7 +302,7 @@ async def test_queries_differing_only_in_case_or_spacing_share_a_recording(count
 
     calls = counted_search()
     _recorded(tmp_path, "SWE-bench Verified", [{"title": "recorded"}])
-    tool = resilient_duckduckgo_tool(retry_delay=0, cache=AcquisitionCache(tmp_path, "replay"))
+    tool = resilient_duckduckgo_tool(retry_delays=(0, 0), cache=AcquisitionCache(tmp_path, "replay"))
     for query in ("swe-bench verified", "  SWE-bench\tVerified ", "ＳＷＥ-bench Verified"):  # full-width letters too
         assert (await tool.function(query=query)).return_value == [{"title": "recorded"}]
     # Operators, quotes, punctuation, and word order change results, so they change the key.
@@ -302,7 +317,7 @@ async def test_a_recording_keeps_the_query_as_the_model_wrote_it(counted_search,
     from research_loop.web import resilient_duckduckgo_tool, search_cache_key
 
     counted_search()
-    await resilient_duckduckgo_tool(retry_delay=0, cache=AcquisitionCache(tmp_path, "record")).function(query="SWE-bench  Lite")
+    await resilient_duckduckgo_tool(retry_delays=(0, 0), cache=AcquisitionCache(tmp_path, "record")).function(query="SWE-bench  Lite")
     entry = AcquisitionCache(tmp_path, "replay").get("duckduckgo", search_cache_key("swe-bench lite"))
     assert entry["query"] == "SWE-bench  Lite"
 
@@ -314,7 +329,7 @@ async def test_reuse_serves_recorded_searches_and_records_new_ones(counted_searc
     calls = counted_search()
     _recorded(tmp_path, "old query", [{"title": "recorded"}])
     reuse = AcquisitionCache(tmp_path, "reuse", ttl_seconds=0)  # any age is served
-    tool = resilient_duckduckgo_tool(retry_delay=0, cache=reuse)
+    tool = resilient_duckduckgo_tool(retry_delays=(0, 0), cache=reuse)
     assert (await tool.function(query="old query")).return_value == [{"title": "recorded"}]
     await tool.function(query="new query")
     assert (await tool.function(query="new query")).metadata == {"cache_hit": True}
@@ -326,10 +341,10 @@ async def test_failed_searches_are_not_recorded(counted_search, tmp_path) -> Non
     from research_loop.web import resilient_duckduckgo_tool, search_cache_key
 
     calls = counted_search(fail=True)
-    tool = resilient_duckduckgo_tool(retry_delay=0, cache=AcquisitionCache(tmp_path, "reuse"))
+    tool = resilient_duckduckgo_tool(retry_delays=(0, 0), cache=AcquisitionCache(tmp_path, "reuse"))
     assert (await tool.function(query="q")).return_value["error"].startswith("SearchUnavailable")
     assert AcquisitionCache(tmp_path, "replay").get("duckduckgo", search_cache_key("q")) is None
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 @pytest.mark.asyncio
@@ -407,3 +422,51 @@ async def test_research_capabilities_pass_the_search_cache_to_every_mode(tmp_pat
     for mode in ResearchToolMode:
         search = build_research_capabilities(mode, search_cache=cache)[0]
         assert (await search.local.function(query="q")).return_value == [{"title": "recorded"}]
+
+
+@pytest.mark.asyncio
+async def test_a_403_is_tried_once_more_as_a_browser(serve, tmp_path) -> None:
+    sent: list[bool] = []
+
+    def respond(url: str, *, as_browser: bool) -> httpx.Response:
+        sent.append(as_browser)
+        if as_browser:
+            return httpx.Response(200, headers={"content-type": "text/html"},
+                                  text="<html><body><p>Pension rules in full.</p></body></html>")
+        return httpx.Response(403)
+
+    serve(respond)
+    result = await WebAcquisition(cache_root=tmp_path).fetch("https://example.org/refuses-bots")
+    assert "Pension rules" in result["text"] and sent == [False, True]
+
+    sent.clear()
+    serve(lambda url, *, as_browser: (sent.append(as_browser), httpx.Response(403))[1])
+    refused = await WebAcquisition(cache_root=tmp_path).fetch("https://example.org/refuses-all")
+    assert refused["status"] == 403 and sent == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_404_carries_a_hint_to_search_instead_of_guessing(serve, tmp_path) -> None:
+    serve(lambda url: httpx.Response(404))
+    result = await WebAcquisition(cache_root=tmp_path).fetch("https://example.org/guessed/path.pdf")
+    assert result["status"] == 404 and "search" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_that_does_not_answer_twice_is_not_tried_again_in_the_job(serve, tmp_path) -> None:
+    from research_loop.acquisition import FetchMemo
+
+    attempts: list[str] = []
+
+    def respond(url: str) -> httpx.Response:
+        attempts.append(url)
+        raise httpx.ConnectTimeout("timed out")
+
+    serve(respond)
+    memo = FetchMemo()
+    web = WebAcquisition(cache_root=tmp_path, memo=memo)
+    first = [await web.fetch(f"https://down.example.gov/page{i}") for i in range(3)]
+    assert [r["error"] for r in first] == ["ConnectTimeout", "ConnectTimeout", "HostUnreachable"]
+    assert len(attempts) == 2 and "another source" in first[2]["hint"]
+    # Another job's memo starts afresh.
+    assert (await WebAcquisition(cache_root=tmp_path, memo=FetchMemo()).fetch("https://down.example.gov/x"))["error"] == "ConnectTimeout"

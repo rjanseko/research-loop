@@ -6,6 +6,7 @@ Settings never load the local .env.
 """
 from __future__ import annotations
 
+import inspect
 import ipaddress
 import socket
 from collections.abc import Callable
@@ -70,10 +71,16 @@ def public_urls(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def serve(monkeypatch: pytest.MonkeyPatch, public_urls: None) -> Callable[[Callable[[str], httpx.Response]], None]:
-    """Answer guarded downloads with `respond(url)` instead of the network."""
-    def install(respond: Callable[[str], httpx.Response]) -> None:
-        async def download(_client, url: str, _max_bytes: int, _policy: Any = None) -> httpx.Response:
-            response = respond(url)
+    """Answer guarded downloads with `respond(url)` instead of the network.
+
+    A `respond` that takes an `as_browser` keyword is told whether the fetch was sent as a browser.
+    """
+    def install(respond: Callable[..., httpx.Response]) -> None:
+        browser_aware = "as_browser" in inspect.signature(respond).parameters
+
+        async def download(_client, url: str, _max_bytes: int, _policy: Any = None, *,
+                           as_browser: bool = False) -> httpx.Response:
+            response = respond(url, as_browser=as_browser) if browser_aware else respond(url)
             response.request = httpx.Request("GET", url)
             return response
 

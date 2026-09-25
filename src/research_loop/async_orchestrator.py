@@ -18,6 +18,7 @@ from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (
     ContentFilterError,
+    ModelAPIError,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
 )
@@ -949,9 +950,19 @@ class AsyncResearchLoop:
             return await self._run_agent(**kwargs, captured=messages, task_ids=exhausted_ids)
         except JobBudgetExceeded:
             return _budget_exhausted_result(question)  # refused before any spend
+        except ModelAPIError as exc:
+            # A provider error the SDK's own retries did not clear. The branch keeps what it searched and
+            # read, as a failed salvage does, and the job goes on; salvaging would call the same provider.
+            # The planner, gap analyst, synthesizer, and verifier still fail the job on one, since nothing
+            # stands in for them, so an exhausted balance still stops it there.
+            status = getattr(exc, "status_code", None)
+            self._notes.setdefault(kwargs["job_id"], []).append(
+                f"a {kwargs['role'].value} on {question.id} ended on a provider error "
+                f"({type(exc).__name__}{f' {status}' if status else ''}); its searches and pages are kept, without claims")
+            return _budget_exhausted_result(question, messages)
         except (UsageLimitExceeded, UnexpectedModelBehavior):
             # One research branch running out, or failing on repeated tool or output errors, should
-            # not cost the job the rest of its research. Provider errors still fail it.
+            # not cost the job the rest of its research.
             gathered, gathered_counts = _gathered_evidence(messages)
         if not gathered:
             return _budget_exhausted_result(question, messages)

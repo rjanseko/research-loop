@@ -422,3 +422,47 @@ def test_salvage_evidence_bound_leaves_room_for_one_retry() -> None:
     prompt = "x" * (_SALVAGE_EVIDENCE_CHARS + 4_000)                      # plus the question and instruction
     # Stored salvage answers ran to 15k tokens with reasoning; 20k leaves a margin.
     assert retry_token_budget(prompt, route, ResearchRole.DEEP_DIVE, output_allowance=20_000) <= route.total_tokens_limit
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore:A `cost_limit` is set but cannot be enforced")
+async def test_a_provider_error_in_a_research_branch_keeps_its_searches_and_leaves_a_note() -> None:
+    from pydantic_ai.exceptions import ModelHTTPError
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    calls: list[int] = []
+
+    def respond(messages, info) -> ModelResponse:
+        calls.append(1)
+        if len(calls) == 1:
+            return ModelResponse(parts=[ToolCallPart("scholar_search", {"query": "SWE-bench"})])
+        raise ModelHTTPError(429, "zai:glm-5.3", {"message": "rate limited"})
+
+    from dataclasses import replace
+
+    loop, agent, route, question = _research_setup(salvage=True)
+    job_id = uuid4()
+    with agent.override(model=FunctionModel(respond)):
+        result = await loop._run_research(
+            question, job_id=job_id, agent=agent, role=ResearchRole.SCOUT, route=replace(route, max_requests=5),
+            prompt='{"question": {"id": "p01"}}', question_id="p01",
+        )
+    assert result.claims == [] and result.search_queries_used == ["SWE-bench"]
+    assert len(calls) == 2  # no salvage call to the provider that just failed
+    assert loop._notes[job_id] == [("a scout on p01 ended on a provider error (ModelHTTPError 429); "
+                                    "its searches and pages are kept, without claims")]
+
+
+@pytest.mark.asyncio
+async def test_without_salvage_a_provider_error_still_fails_the_branch() -> None:
+    from pydantic_ai.exceptions import ModelHTTPError
+    from pydantic_ai.models.function import FunctionModel
+
+    def respond(messages, info):
+        raise ModelHTTPError(500, "zai:glm-5.3", {"message": "down"})
+
+    loop, agent, route, question = _research_setup(salvage=False)
+    with agent.override(model=FunctionModel(respond)), pytest.raises(ModelHTTPError):
+        await loop._run_research(question, job_id=uuid4(), agent=agent, role=ResearchRole.SCOUT, route=route,
+                                 prompt='{"question": {"id": "p01"}}', question_id="p01")

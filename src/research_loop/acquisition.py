@@ -34,7 +34,9 @@ CACHE_VERSION = 1
 # 3: fetches refuse the task's blocked sources, including redirects to them.
 # 4: scholar_search year bounds also filter arXiv and Crossref, not only OpenAlex.
 # 5: web_fetch reads PDFs, and both fetches know a PDF by its signature as well as its content type.
-FETCH_VERSION = 5
+# 6: web_fetch retries a 403 once as a browser, hints after a 404, and stops trying a host that did not
+#    answer twice; web search tells no results from an outage and tries three times.
+FETCH_VERSION = 6
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -97,6 +99,8 @@ class FetchMemo:
     def __init__(self, max_documents: int = 64) -> None:
         self.max_documents = max_documents
         self._documents: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # Hosts whose connections failed in this job, and how often; see UNREACHABLE_AFTER.
+        self.connection_failures: dict[str, int] = {}
 
     def get(self, kind: str, url: str) -> dict[str, Any] | None:
         document = self._documents.get(f"{kind}|{url}")
@@ -205,6 +209,14 @@ def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str,
 
 # Sites such as Wikimedia reject the default library User-Agent; identify the fetcher instead.
 FETCH_USER_AGENT = "research-loop/0.5 (research agent page fetcher)"
+# Sent once, after a site refuses FETCH_USER_AGENT with a 403. In the settings-study pilots 108 of 725
+# fetches were 403s, and 5 of 12 of those sites, ssa.gov among them, served the page to a browser's
+# User-Agent, though not to the fetcher's own with browser Accept headers; decided 25 September 2026.
+BROWSER_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+BROWSER_HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7",
+                   "Accept-Language": "en-US,en;q=0.9"}
+# Connection failures (refused, timed out) to one host after which a job's fetches stop trying it.
+UNREACHABLE_AFTER = 2
 
 
 async def read_capped(response: httpx.Response, max_bytes: int) -> httpx.Response:
@@ -223,14 +235,18 @@ async def read_capped(response: httpx.Response, max_bytes: int) -> httpx.Respons
 
 
 async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int,
-                             policy: SourcePolicy | None = None) -> httpx.Response:
-    """Download a public HTTPS URL, following at most three redirects, each checked like the first."""
+                             policy: SourcePolicy | None = None, *, as_browser: bool = False) -> httpx.Response:
+    """Download a public HTTPS URL, following at most three redirects, each checked like the first.
+
+    `as_browser` sends BROWSER_USER_AGENT and browser Accept headers in place of the fetcher's own.
+    """
+    headers = {"User-Agent": BROWSER_USER_AGENT, **BROWSER_HEADERS} if as_browser else {"User-Agent": FETCH_USER_AGENT}
     for _ in range(4):
         if policy:
             policy.check(url)  # before the DNS check, so a blocked host is never resolved
         if not await public_url(url):
             raise ValueError("unsafe URL")
-        async with client.stream("GET", url, headers={"User-Agent": FETCH_USER_AGENT},
+        async with client.stream("GET", url, headers=headers,
                                  follow_redirects=False, timeout=15) as response:
             if response.is_redirect:
                 location = response.headers.get("location")
