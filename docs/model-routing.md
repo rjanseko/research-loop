@@ -175,7 +175,8 @@ GLM-5.3 and GLM-5.3-Flash, and DeepSeek V4:
 
 `value` has `quality`'s limits, so a comparison changes models, thinking effort, and caching only:
 
-- **Planner and synthesizer:** `anthropic:claude-opus-5-5` at `medium`.
+- **Planner and synthesizer:** `anthropic:claude-opus-5-5` at `medium`. Overridden to another provider,
+  they keep `quality`'s `high`, because `medium` is tuned to how much Opus 5.5 thinks.
 - **Gap analyst, deep dive, and verifier:** `openai:gpt-6-sol`.
 - **Scout:** `quality`'s `zai:glm-5.3`, with its override `RESEARCH_SCOUT_MODEL`.
 - **Cheap scout:** `zai:glm-5.3-flash`, shared with `glm-heavy` through `RESEARCH_GLM_CHEAP_MODEL`.

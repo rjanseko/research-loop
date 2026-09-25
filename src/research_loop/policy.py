@@ -319,25 +319,32 @@ def _glm_heavy_policy() -> ModelPolicy:
     )
 
 
+# Roles whose `value` thinking follows the model's provider; see _value_policy.
+_VALUE_EFFORT_ROLES = (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER)
+
+
+def _value_route(quality_route: ModelRoute, model: str) -> ModelRoute:
+    """`quality`'s route on `model`, at `medium` on Anthropic and at `quality`'s effort elsewhere."""
+    thinking = "medium" if model.partition(":")[0] == "anthropic" else quality_route.thinking
+    return replace(quality_route, model=model, thinking=thinking)
+
+
 def _value_policy() -> ModelPolicy:
     """The lineup docs/model-routing.md recommends: newer models at `quality`'s limits, with caching.
 
-    Opus 5.5 thinks more than Opus 5 at the same level, so its routes use `medium`. The scout,
+    Opus 5.5 thinks more than Opus 5 at the same level, so the planner and synthesizer use `medium`
+    while they run on Anthropic, and `quality`'s `high` when overridden to another provider. The scout,
     multimodal scout, and alternate deep dive keep `quality`'s models and overrides; the cheap
     scout shares `glm-heavy`'s.
     """
     p = _quality_policy()
     q = p.routes
     routes = {
-        ResearchRole.PLANNER: replace(
-            q[ResearchRole.PLANNER], model=_model("RESEARCH_VALUE_PLANNER_MODEL"), thinking="medium",
-        ),
+        ResearchRole.PLANNER: _value_route(q[ResearchRole.PLANNER], _model("RESEARCH_VALUE_PLANNER_MODEL")),
         ResearchRole.SCOUT: q[ResearchRole.SCOUT],
         ResearchRole.GAP_ANALYST: replace(q[ResearchRole.GAP_ANALYST], model=_model("RESEARCH_VALUE_GAP_MODEL")),
         ResearchRole.DEEP_DIVE: replace(q[ResearchRole.DEEP_DIVE], model=_model("RESEARCH_VALUE_DEEP_MODEL")),
-        ResearchRole.SYNTHESIZER: replace(
-            q[ResearchRole.SYNTHESIZER], model=_model("RESEARCH_VALUE_SYNTH_MODEL"), thinking="medium",
-        ),
+        ResearchRole.SYNTHESIZER: _value_route(q[ResearchRole.SYNTHESIZER], _model("RESEARCH_VALUE_SYNTH_MODEL")),
         ResearchRole.VERIFIER: replace(q[ResearchRole.VERIFIER], model=_model("RESEARCH_VALUE_VERIFY_MODEL")),
     }
     cheap_scout = ModelRoute(_model("RESEARCH_GLM_CHEAP_MODEL"), 10, 20, 80_000, 0.30, "low")
@@ -394,9 +401,14 @@ def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -
             ResearchRole.SYNTHESIZER: "RESEARCH_VALUE_SYNTH_MODEL",
             ResearchRole.VERIFIER: "RESEARCH_VALUE_VERIFY_MODEL",
         }
+    quality = _quality_policy() if name == "value" else None
     for role, env_name in route_names.items():
         if model := model_overrides.get(env_name):
-            policy.routes[role] = replace(policy.routes[role], model=model)
+            if quality and role in _VALUE_EFFORT_ROLES:
+                route = replace(_value_route(quality.routes[role], model), prompt_cache=True)
+            else:
+                route = replace(policy.routes[role], model=model)
+            policy.routes[role] = route
     if name == "breadth":
         policy.cheap_scout = policy.routes[ResearchRole.SCOUT]
     elif policy.cheap_scout:

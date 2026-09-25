@@ -243,6 +243,19 @@ def test_value_overrides_leave_quality_alone_and_the_reverse() -> None:
     assert value.for_role(ResearchRole.DEEP_DIVE).model != "openai:quality-deep"
     assert value.for_role(ResearchRole.SYNTHESIZER).model == "zai:glm-5.3"
     assert value.for_role(ResearchRole.SYNTHESIZER).prompt_cache
+    # Off Anthropic, the planner and synthesizer go back to quality's effort.
+    assert value.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
+    assert value.for_role(ResearchRole.PLANNER).thinking == "medium"  # still Opus 5.5
+    planner = get_policy("value", model_overrides={"RESEARCH_VALUE_PLANNER_MODEL": "openai:gpt-6-sol"})
+    assert planner.for_role(ResearchRole.PLANNER).thinking == "high"
     assert value.cheap_scout.model == "zai:cheap"
     quality = get_policy("quality", model_overrides={"RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"})
     assert quality.for_role(ResearchRole.SYNTHESIZER).model != "zai:glm-5.3"
+
+
+def test_value_effort_follows_models_set_in_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("RESEARCH_VALUE_SYNTH_MODEL", "zai:glm-5.3")
+    monkeypatch.delenv("RESEARCH_VALUE_PLANNER_MODEL", raising=False)
+    value = get_policy("value")
+    assert value.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
+    assert value.for_role(ResearchRole.PLANNER).thinking == "medium"
