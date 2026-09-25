@@ -338,3 +338,28 @@ def test_thai_prints_in_its_font_under_xelatex(tmp_path) -> None:
 
 def test_a_percent_encoded_url_can_break_between_its_escapes() -> None:
     assert render._url_text("https://x.th/%E0%B8%81") .endswith(r"\allowbreak{}\%E0\allowbreak{}\%B8\allowbreak{}\%81")
+
+
+def test_bullets_written_as_table_rows_become_a_table() -> None:
+    markdown = ("TABLE 1: Formulas\n(Columns: Country | Plan | Accrual)\n\n- Indonesia | JP | 1% [s1]\n"
+                "- Malaysia | KWAP | 2% (1/600 a month)\n\nNote:\n- Indonesia | severance\n- a | b | c")
+    table = render.pipe_rows_as_tables(markdown)
+    assert "| Country | Plan | Accrual |\n|---|---|---|\n| Indonesia | JP | 1% [s1] |" in table
+    assert "(Columns:" not in table
+    assert "- Indonesia | severance\n- a | b | c" in table  # two cells, then a run of one: left as bullets
+    tex = render._MarkdownToLatex(lambda ids: "").block(table)
+    assert r"\begin{longtable}" in tex and r"\textbf{Country}" in tex
+
+
+def test_pipe_rows_without_a_columns_line_get_an_empty_header() -> None:
+    table = render.pipe_rows_as_tables("- a | b | c\n- d | e | f")
+    assert table.startswith("|  |  |  |\n|---|---|---|\n| a | b | c |")
+
+
+def test_table_columns_fit_their_longest_word_and_wide_tables_use_smaller_type() -> None:
+    cells = [["Country", "Salary base"], ["Philippines", "Average adjusted earnings over the whole career " * 3]]
+    shares = render._column_shares(cells, 2, "")
+    assert abs(sum(shares) - 1) < 1e-9 and shares[0] >= 12 / 82 and shares[1] > shares[0]
+    wide = "| " + " | ".join(f"c{i}" for i in range(6)) + " |\n|" + "---|" * 6 + "\n| " + " | ".join("x/y" for _ in range(6)) + " |"
+    tex = render._MarkdownToLatex(lambda ids: "").block(wide)
+    assert tex.startswith(r"{\footnotesize") and r"x/\allowbreak{}y" in tex

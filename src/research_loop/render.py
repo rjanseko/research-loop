@@ -351,7 +351,7 @@ def _evidence_marks(item: Any) -> list[str]:
 def render_markdown(doc: ReportDocument) -> str:
     lines = ["# Research report", "", f"**Objective:** {doc.objective}", "", f"_{' · '.join(doc.metadata())}_", ""]
     lines += [f"> **{label}:** {text}  " for label, text in doc.status_lines()]
-    lines += ["", "## Findings", "", _shift_headings(doc.report.answer.strip(), 2), ""]
+    lines += ["", "## Findings", "", _shift_headings(pipe_rows_as_tables(doc.report.answer.strip()), 2), ""]
     if doc.report.claims:
         lines += ["## Key statements", ""]
         claim_sources = doc.ledger.claim_source_ids()
@@ -505,6 +505,53 @@ def render_html(doc: ReportDocument) -> str:
     )
 
 
+# A bullet whose text is cells separated by " | ", and the "(Columns: a | b | c)" line that names them.
+_PIPE_ROW = re.compile(r"^\s*[-*+]\s+(.*\S)\s*$")
+_COLUMNS_LINE = re.compile(r"^\s*\(?\s*columns?\s*:\s*(.+?)\s*\)?\s*$", re.IGNORECASE)
+
+
+def _cells(text: str) -> list[str]:
+    return [cell.strip() for cell in text.split(" | ")]
+
+
+def pipe_rows_as_tables(markdown: str) -> str:
+    """`markdown` with each run of bullets written as table rows turned into a Markdown table.
+
+    Models sometimes write a table as bullets of " | "-separated cells under a "(Columns: ...)" line,
+    as the fifth pilot's report did for both of its tables. A run of two or more such bullets with the
+    same three or more cells becomes a table, headed by the columns line when its count matches.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        run: list[list[str]] = []
+        end = index
+        while end < len(lines) and (match := _PIPE_ROW.match(lines[end])) and len(cells := _cells(match.group(1))) >= 3 \
+                and (not run or len(cells) == len(run[0])):
+            run.append(cells)
+            end += 1
+        if len(run) < 2:
+            out.append(lines[index])
+            index += 1
+            continue
+        width = len(run[0])
+        header = [""] * width
+        previous = next((i for i in range(len(out) - 1, -1, -1) if out[i].strip()), None)
+        if previous is not None and (columns := _COLUMNS_LINE.match(out[previous])):
+            named = [cell.strip() for cell in columns.group(1).split("|")]
+            if len(named) == width:
+                header = named
+                del out[previous:]
+        if out and out[-1].strip():
+            out.append("")
+        escape = lambda cell: cell.replace("|", r"\|")
+        out += ["| " + " | ".join(map(escape, header)) + " |", "|" + "---|" * width,
+                *("| " + " | ".join(map(escape, row)) + " |" for row in run), ""]
+        index = end
+    return "\n".join(out)
+
+
 def _truncate(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
@@ -656,6 +703,25 @@ def _claim_ref(claim_id: str, known: Iterable[str]) -> str:
     return rf"\hyperref[{_label('claim', claim_id)}]{{{text}}}" if claim_id in known else text
 
 
+# About how many characters a line holds at each table size, for fitting a column's longest word.
+_LINE_CHARS = {r"\footnotesize": 105, r"\small": 92, "": 82}
+
+
+def _column_shares(cells: list[list[str]], width: int, size: str) -> list[float]:
+    """Each column's share of a table's width, by the text it holds.
+
+    By the square root of a column's longest cell, so a column of long prose gets more room without
+    starving one of short codes, and never less than its longest word needs, so a country name
+    is not split across lines or run into the next column.
+    """
+    columns = [[row[i] for row in cells if i < len(row)] for i in range(width)]
+    weights = [max((len(text) for text in column), default=1) ** 0.5 for column in columns]
+    shares = [weight / sum(weights) for weight in weights]
+    words = [max((len(word) for text in column for word in text.split()), default=1) for column in columns]
+    shares = [max(share, (word + 1) / _LINE_CHARS[size]) for share, word in zip(shares, words, strict=True)]
+    return [share / sum(shares) for share in shares]
+
+
 class _MarkdownToLatex:
     """The CommonMark (plus tables) that models write, as LaTeX; raw HTML is printed as text."""
 
@@ -729,6 +795,7 @@ class _MarkdownToLatex:
 
     def _table(self, tokens: Sequence[Token]) -> str:
         rows: list[list[str]] = []
+        texts: list[list[str]] = []
         header_rows = 0
         in_head = False
         for token in tokens:
@@ -738,28 +805,35 @@ class _MarkdownToLatex:
                 in_head = False
             elif token.type == "tr_open":
                 rows.append([])
+                texts.append([])
                 header_rows += in_head
             elif token.type == "inline":
-                rows[-1].append(self._inline(token.children or [], links=False))
+                rows[-1].append(self._inline(token.children or [], links=False, breakable=True))
+                texts[-1].append(_CITE_PLACEHOLDER.sub("[s0]", token.content))
         width = max((len(row) for row in rows), default=1)
-        column = rf">{{\raggedright\arraybackslash}}p{{\dimexpr(\linewidth-{2 * width}\tabcolsep)/{width}\relax}}"
-        lines = [rf"\begin{{longtable}}{{@{{}}*{{{width}}}{{{column}}}@{{}}}}", r"\toprule"]
+        # Smaller type for wide tables, which otherwise wrap every cell to a word a line.
+        size = r"\footnotesize" if width >= 6 else r"\small" if width >= 4 else ""
+        shares = _column_shares(texts, width, size)
+        columns = "".join(rf">{{\raggedright\arraybackslash}}p{{{share:.3f}\dimexpr\linewidth-{2 * width}\tabcolsep\relax}}"
+                          for share in shares)
+        lines = [*([rf"{{{size}"] if size else []), rf"\begin{{longtable}}{{@{{}}{columns}@{{}}}}", r"\toprule"]
         for number, row in enumerate(rows):
             cells = row + [""] * (width - len(row))
             cells = [rf"\textbf{{{cell}}}" if number < header_rows and cell else cell for cell in cells]
             lines.append(" & ".join(cells) + r" \\")
             if number == header_rows - 1:
                 lines += [r"\midrule", r"\endhead"]
-        lines += [r"\bottomrule", r"\end{longtable}", "", ""]
+        lines += [r"\bottomrule", r"\end{longtable}", *(["}"] if size else []), "", ""]
         return "\n".join(lines)
 
-    def _inline(self, tokens: Sequence[Token], *, links: bool = True) -> str:
+    def _inline(self, tokens: Sequence[Token], *, links: bool = True, breakable: bool = False) -> str:
+        """Inline tokens as LaTeX; `breakable` lets text break after a slash, as narrow table cells need."""
         out: list[str] = []
         open_links: list[bool] = []
         for token in tokens:
             kind = token.type
             if kind == "text":
-                out.append(self._text(token.content))
+                out.append(self._text(token.content, breakable=breakable))
             elif kind == "softbreak":
                 out.append("\n")
             elif kind == "hardbreak":
@@ -788,14 +862,18 @@ class _MarkdownToLatex:
                 out.append(self._text(token.content))
         return "".join(out)
 
-    def _text(self, text: str) -> str:
+    def _text(self, text: str, *, breakable: bool = False) -> str:
+        def escape(plain: str) -> str:
+            escaped = latex_escape(plain)
+            return escaped.replace("/", r"/\allowbreak{}") if breakable else escaped
+
         pieces: list[str] = []
         last = 0
         for match in _CITE_PLACEHOLDER.finditer(text):
-            pieces.append(latex_escape(text[last:match.start()]))
+            pieces.append(escape(text[last:match.start()]))
             pieces.append(self._cite(match.group(1).split(",")))
             last = match.end()
-        pieces.append(latex_escape(text[last:]))
+        pieces.append(escape(text[last:]))
         return "".join(pieces)
 
 
@@ -854,7 +932,7 @@ def render_latex(doc: ReportDocument) -> str:
     md = _MarkdownToLatex(cite)
     claim_ids = doc.ledger.claim_ids()
     body: list[str] = [_latex_title(doc, md), _latex_status(doc)]
-    body += [r"\section{Findings}", md.block(doc.report.answer) or r"\rlnote{The report has no answer.}", ""]
+    body += [r"\section{Findings}", md.block(pipe_rows_as_tables(doc.report.answer)) or r"\rlnote{The report has no answer.}", ""]
     if doc.report.claims:
         claim_sources = doc.ledger.claim_source_ids()
         body += [r"\section{Key statements}", r"\begin{enumerate}"]
