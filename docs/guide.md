@@ -191,7 +191,7 @@ The harness also tracks each job's spend. If you set `job_cost_limit`, every cal
 
 Before gap analysis, synthesis, or verification, the harness checks that the prompt leaves room for one validation retry within the role's token limit. If it doesn't, the call is refused before it is made, so you never pay for a call that cannot finish.
 
-With `salvage_exhausted_research` turned on, a scout or deep dive that hits a usage limit gets one more call without tools, which summarizes the evidence that call had already gathered. It sees only that call's tool results, not the whole ledger. Unanswered, failed, and repeated tool calls are left out, and the remaining results share a 64,000-character allowance so that later, more targeted fetches aren't crowded out. Quote checks still run against the captured tool text, but the stored salvage prompt keeps only hashes and sizes of the replayed results.
+With `salvage_exhausted_research` turned on, a scout or deep dive that hits a usage limit, or gives up after repeated tool or output errors (`UnexpectedModelBehavior`, for example a fetch tool that kept failing), gets one more call without tools, which summarizes the evidence that call had already gathered. It sees only that call's tool results, not the whole ledger. Unanswered, failed, and repeated tool calls are left out, and the remaining results share a 64,000-character allowance so that later, more targeted fetches aren't crowded out. Quote checks still run against the captured tool text, but the stored salvage prompt keeps only hashes and sizes of the replayed results.
 
 The harness uses whatever settings the application passes in and reads environment variables only when none are given.
 
@@ -251,7 +251,7 @@ Limits that no call could run under are refused before a job is created. A route
 | `max_deep_dives_per_round` | 4 | How many gaps are researched per round, most severe first, one per question |
 | `min_scout_confidence` | 0.70 | Questions whose best result is below this get a `low_confidence` gap |
 | `max_verification_rounds` | 2 | Extra research-and-rewrite rounds after the first verification; `0` turns them off |
-| `salvage_exhausted_research` | off | Summarize instead of failing when a scout or deep dive runs out of budget |
+| `salvage_exhausted_research` | off | Summarize instead of failing when a scout or deep dive runs out of budget or gives up after repeated tool or output errors |
 | `max_run_seconds` | none | A wall-clock deadline for the run |
 | `keep_recent_tool_results` | none (off) | Experimental. A scout or deep dive sends only its N most recent tool results whole; older results of 2,000 characters or more that it has already read go as a note plus their first 500 characters, and it can call the tool again for the full text. Stored tool output, quote and source checks, and salvage still see everything. It changes what models are sent, so compare quality before turning it on |
 | `tool_mode` | `adaptive` | Whether models use their provider's search or the shared local tools (see [sources](#where-evidence-comes-from)) |

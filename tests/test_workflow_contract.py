@@ -493,6 +493,27 @@ async def test_scout_request_exhaustion_obeys_salvage_policy_through_whole_run(w
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("salvage", [False, True])
+async def test_a_scout_that_gives_up_is_salvaged_when_salvage_is_on(workflow, salvage):
+    # Invalid output on every attempt ends the scout with UnexpectedModelBehavior, as a fetch tool
+    # that keeps raising does; it has requests to spare, so this is not budget exhaustion.
+    loop, script = workflow
+    loop.config = replace(loop.config, salvage_exhausted_research=salvage, max_deep_dives_per_round=0)
+    script.invalid_scout = True
+    if salvage:
+        outcome = await run(loop)
+        (result,) = outcome.ledger.all()
+        assert result.claims == [] and result.unresolved_questions == [script.questions[0]["question"]]
+        assert loop.repository.jobs[outcome.job_id]["status"] == "succeeded"
+    else:
+        with pytest.raises(UnexpectedModelBehavior):
+            await run(loop)
+        assert next(iter(loop.repository.jobs.values()))["status"] == "failed"
+    (scout,) = [task for task in loop.repository.tasks.values() if task["role"] is ResearchRole.SCOUT]
+    assert scout["status"] == "failed" and scout["error"] == {"type": "UnexpectedModelBehavior"}
+
+
+@pytest.mark.asyncio
 async def test_followup_prompts_keep_constraints_and_evidence_without_prior_task_transcripts(workflow):
     loop, script = workflow
     loop.config = replace(loop.config, max_verification_rounds=2)

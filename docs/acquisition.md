@@ -15,7 +15,7 @@ Scouts and deep dives gather evidence with three tool groups: web search and fet
 `ResearchConfig.tool_mode` decides how web tools reach the model:
 
 - **`normalized`**: every model gets the same local DuckDuckGo search and `web_fetch`, and provider-native search is disabled. Benchmarks and long-horizon runs always use this mode, so a policy comparison does not also compare search stacks.
-- **`adaptive`** (the library default): provider-native web search and fetch where the model supports them, with local fallbacks.
+- **`adaptive`** (the library default): provider-native web search and fetch where the model supports them, with local fallbacks. The local fetch fallback is PydanticAI's `web_fetch`, which raises on any HTTP error instead of returning it; after its one retry the worker gives up (`UnexpectedModelBehavior`), which fails the run unless `salvage_exhausted_research` is on. The normalized `web_fetch` returns the error to the model.
 
 Scholarly tools are added in both modes unless `ResearchConfig.scholarly_tools` is off.
 
