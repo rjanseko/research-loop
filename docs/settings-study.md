@@ -377,3 +377,10 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Result.* One request, 819 seconds, 27,631 input and 50,567 output tokens (39,702 reasoning), $0.03, with no fallback and no retry. The report made 37 statements; of 46 checked, 22 unsupported and 15 major, with 5 follow-ups ($0.22). The judge gave 0.24 ($0.09), one grading, against Opus 5.5's 0.21.
 - *Streaming.* Measured by the socket's `bytes_received`, the reasoning streamed at about 60 tokens a second for 11 minutes; then nothing arrived for about 2.5 minutes until the report, about 10,900 tokens, came at once, so Z.ai appears not to stream an output tool call's arguments. A longer report could pass the 600-second read timeout in that silence. The output used 79% of the 64,000-token allowance.
 - *Reading.* Flash at `max` synthesized this ledger for a fifteenth of Opus 5.5's cost with a similar share of unsupported statements and a grade within one grading's variation; it is nine times slower. These are single runs and do not decide the synthesizer.
+
+**Study concluded, 25 September 2026.**
+
+- *Decided.* The study ends here, unfinished: the project is being rebuilt around a smaller Scout mode (plan, parallel scouts, synthesize). Steps 2 to 7 will not run, and the benched synthesizer comparison is dropped.
+- *Carried forward.* Scout starts from what the study settled: `zai:glm-5.3-flash` scouts at max effort, `gpt-6-sol` plans, Opus 5.5 at `medium` synthesizes with a `gpt-6-sol` fallback, and scouts keep budget notes with 12 requests, 16 productive calls, and 12 misses. [lessons.md](lessons.md) summarizes the rest.
+- *Baseline.* The README run (job `bf89797d`, $2.26, 11.8 minutes) was graded once by the study's judge before the database was archived: rubric 0.556 (5 of 9), quotes verified 97.8%, sources observed 100%. It is the "before" figure for the same question under Scout.
+- *Archived.* The code is at git tag `archive/pre-scout-2026-09`, and the database, step records, and recorded searches are in `~/research-loop-archive/`.
