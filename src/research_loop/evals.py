@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel
 from pydantic_evals import Case, Dataset
-from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 from .benchmarks.models import BenchmarkCaseSpec
 
@@ -50,6 +53,11 @@ class BenchmarkOutput:
     sources_not_found: int = 0
     # What the finished run left unresolved (async_orchestrator.review_reasons).
     review_reasons: list[str] = field(default_factory=list)
+    # The "Sources" section a reader sees under the answer, listing what its [sN] citations name.
+    sources_text: str = ""
+    # False for a run reloaded from Postgres without a transcript, whose tool arguments are hashes:
+    # search queries and fetched URLs are then unknown, and the checks built on them are skipped.
+    tool_args_known: bool = True
 
 
 def normalize_answer(value: str) -> str:
@@ -101,7 +109,9 @@ class CostEfficiency(Evaluator[Any, BenchmarkOutput]):
 
 
 class UniqueSearchRate(Evaluator[Any, BenchmarkOutput]):
-    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float:
+    def evaluate(self, ctx: EvaluatorContext[Any, BenchmarkOutput]) -> float | dict[str, float]:
+        if not ctx.output.tool_args_known:
+            return {}
         queries = [q.strip().casefold() for q in ctx.output.search_queries if q.strip()]
         if not queries:
             return 0.0
@@ -134,12 +144,15 @@ class BlockedSourceCompliance(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
     def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
         if not ctx.inputs.blocked_urls:
             return {}
-        return 0.0 if ctx.output.blocked_fetches_completed or ctx.output.blocked_sources_cited else 1.0
+        if ctx.output.blocked_fetches_completed or ctx.output.blocked_sources_cited:
+            return 0.0
+        # Without the tool arguments, a completed fetch of a blocked source cannot be ruled out.
+        return 1.0 if ctx.output.tool_args_known else {}
 
 
 class EvalIntegrity(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
     def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> float | dict[str, float]:
-        if not ctx.inputs.leakage_sensitive:
+        if not ctx.inputs.leakage_sensitive or not ctx.output.tool_args_known:
             return {}
         return 1.0 if not ctx.output.integrity_flags else 0.0
 
@@ -169,22 +182,127 @@ class AttachmentCitationCoverage(Evaluator[Any, BenchmarkOutput]):
         return min(len(set(ctx.output.attachment_ids_cited)) / ctx.output.attachment_count, 1.0)
 
 
-def make_dataset(cases: list[Case]) -> Dataset:
-    return Dataset(
-        name="research_loop",
-        cases=cases,
-        evaluators=[
-            ReferenceAnswerMatch(),
-            SupportedClaimRate(),
-            MajorErrorFreeRate(),
-            PrimarySourceRate(),
-            ToolEfficiency(),
-            CostEfficiency(),
-            UniqueSearchRate(),
-            BlockedSourceCompliance(),
-            EvalIntegrity(),
-            AttachmentCitationCoverage(),
-            VerbatimQuoteRate(),
-            ObservedSourceRate(),
-        ],
-    )
+# Recorded with every rubric score; bump when JUDGE_INSTRUCTIONS or the verdict schema changes, since
+# scores are comparable only under one judge prompt. 1: one call per report, a verdict for every point.
+JUDGE_VERSION = 1
+JUDGE_INSTRUCTIONS = """\
+You grade a research report against a rubric. Each rubric point says one thing a good answer contains.
+
+For every point, decide whether the report meets it:
+- A point is met when the report itself states what the point describes, and states it consistently
+  with the point. Do not credit what the report only implies, or what you know but the report does not say.
+- A point that asks for something to be absent, such as not naming something, is met when the report
+  does not do it.
+- A point about sources or citations is judged from the report's inline [sN] citations and its Sources list.
+- Judge each point on its own; how the report does on one point says nothing about another.
+
+Return one verdict for every point, identified by its category and number, and no others.
+"""
+
+
+class RubricVerdict(BaseModel):
+    category: str
+    point: int
+    met: bool
+
+
+class RubricGrade(BaseModel):
+    verdicts: list[RubricVerdict]
+
+
+@dataclass
+class RubricJudge(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
+    """Grades the report against the case's rubric with one model call that returns a verdict per point.
+
+    Scores `<name>` (share of all points met), `<name>:<category>` for each rubric category, and
+    `<name>_cost_usd` for the judge's own call. The overall score's reason lists unmet points by
+    category and number only, never their text, since rubrics can be benchmark inputs. Cases without
+    a rubric get no score. Give a second judge its own `name` so both keep their scores.
+    """
+
+    model: Any = "openai:gpt-6-sol"
+    thinking: str | bool | None = "low"
+    name: str = "rubric"
+
+    def get_default_evaluation_name(self) -> str:
+        return self.name
+
+    async def evaluate(self, ctx: EvaluatorContext[BenchmarkCaseSpec, BenchmarkOutput]) -> dict[str, Any]:
+        from pydantic_ai import Agent, ModelRetry
+
+        from .prices import install_price_overrides
+
+        rubric = {category: points for category, points in ctx.inputs.rubrics.items() if points}
+        if not rubric:
+            return {}
+        install_price_overrides()
+        expected = {(category, number) for category, points in rubric.items() for number in range(1, len(points) + 1)}
+        agent = Agent(self.model, output_type=RubricGrade, instructions=JUDGE_INSTRUCTIONS)
+
+        @agent.output_validator
+        def every_point_once(grade: RubricGrade) -> RubricGrade:
+            given = [(v.category, v.point) for v in grade.verdicts]
+            missing, extra = sorted(expected - set(given)), sorted(set(given) - expected)
+            if missing or extra or len(given) != len(set(given)):
+                raise ModelRetry(f"Give exactly one verdict per rubric point. Missing: {missing}; unknown: {extra}.")
+            return grade
+
+        prompt = json.dumps({
+            "question": ctx.inputs.objective,
+            "rubric": {category: [{"point": number, "text": text} for number, text in enumerate(points, 1)]
+                       for category, points in rubric.items()},
+            "report": ctx.output.answer + ctx.output.sources_text,
+        }, ensure_ascii=False)
+        settings = {"thinking": self.thinking} if self.thinking is not None else None
+        result = await agent.run(prompt, model_settings=settings)
+        met = {(v.category, v.point): v.met for v in result.output.verdicts}
+
+        unmet = [f"{category} {number}" for category, number in sorted(expected) if not met[(category, number)]]
+        scores: dict[str, Any] = {
+            self.name: EvaluationReason(
+                value=sum(met.values()) / len(met),
+                reason=f"judge v{JUDGE_VERSION}; unmet: {', '.join(unmet) or 'none'}",
+            ),
+        }
+        for category, points in rubric.items():
+            scores[f"{self.name}:{category}"] = sum(met[(category, n)] for n in range(1, len(points) + 1)) / len(points)
+        cost = getattr(result.usage, "cost", None)
+        if cost is not None:
+            scores[f"{self.name}_cost_usd"] = float(cost)
+        return scores
+
+
+def parse_judge(value: str) -> RubricJudge:
+    """A `--judge` value: MODEL, or NAME=MODEL to keep a second judge's scores apart from the first."""
+    name, sep, model = value.partition("=")
+    if sep and name and ":" not in name and model:
+        return RubricJudge(model=model, name=name)
+    return RubricJudge(model=value)
+
+
+def judge_records(judges: Sequence[RubricJudge]) -> list[dict[str, Any]]:
+    """What a manifest or grade file records about its judges, so their scores can be compared."""
+    return [{"name": j.name, "model": str(j.model), "thinking": j.thinking, "version": JUDGE_VERSION} for j in judges]
+
+
+def default_evaluators() -> list[Evaluator]:
+    """The code-computed metrics every benchmark run gets; no model calls."""
+    return [
+        ReferenceAnswerMatch(),
+        SupportedClaimRate(),
+        MajorErrorFreeRate(),
+        PrimarySourceRate(),
+        ToolEfficiency(),
+        CostEfficiency(),
+        UniqueSearchRate(),
+        BlockedSourceCompliance(),
+        EvalIntegrity(),
+        AttachmentCitationCoverage(),
+        VerbatimQuoteRate(),
+        ObservedSourceRate(),
+    ]
+
+
+def make_dataset(cases: list[Case], *, judges: Sequence[RubricJudge] = ()) -> Dataset:
+    """The benchmark dataset: every default metric, plus any rubric judges, which call a model."""
+    return Dataset(name="research_loop", cases=cases, evaluators=[*default_evaluators(), *judges])

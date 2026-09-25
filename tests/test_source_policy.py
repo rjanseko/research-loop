@@ -112,11 +112,16 @@ def test_audit_separates_refusals_completed_fetches_search_sightings_and_citatio
     }
 
 
-@pytest.mark.parametrize(("completed", "cited", "score"), [([], [], 1.0), ([REPORT], [], 0.0), ([], [REPORT], 0.0)])
-def test_compliance_fails_only_on_blocked_content_that_was_fetched_or_cited(completed, cited, score) -> None:
+@pytest.mark.parametrize(("completed", "cited", "args_known", "score"), [
+    ([], [], True, 1.0), ([REPORT], [], True, 0.0), ([], [REPORT], True, 0.0),
+    # A stored run without its tool arguments can still fail on what it cited, but cannot pass.
+    ([], [REPORT], False, 0.0), ([], [], False, {}),
+])
+def test_compliance_fails_only_on_blocked_content_that_was_fetched_or_cited(completed, cited, args_known, score) -> None:
     from research_loop.evals import BlockedSourceCompliance
 
     ctx = SimpleNamespace(inputs=SimpleNamespace(blocked_urls=[REPORT]),
                           output=SimpleNamespace(blocked_fetches_completed=completed, blocked_sources_cited=cited,
-                                                 blocked_fetches_refused=[SITE], blocked_sources_in_search=[SITE]))
+                                                 blocked_fetches_refused=[SITE], blocked_sources_in_search=[SITE],
+                                                 tool_args_known=args_known))
     assert BlockedSourceCompliance().evaluate(ctx) == score

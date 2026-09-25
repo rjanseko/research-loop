@@ -107,7 +107,7 @@ These are the triggers known in advance. A step's log entry may add others.
 
 - **Step 0.** If the time split shows scouts spend most of their wall-clock time waiting on tools rather than on the model, FlashX's speed cannot shorten a run much, and step 6 shrinks to the equivalence check.
 - **Step 1.** If the pilot reaches its $4 cap, step 2 runs with a higher cap, or with the scout limits lowered to what the pilot's curves show it used. If the pilot's scouts use all 24 requests, the depth curves will be cut off, so the limits go up before step 2. If capture or replay fails, the study stops until the tool is fixed, since nothing after step 1 can run without them.
-- **Step 2.** Step 4's cut points are placed where step 2's curves are still rising, instead of at a fixed 3, 5, 8, and 12. If shallow questions such as `st01` stop adding cited sources by request 2 or 3, step 4 replays them at only one or two depths. If deep questions' curves are cut off, those questions are rerun with higher limits before step 4. If many cited sources were never seen in any tool output, as in the recorded run, add a question that measures it before changing models, since a model change could hide or cause it.
+- **Step 2.** Step 4's cut points are placed where step 2's curves are still rising, instead of at a fixed 3, 5, 8, and 12. If shallow questions such as `st01` stop adding cited sources by request 2 or 3, step 4 replays them at only one or two depths. If deep questions' curves are cut off, those questions are rerun with higher limits before step 4. If many cited sources are marked `not_found`, add a question that measures it before changing models, since a model change could hide or cause it.
 - **Step 3.** If the judge's variation is larger than the differences step 4 or 5 are meant to detect, steps 4 and 5 grade each report three times and average. If the two judges disagree on more than about one rubric point in five, the rubric is too ambiguous to compare models with, and step 7 waits until it is fixed.
 - **Step 4.** Steps 5 and 6 replay at the depth step 4 chose, not at the generous limits, which makes them cheaper and measures models at the depth they would actually run at.
 - **Step 5.** If `glm-5.3-flash` scouts within the judge's variation of `glm-5.3`, step 6 runs in full, because FlashX would then be a cheaper and faster replacement for the current scout. If Flash is clearly worse, FlashX, being the same model, cannot do better, and step 6 runs only the equivalence check or is dropped. If a cheap model is undecided, repeat its replays on the two questions with the largest differences before moving on.
@@ -141,7 +141,7 @@ Each rule is then checked in step 8.
 
 - **A study runner** that runs the suite's questions with a named policy, study limits, `--persist`, `--capture`, and a cache mode in the study's own cache directory. `research-bench` never captures transcripts, because they would hold benchmark inputs. These questions are our own, so capturing is safe.
 - **A replay command** that reruns a captured task on another model, and that can cut a research task at request *k* and run its salvage call. For depth and research models, it works on a whole question at once: it cuts or replays every research task of the question, then writes a report from the results with the fixed synthesizer. It reuses the role calls in `AsyncResearchLoop`, so the prompts and schemas are the ones real runs use.
-- **A grader** that applies exact match or the rubric judge to a report, with a choice of judge model and a repeat count.
+- **A grader.** Built: `RubricJudge` in `evals.py` and `research-grade`, which grades jobs stored in Postgres with the default metrics and any rubric judges, repeatedly; see [benchmarks.md](benchmarks.md#grading-stored-runs). Replays and fixed-synthesizer reports can be graded the same way once they are stored as jobs.
 - **A local price override.** Built: `src/research_loop/prices.toml` and `research_loop.prices`. The two Flash corrections are still worth sending upstream to `genai-prices`.
 - **A timing analysis** for earlier runs. Section 8 of `scripts/analyze_run.sql` splits each research task's time into model and tool time for runs from 2026-09-25 on; runs before that, including the recorded README run, need the split from captured transcripts, for step 0.
 - **The depth analysis** as a script, from the prototype used for [First data](#first-data).
@@ -152,13 +152,13 @@ The recorded README run (job `bf89797d`, 25 September 2026, on `quality` before 
 
 | Task | Requests | Limit reached | Cited sources, by request first seen |
 |---|---:|---|---|
-| Scout q1 | 12 | Yes | 1, 2, 3, 3, 9, 10, and one never seen |
-| Scout q2 | 10 | No | 1, 2, 3, 5, 5, 7, 7, 9, and two never seen |
-| Scout q3 | 11 | No | 1, 2, 3, 3, 3, 3, 5, 7, and four never seen |
+| Scout q1 | 12 | Yes | 1, 2, 3, 3, 9, 10, and one not matched |
+| Scout q2 | 10 | No | 1, 2, 3, 5, 5, 7, 7, 9, and two not matched |
+| Scout q3 | 11 | No | 1, 2, 3, 3, 3, 3, 5, 7, and four not matched |
 | Deep dive q1 | 6 | Yes | 1, 1, 2, 2, 2, 2, 3, 3, 4, 4 |
 | Deep dive q2 | 6 | Yes | 2, 2, 2, 2, 2, 2, 2, 4, 4, 4, 4, 5, 5, 5, 5 |
 
-Scouts found most of what they cited within three requests but kept adding sources up to request 10. Deep dives found everything they cited within five requests. Their stop at six came from that run's limit of 40 tool calls, since they make several tool calls per request; `readme_example.py` now allows 80. Seven cited sources never appeared in any tool output under the URL cited; those are the ones `source_check` (evidence version 3 and later) marks `not_found`. Scout q1 and both deep dives reached their limits, so their curves are cut off, and they show only that those tasks needed at least that many requests. One run is too little for a rule. It shows that the method works on the data the repository already records.
+Scouts found most of what they cited within three requests but kept adding sources up to request 10. Deep dives found everything they cited within five requests. Their stop at six came from that run's limit of 40 tool calls, since they make several tool calls per request; `readme_example.py` now allows 80. Seven cited sources did not match any tool output under the exact URL cited. The prototype compared URLs exactly, while `source_check` also ignores query strings and accepts a DOI or arXiv ID found in the output, and it marks all 101 of the run's URL-cited sources `observed`. So the seven are the prototype's stricter matching, not sources the run never saw, and the depth analysis script should match sources the way `source_check` does. Scout q1 and both deep dives reached their limits, so their curves are cut off, and they show only that those tasks needed at least that many requests. One run is too little for a rule. It shows that the method works on the data the repository already records.
 
 ## Caveats
 
