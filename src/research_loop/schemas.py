@@ -189,13 +189,23 @@ class ReportClaim(BaseModel):
 
 
 class FinalReport(BaseModel):
+    # Optional, so reports from before they were asked for still load; the renderer derives a title
+    # from the objective when there is none.
+    title: str = Field(default="", description="A short, specific title for the report, without a subtitle")
     answer: str
+    executive_summary: str = Field(
+        default="", description="The main findings in three to six sentences, cited inline like `answer`")
     claims: list[ReportClaim] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
 
     @property
     def claim_ids_used(self) -> list[str]:
         return sorted({claim_id for claim in self.claims for claim_id in claim.claim_ids})
+
+    @property
+    def cited_texts(self) -> list[str]:
+        """The parts of the report that cite sources inline as [sN]."""
+        return [text for text in (self.executive_summary, self.answer, *self.caveats) if text]
 
 
 class ClaimCheck(BaseModel):

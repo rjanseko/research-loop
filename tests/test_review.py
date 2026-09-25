@@ -121,3 +121,15 @@ def test_stray_citations_are_dropped_in_citation_order_and_named_in_a_caveat() -
     kept = _report_cites_ledger_claims(SimpleNamespace(deps=refs, last_attempt=True), report)
     assert kept.answer == "Verified has 500 tasks [s1]. Scores rose."
     assert kept.caveats[0] == "Vendor claim [s2]." and "s9, s45" in kept.caveats[1]
+
+
+def test_the_executive_summary_is_checked_for_stray_citations_too() -> None:
+    from types import SimpleNamespace
+
+    from research_loop.agents import LedgerRefs, _report_cites_ledger_claims
+
+    refs = LedgerRefs(claim_ids=frozenset({"q1/c1"}), question_ids=frozenset({"q1"}),
+                      claim_sources={"q1/c1": frozenset({"s1"})})
+    report = _synthesis("Body [s1].", "q1/c1").model_copy(update={"executive_summary": "Gist [s1, s7]."})
+    kept = _report_cites_ledger_claims(SimpleNamespace(deps=refs, last_attempt=False), report)
+    assert kept.executive_summary == "Gist [s1]." and "s7" in kept.caveats[-1]

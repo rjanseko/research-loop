@@ -290,7 +290,7 @@ def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> st
 
 def sources_markdown(report: FinalReport, ledger: EvidenceLedger) -> str:
     """A "Sources" section listing what the report's inline [sN] citations name; empty when it cites none."""
-    cited = {source_id for text in (report.answer, *report.caveats) for source_id in inline_source_ids(text)}
+    cited = {source_id for text in report.cited_texts for source_id in inline_source_ids(text)}
     rows = [row for row in ledger.source_table() if row["id"] in cited]
     if not rows:
         return ""

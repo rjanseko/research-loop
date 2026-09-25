@@ -115,7 +115,7 @@ def test_sources_are_grouped_and_marked_with_how_the_report_uses_them() -> None:
 
 def test_markdown_holds_the_report_every_source_and_the_ledger() -> None:
     text = render_markdown(_document())
-    assert text.startswith("# Research report\n")
+    assert text.startswith("# Is SWE-bench Verified trustworthy?\n")
     assert "### Summary" in text  # the report's own heading sits below the document's
     for heading in ("## Findings", "## Key statements", "## Caveats", "### Scholarly literature",
                     "### Web and other sources", "### Attachments", "## Appendix A. Research plan",
@@ -403,3 +403,16 @@ def test_nested_bullets_under_a_numbered_item_keep_their_levels() -> None:
     assert tidy.startswith("# SECTION 1. PROFILES")
     assert "1. **INDONESIA**\n   - JHT: MDC.\n     - Coverage: employees.\n   - JP: MDB.\n     - Rate: 3%." in tidy
     assert "2. **MALAYSIA**\n   - EPF" in tidy
+
+
+def test_a_reports_own_title_and_summary_lead_the_document() -> None:
+    from dataclasses import replace as replace_field
+
+    base = _document()
+    doc = replace_field(base, report=base.report.model_copy(
+        update={"title": "Pension Gaps in Seven Asian Economies", "executive_summary": "Coverage is thin [s1]."}))
+    tex = render_latex(doc)
+    assert r"\huge\bfseries\raggedright Pension Gaps in Seven Asian Economies" in tex
+    assert tex.index(r"\section*{Summary}") < tex.index(r"\section{Findings}") and "Coverage is thin" in tex
+    text = render_markdown(doc)
+    assert text.startswith("# Pension Gaps in Seven Asian Economies\n") and "## Summary\n\nCoverage is thin [s1]." in text

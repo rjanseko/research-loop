@@ -102,7 +102,10 @@ INSTRUCTIONS: dict[str, str] = {
         "that no research tool returned; do not rest a statement on such evidence alone. Preserve uncertainty and disagreement. Respect supplied benchmark/source constraints "
         "and do not cite blocked sources. Do not invent missing evidence or citations. In `answer` and `caveats`, "
         "cite sources inline as [s1] or [s1, s4], using only the `source_id`s of the evidence behind claim IDs you "
-        "list in `claims`."
+        "list in `claims`. Write `answer` in Markdown: `#` and `##` headings for its sections, pipe tables for "
+        "anything compared across several items (a row per item, a column per attribute), and bullet lists for "
+        "the rest; do not mark headings with rules or capitals. Give the report a short, specific `title`, and in "
+        "`executive_summary` state the main findings in three to six sentences, cited inline like `answer`."
     ),
     "verifier": (
         "Audit the proposed report claim-by-claim against the supplied evidence. Evidence cites "
@@ -261,7 +264,7 @@ DROPPED_CITATIONS_CAVEAT = (
 
 @synthesizer_agent.output_validator
 def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport) -> FinalReport:
-    cited = {source_id for text in (output.answer, *output.caveats) for source_id in inline_source_ids(text)}
+    cited = {source_id for text in output.cited_texts for source_id in inline_source_ids(text)}
     behind_claims = frozenset(source_id for claim_id in output.claim_ids_used
                               for source_id in ctx.deps.claim_sources.get(claim_id, ()))
     problems = _unknown_claims(output.claim_ids_used, ctx.deps)
@@ -273,6 +276,7 @@ def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport
         # better supported than it is; a caveat says which were dropped, so a reader and the verifier know.
         return output.model_copy(update={
             "answer": strip_inline_citations(output.answer, behind_claims),
+            "executive_summary": strip_inline_citations(output.executive_summary, behind_claims),
             "caveats": [*(strip_inline_citations(caveat, behind_claims) for caveat in output.caveats),
                         DROPPED_CITATIONS_CAVEAT.format(ids=", ".join(stray))],
         })

@@ -189,8 +189,7 @@ class ReportDocument:
     @cached_property
     def sources(self) -> list[SourceEntry]:
         """Every ledger source in ID order, with how the report uses it."""
-        cited = {source_id for text in (self.report.answer, *self.report.caveats,
-                                        *(claim.statement for claim in self.report.claims))
+        cited = {source_id for text in (*self.report.cited_texts, *(claim.statement for claim in self.report.claims))
                  for source_id in inline_source_ids(text)}
         claim_sources = self.ledger.claim_source_ids()
         behind = {source_id for claim_id in self.report.claim_ids_used for source_id in claim_sources.get(claim_id, ())}
@@ -349,8 +348,10 @@ def _evidence_marks(item: Any) -> list[str]:
 
 
 def render_markdown(doc: ReportDocument) -> str:
-    lines = ["# Research report", "", f"**Objective:** {doc.objective}", "", f"_{' · '.join(doc.metadata())}_", ""]
+    lines = [f"# {report_title(doc)}", "", f"**Objective:** {doc.objective}", "", f"_{' · '.join(doc.metadata())}_", ""]
     lines += [f"> **{label}:** {text}  " for label, text in doc.status_lines()]
+    if doc.report.executive_summary.strip():
+        lines += ["", "## Summary", "", doc.report.executive_summary.strip()]
     lines += ["", "## Findings", "", _shift_headings(tidy_answer(doc.report.answer.strip()), 2), ""]
     if doc.report.claims:
         lines += ["## Key statements", ""]
@@ -500,7 +501,7 @@ def render_html(doc: ReportDocument) -> str:
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        f"<title>{html.escape(_truncate(doc.objective, 90))}</title>\n<style>{_HTML_STYLE}</style>\n"
+        f"<title>{html.escape(_truncate(report_title(doc), 90))}</title>\n<style>{_HTML_STYLE}</style>\n"
         f"</head>\n<body>\n{body}</body>\n</html>\n"
     )
 
@@ -1051,6 +1052,10 @@ def render_latex(doc: ReportDocument) -> str:
     md = _MarkdownToLatex(cite)
     claim_ids = doc.ledger.claim_ids()
     body: list[str] = [_latex_title(doc, md)]
+    if doc.report.executive_summary.strip():
+        body += [r"\section*{Summary}", r"\addcontentsline{toc}{section}{Summary}",
+                 r"\noindent\fcolorbox{rlaccent!40}{rlaccent!4}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{%",
+                 md.block(doc.report.executive_summary), "}}", ""]
     body += [r"\section{Findings}", md.block(tidy_answer(doc.report.answer)) or r"\rlnote{The report has no answer.}", ""]
     body += _latex_disputed(doc, md, claim_ids)
     if doc.report.claims:
