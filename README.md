@@ -11,6 +11,7 @@ make setup && source .venv/bin/activate
 pytest -q                                          # offline tests
 python examples/run_research.py "Your question"    # scripted models: free, no network
 python examples/run_research.py "Your question" --policy quality --paid   # real models
+python examples/run_research.py "Your question" --policy quality --paid --persist   # and store the job in Postgres
 ```
 
 Before your first paid run, set up provider keys and network access with [docs/setup.md](docs/setup.md#preparing-for-paid-runs) and check them with `research-diagnose --smoke`.
