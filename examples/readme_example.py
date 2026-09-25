@@ -30,6 +30,7 @@ from research_loop.repository import (
 from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 from research_loop.synthetic import SyntheticResearchLoop
+from research_loop.tools import ResearchToolMode
 
 QUESTION = "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
 SCOUT_TOKENS = 400_000
@@ -58,9 +59,13 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings)
     config = ResearchConfig(
         max_verification_rounds=1,
         max_deep_dives_per_round=2,
-        # A scout or deep dive that runs out of tokens or budget writes its result from what it
-        # gathered, instead of failing the whole run; the job cap makes running out expected.
+        # A scout or deep dive that runs out of tokens or budget, or gives up after repeated tool
+        # errors, writes its result from what it gathered instead of failing the whole run.
         salvage_exhausted_research=True,
+        # The repository's own search and fetch, as benchmarks and long-horizon studies use: a
+        # failed fetch comes back to the model as an error result instead of raising. In adaptive
+        # mode, models without a native fetch use PydanticAI's, which raises on any HTTP error.
+        tool_mode=ResearchToolMode.NORMALIZED,
         scholarly_cache_mode=settings.scholarly_cache_mode,
     )
     return policy, config

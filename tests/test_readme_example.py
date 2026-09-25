@@ -10,6 +10,7 @@ import pytest
 
 from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
+from research_loop.tools import ResearchToolMode
 
 _SPEC = importlib.util.spec_from_file_location(
     "readme_example", Path(__file__).parents[1] / "examples" / "readme_example.py"
@@ -27,6 +28,7 @@ def test_paid_setup_caps_the_quality_policy_and_trims_the_run() -> None:
     assert (config.max_verification_rounds, config.max_deep_dives_per_round) == (1, 2)
     # Running out of tokens or budget degrades a scout or deep dive instead of failing the run.
     assert config.salvage_exhausted_research
+    assert config.tool_mode is ResearchToolMode.NORMALIZED  # fetch errors come back as results, not exceptions
     assert policy.routes[ResearchRole.SCOUT].total_tokens_limit == policy.cheap_scout.total_tokens_limit == 400_000
     assert policy.routes[ResearchRole.SCOUT].cost_limit == 0.80  # the dollar cap is unchanged
 

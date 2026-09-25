@@ -15,7 +15,7 @@ import httpx
 from pydantic import BaseModel
 from pydantic_ai import UsageLimits, capture_run_messages
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
 from .acquisition import (
@@ -88,8 +88,9 @@ class ResearchConfig:
     attachment_strict: bool = True
     scholarly_tools: bool = True
     scholarly_cache_mode: str = "live"
-    # When a scout or deep dive exhausts its budget, summarize what it gathered in one
-    # tool-free call (or return an empty result) instead of failing the job.
+    # When a scout or deep dive exhausts its budget, or gives up after repeated tool or output
+    # errors (UnexpectedModelBehavior, e.g. a fetch tool that kept failing), summarize what it
+    # gathered in one tool-free call (or return an empty result) instead of failing the job.
     salvage_exhausted_research: bool = False
     # Wall-clock limit for one run; past it the run is cancelled and recorded failed (TimeoutError).
     max_run_seconds: float | None = None
@@ -772,7 +773,7 @@ class AsyncResearchLoop:
             self._release(job_id, hold)
 
     async def _run_research(self, question: ResearchQuestion, **kwargs: Any) -> ResearchResult:
-        """Run a scout or deep dive; with salvage enabled, budget exhaustion degrades, not fails."""
+        """Run a scout or deep dive; with salvage enabled, exhaustion or a model giving up degrades, not fails."""
         if not self.config.salvage_exhausted_research:
             return await self._run_agent(**kwargs)
         messages: list[Any] = []
@@ -781,7 +782,9 @@ class AsyncResearchLoop:
             return await self._run_agent(**kwargs, captured=messages, task_ids=exhausted_ids)
         except JobBudgetExceeded:
             return _budget_exhausted_result(question)  # refused before any spend
-        except UsageLimitExceeded:
+        except (UsageLimitExceeded, UnexpectedModelBehavior):
+            # One research branch running out, or failing on repeated tool or output errors, should
+            # not cost the job the rest of its research. Provider errors still fail it.
             gathered, gathered_counts = _gathered_evidence(messages)
         if not gathered:
             return _budget_exhausted_result(question)
@@ -818,7 +821,7 @@ class AsyncResearchLoop:
                 salvage=True,
                 quote_texts=tool_texts(extract_tool_events(messages)),
             )
-        except (JobBudgetExceeded, UsageLimitExceeded):
+        except (JobBudgetExceeded, UsageLimitExceeded, UnexpectedModelBehavior):
             return _budget_exhausted_result(question)
 
     async def _plan(
