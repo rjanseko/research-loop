@@ -202,6 +202,12 @@ Once `--smoke` passes, a first paid benchmark run is one case by default:
 research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
 ```
 
+The built-in policies cap each call but set no total per run (`job_cost_limit`). For a first single question with a total cap, `examples/readme_example.py` runs the README's example question on the `quality` policy under a $4 cap (`--budget`), $1.50 of it held for synthesis and verification (`--reserve`), with three to five questions, two deep dives per round, and one verification round. It writes the report, verification, review reasons, cost, and the policy and configuration it ran with to `benchmark_outputs/readme_example/`; add `--persist` to store the job in Postgres too. Without `--paid` it runs the synthetic policy, for free. The cap is soft, and holds only while every model has pricing data, which `--smoke` checks.
+
+```bash
+python examples/readme_example.py --paid --persist
+```
+
 See [benchmarks.md](benchmarks.md) for suites and manifests, and the [long-horizon README](../long_horizon/agentic_se/README.md) for long-horizon runs.
 
 ## Logfire tracing
