@@ -131,3 +131,11 @@ async def test_postgres_finish_job_stores_the_ledger_and_review_reasons() -> Non
     stored = {getattr(param, "obj", param) for param in params if not isinstance(getattr(param, "obj", param), (dict, list))}
     assert job_id in stored
     assert ledger in [getattr(param, "obj", None) for param in params]
+
+
+def test_nul_characters_are_removed_before_postgres_sees_them() -> None:
+    from research_loop.repository import without_nul
+
+    value = {"text\x00key": ["page\x00 one", {"n": 1, "quote": "a\x00b"}], "ok": "plain", "none": None}
+    assert without_nul(value) == {"textkey": ["page one", {"n": 1, "quote": "ab"}], "ok": "plain", "none": None}
+    assert without_nul(("x\x00",)) == ["x"]

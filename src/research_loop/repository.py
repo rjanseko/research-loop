@@ -10,12 +10,28 @@ from .schemas import ResearchRole, ToolEvent
 from .telemetry import jsonable, safe_tool_args, safe_tool_result, transcript
 
 
+def without_nul(value: Any) -> Any:
+    """`value` with NUL characters removed from every string in it.
+
+    Postgres stores no NUL in text or jsonb (psycopg raises UntranslatableCharacter), and text extracted
+    from PDFs can hold one: a deep dive in the seventh settings-study pilot failed its job on one in its
+    transcript. Nothing else in a stored value changes.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {without_nul(key): without_nul(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [without_nul(item) for item in value]
+    return value
+
+
 def _pg_json(value: Any):
     try:
         from psycopg.types.json import Jsonb
     except ImportError as exc:
         raise RuntimeError("Install the postgres extra: pip install -e '.[postgres]'") from exc
-    return Jsonb(jsonable(value))
+    return Jsonb(without_nul(jsonable(value)))
 
 
 class ResearchRepository(Protocol):
@@ -189,7 +205,7 @@ class PostgresResearchRepository:
                     job_id,
                     kwargs["session_id"],
                     kwargs["root_run_id"],
-                    kwargs["objective"],
+                    without_nul(kwargs["objective"]),
                     kwargs["policy_name"],
                     _pg_json(kwargs["config"]),
                 ),
@@ -261,7 +277,7 @@ class PostgresResearchRepository:
                     kwargs["parent_task_id"],
                     kwargs["role"].value,
                     kwargs["question_id"],
-                    kwargs["prompt"],
+                    without_nul(kwargs["prompt"]),
                     kwargs["model_id"],
                     _pg_json(kwargs["effective_config"]),
                     kwargs.get("attempt", 0),
