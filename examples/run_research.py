@@ -2,7 +2,8 @@
 
 The default synthetic policy runs the real graph without model or web calls; any
 other policy calls paid model providers and needs --paid. With --persist, the job is
-stored in Postgres (DATABASE_URL) like a benchmark run with --persist.
+stored in Postgres (DATABASE_URL) like a benchmark run with --persist; --capture also
+stores every agent's full messages there.
 """
 from __future__ import annotations
 
@@ -27,12 +28,14 @@ from research_loop.settings import ResearchSettings
 from research_loop.synthetic import SyntheticResearchLoop
 
 
-async def run(objective: str, policy_name: str, tool_mode: str, settings: ResearchSettings, persist: bool) -> None:
+async def run(objective: str, policy_name: str, tool_mode: str, settings: ResearchSettings,
+              persist: bool, capture: bool = False) -> None:
     configure_logfire(settings)
     async with AsyncExitStack() as stack:
         if persist:
             # Refuses before any model call if migrations are pending or changed.
-            repo = PostgresResearchRepository(await open_migrated_pool(stack, settings.database_dsn))
+            pool = await open_migrated_pool(stack, settings.database_dsn)
+            repo = PostgresResearchRepository(pool, capture_transcripts=capture)
         else:
             repo = InMemoryResearchRepository()
         loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
@@ -67,6 +70,8 @@ def main() -> None:
     parser.add_argument("--tool-mode", default="adaptive", choices=[mode.value for mode in ResearchToolMode])
     parser.add_argument("--paid", action="store_true", help="Allow policies that call paid model providers")
     parser.add_argument("--persist", action="store_true", help="Store the job in Postgres at DATABASE_URL")
+    parser.add_argument("--capture", action="store_true",
+                        help="With --persist, also store every agent's full messages (research_task_messages)")
     args = parser.parse_args()
     if args.policy != "synthetic" and not args.paid:
         parser.error("real model policies require --paid")
@@ -74,7 +79,9 @@ def main() -> None:
     settings = ResearchSettings.from_env()
     if args.persist and not settings.database_dsn:
         parser.error("--persist needs DATABASE_URL; see docs/setup.md#postgres")
-    asyncio.run(run(args.objective, args.policy, args.tool_mode, settings, args.persist))
+    if args.capture and not args.persist:
+        parser.error("--capture stores transcripts in Postgres; add --persist")
+    asyncio.run(run(args.objective, args.policy, args.tool_mode, settings, args.persist, args.capture))
 
 
 if __name__ == "__main__":

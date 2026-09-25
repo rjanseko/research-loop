@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -24,12 +25,17 @@ def test_paid_setup_caps_the_quality_policy_and_trims_the_run() -> None:
     assert (policy.name, policy.job_cost_limit, policy.job_reserve_usd) == ("quality", 4.0, 1.5)
     assert policy.planner_question_range == (3, 5)
     assert (config.max_verification_rounds, config.max_deep_dives_per_round) == (1, 2)
+    # Running out of tokens or budget degrades a scout or deep dive instead of failing the run.
+    assert config.salvage_exhausted_research
+    assert policy.routes[ResearchRole.SCOUT].total_tokens_limit == policy.cheap_scout.total_tokens_limit == 400_000
+    assert policy.routes[ResearchRole.SCOUT].cost_limit == 0.80  # the dollar cap is unchanged
 
 
 @pytest.mark.parametrize("argv", [
     ["--paid", "--budget", "1", "--reserve", "1.5"],  # the reserve must stay below the cap
     ["--paid", "--budget", "0"],
     ["--persist"],  # no DATABASE_URL
+    ["--capture"],  # transcripts go to Postgres, so capture needs --persist
 ])
 def test_unrunnable_options_are_refused_before_any_run(argv, monkeypatch) -> None:
     monkeypatch.setattr(readme_example, "ResearchSettings", _empty_settings)

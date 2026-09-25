@@ -224,3 +224,33 @@ class SourceReach:
             return None
         reasons = ", ".join(reason for reason, _ in self.unreached.most_common(3))
         return f"{failed} of {self.calls} web and scholarly tool calls reached no source ({reasons})"
+
+
+# Longest string a captured transcript keeps whole; web and scholarly fetches return at most
+# 12,000 characters per call, so this cuts mainly inline images and oversized prompts.
+TRANSCRIPT_MAX_CHARS = 50_000
+
+
+def transcript(messages: Iterable[Any], max_chars: int = TRANSCRIPT_MAX_CHARS) -> tuple[list[Any], int]:
+    """A task's PydanticAI messages as JSON, with strings past `max_chars` cut; also how many were cut.
+
+    Unlike tool telemetry, this keeps prompts, responses, tool arguments, and tool results as
+    text, so it is written only when a repository opts in to capture.
+    """
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    cut = 0
+
+    def bounded(value: Any) -> Any:
+        nonlocal cut
+        if isinstance(value, str) and len(value) > max_chars:
+            cut += 1
+            return value[:max_chars] + f" [truncated {len(value) - max_chars} chars]"
+        if isinstance(value, list):
+            return [bounded(item) for item in value]
+        if isinstance(value, dict):
+            return {key: bounded(item) for key, item in value.items()}
+        return value
+
+    dumped = ModelMessagesTypeAdapter.dump_python(list(messages), mode="json")
+    return bounded(dumped), cut

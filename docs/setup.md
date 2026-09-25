@@ -105,6 +105,23 @@ Migrations live in `src/research_loop/migrations/`, ship in the installed packag
 
 The database keeps jobs, the plan, every role task with its prompt, effective configuration, output, usage, and parent task, tool events, and attachment manifests. Each finished job also keeps its evidence ledger, whose unique claim IDs are the ones its report and verification cite (task outputs keep each worker's own IDs), and its `review_reasons`; a failed job keeps the evidence gathered before it failed. Text in tool arguments is stored as hashes and lengths, and fetched content as hashes and sizes, so protected benchmark inputs and article text stay out of it. Graph and policy versions are recorded in each job's effective configuration, so topology changes need no migration.
 
+### Full transcripts
+
+For analysing your own runs, a repository can also keep each task's full transcript: `PostgresResearchRepository(pool, capture_transcripts=True)`, or `--capture` with `--persist` on `examples/run_research.py` and `examples/readme_example.py`. Every agent call then gets a `research_task_messages` row holding its PydanticAI messages as JSON: the prompt, each model response with its own token usage, and the real tool arguments and results, such as search queries and fetched text. String values over 50,000 characters are cut, and `truncated_values` counts them. Capture makes no extra model calls and changes no prompts; its cost is database size, mostly fetched text, which runs up to about 12,000 characters per fetch.
+
+Capture is off by default, and `research-bench` never turns it on, because transcripts hold exactly the benchmark inputs and fetched content that tool events hash. The table comes from migration `004_research_task_messages.sql`, so run `research-db migrate` after updating; persisting commands refuse to start until it is applied.
+
+```sql
+-- One task's transcript, one part per row: its kind, tool, and the start of its content.
+select m.ordinality as step, p.value->>'part_kind' as kind, p.value->>'tool_name' as tool,
+       left(coalesce(p.value->>'content', p.value->>'args'), 200) as content
+  from research_task_messages t,
+       jsonb_array_elements(t.messages) with ordinality m,
+       jsonb_array_elements(m.value->'parts') p
+ where t.task_id = '<task_id>'
+ order by m.ordinality;
+```
+
 A run that fails, is interrupted, or passes its `ResearchConfig.max_run_seconds` deadline records itself as failed. Only a process killed outright leaves jobs and tasks `running`. To close those out:
 
 ```bash
@@ -202,7 +219,7 @@ Once `--smoke` passes, a first paid benchmark run is one case by default:
 research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
 ```
 
-The built-in policies cap each call but set no total per run (`job_cost_limit`). For a first single question with a total cap, `examples/readme_example.py` runs the README's example question on the `quality` policy under a $4 cap (`--budget`), $1.50 of it held for synthesis and verification (`--reserve`), with three to five questions, two deep dives per round, and one verification round. It writes the report, verification, review reasons, cost, and the policy and configuration it ran with to `benchmark_outputs/readme_example/`; add `--persist` to store the job in Postgres too. Without `--paid` it runs the synthetic policy, for free. The cap is soft, and holds only while every model has pricing data, which `--smoke` checks.
+The built-in policies cap each call but set no total per run (`job_cost_limit`). For a first single question with a total cap, `examples/readme_example.py` runs the README's example question on the `quality` policy under a $4 cap (`--budget`), $1.50 of it held for synthesis and verification (`--reserve`), with three to five questions, two deep dives per round, and one verification round. Scouts get 400,000 tokens, as in the calibration pilot, instead of the policy's 100,000, and keep their dollar caps. A scout or deep dive that runs out of tokens or budget writes its result from what it gathered instead of failing the run (`ResearchConfig.salvage_exhausted_research`, off by default). It writes the report, verification, review reasons, cost, and the policy and configuration it ran with to `benchmark_outputs/readme_example/`; add `--persist` to store the job in Postgres too. Without `--paid` it runs the synthetic policy, for free. The cap is soft, and holds only while every model has pricing data, which `--smoke` checks.
 
 ```bash
 python examples/readme_example.py --paid --persist

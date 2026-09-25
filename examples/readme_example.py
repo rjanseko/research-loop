@@ -14,7 +14,7 @@ import argparse
 import asyncio
 import json
 from contextlib import AsyncExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,10 +26,12 @@ from research_loop.repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
 )
+from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 from research_loop.synthetic import SyntheticResearchLoop
 
 QUESTION = "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
+SCOUT_TOKENS = 400_000
 NOTES = [
     "Keep preprints and published papers distinct.",
     "Label scores a vendor reports about its own model as vendor claims.",
@@ -46,16 +48,24 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings)
     # Held back from research so synthesis and verification can still run once it is spent.
     policy.job_reserve_usd = reserve
     policy.planner_question_range = (3, 5)
+    # A scout resends its growing tool history each request; the calibration pilot's scouts used
+    # about 250k tokens each, so quality's 100k stops them early. Their $ caps still apply.
+    policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], total_tokens_limit=SCOUT_TOKENS)
+    if policy.cheap_scout:
+        policy.cheap_scout = replace(policy.cheap_scout, total_tokens_limit=SCOUT_TOKENS)
     policy.validate()
     config = ResearchConfig(
         max_verification_rounds=1,
         max_deep_dives_per_round=2,
+        # A scout or deep dive that runs out of tokens or budget writes its result from what it
+        # gathered, instead of failing the whole run; the job cap makes running out expected.
+        salvage_exhausted_research=True,
         scholarly_cache_mode=settings.scholarly_cache_mode,
     )
     return policy, config
 
 
-async def run(*, paid: bool, persist: bool, budget: float, reserve: float,
+async def run(*, paid: bool, persist: bool, capture: bool, budget: float, reserve: float,
               settings: ResearchSettings, output: Path) -> dict[str, Any]:
     policy, config = build(paid, budget, reserve, settings)
     configure_logfire(settings)
@@ -63,7 +73,8 @@ async def run(*, paid: bool, persist: bool, budget: float, reserve: float,
     async with AsyncExitStack() as stack:
         if persist:
             # Refuses before any model call if migrations are pending or changed.
-            repo = PostgresResearchRepository(await open_migrated_pool(stack, settings.database_dsn))
+            pool = await open_migrated_pool(stack, settings.database_dsn)
+            repo = PostgresResearchRepository(pool, capture_transcripts=capture)
         else:
             repo = InMemoryResearchRepository()
         loop_class = ResearchLoop if paid else SyntheticResearchLoop
@@ -80,6 +91,7 @@ async def run(*, paid: bool, persist: bool, budget: float, reserve: float,
         "config": asdict(config),
         "job_id": str(outcome.job_id),
         "persisted": persist,
+        "captured": capture,
         "cost_usd": None if outcome.cost_usd is None else float(outcome.cost_usd),
         "review_reasons": outcome.review_reasons,
         "plan": outcome.plan.model_dump(mode="json"),
@@ -98,19 +110,23 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reserve", type=float, default=1.5,
                         help="USD of the budget held for synthesis and verification (default 1.50)")
     parser.add_argument("--persist", action="store_true", help="Also store the job in Postgres at DATABASE_URL")
+    parser.add_argument("--capture", action="store_true",
+                        help="With --persist, also store every agent's full messages (research_task_messages)")
     parser.add_argument("--output", type=Path, help="Where to write the JSON record")
     args = parser.parse_args(argv)
     # Resolve settings first: it loads .env, which carries the model overrides and DATABASE_URL.
     settings = ResearchSettings.from_env()
     if args.persist and not settings.database_dsn:
         parser.error("--persist needs DATABASE_URL; see docs/setup.md#postgres")
+    if args.capture and not args.persist:
+        parser.error("--capture stores transcripts in Postgres; add --persist")
     try:
         build(args.paid, args.budget, args.reserve, settings)
     except ValueError as exc:  # a budget or reserve no policy can run under
         parser.error(str(exc))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or settings.benchmark_output / "readme_example" / f"{stamp}.json"
-    record = asyncio.run(run(paid=args.paid, persist=args.persist, budget=args.budget,
+    record = asyncio.run(run(paid=args.paid, persist=args.persist, capture=args.capture, budget=args.budget,
                              reserve=args.reserve, settings=settings, output=output))
 
     print(record["report"]["answer"])
