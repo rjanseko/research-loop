@@ -24,6 +24,7 @@ from .db import pending_migrations
 from .graph import get_research_graph
 from .observability import configure_logfire
 from .policy import ModelRoute, get_policy
+from .prices import install_price_overrides, override_for
 from .schemas import ResearchRole
 from .scholar import SCHOLAR_HOSTS, ScholarClient, build_scholar_toolset
 from .settings import PROVIDER_KEY_ENV, ResearchSettings, model_provider
@@ -105,10 +106,12 @@ def _model_price(model: str) -> tuple[Decimal, Decimal] | None:
 
     Priced at 100k tokens and scaled, so a price tier for long prompts does not set the rate.
     None when the data has no price for the model: its calls then have no cost_usd, and cost caps
-    cannot be enforced for them.
+    cannot be enforced for them. Includes the corrections in prices.toml.
     """
     from genai_prices import calc_price
     from pydantic_ai.usage import RequestUsage
+
+    install_price_overrides()
 
     provider, _, name = model.partition(":")
     try:
@@ -120,10 +123,10 @@ def _model_price(model: str) -> tuple[Decimal, Decimal] | None:
 
 
 def _update_prices() -> None:
-    """Fetch the latest genai-prices data; this process then prices every call with it."""
-    from genai_prices import UpdatePrices
+    """Fetch the latest genai-prices data, with prices.toml's corrections; this process then prices every call with it."""
+    from .prices import OverridingUpdatePrices
 
-    with UpdatePrices() as updater:
+    with OverridingUpdatePrices() as updater:
         if not updater.wait(timeout=30):
             raise TimeoutError("no price data fetched within 30 seconds")
 
@@ -158,8 +161,10 @@ def _price_checks(
             checks.append(Check(f"price:{model}", "WARN",
                                 f"No price data ({used_by}); cost_usd is unknown and cost caps cannot be enforced"))
         else:
+            override = override_for(model)
+            origin = f"; from prices.toml, checked {override.checked}" if override else ""
             checks.append(Check(f"price:{model}", "PASS",
-                                f"${price[0]:.2f} in / ${price[1]:.2f} out per million tokens ({used_by})"))
+                                f"${price[0]:.2f} in / ${price[1]:.2f} out per million tokens ({used_by}{origin})"))
     return checks
 
 
@@ -274,6 +279,8 @@ def run_diagnose(
     profile_probe: Callable[[str], dict[str, Any]] = _model_profile,
     smoke_probe: Callable[..., Any] = _smoke_model,
 ) -> list[Check]:
+    # Price checks and --smoke calls see prices.toml's corrections, as runs do.
+    install_price_overrides()
     checks: list[Check] = []
     python_ok = sys.version_info >= (3, 12)
     checks.append(Check("runtime", "PASS" if python_ok else "FAIL", "Python 3.12+" if python_ok else "Install Python 3.12+"))

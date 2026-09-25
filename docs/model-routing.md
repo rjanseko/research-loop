@@ -26,7 +26,7 @@ Cost per question on the p01 profile:
 |---|---:|---:|
 | A `quality` preset | $3.20 | $2.32 |
 | **B `value` preset** | **$2.03 (−37%)** | **$1.61 (−50%)** |
-| F all trials pass (Z.ai-heavy) | $0.59 (−82%) | $0.61 (−74%) |
+| F all trials pass (Z.ai-heavy) | $0.63 (−80%) | $0.64 (−72%) |
 
 B moves no role to a weaker model: each change is a successor that is as cheap or cheaper and
 scores at least as well. The trials trade benchmark standing for price, so they need the harness.
@@ -43,7 +43,7 @@ repair what they miss.
 - **GLM-5.3** costs about $0.56 a question for three scouts, because 84% of its loop input is billed as
   cached. Its BrowseComp score, 75.9%, is the lowest of the current routes; frontier models score
   about 90%.
-- **GLM-5.3-Flash** costs $0.03 a question. It is at or near the top of OpenRouter's tool-calling
+- **GLM-5.3-Flash** costs $0.06–0.07 a question. It is at or near the top of OpenRouter's tool-calling
   usage ranking, next to DeepSeek V4.1 Flash, and scores 78.4 on Toolathlon. No BrowseComp number is
   published. It runs on `zai`, which the repo already supports, and the `glm-heavy` preset already
   uses it as the cheap scout.
@@ -87,15 +87,17 @@ synthesizer moves to GLM, the verifier must stay off GLM.
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | A `quality` preset | 0.04 | 0.56 | 0.12 | **1.70** | 0.47 | 0.31 | **3.20** | 2.32 |
 | B `value` preset | 0.03 | 0.56 | 0.06 | 0.85 | 0.38 | 0.16 | **2.03** | 1.61 |
-| C B, GLM-5.3-Flash scouts | 0.03 | 0.03 | 0.06 | 0.85 | 0.38 | 0.16 | 1.51 | 1.05 |
+| C B, GLM-5.3-Flash scouts | 0.03 | 0.06 | 0.06 | 0.85 | 0.38 | 0.16 | 1.54 | 1.08 |
 | D B, GLM-5.3 synthesizer | 0.03 | 0.56 | 0.06 | 0.85 | 0.09 | 0.16 | 1.74 | 1.32 |
 | E B, GLM-5.3 deep dives | 0.03 | 0.56 | 0.06 | 0.25 | 0.38 | 0.16 | 1.44 | 1.49 |
-| F Z.ai-heavy: Flash scouts, GLM gap, deep dives, synthesis; GPT-6 Sol verifier | 0.03 | 0.03 | 0.04 | 0.25 | 0.09 | 0.16 | 0.59 | 0.61 |
+| F Z.ai-heavy: Flash scouts, GLM gap, deep dives, synthesis; GPT-6 Sol verifier | 0.03 | 0.06 | 0.04 | 0.25 | 0.09 | 0.16 | 0.63 | 0.64 |
 | G B, OpenRouter: DeepSeek V4 Flash scouts, Hy4 deep dives | 0.03 | 0.06 | 0.06 | 0.21 | 0.38 | 0.16 | 0.89 | 0.79 |
 | H floor: GPT-6 Luna everywhere, Sonnet 5 synthesizer | 0.00 | 0.09 | 0.00 | 0.04 | 0.19 | 0.01 | 0.34 | 0.27 |
 | I Opus 5.5 everywhere | 0.03 | 5.46 | 0.17 | 2.53 | 0.38 | 0.38 | 8.95 | 4.37 |
 
-USD per question, list prices from `genai-prices` 0.1.8 on 2026-09-25. "Total" uses the loop
+USD per question, list prices from `genai-prices` 0.1.8 on 2026-09-25, with the corrections in
+`src/research_loop/prices.toml`. GLM-5.3-Flash's figures were first worked out at the half price
+`genai-prices` lists for it, and were updated when that correction was added. "Total" uses the loop
 caching the pilot's usage showed; "Cached" assumes 80% of every tool loop's input is read from cache.
 
 - **The deep dive and the scouts are loops; everything else is single calls.** Moving the loops
@@ -141,7 +143,7 @@ different index versions.
 | GPT-5.6 Sol | 4 / 0.40 / 20 (promotional) | BrowseComp 92.2%, second on that leaderboard |
 | GPT-6 Luna | 0.10 / 0.01 / 0.50 | DeepSWE 66.6%, Agents' Last Exam 50.9%. No search benchmark published |
 | GLM-5.3 | 1.40 / 0.26 / 4.40 | BrowseComp 75.9%. Synthesizer in the p01 evidence-v4 rerun |
-| GLM-5.3-Flash | 0.075 / 0.015 / 0.25 | Toolathlon 78.4, AutomationBench 48.8. Artificial Analysis index 57 in one report, 42 in another. At or near the top of OpenRouter's tool-calling usage |
+| GLM-5.3-Flash | 0.15 / 0.03 / 0.50 | Toolathlon 78.4, AutomationBench 48.8. Artificial Analysis index 57 in one report, 42 in another. At or near the top of OpenRouter's tool-calling usage |
 | DeepSeek V4.1 Flash | 0.10–0.22 / 0.003–0.02 / 0.20–0.66 | Terminal-Bench 2.1 90.6. At or near the top of OpenRouter's tool-calling usage. Peak-hour prices are about double. No BrowseComp number found |
 | Tencent Hy4 preview | 0.834 / 0.042 / 2.501 | 770B mixture-of-experts. Trades wins with Kimi K3 and GLM-5.3; behind Opus 5 and GPT-5.6. Not in `genai-prices` |
 | Kimi K3 | 3 / 0.30 / 15 | BrowseComp 91.2% |

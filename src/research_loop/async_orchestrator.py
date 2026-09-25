@@ -46,6 +46,7 @@ from .attachments import (
 from .ledger import EvidenceLedger
 from .observability import job_span
 from .policy import ModelPolicy, ModelRoute, retry_token_budget
+from .prices import install_price_overrides
 from .quotes import check_quotes, check_sources, tool_texts
 from .repository import NullResearchRepository, ResearchRepository
 from .schemas import (
@@ -340,6 +341,8 @@ class AsyncResearchLoop:
         settings: ResearchSettings | None = None,
     ) -> None:
         policy.validate()
+        # Correct genai-prices before any call is priced, so cost caps hold on every model.
+        install_price_overrides()
         self.policy = policy
         # Applications pass the settings they resolved; only a bare library call reads the environment.
         self.settings = settings or ResearchSettings.from_env()
