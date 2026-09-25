@@ -85,7 +85,7 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         pending_migrations,
         reconcile,
     )
-    from research_loop.store import load_run
+    from research_loop.store import load_calls, load_run, save_grade
 
     assert pending_migrations(dsn) == ["001_scout.sql"]
     async with AsyncExitStack() as stack:
@@ -100,15 +100,25 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         run_id, parent = uuid4(), uuid4()
         await store.start_run(parent, mode="long_horizon", workflow_version="v", question="Study", config={})
         await store.start_run(run_id, mode="scout", workflow_version="scout-v1", question="Q\x00?",
-                              config={"models": {"scout": "zai:glm-5.3-flash"}}, parent_run_id=parent)
+                              config={"models": {"scout": "zai:glm-5.3-flash"}}, parent_run_id=parent,
+                              input_hash="ab" * 32, study_id="s1", arm="high", replicate=2)
         call_id = await store.start_call(run_id, role="scout", model="zai:glm-5.3-flash", question_id="q1")
         await store.finish_call(call_id, status="failed", usage=RunUsage(requests=1), messages=MESSAGES,
-                                error=RuntimeError("boom"))
+                                error=RuntimeError("boom"), stop_reason="limit reached", tool_seconds=12.5)
         await store.finish_run(run_id, status="partial", report={"title": "T"}, ledger={"q1": []},
-                               checks={"citation_problems": []}, cost_usd=Decimal("0.0123"), trace_id="f" * 32)
+                               checks={"citation_problems": []}, cost_usd=Decimal("0.0123"), trace_id="f" * 32,
+                               cache={"mode": "reuse", "by_provider": {}})
+        await save_grade(pool, {"id": uuid4(), "run_id": run_id, "case_id": "st05-scaling-table",
+                                "judge_model": "openai:gpt-6-sol", "judge_thinking": "high", "judge_version": 2,
+                                "rubric_version": "1", "status": "succeeded", "score": 0.5,
+                                "points": [{"category": "analysis", "point": 1, "met": True}],
+                                "usage": {"requests": 1}, "cost_usd": Decimal("0.02"), "messages": None, "error": None})
         row = await load_run(pool, run_id)
+        (call,) = await load_calls(pool, run_id)
     assert (row["status"], row["question"], row["parent_run_id"], row["report"], row["cost_usd"]) == (
         "partial", "Q?", parent, {"title": "T"}, Decimal("0.0123"))
+    assert (row["study_id"], row["arm"], row["replicate"], row["cache"]["mode"]) == ("s1", "high", 2, "reuse")
+    assert (call["stop_reason"], call["tool_seconds"]) == ("limit reached", Decimal("12.5"))
     with psycopg.connect(dsn, autocommit=True) as conn:
         status, messages, error = conn.execute("select status, messages, error from run_calls").fetchone()
         assert status == "failed" and error["message"] == "boom"
@@ -117,3 +127,4 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         assert reconcile(conn, 0, apply=False) == (1, 0)
         assert reconcile(conn, 0, apply=True) == (1, 0)
         assert conn.execute("select status from runs where id = %s", (parent,)).fetchone() == ("failed",)
+        assert conn.execute("select case_id, score from grades").fetchone() == ("st05-scaling-table", Decimal("0.5"))

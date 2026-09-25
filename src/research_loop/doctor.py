@@ -41,7 +41,8 @@ async def _smoke(model_id: str, role: str, settings: Settings) -> str:
 
     from .models import build_model
 
-    agent = Agent(build_model(model_id, role, settings), output_type=_Ok)  # type: ignore[arg-type]
+    agent = Agent(build_model(model_id, role, settings, sdk_retries=0 if role == "scout" else None),  # type: ignore[arg-type]
+                  output_type=_Ok)
     called = False
 
     @agent.tool_plain

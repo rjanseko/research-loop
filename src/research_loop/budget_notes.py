@@ -8,10 +8,13 @@ call with works) apart from misses (an empty search, an HTTP error, a blocked UR
 only failing stops without starving one that is working.
 
 The note is appended to the newest request only, and PydanticAI keeps the processed history, so
-earlier notes stay as they were sent and the cached prompt prefix survives between requests.
+earlier notes stay as they were sent and the cached prompt prefix survives between requests. When the
+research deadline is closer than one request timeout, the note says so and the tools are withdrawn:
+a request still running at the deadline is cut off and keeps no claims.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -29,6 +32,7 @@ from .tools import productive
 
 NOTE_PREFIX = "[Research budget] "
 LAST_REQUEST_NOTE = NOTE_PREFIX + "This is your last model request. Do not call tools; return your result now."
+DEADLINE_NOTE = NOTE_PREFIX + "The research deadline is close. Do not call tools; return your result now."
 PRODUCTIVE_SPENT_NOTE = (
     NOTE_PREFIX + "No productive tool calls are left, and {requests} of {max_requests} model requests are. "
     "Do not call tools; return your result now."
@@ -77,9 +81,20 @@ class LoopBudget:
     max_requests: int
     max_productive: int
     max_misses: int
+    # Seconds left until the research deadline, and how many must remain for another tool-using request.
+    # The scout sets `return_within` to its request timeout: a request started with less than that left
+    # would be cut off, and a cutoff keeps no claims.
+    time_left: Callable[[], float] | None = None
+    return_within: float = 0
+
+    def closing(self) -> bool:
+        """Whether the next request must be the result so it can finish before the research deadline."""
+        return self.time_left is not None and self.time_left() <= self.return_within
 
     def note(self, requests_used: int, spent: ToolYield) -> str:
         """The note for the next request, given what the loop has used so far."""
+        if self.closing():
+            return DEADLINE_NOTE
         requests = max(self.max_requests - requests_used, 0)
         if requests <= 1:
             return LAST_REQUEST_NOTE
@@ -97,10 +112,26 @@ class LoopBudget:
                            misses=max(self.max_misses - spent.misses, 0), max_misses=self.max_misses, batch=batch)
 
     def spent(self, requests_used: int, messages: list[ModelMessage]) -> bool:
-        """Whether the loop is on its last request or has spent its productive calls or misses."""
+        """Whether the loop is on its last request, out of time, or has spent its productive calls or misses."""
+        if self.closing():
+            return True
         counted = tool_yield(messages)
         return (self.max_requests - requests_used <= 1
                 or counted.productive >= self.max_productive or counted.misses >= self.max_misses)
+
+    def finish_reason(self, requests: int, messages: list[ModelMessage]) -> str:
+        """Why a loop that returned its result stopped: a spent budget, the deadline, or on its own."""
+        if any(isinstance(part, UserPromptPart) and part.content == DEADLINE_NOTE
+               for message in messages if isinstance(message, ModelRequest) for part in message.parts):
+            return "returned because the research deadline was close"
+        counted = tool_yield(messages)
+        if counted.productive >= self.max_productive:
+            return "returned after its productive calls were spent"
+        if counted.misses >= self.max_misses:
+            return "returned after its misses were spent"
+        if requests >= self.max_requests:
+            return "returned on its last request"
+        return "returned on its own"
 
     def capabilities(self) -> list[Any]:
         """A note on each request, and no tools once a budget is spent, so the loop returns its result

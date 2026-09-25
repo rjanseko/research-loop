@@ -34,7 +34,7 @@ all = ["research-loop[eval,postgres,test]"]
 research = "research_loop.cli:main"
 
 [tool.setuptools.package-data]
-research_loop = ["migrations/*.sql", "prices.toml"]
+research_loop = ["migrations/*.sql", "prices.toml", "study_cases.jsonl", "quality_packets.jsonl"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

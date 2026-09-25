@@ -59,6 +59,12 @@ class AcquisitionCache:
 
     def __init__(self, root: Path, mode: CacheMode = "live", ttl_seconds: int = 86400) -> None:
         self.root, self.mode, self.ttl_seconds = root, mode, ttl_seconds
+        # Lookups served, lookups missed, and entries written, by provider; a run records them.
+        self.counts: dict[str, dict[str, int]] = {}
+
+    def _count(self, provider: str, outcome: str) -> None:
+        counts = self.counts.setdefault(provider, {"hits": 0, "misses": 0, "writes": 0})
+        counts[outcome] += 1
 
     def _path(self, provider: str, key: str) -> Path:
         digest = hashlib.sha256(f"v{CACHE_VERSION}:{provider}:{key}".encode()).hexdigest()
@@ -71,9 +77,11 @@ class AcquisitionCache:
         try:
             payload = json.loads(path.read_text())
             if self.mode != "live" or time.time() - payload["created_at"] <= self.ttl_seconds:
+                self._count(provider, "hits")
                 return payload["value"]
         except (OSError, ValueError, KeyError, TypeError):
             pass
+        self._count(provider, "misses")
         return None
 
     def put(self, provider: str, key: str, value: Any) -> None:
@@ -87,6 +95,7 @@ class AcquisitionCache:
         tmp = path.with_name(path.name + f".{uuid4().hex}.tmp")
         tmp.write_text(encoded)
         tmp.replace(path)
+        self._count(provider, "writes")
 
 
 class FetchMemo:

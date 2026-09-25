@@ -1,4 +1,5 @@
-"""The `research` command: run Scout, show a stored run, check the setup, and manage the database."""
+"""The `research` command: run Scout, show, break down, or grade a stored run, check the setup, and manage
+the database."""
 from __future__ import annotations
 
 import argparse
@@ -6,6 +7,7 @@ import asyncio
 import json
 import sys
 from contextlib import AsyncExitStack
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -31,9 +33,11 @@ def _record_from_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _scout(args: argparse.Namespace, settings: Settings) -> int:
+    import faulthandler
+
     from .db import open_migrated_pool
     from .render import render_markdown
-    from .scout import ConfigError, check_config, scout
+    from .scout import ConfigError, StudyLabels, check_config, scout
     from .store import MemoryStore, PostgresStore
     from .telemetry import configure_logfire
 
@@ -42,16 +46,23 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     except ConfigError as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
+    # A native parser fault otherwise leaves only exit 139 and unfinished scout rows.
+    faulthandler.enable(file=sys.stderr, all_threads=True)
     configure_logfire(settings)
     limits, models = settings.limits, settings.models
-    print(f"Scout: up to ${limits.cost_usd:.2f} and {limits.deadline_seconds / 60:.0f} minutes; planner {models.planner}, "
+    cost = limits.followup_cost_usd if args.follow_up else limits.cost_usd
+    seconds = limits.followup_deadline_seconds if args.follow_up else limits.deadline_seconds
+    mode = "Scout with gap analysis and one deep dive" if args.follow_up else "Scout"
+    print(f"{mode}: up to ${cost:.2f} and {seconds / 60:.0f} minutes; planner {models.planner}, "
           f"scouts {models.scout}, synthesizer {models.synthesizer}.", file=sys.stderr)
     async with AsyncExitStack() as stack:
         if settings.database_dsn and not args.no_persist:
             store: Any = PostgresStore(await open_migrated_pool(stack, settings.database_dsn))
         else:
             store = MemoryStore()
-        run = await scout(args.question, settings=settings, store=store, notes=args.note, blocked_urls=args.block)
+        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
+        run = await scout(args.question, settings=settings, store=store, notes=args.note, blocked_urls=args.block,
+                          study=study, follow_up=args.follow_up)
     record = run.to_record()
     markdown = render_markdown(record)
     print(markdown)
@@ -63,6 +74,49 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     stored = "stored" if isinstance(store, PostgresStore) else "not stored (no DATABASE_URL, or --no-persist)"
     print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.2f}, {run.seconds / 60:.1f} minutes, {stored}.",
           file=sys.stderr)
+    return 1 if run.status == "failed" else 0
+
+
+async def _synthesize(args: argparse.Namespace, settings: Settings) -> int:
+    from .db import open_migrated_pool
+    from .render import render_markdown
+    from .scout import ConfigError, StudyLabels, check_config, synthesize_stored
+    from .store import PostgresStore, load_run
+    from .study_budget import StudyBudget
+    from .telemetry import configure_logfire
+
+    settings = settings.model_copy(update={"models": settings.models.model_copy(
+        update={"synthesizer": args.model})})
+    try:
+        check_config(settings)
+    except ConfigError as exc:
+        print(f"Cannot run: {exc}", file=sys.stderr)
+        return 2
+    configure_logfire(settings)
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        source = await load_run(pool, args.source_run_id)
+        if source is None:
+            print(f"No source run {args.source_run_id}", file=sys.stderr)
+            return 1
+        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
+        budget = StudyBudget(args.max_usd)
+        print(f"Fixed-ledger synthesis: {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap; "
+              f"this is a paid run.", file=sys.stderr)
+        try:
+            run = await synthesize_stored(source, settings=settings, store=PostgresStore(pool), study=study,
+                                          budget=budget)
+        except ValueError as exc:
+            print(f"Cannot synthesize: {exc}", file=sys.stderr)
+            return 2
+    record = run.to_record()
+    markdown = render_markdown(record)
+    print(markdown)
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "report.md").write_text(markdown, encoding="utf-8")
+        (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}; source {args.source_run_id}.", file=sys.stderr)
     return 1 if run.status == "failed" else 0
 
 
@@ -78,6 +132,117 @@ async def _show(args: argparse.Namespace, settings: Settings) -> int:
         return 1
     record = _record_from_row(row)
     print(json.dumps(record, indent=2, ensure_ascii=False, default=str) if args.format == "json" else render_markdown(record))
+    return 0
+
+
+async def _breakdown(args: argparse.Namespace, settings: Settings) -> int:
+    from .breakdown import breakdown
+    from .db import open_migrated_pool
+    from .store import load_calls, load_run
+
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        row = await load_run(pool, args.run_id)
+        calls = await load_calls(pool, args.run_id) if row else []
+    if row is None:
+        print(f"No run {args.run_id}", file=sys.stderr)
+        return 1
+    print(breakdown(row, calls), end="")
+    return 0
+
+
+async def _grade(args: argparse.Namespace, settings: Settings) -> int:
+    from .db import open_migrated_pool
+    from .evals import (
+        JUDGE_MODEL,
+        JUDGE_VERSION,
+        StoredReport,
+        find_case,
+        grade_reports,
+        grade_row,
+        reader_text,
+    )
+    from .evidence import EvidenceLedger
+    from .schemas import FinalReport
+    from .store import load_run, save_grade
+
+    try:
+        case = find_case(args.case)
+    except KeyError as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
+    if not case.rubrics:
+        print(f"{case.id} is scored by exact answer, not a rubric; only rubric grading is ported so far.", file=sys.stderr)
+        return 2
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        row = await load_run(pool, args.run_id)
+        if row is None or not row.get("report"):
+            print(f"Run {args.run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
+            return 1
+        text = reader_text(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}))
+        print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {JUDGE_MODEL}, "
+              f"judge v{JUDGE_VERSION}; this is a paid call.", file=sys.stderr)
+        _, grades = await grade_reports([StoredReport(case, args.run_id, text)], settings)
+        for grade in grades:
+            await save_grade(pool, grade_row(grade))
+    for grade in grades:
+        cost = f"${grade.cost_usd:.4f}" if grade.cost_usd is not None else "unpriced"
+        if grade.status != "succeeded":
+            print(f"Grade failed ({type(grade.error).__name__}), {cost}; recorded as {grade.id}.", file=sys.stderr)
+            return 1
+        met = sum(p["met"] for p in grade.points)
+        print(f"{case.id}: {met} of {len(grade.points)} points ({grade.score:.3f}), {cost}. "
+              f"Unmet: {', '.join(grade.unmet()) or 'none'}. Recorded as {grade.id}.")
+    return 0
+
+
+async def _assess(args: argparse.Namespace, settings: Settings) -> int:
+    from .db import open_migrated_pool
+    from .evidence import EvidenceLedger
+    from .quality import (
+        QUALITY_MODEL,
+        QUALITY_VERSION,
+        StoredQualityReport,
+        assess_reports,
+        find_quality_packet,
+        quality_row,
+    )
+    from .schemas import FinalReport
+    from .store import load_run, save_quality_assessment
+    from .study_budget import StudyBudget
+
+    try:
+        packet = find_quality_packet(args.case)
+    except KeyError as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        row = await load_run(pool, args.run_id)
+        if row is None or not row.get("report"):
+            print(f"Run {args.run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
+            return 1
+        if row["question"] != packet.question:
+            print(f"Run question does not match frozen packet {packet.case_id} v{packet.version}.", file=sys.stderr)
+            return 2
+        item = StoredQualityReport(args.run_id, FinalReport.model_validate(row["report"]),
+                                   EvidenceLedger.from_json(row["ledger"] or {}), packet, row["checks"] or {})
+        budget = StudyBudget(args.max_usd)
+        print(f"Assessing {args.run_id} with {QUALITY_MODEL}, evaluator v{QUALITY_VERSION}, "
+              f"packet {packet.case_id} v{packet.version}, ${budget.cap_usd:.2f} pre-dispatch cap; "
+              f"this is a paid call.", file=sys.stderr)
+        _, records = await assess_reports([item], settings, budget=budget)
+        for record in records:
+            await save_quality_assessment(pool, quality_row(record))
+    record = records[0]
+    cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "unpriced"
+    if record.judgment is None:
+        print(f"Assessment failed ({type(record.error).__name__}), {cost}; recorded as {record.id}.", file=sys.stderr)
+        return 1
+    facts = {finding: sum(check.finding == finding for check in record.judgment.fact_checks)
+             for finding in ("correct", "incorrect", "omitted", "unresolved")}
+    print(f"Overall {record.judgment.overall_level}/3; facts {facts}; {cost}. Recorded as {record.id}.")
     return 0
 
 
@@ -115,12 +280,38 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--note", action="append", default=[], help="A requirement every role follows; repeat for more")
     run.add_argument("--block", action="append", default=[], metavar="URL",
                      help="A source no tool may fetch and no evidence may cite; repeat for more")
+    run.add_argument("--follow-up", action="store_true",
+                     help="Analyze material gaps and research at most one before synthesis (paid)")
     run.add_argument("--out", type=Path, help="Also write report.md and run.json here")
     run.add_argument("--no-persist", action="store_true", help="Keep the run in memory even when DATABASE_URL is set")
+    run.add_argument("--study", help="Record the run as part of this study")
+    run.add_argument("--arm", default="default", help="--study: the arm this run belongs to")
+    run.add_argument("--replicate", type=int, default=1, help="--study: which repetition of the arm this is")
+
+    synth = commands.add_parser("synthesize", help="Synthesize a stored Scout ledger with a chosen model (paid)")
+    synth.add_argument("source_run_id", type=UUID)
+    synth.add_argument("--model", required=True, help="Synthesizer provider:model")
+    synth.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this command")
+    synth.add_argument("--out", type=Path, help="Also write report.md and run.json here")
+    synth.add_argument("--study", help="Record this as part of a study")
+    synth.add_argument("--arm", default="default")
+    synth.add_argument("--replicate", type=int, default=1)
 
     show = commands.add_parser("show", help="Render a stored run")
     show.add_argument("run_id", type=UUID)
     show.add_argument("--format", choices=("md", "json"), default="md")
+
+    split = commands.add_parser("breakdown", help="Show where a stored run's money and time went, call by call")
+    split.add_argument("run_id", type=UUID)
+
+    grade = commands.add_parser("grade", help="Grade a stored run's report against a study case's rubric (paid)")
+    grade.add_argument("run_id", type=UUID)
+    grade.add_argument("--case", required=True, help="The study case, such as st05 or st07-swebench-trust")
+
+    assess = commands.add_parser("assess", help="Assess a stored report's quality and facts against a source packet (paid)")
+    assess.add_argument("run_id", type=UUID)
+    assess.add_argument("--case", required=True, help="The source packet, such as st04 or st07")
+    assess.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
     doctor = commands.add_parser("doctor", help="Check keys, prices, the database, and the network")
     doctor.add_argument("--smoke", action="store_true", help="Also make one small paid call per configured model")
@@ -133,7 +324,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     settings = _settings(parser)
-    if args.command in ("show", "db") and not settings.database_dsn:
+    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "db") and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
@@ -142,6 +333,14 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_scout(args, settings))
         elif args.command == "show":
             code = asyncio.run(_show(args, settings))
+        elif args.command == "synthesize":
+            code = asyncio.run(_synthesize(args, settings))
+        elif args.command == "breakdown":
+            code = asyncio.run(_breakdown(args, settings))
+        elif args.command == "grade":
+            code = asyncio.run(_grade(args, settings))
+        elif args.command == "assess":
+            code = asyncio.run(_assess(args, settings))
         elif args.command == "doctor":
             from .doctor import run_doctor
             code = asyncio.run(run_doctor(settings, smoke=args.smoke))

@@ -21,6 +21,7 @@ benchmark_outputs/
 /transcripts*.json
 /analysis*.txt
 report/
+/runs/
 .cache/
 *.log
 

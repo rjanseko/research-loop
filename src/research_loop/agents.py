@@ -1,4 +1,4 @@
-"""The three Scout agents and the checks their outputs must pass.
+"""Scout agents and the checks their outputs must pass.
 
 An output that fails a check gets one retry that names the problem; a second failure ends the call
 (UnexpectedModelBehavior). Models are chosen per run (models.py), not here.
@@ -13,7 +13,13 @@ from pydantic_ai import Agent, ModelRetry, RunContext
 from .acquisition import SourcePolicy
 from .evidence import inline_source_ids, strip_inline_citations
 from .prompts import INSTRUCTIONS
-from .schemas import FinalReport, ResearchPlan, ResearchQuestion, ResearchResult
+from .schemas import (
+    FinalReport,
+    GapAnalysis,
+    ResearchPlan,
+    ResearchQuestion,
+    ResearchResult,
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,13 @@ class Assignment:
 
 
 @dataclass(frozen=True)
+class GapRefs:
+    """The planned question IDs a gap may refer to."""
+
+    question_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
 class LedgerRefs:
     """What the synthesizer may cite: ledger claim IDs, and the source IDs behind each claim."""
 
@@ -39,6 +52,7 @@ class LedgerRefs:
 
 planner_agent = Agent(output_type=ResearchPlan, deps_type=PlanLimits, instructions=INSTRUCTIONS["planner"])
 scout_agent = Agent(output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"])
+gap_agent = Agent(output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
 synthesizer_agent = Agent(output_type=FinalReport, deps_type=LedgerRefs, instructions=INSTRUCTIONS["synthesizer"])
 
 
@@ -59,6 +73,14 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
         problems.append(f"The plan has {len(ids)} questions; return at most {ctx.deps.max_questions}, "
                         "merging overlapping ones.")
     _retry_on(problems)
+    return output
+
+
+@gap_agent.output_validator
+def _gaps_name_plan_questions(ctx: RunContext[GapRefs], output: GapAnalysis) -> GapAnalysis:
+    unknown = sorted({gap.question_id for gap in output.gaps} - ctx.deps.question_ids)
+    if unknown:
+        _retry_on([f"Unknown question IDs: {', '.join(unknown)}. Use an ID in the supplied plan."])
     return output
 
 

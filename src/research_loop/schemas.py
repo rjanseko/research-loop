@@ -103,6 +103,20 @@ class ResearchPlan(BaseModel):
     questions: list[ResearchQuestion]
 
 
+class MaterialGap(BaseModel):
+    """One missing piece of evidence that could change the answer."""
+
+    question_id: str = Field(description="ID of an existing planned research question")
+    follow_up_question: str = Field(description="One precise question for a researcher to investigate")
+    reason: str = Field(description="How resolving this gap could change the answer")
+
+
+class GapAnalysis(BaseModel):
+    """At most one decisive follow-up; an empty list means synthesize what is known."""
+
+    gaps: list[MaterialGap] = Field(default_factory=list, max_length=1)
+
+
 class UnreachedSource(BaseModel):
     """A fetch or lookup that returned nothing usable, and why."""
 

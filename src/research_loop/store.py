@@ -86,19 +86,21 @@ def transcript(messages: list[ModelMessage]) -> list[Any]:
 
 class RunStore(Protocol):
     async def start_run(self, run_id: UUID, *, mode: str, workflow_version: str, question: str,
-                        config: dict[str, Any], parent_run_id: UUID | None = None) -> None: ...
+                        config: dict[str, Any], parent_run_id: UUID | None = None, input_hash: str | None = None,
+                        study_id: str | None = None, arm: str | None = None, replicate: int | None = None) -> None: ...
 
     async def finish_run(self, run_id: UUID, **fields: Any) -> None:
-        """Set any of: status, plan, report, ledger, checks, cost_usd, usage, error, trace_id."""
+        """Set any of: status, plan, report, ledger, checks, cost_usd, usage, error, cache, trace_id."""
 
     async def start_call(self, run_id: UUID, *, role: str, model: str, question_id: str | None = None) -> UUID: ...
 
     async def finish_call(self, call_id: UUID, *, status: str, usage: RunUsage | None = None,
                           cost_usd: Decimal | None = None, output: Any = None,
-                          messages: list[ModelMessage] | None = None, error: BaseException | None = None) -> None: ...
+                          messages: list[ModelMessage] | None = None, error: BaseException | None = None,
+                          stop_reason: str | None = None, tool_seconds: float | None = None) -> None: ...
 
 
-_RUN_FIELDS = ("status", "plan", "report", "ledger", "checks", "cost_usd", "usage", "error", "trace_id")
+_RUN_FIELDS = ("status", "plan", "report", "ledger", "checks", "cost_usd", "usage", "error", "cache", "trace_id")
 
 
 @dataclass
@@ -109,10 +111,12 @@ class MemoryStore:
     calls: dict[UUID, dict[str, Any]] = field(default_factory=dict)
 
     async def start_run(self, run_id: UUID, *, mode: str, workflow_version: str, question: str,
-                        config: dict[str, Any], parent_run_id: UUID | None = None) -> None:
+                        config: dict[str, Any], parent_run_id: UUID | None = None, input_hash: str | None = None,
+                        study_id: str | None = None, arm: str | None = None, replicate: int | None = None) -> None:
         self.runs[run_id] = {"id": run_id, "parent_run_id": parent_run_id, "mode": mode,
                              "workflow_version": workflow_version, "question": question, "status": "running",
-                             "config": jsonable(config), "started_at": datetime.now(UTC)}
+                             "config": jsonable(config), "input_hash": input_hash, "study_id": study_id, "arm": arm,
+                             "replicate": replicate, "started_at": datetime.now(UTC)}
 
     async def finish_run(self, run_id: UUID, **fields: Any) -> None:
         unknown = set(fields) - set(_RUN_FIELDS)
@@ -129,12 +133,14 @@ class MemoryStore:
 
     async def finish_call(self, call_id: UUID, *, status: str, usage: RunUsage | None = None,
                           cost_usd: Decimal | None = None, output: Any = None,
-                          messages: list[ModelMessage] | None = None, error: BaseException | None = None) -> None:
+                          messages: list[ModelMessage] | None = None, error: BaseException | None = None,
+                          stop_reason: str | None = None, tool_seconds: float | None = None) -> None:
         self.calls[call_id].update(
             status=status, usage=usage_record(usage) if usage else None,
             cost_usd=float(cost_usd) if cost_usd is not None else None, output=jsonable(output),
             messages=transcript(messages) if messages else None,
-            error=error_record(error) if error else None, finished_at=datetime.now(UTC))
+            error=error_record(error) if error else None, stop_reason=stop_reason,
+            tool_seconds=tool_seconds, finished_at=datetime.now(UTC))
 
 
 def _json(value: Any) -> Any:
@@ -150,12 +156,15 @@ class PostgresStore:
         self.pool = pool
 
     async def start_run(self, run_id: UUID, *, mode: str, workflow_version: str, question: str,
-                        config: dict[str, Any], parent_run_id: UUID | None = None) -> None:
+                        config: dict[str, Any], parent_run_id: UUID | None = None, input_hash: str | None = None,
+                        study_id: str | None = None, arm: str | None = None, replicate: int | None = None) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(
-                """insert into runs (id, parent_run_id, mode, workflow_version, question, status, config)
-                   values (%s, %s, %s, %s, %s, 'running', %s)""",
-                (run_id, parent_run_id, mode, workflow_version, without_nul(question), _json(config)),
+                """insert into runs (id, parent_run_id, mode, workflow_version, question, status, config,
+                                     input_hash, study_id, arm, replicate)
+                   values (%s, %s, %s, %s, %s, 'running', %s, %s, %s, %s, %s)""",
+                (run_id, parent_run_id, mode, workflow_version, without_nul(question), _json(config),
+                 input_hash, study_id, arm, replicate),
             )
 
     async def finish_run(self, run_id: UUID, **fields: Any) -> None:
@@ -180,14 +189,15 @@ class PostgresStore:
 
     async def finish_call(self, call_id: UUID, *, status: str, usage: RunUsage | None = None,
                           cost_usd: Decimal | None = None, output: Any = None,
-                          messages: list[ModelMessage] | None = None, error: BaseException | None = None) -> None:
+                          messages: list[ModelMessage] | None = None, error: BaseException | None = None,
+                          stop_reason: str | None = None, tool_seconds: float | None = None) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(
                 """update run_calls set status = %s, usage = %s, cost_usd = %s, output = %s, messages = %s,
-                          error = %s, finished_at = now() where id = %s""",
+                          error = %s, stop_reason = %s, tool_seconds = %s, finished_at = now() where id = %s""",
                 (status, _json(usage_record(usage)) if usage else None, cost_usd, _json(output),
                  _json(transcript(messages)) if messages else None, _json(error_record(error)) if error else None,
-                 call_id),
+                 stop_reason, tool_seconds, call_id),
             )
 
 
@@ -198,3 +208,42 @@ async def load_run(pool: Any, run_id: UUID) -> dict[str, Any] | None:
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
         await cursor.execute("select * from runs where id = %s", (run_id,))
         return await cursor.fetchone()
+
+
+async def load_calls(pool: Any, run_id: UUID) -> list[dict[str, Any]]:
+    """A stored run's call rows in the order they started, without their messages."""
+    from psycopg.rows import dict_row
+
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+        await cursor.execute(
+            """select id, role, question_id, model, status, usage, cost_usd, error, stop_reason, tool_seconds,
+                      started_at, finished_at
+               from run_calls where run_id = %s order by started_at""", (run_id,))
+        return await cursor.fetchall()
+
+
+_GRADE_COLUMNS = ("id", "run_id", "case_id", "judge_model", "judge_thinking", "judge_version", "rubric_version",
+                  "status", "score", "points", "usage", "cost_usd", "messages", "error")
+_GRADE_JSON = frozenset({"points", "usage", "messages", "error"})
+
+
+async def save_grade(pool: Any, row: dict[str, Any]) -> None:
+    """Insert one `grades` row, as evals.grade_row builds it."""
+    values = [_json(row[name]) if name in _GRADE_JSON else row[name] for name in _GRADE_COLUMNS]
+    async with pool.connection() as conn:
+        await conn.execute(f"insert into grades ({', '.join(_GRADE_COLUMNS)}) "
+                           f"values ({', '.join(['%s'] * len(_GRADE_COLUMNS))})", values)
+
+
+_QUALITY_COLUMNS = ("id", "run_id", "case_id", "packet_version", "packet_sha256", "evaluator_version",
+                    "judge_model", "judge_thinking", "status", "judgment", "usage", "cost_usd", "messages", "error", "budget_cap_usd",
+                    "reserved_usd", "budget_policy")
+_QUALITY_JSON = frozenset({"judgment", "usage", "messages", "error"})
+
+
+async def save_quality_assessment(pool: Any, row: dict[str, Any]) -> None:
+    """Insert one versioned quality assessment, including a failed judge call."""
+    values = [_json(row[name]) if name in _QUALITY_JSON else row[name] for name in _QUALITY_COLUMNS]
+    async with pool.connection() as conn:
+        await conn.execute(f"insert into quality_assessments ({', '.join(_QUALITY_COLUMNS)}) "
+                           f"values ({', '.join(['%s'] * len(_QUALITY_COLUMNS))})", values)

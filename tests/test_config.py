@@ -9,7 +9,7 @@ from research_loop.config import ScoutLimits, Settings
 def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
     settings = Settings()
     assert (settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback) == (
-        "openai:gpt-6-sol", "zai:glm-5.3-flash", "anthropic:claude-opus-5-5", "openai:gpt-6-sol")
+        "openai:gpt-6-sol", "openai:gpt-6-luna", "anthropic:claude-opus-5-5", "openai:gpt-6-sol")
     limits = settings.limits
     assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 360, 4)
     assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (12, 16, 12)
@@ -64,6 +64,9 @@ def test_limits_must_leave_time_to_synthesize() -> None:
 def test_route_problems_name_missing_keys_and_disabled_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert Settings().route_problems() == []
+
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "zai:glm-5.3-flash")
     assert Settings().route_problems() == ["scout: zai:glm-5.3-flash needs ZAI_API_KEY"]
 
     monkeypatch.setenv("ZAI_API_KEY", "k")

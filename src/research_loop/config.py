@@ -2,7 +2,7 @@
 
 Values come from, highest first: arguments passed to `Settings(...)`, environment variables, `.env`
 in the working directory, then the defaults below. Research Loop's own variables start with
-`RESEARCH_`; nested ones use a double underscore, such as `RESEARCH_MODELS__SCOUT=zai:glm-5.3-flash`
+`RESEARCH_`; nested ones use a double underscore, such as `RESEARCH_MODELS__SCOUT=openai:gpt-6-luna`
 or `RESEARCH_LIMITS__COST_USD=1.5`. Provider keys, `DATABASE_URL`, and `LOGFIRE_TOKEN` keep their
 usual names. Keys are read into `SecretStr` values and handed to each provider directly; the
 process environment is never modified.
@@ -10,7 +10,7 @@ process environment is never modified.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
@@ -49,15 +49,18 @@ def _model_id(value: str) -> str:
 class ScoutModels(BaseModel):
     """The model each Scout role runs on. Workflow and model choice stay separate: change these freely.
 
-    The defaults are the settings study's lineup (docs/lessons.md). `fallback` takes a planner or
-    synthesizer call when its model refuses it or its provider fails; Opus 5.5 refused to plan one
-    ordinary research question as a biological risk.
+    The planner, synthesizer, and fallback are the settings study's lineup (docs/lessons.md). The
+    scout is `gpt-6-luna`: on the screened cases it finished inside the deadline, and Flash at max did
+    not. `fallback` takes a planner or synthesizer call when its model refuses it or its provider fails;
+    Opus 5.5 refused to plan one ordinary research question as a biological risk.
     """
 
     planner: str = "openai:gpt-6-sol"
-    scout: str = "zai:glm-5.3-flash"
+    scout: str = "openai:gpt-6-luna"
     synthesizer: str = "anthropic:claude-opus-5-5"
     fallback: str | None = "openai:gpt-6-sol"
+    # None keeps effort_for's default, which is xhigh for every GLM scout.
+    scout_effort: Literal["low", "medium", "high", "xhigh"] | None = None
 
     @field_validator("planner", "scout", "synthesizer", "fallback")
     @classmethod
@@ -72,6 +75,16 @@ class ScoutLimits(BaseModel):
     planner_usd: float = Field(0.05, gt=0)
     # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25; this leaves room for one validation retry.
     synthesis_usd: float = Field(0.40, gt=0)
+    # Opt-in gap analysis and one targeted follow-up use a separate envelope, keeping scout-v1 unchanged.
+    followup_cost_usd: float = Field(1.25, gt=0)
+    gap_usd: float = Field(0.10, gt=0)
+    deep_dive_usd: float = Field(0.25, gt=0)
+    followup_deadline_seconds: float = Field(600, gt=0)
+    gap_seconds: float = Field(45, gt=0)
+    deep_dive_seconds: float = Field(180, gt=0)
+    deep_dive_requests: int = Field(8, ge=2)
+    deep_dive_productive_calls: int = Field(10, ge=1)
+    deep_dive_misses: int = Field(6, ge=1)
     max_questions: int = Field(4, ge=1, le=8)
     parallel_scouts: int = Field(4, ge=1)
     # The settings study's scout budget: requests, productive calls, and misses (budget_notes.py).
@@ -91,7 +104,15 @@ class ScoutLimits(BaseModel):
             raise ValueError("planner_usd + synthesis_usd must leave part of cost_usd for scouts")
         if self.research_seconds >= self.deadline_seconds:
             raise ValueError("research_seconds must end before deadline_seconds")
+        if self.planner_usd + self.synthesis_usd + self.gap_usd + self.deep_dive_usd >= self.followup_cost_usd:
+            raise ValueError("followup_cost_usd must leave part of the budget for initial scouts")
+        if self.research_seconds + self.gap_seconds + self.deep_dive_seconds + 90 > self.followup_deadline_seconds:
+            raise ValueError("followup_deadline_seconds must reserve 90 seconds for synthesis")
         return self
+
+    def followup_scout_usd(self, questions: int) -> float:
+        return round((self.followup_cost_usd - self.planner_usd - self.synthesis_usd
+                      - self.gap_usd - self.deep_dive_usd) / max(questions, 1), 4)
 
     def scout_usd(self, questions: int) -> float:
         """Each scout's share when `questions` scouts run."""

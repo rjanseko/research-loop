@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from research_loop.budget_notes import (
+    DEADLINE_NOTE,
     LAST_REQUEST_NOTE,
     NOTE_PREFIX,
     LoopBudget,
@@ -102,3 +103,51 @@ def test_a_miss_is_an_empty_search_or_a_failed_call_and_other_tools_are_not_coun
     assert "one or two broader searches" in budget.note(1, spent)
     assert "Last batch" not in budget.note(1, tool_yield([]))
     assert "No productive tool calls are left" in budget.note(1, replace(spent, productive=16))
+
+
+async def test_a_close_deadline_withdraws_tools_while_budget_remains() -> None:
+    remaining = 1_000.0
+
+    def time_left() -> float:
+        return remaining
+
+    budget = LoopBudget(max_requests=10, max_productive=16, max_misses=12, time_left=time_left, return_within=120)
+    notes: list[list[str]] = []
+    offered: list[list[str]] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal remaining
+        notes.append(_notes(messages))
+        offered.append(sorted(tool.name for tool in info.function_tools))
+        if info.function_tools:
+            remaining = 30
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": "https://a.test/1"})])
+        return ModelResponse(parts=[TextPart("result")])
+
+    result = await _agent().run("research", model=FunctionModel(respond), capabilities=budget.capabilities(),
+                                usage_limits=UsageLimits(request_limit=budget.max_requests, tool_calls_limit=100))
+    assert result.output == "result"
+    assert "10 of 10 model requests left" in notes[0][-1]
+    assert notes[1][-1] == DEADLINE_NOTE
+    assert offered == [["fetch"], []]
+    assert budget.finish_reason(result.usage.requests, result.all_messages()) == \
+        "returned because the research deadline was close"
+
+
+async def test_a_returned_loop_says_which_budget_it_spent() -> None:
+    async def finish(budget: LoopBudget, urls: list[str]) -> str:
+        def respond(messages, info: AgentInfo) -> ModelResponse:
+            if info.function_tools and urls:
+                return ModelResponse(parts=[ToolCallPart("fetch", {"url": url}) for url in urls])
+            return ModelResponse(parts=[TextPart("result")])
+
+        result = await _agent().run("research", model=FunctionModel(respond), capabilities=budget.capabilities(),
+                                    usage_limits=UsageLimits(request_limit=budget.max_requests, tool_calls_limit=100))
+        return budget.finish_reason(result.usage.requests, result.all_messages())
+
+    assert await finish(LoopBudget(10, 2, 12), ["https://a.test/1", "https://a.test/2"]) == \
+        "returned after its productive calls were spent"
+    assert await finish(LoopBudget(10, 16, 3), ["https://a.test/missing-1", "https://a.test/missing-2"]) == \
+        "returned after its misses were spent"
+    assert await finish(LoopBudget(3, 16, 12), ["https://a.test/1"]) == "returned on its last request"
+    assert await finish(LoopBudget(10, 16, 12), []) == "returned on its own"

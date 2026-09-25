@@ -9,11 +9,12 @@ that could not be reached. The tools only read public sources; none has a side e
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic_ai import FunctionToolset
+from pydantic_ai import FunctionToolset, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -21,6 +22,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
 from .evidence import ToolText, identity_keys
 from .schemas import UnreachedSource
@@ -71,6 +73,35 @@ def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarC
         return {"works": [_work(w) for w in response.works], "provider_errors": response.provider_errors}
 
     return FunctionToolset(tools=[web_search, fetch, scholar_search, scholar_get])
+
+
+@dataclass
+class TimedToolset(WrapperToolset[Any]):
+    """The research tools, timing each call by the question its scout researches.
+
+    A scout's tool time is the union of its calls' intervals, so a parallel batch counts once; the rest of
+    its call's time is model time. Every copy PydanticAI makes for a run shares one set of intervals.
+    """
+
+    intervals: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+
+    async def call_tool(self, name: str, tool_args: dict[str, Any], ctx: RunContext[Any],
+                        tool: ToolsetTool[Any]) -> Any:
+        started = time.monotonic()
+        try:
+            return await self.wrapped.call_tool(name, tool_args, ctx, tool)
+        finally:
+            question = getattr(ctx.deps, "question", None)
+            self.intervals.setdefault(getattr(question, "id", ""), []).append((started, time.monotonic()))
+
+    def seconds(self, question_id: str) -> float:
+        """Wall-clock seconds the tools of `question_id`'s scout ran, overlaps counted once."""
+        total, end = 0.0, float("-inf")
+        for start, stop in sorted(self.intervals.get(question_id, [])):
+            if stop > end:
+                total += stop - max(start, end)
+                end = stop
+        return total
 
 
 def _data(content: Any) -> Any:
