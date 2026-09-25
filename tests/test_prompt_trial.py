@@ -50,7 +50,8 @@ def test_each_case_is_planned_with_both_prompts() -> None:
     cases = [SimpleNamespace(case_id=f"case{i}", blocked_urls=[], benchmark_id=None,
                              render_objective=lambda: "objective") for i in range(2)]
     with planner_agent.override(model=FunctionModel(respond)):
-        rows = asyncio.run(prompt_trial.trial_plans(loop, cases, prompt_trial.CANDIDATES["planner"]))
+        rows = asyncio.run(prompt_trial.trial_plans(loop, prompt_trial.TrialBudget(1.0), cases,
+                                                    prompt_trial.CANDIDATES["planner"]))
 
     assert sorted((row["case_id"], row["variant"], len(row["questions"])) for row in rows) == [
         ("case0", "candidate", 3), ("case0", "current", 1), ("case1", "candidate", 3), ("case1", "current", 1)]
@@ -66,7 +67,7 @@ def test_synthesis_rows_count_the_verifiers_findings() -> None:
     counts = prompt_trial._counts(verification, report)
     assert counts == {"statements": 2, "checked": 2, "unsupported": 1, "major": 1, "follow_ups": 0}
     row = {"job_id": "3bccbe6d-x", "variant": "candidate", "synthesis_usd": 0.5, "verification_usd": 0.2,
-           "error": None, **counts}
+           "synthesis_requests": 1, "error": None, **counts}
     table = prompt_trial.render_synthesis([row], {"3bccbe6d-x": counts})
     assert "candidate" in table and "stored" in table
 
@@ -83,7 +84,42 @@ def test_a_failed_unit_is_recorded_and_the_others_finish() -> None:
     cases = [SimpleNamespace(case_id=case_id, blocked_urls=[], benchmark_id=None, render_objective=lambda o=objective: o)
              for case_id, objective in (("ok", "fine"), ("bad", "refuse me"))]
     with planner_agent.override(model=FunctionModel(respond)):
-        rows = asyncio.run(prompt_trial.trial_plans(loop, cases, prompt_trial.CANDIDATES["planner"]))
+        rows = asyncio.run(prompt_trial.trial_plans(loop, prompt_trial.TrialBudget(1.0), cases,
+                                                    prompt_trial.CANDIDATES["planner"]))
     assert sorted((row["case_id"], row["error"], len(row["questions"])) for row in rows) == [
         ("bad", "RuntimeError", 0), ("bad", "RuntimeError", 0), ("ok", None, 1), ("ok", None, 1)]
     assert "RuntimeError" in prompt_trial.render_plans(rows)
+
+
+def test_no_unit_starts_once_the_cap_is_spent() -> None:
+    calls: list[int] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        calls.append(1)
+        plan = {"objective": "o", "questions": [{"id": "Q1", "question": "q", "priority": 3}]}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, plan)])
+
+    route = ModelRoute("test", 2, 0, 100_000)
+    loop = prompt_trial._loop(ModelPolicy("p", {role: route for role in ResearchRole}), ResearchSettings.from_env({}))
+    cases = [SimpleNamespace(case_id=f"case{i}", blocked_urls=[], benchmark_id=None, render_objective=lambda: "o")
+             for i in range(3)]
+    budget = prompt_trial.TrialBudget(0.01, concurrency=1)
+    budget.spent = 0.01  # as if earlier units had spent the cap
+    with planner_agent.override(model=FunctionModel(respond)):
+        rows = asyncio.run(prompt_trial.trial_plans(loop, budget, cases, prompt_trial.CANDIDATES["planner"]))
+    assert not calls
+    assert {row["error"] for row in rows} == {prompt_trial.CAP_REACHED}
+
+
+def test_a_unit_records_its_requests() -> None:
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        plan = {"objective": "o", "questions": [{"id": "Q1", "question": "q", "priority": 3}]}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, plan)])
+
+    route = ModelRoute("test", 2, 0, 100_000)
+    loop = prompt_trial._loop(ModelPolicy("p", {role: route for role in ResearchRole}), ResearchSettings.from_env({}))
+    cases = [SimpleNamespace(case_id="c", blocked_urls=[], benchmark_id=None, render_objective=lambda: "o")]
+    with planner_agent.override(model=FunctionModel(respond)):
+        rows = asyncio.run(prompt_trial.trial_plans(loop, prompt_trial.TrialBudget(1.0), cases,
+                                                    prompt_trial.CANDIDATES["planner"]))
+    assert [row["requests"] for row in rows] == [1, 1]
