@@ -19,6 +19,26 @@ settings_study = importlib.util.module_from_spec(_SPEC)
 sys.modules["settings_study"] = settings_study
 _SPEC.loader.exec_module(settings_study)
 
+# The suite's DRB-II tasks, by their position among the English tasks (examples/settings_study.toml).
+_DRB2_PICKS = {1: "task2+", 7: "task8", 20: "task17+", 31: "task26"}
+
+
+@pytest.fixture(autouse=True)
+def drb2_offline(tmp_path, monkeypatch):
+    """A stand-in for DRB-II's tasks file in the benchmark cache, so loading the suite never downloads it."""
+    rows = []
+    for position in range(32):
+        task_id = _DRB2_PICKS.get(position, f"filler{position}")
+        rows.append({"id": task_id, "idx": position, "language": "en", "prompt": f"Research task {task_id}",
+                     "content": {"rubric": {"info_recall": [f"{task_id} point"]},
+                                 "blocked": {"urls": [f"https://example.org/{task_id}"]}}})
+        rows.append({"id": f"zh{position}", "idx": 100 + position, "language": "zh", "prompt": "x",
+                     "content": {"rubric": {}}})
+    cache = tmp_path / "benchmark-cache"
+    cache.mkdir()
+    (cache / "drb2_tasks_and_rubrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    monkeypatch.setenv("RESEARCH_BENCHMARK_CACHE", str(cache))
+
 
 def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar_caps() -> None:
     preset = settings_study.get_policy("value")
