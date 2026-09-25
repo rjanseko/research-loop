@@ -279,6 +279,7 @@ def build_research_graph():
             not bundle.verification.needs_research
             or not bundle.verification.followups
             or ctx.state.verification_round >= ctx.state.max_verification_rounds
+            or not ctx.deps.loop._start_followup_round(ctx.deps.job_id)
         ):
             return VerificationComplete(bundle.report, bundle.verification)
         return VerificationResearchNeeded(bundle.verification.followups, parent_task_id=bundle.task_id)

@@ -113,12 +113,14 @@ Initial deep dives come from the gap analyst's gaps plus a `low_confidence` gap 
 initial verification
        ├── no research needed, or no follow-ups ──► finish
        └── research requested
-                │  if rounds remain
+                │  if rounds remain, and the job's budget covers one
                 ▼
           follow-up deep dives ──► synthesize ──► verify
 ```
 
 `max_verification_rounds` bounds the research-and-resynthesis rounds after the first verification; `0` disables them. When the limit is reached, the run finishes with the last verification, including its unresolved findings.
+
+Under a job cap (`job_cost_limit`), a round runs only if the job can pay for it. Its synthesis and verification are budgeted at twice what the job's latest synthesis and verification cost (`FOLLOWUP_FINISHING_MARGIN`), since a synthesis over a larger ledger can need a validation retry. The round runs only if its deep dives would still get $0.25 (`FOLLOWUP_MIN_RESEARCH_USD`), and those deep dives leave the budgeted amount unspent. A skipped round is a review reason. If a round's research, synthesis, or verification still runs out of budget or tokens, the job does not fail: it finishes with the report verified before the round, with a review reason saying so, and the round's research stays in the evidence ledger. This is a routing condition in "Route verification result", not a new node, and the legacy loop applies the same check. The sixth settings-study pilot lost a finished report this way: its second synthesis needed a retry, and its verification ran out of the job's $5 cap.
 
 Follow-ups naming questions outside the plan are retried away by the verifier, so they no longer buy an empty round. One case remains, held because fixing it changes `v1` routing: with `max_deep_dives_per_round = 0`, valid follow-ups still repeat synthesis and verification on an unchanged ledger. See finding 2 in the [architecture review](architecture-review.md).
 

@@ -139,6 +139,10 @@ class ResearchConfig:
 
 # Roles that run tool loops, the only ones a budget note applies to.
 _TOOL_LOOP_ROLES = frozenset({ResearchRole.SCOUT, ResearchRole.DEEP_DIVE})
+# A verification round's synthesis and verification are budgeted at this many times the job's latest
+# pair, and run only if the round's deep dives still get FOLLOWUP_MIN_RESEARCH_USD. See _start_followup_round.
+FOLLOWUP_FINISHING_MARGIN = 2.0
+FOLLOWUP_MIN_RESEARCH_USD = 0.25
 
 # How long recording a failed or cancelled task or job may take before the run gives up on it.
 _FAILURE_WRITE_SECONDS = 10.0
@@ -342,11 +346,13 @@ class ResearchOutcome:
     attachments: AttachmentCorpus | None = None
     cost_usd: Decimal | None = None
     reach: SourceReach | None = None
+    # Reasons from how the run went rather than from its result, such as a skipped verification round.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def review_reasons(self) -> list[str]:
         """Why this run, though it finished, needs review; empty when nothing is unresolved."""
-        return review_reasons(self.report, self.verification, self.ledger, self.reach)
+        return [*self.notes, *review_reasons(self.report, self.verification, self.ledger, self.reach)]
 
     @property
     def sources(self) -> list[dict[str, Any]]:
@@ -475,6 +481,14 @@ class AsyncResearchLoop:
         self._source_policies: dict[UUID, SourcePolicy] = {}
         # Per-job counts of web and scholarly tool calls that reached no source, for review reasons.
         self._source_reach: dict[UUID, SourceReach] = {}
+        # Per-job follow-up bookkeeping (see _start_followup_round): the plan, the latest synthesis and
+        # verification costs, the latest verified report, the USD a follow-up round's research must leave
+        # for its synthesis and verification, and review notes for the outcome.
+        self._plans: dict[UUID, ResearchPlan] = {}
+        self._finishing_costs: dict[UUID, dict[ResearchRole, Decimal]] = {}
+        self._verified: dict[UUID, tuple[FinalReport, VerificationReport]] = {}
+        self._followup_reserves: dict[UUID, float] = {}
+        self._notes: dict[UUID, list[str]] = {}
 
     async def _create_job(
         self,
@@ -544,6 +558,8 @@ class AsyncResearchLoop:
             self._fetch_memos.pop(job_id, None)
             self._source_policies.pop(job_id, None)
             self._source_reach.pop(job_id, None)
+            for per_job in (self._plans, self._finishing_costs, self._verified, self._followup_reserves, self._notes):
+                per_job.pop(job_id, None)
             if http := self._http_clients.pop(job_id, None):
                 # Shielded and bounded like failure records, so a cancelled run still closes them.
                 with anyio.move_on_after(_FAILURE_WRITE_SECONDS, shield=True):
@@ -576,6 +592,7 @@ class AsyncResearchLoop:
         outcome = ResearchOutcome(
             job_id, plan, report, verification, ledger, attachments,
             cost_usd=self._job_spend.get(job_id), reach=self._source_reach.get(job_id),
+            notes=list(self._notes.get(job_id, [])),
         )
         # The ledger is stored whole: its unique claim IDs are the ones the report and verification cite.
         await self.repository.finish_job(
@@ -766,7 +783,11 @@ class AsyncResearchLoop:
         budget_notes = research_tools and not salvage and role in self.config.budget_notes
         if budget_notes:
             effective_config["budget_notes"] = True
-        hold = await self._admit(job_id, route, self.policy.job_reserve_for(role, salvage=salvage))
+        reserve = self.policy.job_reserve_for(role, salvage=salvage)
+        if role in _TOOL_LOOP_ROLES:
+            # In a follow-up round, research leaves what the round's synthesis and verification need.
+            reserve = max(reserve, self._followup_reserves.get(job_id, 0.0))
+        hold = await self._admit(job_id, route, reserve)
         remaining_budget = hold.amount if hold else None
         try:
             task_id = await self.repository.start_task(
@@ -995,6 +1016,7 @@ class AsyncResearchLoop:
             deps=PlanLimits(max_questions=qmax),
         )
         await self.repository.save_plan(job_id, plan.model_dump(mode="json"))
+        self._plans[job_id] = plan
         return plan
 
     async def _run_scout(
@@ -1101,15 +1123,16 @@ class AsyncResearchLoop:
         attachments: AttachmentCorpus | None,
     ) -> FinalReport:
         route = self.policy.for_role(ResearchRole.SYNTHESIZER)
-        return await self._run_agent(
-            job_id=job_id,
-            agent=synthesizer_agent,
-            role=ResearchRole.SYNTHESIZER,
-            route=route,
-            deps=self._ledger_refs(ledger, sources=True),
-            require_retry_room=True,
-            prompt=synthesis_prompt(objective, ledger, self._constraints_payload(constraints, attachments)),
-        )
+        async with self._finishing_cost(job_id, ResearchRole.SYNTHESIZER):
+            return await self._run_agent(
+                job_id=job_id,
+                agent=synthesizer_agent,
+                role=ResearchRole.SYNTHESIZER,
+                route=route,
+                deps=self._ledger_refs(ledger, sources=True),
+                require_retry_room=True,
+                prompt=synthesis_prompt(objective, ledger, self._constraints_payload(constraints, attachments)),
+            )
 
     async def _verify(
         self,
@@ -1123,16 +1146,71 @@ class AsyncResearchLoop:
         task_ids: list[UUID] | None = None,
     ) -> VerificationReport:
         route = self.policy.for_role(ResearchRole.VERIFIER)
-        return await self._run_agent(
-            job_id=job_id,
-            agent=verifier_agent,
-            role=ResearchRole.VERIFIER,
-            route=route,
-            deps=self._ledger_refs(ledger),
-            prompt=verification_prompt(objective, report, ledger, self._constraints_payload(constraints, attachments)),
-            task_ids=task_ids,
-            require_retry_room=True,
-        )
+        async with self._finishing_cost(job_id, ResearchRole.VERIFIER):
+            verification = await self._run_agent(
+                job_id=job_id,
+                agent=verifier_agent,
+                role=ResearchRole.VERIFIER,
+                route=route,
+                deps=self._ledger_refs(ledger),
+                prompt=verification_prompt(objective, report, ledger, self._constraints_payload(constraints, attachments)),
+                task_ids=task_ids,
+                require_retry_room=True,
+            )
+        self._verified[job_id] = (report, verification)
+        return verification
+
+    @asynccontextmanager
+    async def _finishing_cost(self, job_id: UUID, role: ResearchRole) -> AsyncIterator[None]:
+        """Record what a synthesis or verification call cost the job, whether or not it succeeded.
+
+        These run alone, after research, so the job's spend across the call is the call's cost.
+        """
+        before = self._job_spend.get(job_id)
+        try:
+            yield
+        finally:
+            after = self._job_spend.get(job_id)
+            if before is not None and after is not None:
+                self._finishing_costs.setdefault(job_id, {})[role] = after - before
+
+    def _start_followup_round(self, job_id: UUID) -> bool:
+        """Whether the job can afford another verification round; if so, hold back what it will need.
+
+        A round is follow-up deep dives, then another synthesis and verification. Those two are budgeted
+        at FOLLOWUP_FINISHING_MARGIN times what the job's latest pair cost, since a synthesis over a
+        larger ledger can need a validation retry: the sixth settings-study pilot's second synthesis
+        cost $1.12 against its first's $0.59, and its verification then ran out of the job's $5 cap,
+        failing the job. The round runs only if its deep dives would still get FOLLOWUP_MIN_RESEARCH_USD,
+        and they leave the held amount unspent. Without a job cap every round can run.
+        """
+        limit = self.policy.job_cost_limit
+        spent = self._job_spend.get(job_id)
+        if limit is None or spent is None:
+            return True
+        costs = self._finishing_costs.get(job_id, {})
+        needed = FOLLOWUP_FINISHING_MARGIN * float(sum(costs.values(), Decimal(0)))
+        if limit - float(spent) - needed < FOLLOWUP_MIN_RESEARCH_USD:
+            self._notes.setdefault(job_id, []).append(
+                f"a verification round was skipped: ${limit - float(spent):.2f} of the job's budget was left, "
+                f"and its synthesis and verification alone were budgeted at ${needed:.2f}")
+            return False
+        self._followup_reserves[job_id] = needed
+        return True
+
+    def _verified_fallback(self, job_id: UUID, exc: BaseException) -> tuple[FinalReport, VerificationReport] | None:
+        """The last verified report, when a follow-up round could not finish for want of budget or tokens.
+
+        Its research stays in the ledger; the report written from it is lost, since it was not verified.
+        """
+        if job_id not in self._followup_reserves or job_id not in self._verified:
+            return None
+        if not isinstance(exc, JobBudgetExceeded | UsageLimitExceeded | PromptExceedsRetryBudget):
+            return None
+        self._notes.setdefault(job_id, []).append(
+            f"a verification round's report could not be finished ({type(exc).__name__}); "
+            "this is the report verified before it, and the round's research is in the evidence ledger")
+        return self._verified[job_id]
 
     def _select_gaps(
         self,
@@ -1296,19 +1374,27 @@ class AsyncResearchLoop:
             for round_index in range(self.config.max_verification_rounds):
                 if not verification.needs_research or not verification.followups:
                     break
-                await self._resolve_gaps(
-                    job_id,
-                    self._dedupe_gaps(verification.followups),
-                    questions,
-                    ledger,
-                    constraints,
-                    attachments,
-                    attempt=round_index + 1,
-                    parent_task_id=verify_task_ids[-1] if verify_task_ids else None,
-                )
-                report = await self._synthesize(job_id, objective, ledger, constraints, attachments)
-                verification = await self._verify(
-                    job_id, objective, report, ledger, constraints, attachments, task_ids=verify_task_ids
-                )
+                if not self._start_followup_round(job_id):
+                    break
+                try:
+                    await self._resolve_gaps(
+                        job_id,
+                        self._dedupe_gaps(verification.followups),
+                        questions,
+                        ledger,
+                        constraints,
+                        attachments,
+                        attempt=round_index + 1,
+                        parent_task_id=verify_task_ids[-1] if verify_task_ids else None,
+                    )
+                    report = await self._synthesize(job_id, objective, ledger, constraints, attachments)
+                    verification = await self._verify(
+                        job_id, objective, report, ledger, constraints, attachments, task_ids=verify_task_ids
+                    )
+                except Exception as exc:
+                    if (verified := self._verified_fallback(job_id, exc)) is None:
+                        raise
+                    report, verification = verified
+                    break
 
             return await self._finish(job_id, plan, report, verification, ledger, attachments)

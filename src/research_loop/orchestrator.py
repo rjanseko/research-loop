@@ -4,10 +4,12 @@ import asyncio
 from uuid import UUID
 
 from .async_orchestrator import AsyncResearchLoop, ResearchConfig, ResearchOutcome
+from .attachments import AttachmentCorpus
 from .graph import (
     RESEARCH_GRAPH_VERSION,
     ResearchGraphDeps,
     ResearchGraphInput,
+    ResearchGraphResult,
     ResearchGraphState,
     get_research_graph,
     render_research_graph,
@@ -56,27 +58,37 @@ class ResearchLoop(AsyncResearchLoop):
         ledger = EvidenceLedger()
         async with self._job_scope(job_id, constraints, ledger):
             attachments = await self._load_attachments(job_id, constraints)
-            result = await self.graph.run(
-                state=ResearchGraphState(
-                    job_id=job_id,
-                    objective=objective,
-                    policy_name=self.policy.name,
-                    max_verification_rounds=self.config.max_verification_rounds,
-                ),
-                deps=ResearchGraphDeps(
-                    loop=self,
-                    job_id=job_id,
-                    constraints=constraints,
-                    attachments=attachments,
-                    ledger=ledger,
-                    scout_semaphore=asyncio.Semaphore(self.config.max_parallel_scouts),
-                    deep_dive_semaphore=asyncio.Semaphore(self.config.max_parallel_deep_dives),
-                ),
-                inputs=ResearchGraphInput(objective=objective),
-            )
+            try:
+                result = await self._run_graph(job_id, objective, constraints, attachments, ledger)
+            except Exception as exc:
+                # A verification round that ran out finishes with the report verified before it.
+                if (verified := self._verified_fallback(job_id, exc)) is None:
+                    raise
+                return await self._finish(job_id, self._plans[job_id], *verified, ledger, attachments)
             return await self._finish(
                 job_id, result.plan, result.report, result.verification, ledger, attachments
             )
+
+    async def _run_graph(self, job_id: UUID, objective: str, constraints: ResearchConstraints,
+                         attachments: AttachmentCorpus | None, ledger: EvidenceLedger) -> ResearchGraphResult:
+        return await self.graph.run(
+            state=ResearchGraphState(
+                job_id=job_id,
+                objective=objective,
+                policy_name=self.policy.name,
+                max_verification_rounds=self.config.max_verification_rounds,
+            ),
+            deps=ResearchGraphDeps(
+                loop=self,
+                job_id=job_id,
+                constraints=constraints,
+                attachments=attachments,
+                ledger=ledger,
+                scout_semaphore=asyncio.Semaphore(self.config.max_parallel_scouts),
+                deep_dive_semaphore=asyncio.Semaphore(self.config.max_parallel_deep_dives),
+            ),
+            inputs=ResearchGraphInput(objective=objective),
+        )
 
     @classmethod
     def render_graph(cls, *, direction: str = "LR") -> str:

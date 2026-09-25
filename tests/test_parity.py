@@ -189,3 +189,105 @@ async def test_parity_catches_changed_evidence_not_just_claim_ids() -> None:
 
     assert parity_differences(outcome, outcome) == []
     assert parity_differences(outcome, changed) == ["evidence"]
+
+
+# What each role's call costs the scripted job, so the job cap and follow-up budgeting can be exercised.
+_COSTS = {ResearchRole.PLANNER: "0.05", ResearchRole.SCOUT: "0.10", ResearchRole.GAP_ANALYST: "0.05",
+          ResearchRole.DEEP_DIVE: "0.10", ResearchRole.SYNTHESIZER: "0.30", ResearchRole.VERIFIER: "0.10"}
+
+
+class _BilledMixin(_DeterministicMixin):
+    """The deterministic loop, billing each call and optionally failing the second synthesis."""
+
+    fail_second_synthesis: BaseException | None = None
+
+    async def _run_agent(self, **kwargs: Any) -> Any:
+        from decimal import Decimal
+
+        from pydantic_ai.usage import RunUsage
+
+        role: ResearchRole = kwargs["role"]
+        self._record_spend(kwargs["job_id"], RunUsage(requests=1, cost=Decimal(_COSTS[role])))
+        if (role is ResearchRole.SYNTHESIZER and self.fail_second_synthesis is not None
+                and sum(1 for traced, _, _ in self.call_trace if traced == "synthesizer") == 1):
+            self.call_trace.append((role.value, None, 0))
+            raise self.fail_second_synthesis
+        return await super()._run_agent(**kwargs)
+
+
+class BilledGraphLoop(_BilledMixin, ResearchLoop):
+    pass
+
+
+class BilledAsyncLoop(_BilledMixin, AsyncResearchLoop):
+    pass
+
+
+def _capped_policy(cap: float) -> ModelPolicy:
+    policy = _policy()
+    policy.job_cost_limit, policy.job_reserve_usd = cap, 0.1
+    return policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_class", [BilledGraphLoop, BilledAsyncLoop])
+async def test_a_verification_round_the_budget_cannot_cover_is_skipped(loop_class) -> None:
+    # Planner, two scouts, gap analysis, a deep dive, synthesis, and verification spend $0.80 of $1.00; the
+    # round's synthesis and verification are budgeted at 2 x $0.40, which leaves its deep dives nothing.
+    loop = loop_class(_capped_policy(1.0), ResearchConfig(max_verification_rounds=2), InMemoryResearchRepository())
+    outcome = await loop.run("Budgeted objective")
+    assert not any(role == "deep_dive" and attempt > 0 for role, _, attempt in loop.call_trace)
+    assert outcome.verification.needs_research
+    assert outcome.review_reasons[0].startswith("a verification round was skipped: $0.20 of the job's budget was left")
+    assert loop.repository.jobs[outcome.job_id]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_class", [BilledGraphLoop, BilledAsyncLoop])
+async def test_a_verification_round_that_runs_out_finishes_with_the_report_verified_before_it(loop_class) -> None:
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    loop = loop_class(_capped_policy(10.0), ResearchConfig(max_verification_rounds=2), InMemoryResearchRepository())
+    loop.fail_second_synthesis = UsageLimitExceeded("The next request would exceed the cost_limit")
+    outcome = await loop.run("Budgeted objective")
+    # The first verification, which asked for the round, is the one kept, with the report it checked.
+    assert outcome.verification.needs_research and not outcome.verification.checks[0].supported
+    assert any(role == "deep_dive" and attempt == 1 for role, _, attempt in loop.call_trace)
+    assert outcome.review_reasons[0].startswith("a verification round's report could not be finished (UsageLimitExceeded)")
+    job = loop.repository.jobs[outcome.job_id]
+    assert job["status"] == "succeeded" and job["review_reasons"][0] == outcome.review_reasons[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_class", [BilledGraphLoop, BilledAsyncLoop])
+async def test_other_failures_in_a_verification_round_still_fail_the_job(loop_class) -> None:
+    loop = loop_class(_capped_policy(10.0), ResearchConfig(max_verification_rounds=2), InMemoryResearchRepository())
+    loop.fail_second_synthesis = RuntimeError("provider down")
+    with pytest.raises(RuntimeError, match="provider down"):
+        await loop.run("Budgeted objective")
+
+
+@pytest.mark.asyncio
+async def test_follow_up_research_leaves_the_rounds_finishing_budget_unspent() -> None:
+    from uuid import uuid4
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    loop = AsyncResearchLoop(_capped_policy(10.0), ResearchConfig(), InMemoryResearchRepository())
+    reserves: list[float] = []
+
+    async def admit(job_id, route, reserve):
+        reserves.append(reserve)
+
+    loop._admit = admit
+    agent = Agent(output_type=str)
+    job_id = uuid4()
+    async with loop._job_scope(job_id):
+        loop._followup_reserves[job_id] = 0.8
+        with agent.override(model=FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart("x")]))):
+            for role in (ResearchRole.DEEP_DIVE, ResearchRole.SYNTHESIZER):
+                await loop._run_agent(job_id=job_id, agent=agent, role=role, route=_policy().for_role(role),
+                                      prompt="p")
+    assert reserves == [0.8, 0.0]
