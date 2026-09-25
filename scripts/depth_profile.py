@@ -12,7 +12,10 @@ reports:
   bind showing up here, as tokens did in the first pilot, means the study's limits need changing;
 - its time split into model time (a request sent until its response arrived) and tool time (the
   response arrived until the next request went out with the tool results), and the salvage call's
-  time.
+  time;
+- for a deep dive, `scouted`: how many of the sources it cited the scout on the same question had already
+  returned. A deep dive gets the gap, not the scout's evidence, so a high share means its early requests
+  found the scout's sources again, and its depth curve partly measures that repetition.
 
 The depth curve at the end is the share of all cited sources that had been returned by request k.
 docs/settings-study.md explains how the settings study uses it. Output holds counts and times, not
@@ -47,6 +50,9 @@ class LoopProfile:
     tool_seconds: float = 0.0
     salvage_seconds: float | None = None
     stopped_by: str | None = None
+    # Deep dives only: how many of the sources it cited its question's scout had already returned. A deep dive
+    # is not given the scout's evidence, so a high count means it spent requests finding them again.
+    from_scout: int | None = None
 
 
 # The route limits a task records in effective_config, and the usage each is measured against.
@@ -76,6 +82,15 @@ def _cited_sources(result: ResearchResult) -> list[SourceRef]:
                 seen.add(str(item.source.url))
                 sources.append(item.source)
     return sources
+
+
+def loop_texts(messages: list[Any]) -> list[str]:
+    """Every tool result text in one loop's messages."""
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    events = [ToolEvent(tool_name=part.tool_name, result=part.content) for message in messages
+              if isinstance(message, ModelRequest) for part in message.parts if isinstance(part, ToolReturnPart)]
+    return tool_texts(events)
 
 
 def profile_loop(messages: list[Any], result: ResearchResult | None) -> tuple[int, list[int | None], float, float]:
@@ -126,6 +141,11 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
     # A salvage call is a child of the loop it wrote the result for, with the same role and question.
     salvage = {row[4]: row for row in rows if row[4] in tasks and tasks[row[4]][1] == row[1] and tasks[row[4]][2] == row[2]}
     profiles = []
+    scout_texts: dict[str, list[str]] = {}
+    for task_id, role, question_id, _status, _parent, _output, _started, _finished, messages, _usage, _config in rows:
+        if role == "scout" and messages is not None and task_id not in {row[0] for row in salvage.values()}:
+            scout_texts.setdefault(question_id or "", []).extend(
+                loop_texts(ModelMessagesTypeAdapter.validate_python(messages)))
     for task_id, role, question_id, status, _parent, output, _started, _finished, messages, usage, config in rows:
         if task_id in {row[0] for row in salvage.values()}:
             continue
@@ -135,22 +155,28 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
         final = child[5] if child else (output if status == "succeeded" else None)
         result = ResearchResult.model_validate(final) if final else None
         requests, first_seen, model_s, tool_s = profile_loop(ModelMessagesTypeAdapter.validate_python(messages), result)
+        from_scout = None
+        if role == "deep_dive" and result is not None:
+            scouted = ToolOutputIndex(scout_texts.get(question_id or "", []))
+            from_scout = sum(scouted.observed(source) for source in _cited_sources(result))
         profiles.append(LoopProfile(
             role=role, question_id=question_id or "", requests=requests, cut_off=child is not None,
             first_seen=first_seen, model_seconds=model_s, tool_seconds=tool_s,
             salvage_seconds=(child[7] - child[6]).total_seconds() if child else None,
             stopped_by=stopping_limit(usage or {}, config or {}) if child else None,
+            from_scout=from_scout,
         ))
     return profiles
 
 
 def render(profiles: list[LoopProfile]) -> str:
-    lines = ["role       question requests stopped_by model_s tool_s salvage_s  first seen at request (- = not matched)"]
+    lines = ["role       question requests stopped_by model_s tool_s salvage_s scouted  first seen at request (- = not matched)"]
     for p in profiles:
         seen = ", ".join(str(k) if k else "-" for k in sorted(p.first_seen, key=lambda k: (k is None, k or 0)))
         salvage = f"{p.salvage_seconds:9.1f}" if p.salvage_seconds is not None else " " * 9
+        scouted = f"{p.from_scout:>3}/{len(p.first_seen):<3}" if p.from_scout is not None else " " * 7
         lines.append(f"{p.role:<10} {p.question_id:<8} {p.requests:>8} {p.stopped_by or '-':>10} "
-                     f"{p.model_seconds:7.1f} {p.tool_seconds:6.1f} {salvage}  {seen}")
+                     f"{p.model_seconds:7.1f} {p.tool_seconds:6.1f} {salvage} {scouted}  {seen}")
     for role in RESEARCH_ROLES:
         group = [p for p in profiles if p.role == role]
         cited = [k for p in group for k in p.first_seen]

@@ -71,3 +71,19 @@ def test_a_stopped_loop_names_the_limit_it_was_closest_to() -> None:
     assert depth_profile.stopping_limit({"total_tokens": 900_000, "requests": 24, "tool_calls": 30},
                                         config | {"total_tokens_limit": 2_000_000}) == "requests"
     assert depth_profile.stopping_limit({}, {}) == "unknown"
+
+
+def test_a_deep_dive_counts_the_cited_sources_its_scout_had_returned() -> None:
+    scout = [
+        ModelRequest(parts=[UserPromptPart("q")], timestamp=_at(0)),
+        ModelResponse(parts=[ToolCallPart("web_fetch", {"url": "https://example.org/a"}, tool_call_id="a")], timestamp=_at(1)),
+        ModelRequest(parts=[ToolReturnPart("web_fetch", {"url": "https://example.org/a", "text": "A"},
+                                           tool_call_id="a")], timestamp=_at(2)),
+    ]
+    scouted = depth_profile.ToolOutputIndex(depth_profile.loop_texts(scout))
+    assert scouted.observed(SourceRef(url="https://www.example.org/a", title="A"))
+    assert not scouted.observed(SourceRef(url="https://example.org/new", title="N"))
+    profiles = [depth_profile.LoopProfile("deep_dive", "q1", 4, False, [1, 1, 2], 9.0, 3.0, from_scout=2),
+                depth_profile.LoopProfile("scout", "q1", 3, False, [1], 5.0, 1.0)]
+    lines = depth_profile.render(profiles).splitlines()
+    assert "scouted" in lines[0] and "  2/3  " in lines[1] and "/" not in lines[2].split()[5]

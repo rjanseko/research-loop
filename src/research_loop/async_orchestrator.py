@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass, field
@@ -249,6 +250,22 @@ def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
     )
 
 
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def _checked_statements(report: FinalReport, verification: VerificationReport) -> int:
+    """How many report statements a verifier check covers: by the same wording, or by checks citing all its claims.
+
+    Checks carry no report-statement ID, and verifiers merge and split statements, so one check can cover two
+    statements and three checks one. Every stored real run matched this way before it was written.
+    """
+    worded = {_words(check.statement) for check in verification.checks}
+    cited = {claim_id for check in verification.checks for claim_id in check.claim_ids}
+    return sum(_words(claim.statement) in worded or bool(claim.claim_ids) and set(claim.claim_ids) <= cited
+               for claim in report.claims)
+
+
 def review_reasons(
     report: FinalReport,
     verification: VerificationReport,
@@ -271,6 +288,8 @@ def review_reasons(
     checks = verification.checks
     if report.claims and not checks:
         reasons.append("the verifier checked none of the report's statements")
+    elif unchecked := len(report.claims) - _checked_statements(report, verification):
+        reasons.append(f"the verifier checked {len(report.claims) - unchecked} of the report's {len(report.claims)} statements")
     if unsupported := sum(not check.supported for check in checks):
         reasons.append(f"{unsupported} of {len(checks)} verifier checks {'is' if unsupported == 1 else 'are'} unsupported")
     if major := sum(check.severity == "major" for check in checks):
