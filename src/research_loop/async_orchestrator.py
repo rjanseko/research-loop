@@ -273,6 +273,11 @@ class ResearchOutcome:
         """Why this run, though it finished, needs review; empty when nothing is unresolved."""
         return review_reasons(self.report, self.verification, self.ledger, self.reach)
 
+    @property
+    def sources(self) -> list[dict[str, Any]]:
+        """The sources the report's inline [sN] citations name, with those IDs."""
+        return self.ledger.source_table()
+
 
 @dataclass
 class AgentJobOutcome:
@@ -561,9 +566,32 @@ class AsyncResearchLoop:
             source_policy=self._source_policies.get(job_id, SourcePolicy()),
         )
 
+    def _budget_payload(self) -> dict[str, Any]:
+        """The job's USD cap as the planner sees it; nothing when the policy sets no cap."""
+        limit = self.policy.job_cost_limit
+        if limit is None:
+            return {}
+        reserve = self.policy.job_reserve_usd
+        policy = self.policy
+        # Every route research can run on: easy questions may use cheap_scout, image questions
+        # multimodal_scout, and verification rounds alternate_deep_dive.
+        caps = {"scout": policy.for_role(ResearchRole.SCOUT).cost_limit,
+                "cheap_scout": policy.cheap_scout.cost_limit if policy.cheap_scout else None,
+                "multimodal_scout": policy.multimodal_scout.cost_limit if policy.multimodal_scout else None,
+                "deep_dive": policy.for_role(ResearchRole.DEEP_DIVE).cost_limit,
+                "alternate_deep_dive": policy.alternate_deep_dive.cost_limit if policy.alternate_deep_dive else None}
+        return {"budget": {
+            "total_usd": limit,
+            "reserved_for_synthesis_and_verification_usd": reserve,
+            "research_usd": round(limit - reserve, 4),
+            "cost_cap_per_call_usd": {role: cap for role, cap in caps.items() if cap is not None},
+        }}
+
     @staticmethod
-    def _ledger_refs(ledger: EvidenceLedger) -> LedgerRefs:
-        return LedgerRefs(claim_ids=frozenset(ledger.claim_ids()), question_ids=frozenset(ledger.results))
+    def _ledger_refs(ledger: EvidenceLedger, *, sources: bool = False) -> LedgerRefs:
+        """What a finishing role may cite; `sources` adds each claim's source IDs, which only synthesis checks."""
+        return LedgerRefs(claim_ids=frozenset(ledger.claim_ids()), question_ids=frozenset(ledger.results),
+                          claim_sources=ledger.claim_source_ids() if sources else {})
 
     async def _run_agent(
         self,
@@ -814,6 +842,7 @@ class AsyncResearchLoop:
                         f"Aim for {qmin}-{qmax} non-overlapping research questions when the objective "
                         "is broad enough. Use fewer when additional questions would be artificial or redundant."
                     ),
+                    **self._budget_payload(),
                 },
                 ensure_ascii=False,
             ),
@@ -942,7 +971,7 @@ class AsyncResearchLoop:
             agent=synthesizer_agent,
             role=ResearchRole.SYNTHESIZER,
             route=route,
-            deps=self._ledger_refs(ledger),
+            deps=self._ledger_refs(ledger, sources=True),
             require_retry_room=True,
             prompt=json.dumps(
                 {

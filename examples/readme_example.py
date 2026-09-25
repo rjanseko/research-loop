@@ -21,6 +21,7 @@ from typing import Any
 
 from research_loop import ResearchConfig, ResearchConstraints, ResearchLoop, get_policy
 from research_loop.db import open_migrated_pool
+from research_loop.ledger import sources_markdown
 from research_loop.observability import configure_logfire
 from research_loop.repository import (
     InMemoryResearchRepository,
@@ -96,6 +97,10 @@ async def run(*, paid: bool, persist: bool, capture: bool, budget: float, reserv
         "review_reasons": outcome.review_reasons,
         "plan": outcome.plan.model_dump(mode="json"),
         "report": outcome.report.model_dump(mode="json"),
+        # Every source, under the IDs the report's inline [sN] citations use.
+        "sources": outcome.sources,
+        # The answer with a "Sources" section for the IDs it cites, as printed.
+        "report_markdown": outcome.report.answer + sources_markdown(outcome.report, outcome.ledger),
         "verification": outcome.verification.model_dump(mode="json"),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
     record = asyncio.run(run(paid=args.paid, persist=args.persist, capture=args.capture, budget=args.budget,
                              reserve=args.reserve, settings=settings, output=output))
 
-    print(record["report"]["answer"])
+    print(record["report_markdown"])
     print(f"\njob_id={record['job_id']} cost_usd={record['cost_usd']}")
     if args.paid and record["cost_usd"] is None:
         print("cost unknown: a model had no pricing data, so the budget could not be enforced for it")

@@ -54,4 +54,5 @@ def test_synthetic_run_writes_the_record(tmp_path, monkeypatch, capsys) -> None:
     assert record["paid"] is False and record["policy"]["name"] == "synthetic"
     assert record["report"]["answer"] and record["verification"] is not None
     assert record["review_reasons"] == [] and record["cost_usd"] == 0.0
+    assert [row["id"] for row in record["sources"]] == ["s1"]  # what the report's [sN] citations name
     assert f"record: {output}" in capsys.readouterr().out

@@ -104,7 +104,7 @@ async def _complete_questions(monkeypatch, output: Path, question_ids: list[str]
         async def run(self, objective, **_kwargs):
             question_id = next(qid for qid in question_ids if f"Question {qid}:" in objective)
             report = report_for(question_id) if report_for else FinalReport(
-                answer=f"Draft report {question_id}", caveats=["Thin"])
+                answer=f"Draft report {question_id}", caveats=["Thin [s1]"])
             return SimpleNamespace(job_id=uuid4(), report=report,
                                    ledger=_ledger(question_id), verification=verification or VerificationReport(),
                                    cost_usd=Decimal("1.25"), reach=None)
@@ -122,7 +122,7 @@ async def test_long_horizon_run_exports_spec_question_files(monkeypatch, tmp_pat
     folder = tmp_path / "q01"
     assert {item.name for item in folder.iterdir()} == set(load_spec(SPEC_FILE)["outputs"]["question_files"])
     assert "Draft report q01" in (folder / "report.md").read_text()
-    assert json.loads((folder / "report.json").read_text())["caveats"] == ["Thin"]
+    assert json.loads((folder / "report.json").read_text())["caveats"] == ["Thin [s1]"]
     assert "preprint" in (folder / "bibliography.json").read_text()
     run = json.loads((folder / "run.json").read_text())
     manifest = json.loads(manifest_path.read_text())
@@ -345,6 +345,7 @@ async def test_synthesis_prompt_carries_verifier_findings(monkeypatch, tmp_path:
         "findings": [{"statement": "Deep-dive finding holds", "supported": False, "severity": "major",
                       "explanation": "excerpt does not say this", "claim_refs": ["q01/q1/c1~2"]}],
     }
+    # The question's own [sN] IDs would clash with the study-wide source table, so they are removed.
     assert question["caveats"] == ["Thin"]
     assert question["contradictions"] == [{"description": "Sources disagree", "claim_refs": ["q01/q1/c1"]}]
     assert "answer" not in question
@@ -552,6 +553,16 @@ def test_question_report_counts_quotes_not_found_in_tool_output() -> None:
     assert "1 of 2 quoted passages was not found in any text the research tools returned (claims: q1/c2)." in text
     assert "1 of 2 cited sources was not found in any text the research tools returned (claims: q1/c2)." in text
     assert "quoted passages" not in render_question_report(FinalReport(answer="Answer"), VerificationReport())
+
+
+def test_question_report_lists_the_sources_its_citations_name() -> None:
+    from research_loop.long_horizon import render_question_report
+
+    ledger = _quoted_ledger()
+    cited = ledger.source_table()[0]
+    text = render_question_report(FinalReport(answer=f"Answer [{cited['id']}]."), VerificationReport(), ledger)
+    assert f"## Sources\n\n- [{cited['id']}] {cited['title']}" in text
+    assert "## Sources" not in render_question_report(FinalReport(answer="Uncited"), VerificationReport(), ledger)
 
 
 @pytest.mark.asyncio

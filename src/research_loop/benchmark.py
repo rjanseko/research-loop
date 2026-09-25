@@ -23,6 +23,7 @@ from .benchmarks import BenchmarkCaseSpec, BenchmarkOutputMode, load_suite
 from .db import open_migrated_pool
 from .evals import EVALUATOR_VERSION, BenchmarkOutput, make_dataset
 from .experiment import build_manifest, write_manifest
+from .ledger import sources_markdown, strip_inline_citations
 from .observability import configure_logfire
 from .orchestrator import RESEARCH_GRAPH_VERSION, ResearchConfig, ResearchLoop
 from .policy import POLICY_PRESETS, get_policy
@@ -106,10 +107,11 @@ def _export_component(value: str) -> str:
 def _extract_exact_answer(answer: str, mode: BenchmarkOutputMode) -> str | None:
     if mode is not BenchmarkOutputMode.SHORT_ANSWER:
         return None
+    # Reports cite sources inline as [sN]; a graded answer must not carry them.
     matches = EXACT_ANSWER_RE.findall(answer)
     if matches:
-        return matches[-1].strip()
-    stripped = answer.strip()
+        return strip_inline_citations(matches[-1]).strip()
+    stripped = strip_inline_citations(answer).strip()
     if "\n" not in stripped and len(stripped) <= 300:
         return stripped
     return None
@@ -247,7 +249,8 @@ async def _run_policy_case(
         idx = case.metadata.get("idx")
         stem = f"idx-{idx}" if idx is not None else case.case_id
         filename = f"{_export_component(str(stem))}.md"
-        (policy_dir / filename).write_text(outcome.report.answer, encoding="utf-8")
+        (policy_dir / filename).write_text(outcome.report.answer + sources_markdown(outcome.report, outcome.ledger),
+                                           encoding="utf-8")
 
     return BenchmarkOutput(
         benchmark_id=case.benchmark_id,

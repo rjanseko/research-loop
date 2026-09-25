@@ -27,6 +27,7 @@ outcome = await loop.run("How do long-horizon coding agents recover from errors?
 outcome.report          # the answer, with each claim citing ledger claim IDs
 outcome.verification    # the verifier's check of each claim
 outcome.ledger          # all the evidence gathered
+outcome.sources         # what the report's inline [sN] citations name
 outcome.review_reasons  # anything left unresolved; empty means no check flagged a problem
 ```
 
