@@ -1,105 +1,174 @@
 # Model routing: cost and quality per role
 
-Status as of 2026-09-25. This is desk research: prices, vendor and third-party benchmarks, and the
-p01 calibration runs, with no new paid run. It picks lineups to benchmark; per
-[benchmarks.md](benchmarks.md), the routing decision itself should come from those models running
-through this harness. `scripts/route_costs.py` reproduces every dollar figure here.
+Status as of 2026-09-25. This is desk research: list prices, vendor and third-party benchmarks,
+OpenRouter's catalog and usage rankings, and the p01 calibration runs. No new paid run was made.
+It picks the lineups to benchmark. Per [benchmarks.md](benchmarks.md), the routing decision itself
+should come from those models running through this harness. `scripts/route_costs.py` reproduces
+every dollar figure here.
 
 ## Recommendation
 
-| Role | Now | Recommended | Thinking | Why |
-|---|---|---|---|---|
-| Planner | Opus 5, `high` | `anthropic:claude-opus-5-5` | `medium` | about $0.03 a question on any model, so use the best one. Opus 5.5 is cheaper than Opus 5 and ahead on every benchmark Anthropic published for both |
-| Scout | GLM-5.3, `high` | keep `zai:glm-5.3`; trial `openai:gpt-6-luna` | `high` | GLM's cached input keeps three scouts near $0.56. BrowseComp 75.9% against about 90% for frontier models. That gap is what the deep dives exist to close. Luna would cost about $0.05–0.09 but has no published search score |
-| Gap analyst | GPT-5.6 Sol, `medium` | `openai:gpt-6-sol` | `medium` | same price tier, half the rate: $2 / $10 against $4 / $20 |
-| Deep dive | GPT-5.6 Sol, `high` | `openai:gpt-6-sol` | `high` | the largest cost, about half of each question. GPT-6 Sol halves it and is scored slightly above GPT-5.6 Sol |
-| Synthesizer | Opus 5, `high` | `anthropic:claude-opus-5-5` | `medium` | writes the report that DRB-II grades. Sonnet 5 saves another $0.19 a question and is worth an A/B test |
-| Verifier | GPT-5.6 Sol, `high` | `openai:gpt-6-sol` | `high` | keep it from a different vendor than the synthesizer, so the report is not checked by the model that wrote it |
+Adopt now (configuration plus a small `policy.py` edit), then trial the cheaper options one role
+at a time:
 
-Expected effect on the p01 profile: **$3.20 → $2.03 a question (−37%)** from the model swaps alone,
-and **→ $1.61 (−50%)** once tool-loop prompt caching is configured, with no model moving to a
-weaker tier. The swaps are configuration only. The thinking changes and caching need a
-`policy.py` edit; see [What to change](#what-to-change).
+| Role | Now | Adopt | Trial next | Thinking |
+|---|---|---|---|---|
+| Planner | Opus 5 | `anthropic:claude-opus-5-5` | none: about $0.03 a question on any model | `medium` |
+| Scout | GLM-5.3 | keep `zai:glm-5.3`. Make `zai:glm-5.3-flash` the cheap scout | `zai:glm-5.3-flash` as the main scout | `high` |
+| Gap analyst | GPT-5.6 Sol | `openai:gpt-6-sol` | none: GLM-5.3 would save $0.02 | `medium` |
+| Deep dive | GPT-5.6 Sol | `openai:gpt-6-sol`, with prompt caching | `zai:glm-5.3`, if scout trials show search quality holds | `high` |
+| Synthesizer | Opus 5 | `anthropic:claude-opus-5-5` | `zai:glm-5.3`, then `anthropic:claude-sonnet-5` | `medium` |
+| Verifier | GPT-5.6 Sol | `openai:gpt-6-sol` | none. Keep it from a different vendor than the synthesizer | `high` |
+
+Cost per question on the p01 profile:
+
+| | As the pilot ran (little loop caching outside GLM) | With prompt caching configured |
+|---|---:|---:|
+| A current defaults | $3.20 | $2.32 |
+| **B adopt** | **$2.03 (−37%)** | **$1.61 (−50%)** |
+| F all trials pass (Z.ai-heavy) | $0.59 (−82%) | $0.61 (−74%) |
+
+B moves no role to a weaker model: each change is a successor that is as cheap or cheaper and
+scores at least as well. The trials trade benchmark standing for price, so they need the harness.
+
+## Each role
+
+**Planner.** One short call, about 1,100 input and 1,200 output tokens. It costs $0.007–0.03 on
+any candidate, and a bad plan wastes everything after it. Use the strongest model: Opus 5.5.
+
+**Scout.** Three parallel tool loops of about 16 requests each. Each request resends the whole
+history, so a scout reads about 240,000 input tokens and writes about 11,000. Input price and
+cached-input price decide the cost. Scouts gather breadth; the gap analyst and deep dives exist to
+repair what they miss.
+- **GLM-5.3** costs about $0.56 a question for three scouts, because 84% of its loop input is billed as
+  cached. Its BrowseComp score, 75.9%, is the lowest of the current routes; frontier models score
+  about 90%.
+- **GLM-5.3-Flash** costs $0.03 a question. It is at or near the top of OpenRouter's tool-calling
+  usage ranking, next to DeepSeek V4.1 Flash, and scores 78.4 on Toolathlon. No BrowseComp number is
+  published. It runs on `zai`, which the repo already supports, and the `glm-heavy` preset already
+  uses it as the cheap scout.
+- Other options: **GPT-6 Luna** $0.05–0.09; DeepSeek V4.1 Flash and MiMo-V2.5, about $0.04–0.07 through
+  OpenRouter; Gemini 3.8 Flash $0.34–0.49; GPT-6 Sol $0.91–1.88. GPT-6 Sol as scout would cost
+  more than any other role.
+
+**Gap analyst.** One call reading the projected ledger (about 23,000 input tokens) and writing a
+short gap list. It costs $0.04–0.06 on GPT-6 Sol or GLM-5.3. It decides where the expensive deep
+dives go, so the cheaper model does not pay for itself. GPT-6 Sol.
+
+**Deep dive.** Two tool loops of about 170,000 input tokens each, plus salvage. At 53% of today's
+cost, it is the biggest lever.
+- GPT-5.6 Sol costs $1.70 a question. The pilot's usage shows only about 5% of its loop input
+  billed as cached.
+- GPT-6 Sol halves that to $0.85, and caching brings it to $0.39.
+- GLM-5.3 would be $0.25–0.27. But a deep dive's job is hard retrieval, where GLM is weakest on
+  BrowseComp.
+- Through OpenRouter, Tencent Hy4 preview ($0.13–0.21) and MiMo-V2.5-Pro ($0.06–0.10) are cheaper
+  still, with no search benchmark this doc could find. Kimi K3 (BrowseComp 91.2%) costs
+  $0.59–0.86, no less than GPT-6 Sol.
+
+**Synthesizer.** One call: about 26,000 input tokens (40,000 on Anthropic's tokenizer) and 11,000
+output. It writes the report that DeepResearch Bench II grades, and a failed synthesis wastes
+research that cost several times more.
+- Opus 5.5 costs $0.38, against $0.47 for Opus 5, and is ahead on every benchmark Anthropic
+  published for both.
+- GLM-5.3 costs $0.09 and has the one in-harness data point: in the evidence-v4 rerun of p01 it
+  replaced Opus 5, because the Anthropic account had no credits. That run had fewer unsupported
+  verifier checks (25% vs 31%) and the same number of major findings (2). Several fixes landed in
+  the same rerun, so this shows direction, not effect size.
+- Sonnet 5 costs $0.19.
+
+**Verifier.** One call: about 33,000 input tokens and 9,000 output. It checks the report against
+the ledger, and should not be the model that wrote the report. GPT-6 Sol costs $0.16. If the
+synthesizer moves to GLM, the verifier must stay off GLM.
 
 ## Where the money goes
 
-Scouts and deep dives resend their whole history on every request, so their input tokens grow
-with the square of the number of turns ([PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md#problem-3-agent-loops-grow-with-every-turn)).
-Their cost is set by the **price of input tokens, and of cached input tokens**, more than by
-output prices. Finishing calls are single requests, and their output is a larger share.
+| Lineup | Planner | Scout | Gap | Deep dive | Synthesizer | Verifier | Total | Cached |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A current defaults | 0.04 | 0.56 | 0.12 | **1.70** | 0.47 | 0.31 | **3.20** | 2.32 |
+| B adopt | 0.03 | 0.56 | 0.06 | 0.85 | 0.38 | 0.16 | **2.03** | 1.61 |
+| C B, GLM-5.3-Flash scouts | 0.03 | 0.03 | 0.06 | 0.85 | 0.38 | 0.16 | 1.51 | 1.05 |
+| D B, GLM-5.3 synthesizer | 0.03 | 0.56 | 0.06 | 0.85 | 0.09 | 0.16 | 1.74 | 1.32 |
+| E B, GLM-5.3 deep dives | 0.03 | 0.56 | 0.06 | 0.25 | 0.38 | 0.16 | 1.44 | 1.49 |
+| F Z.ai-heavy: Flash scouts, GLM gap, deep dives, synthesis; GPT-6 Sol verifier | 0.03 | 0.03 | 0.04 | 0.25 | 0.09 | 0.16 | 0.59 | 0.61 |
+| G B, OpenRouter: DeepSeek V4 Flash scouts, Hy4 deep dives | 0.03 | 0.06 | 0.06 | 0.21 | 0.38 | 0.16 | 0.89 | 0.79 |
+| H floor: GPT-6 Luna everywhere, Sonnet 5 synthesizer | 0.00 | 0.09 | 0.00 | 0.04 | 0.19 | 0.01 | 0.34 | 0.27 |
+| I Opus 5.5 everywhere | 0.03 | 5.46 | 0.17 | 2.53 | 0.38 | 0.38 | 8.95 | 4.37 |
 
-The model below prices the p01 token profile: 3 scouts (one salvaged), gap analysis, 2 deep dives
-(both salvaged), synthesis, and verification. Prices are list prices from `genai-prices` 0.1.8 on
-2026-09-25. On the current defaults it predicts **$3.20** a question. p01 was billed $2.66 with one
-deep dive and $2.94 with two, so the model runs about 10% high.
+USD per question, list prices from `genai-prices` 0.1.8 on 2026-09-25. "Total" uses the loop
+caching the pilot's usage showed; "Cached" assumes 80% of every tool loop's input is read from cache.
 
-USD per question, loop caching as the pilot's bills imply it happened:
+- **The deep dive and the scouts are loops; everything else is single calls.** Moving the loops
+  is where money is saved. Moving the finishing calls buys little and risks the report.
+- **Caching helps OpenAI and Anthropic loops, not GLM.** GLM already caches 84%, so lineups built
+  on it gain nothing from the switch (E and F cost slightly more under the 80% assumption).
+- **Putting a premium model everywhere is the wrong trade.** I costs almost three times A, mostly
+  on scouts. The pilot scouts stopped on request and tool-call limits, not on reasoning.
 
-| Lineup | Planner | Scout | Gap | Deep dive | Synthesizer | Verifier | Total |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| A current defaults | 0.04 | 0.56 | 0.12 | **1.70** | 0.47 | 0.31 | **3.20** |
-| B successors (recommended) | 0.03 | 0.56 | 0.06 | 0.85 | 0.38 | 0.16 | **2.03** |
-| C B, Sonnet 5 synthesizer | 0.03 | 0.56 | 0.06 | 0.85 | 0.19 | 0.16 | 1.85 |
-| D budget: DeepSeek scouts (needs the provider added), Luna gap, Sonnet 5 planner and synthesizer | 0.02 | 0.07 | 0.00 | 0.85 | 0.19 | 0.16 | 1.28 |
-| E floor: GPT-6 Luna everywhere but a Sonnet 5 synthesizer | 0.00 | 0.09 | 0.00 | 0.04 | 0.19 | 0.01 | 0.34 |
-| F Opus 5.5 everywhere | 0.03 | 5.46 | 0.17 | 2.53 | 0.38 | 0.38 | 8.95 |
+## OpenRouter
 
-With caching configured on every tool loop (80% of loop input read from cache), the totals are
-A $2.32, B $1.61, C $1.42, D $0.83, E $0.27, and F $4.37.
+OpenRouter's site is blocked from this environment. Prices come from the copy of its catalog in
+`genai-prices`, and rankings from web search.
 
-What this shows:
-
-- **The deep dive is the lever.** It is 53% of today's cost. The pilot's bill ($0.66 for 158,600
-  input tokens on GPT-5.6 Sol) implies only about 5% of that input was billed as cached, against
-  about 84% for the GLM scouts. GPT-6 Sol halves the rate, and caching halves it again.
-- **Scouts are already cheap** because GLM-5.3 caches well. GPT-6 Luna or DeepSeek V4 Flash would
-  cut them to under $0.10, but neither has a measured search score in this loop. DeepSeek is not
-  a supported provider yet: `settings.py` and `diagnose.py` would need a `deepseek` entry.
-- **Putting a premium model everywhere is the wrong trade.** F costs almost three times A,
-  mostly on scouts. The pilot scouts stopped on request and tool-call counts, not on reasoning.
-- **Finishing calls are cheap to make good.** Opus 5.5 synthesis costs $0.38. A synthesis or
-  verification failure throws away research that cost several times that.
+- **Nothing on OpenRouter beats the adopted lineup on the evidence found.** For the synthesizer
+  and verifier, no open model has published results that challenge Opus 5.5 and GPT-6 Sol. For deep
+  dives, the one open model with a frontier BrowseComp score, Kimi K3 (91.2%), costs as much as GPT-6 Sol.
+- **Its top tool-calling models by usage** are GLM-5.3 Flash, DeepSeek V4.1 Flash, and Tencent
+  Hy4 preview. Usage measures adoption, not quality. GLM-5.3 Flash is reachable today through `zai`;
+  the other two need an OpenRouter provider (lineup G).
+- **Using OpenRouter needs code.** `settings.py` accepts only `openai`, `anthropic`, `google`,
+  `xai`, and `zai`, and rejects an `openrouter:` override before any job starts. PydanticAI 2.48
+  supports `openrouter:` ids, so the change is an `OPENROUTER_API_KEY` entry in `PROVIDER_KEY_ENV`,
+  a diagnose endpoint, and docs.
+- **Unpriced models turn off the dollar caps.** `genai-prices` has no entry for Hy4 preview, so
+  PydanticAI reports its cost as `None`. `_record_spend` then stops tracking the job's spend, so
+  the job cost cap cannot hold. The script prices Hy4 from its OpenRouter listing ($0.834 /
+  $0.042 cached / $2.501). Any unpriced model needs a price source before a paid run.
+- **Catalog prices can lag.** The catalog lists GPT-5.6 Sol at $2 / $10. OpenAI lists $4 / $20,
+  a promotional price available at least through 2026-11-21. This doc uses OpenAI's price.
 
 ## Quality evidence
 
-Public numbers only narrow the field. They were run with other scaffolds, tools, and effort
-settings, and sources disagree with each other (two reports give GLM-5.3 an Artificial Analysis
-index of 45 and 60, under different index versions).
+Public numbers only narrow the field. They come from other scaffolds, tools, and effort settings,
+and sources disagree: two reports give GLM-5.3 an Artificial Analysis index of 45 and 60, under
+different index versions.
 
 | Model | $ in / cached / out per M | Evidence relevant to this loop |
 |---|---|---|
-| Claude Opus 5.5 (released 2026-09-22) | 4 / 0.20 / 20 | Tops the Artificial Analysis index at max effort (58). BrowseComp about 90–91%. Cheaper than Opus 5 and ahead on every benchmark Anthropic published for both |
-| Claude Sonnet 5 | 2 / 0.20 / 10 | Below Opus 5.5 overall. Anthropic reports lower hallucination and sycophancy than Sonnet 4.6. No DRB-II number found |
-| GPT-6 Sol (2026-09-22) | 2 / 0.20 / 10 | About one index point above GPT-5.6 Sol at half the price. OpenAI puts it at 90–95% of GPT-6 Astra's practical capability for 20% of the cost. No BrowseComp number published; GPT-5.6 Sol has 92.2% |
-| GPT-5.6 Sol (current default) | 4 / 0.40 / 20 | BrowseComp 92.2%, second on that leaderboard |
-| GPT-6 Luna | 0.10 / 0.01 / 0.50 | Matches earlier flagships on OpenAI's agent benchmarks (DeepSWE 66.6%, Agents' Last Exam 50.9%). No search benchmark published |
-| GLM-5.3 (current scout) | 1.40 / 0.26 / 4.40 | BrowseComp 75.9% |
-| DeepSeek V4 Flash (V4.1) | 0.22 / 0.007 / 0.66 | Strong coding and agent numbers (Terminal-Bench 2.1 90.6). No BrowseComp number found. Peak-hour prices are about double |
-| Kimi K3 | 3 / 0.30 / 15 | BrowseComp 91.2%, but priced like a frontier model |
+| Claude Opus 5.5 (2026-09-22) | 4 / 0.20 / 20 | Top of the Artificial Analysis index at max effort (58). BrowseComp about 90–91%. Ahead of Opus 5 on every benchmark Anthropic published for both |
+| Claude Sonnet 5 | 2 / 0.20 / 10 | Below Opus 5.5 overall. Anthropic reports less hallucination and sycophancy than Sonnet 4.6 |
+| GPT-6 Sol (2026-09-22) | 2 / 0.20 / 10 | About one index point above GPT-5.6 Sol. OpenAI puts it at 90–95% of GPT-6 Astra's practical capability for 20% of the cost. No BrowseComp number published |
+| GPT-5.6 Sol | 4 / 0.40 / 20 (promotional) | BrowseComp 92.2%, second on that leaderboard |
+| GPT-6 Luna | 0.10 / 0.01 / 0.50 | DeepSWE 66.6%, Agents' Last Exam 50.9%. No search benchmark published |
+| GLM-5.3 | 1.40 / 0.26 / 4.40 | BrowseComp 75.9%. Synthesizer in the p01 evidence-v4 rerun |
+| GLM-5.3-Flash | 0.075 / 0.015 / 0.25 | Toolathlon 78.4, AutomationBench 48.8. Artificial Analysis index 57 in one report, 42 in another. At or near the top of OpenRouter's tool-calling usage |
+| DeepSeek V4.1 Flash | 0.10–0.22 / 0.003–0.02 / 0.20–0.66 | Terminal-Bench 2.1 90.6. At or near the top of OpenRouter's tool-calling usage. Peak-hour prices are about double. No BrowseComp number found |
+| Tencent Hy4 preview | 0.834 / 0.042 / 2.501 | 770B mixture-of-experts. Trades wins with Kimi K3 and GLM-5.3; behind Opus 5 and GPT-5.6. Not in `genai-prices` |
+| Kimi K3 | 3 / 0.30 / 15 | BrowseComp 91.2% |
 
-BrowseComp is close to saturated at the top: the leaders are within 1 point of each other. It
-still separates GLM-5.3 (75.9%) from the frontier. That is the one quality gap in the
-recommended lineup worth measuring, not assuming.
+BrowseComp is close to saturated at the top, with the leaders within 1 point of each other. It still
+separates GLM-5.3 from the frontier. That gap, and whether GLM-5.3-Flash shares it, is what the
+trials must measure.
 
 ## Compatibility checked
 
-The pinned `pydantic-ai-slim` 2.48.0 already has profiles for every recommended model:
+The pinned `pydantic-ai-slim` 2.48.0 has profiles for Opus 5.5, Sonnet 5, GPT-6 Sol and Luna,
+GLM-5.3 and GLM-5.3-Flash, and DeepSeek V4:
 
-- **Opus 5.5** rejects a forced `tool_choice`. When a `thinking` setting is present, PydanticAI
+- **Opus 5.5 rejects a forced `tool_choice`.** When a `thinking` setting is present, PydanticAI
   switches its structured output to native JSON-schema output, which Opus 5.5 supports. Every
-  route sets `thinking`, so no code change is needed. Opus 5.5 cannot turn thinking off, so
-  never give an Opus 5.5 route `thinking=False`.
+  route sets `thinking`, so nothing breaks. Opus 5.5 cannot turn thinking off: never give it
+  `thinking=False`.
 - **Opus 5.5 effort levels are not Opus 5's.** Its default is `medium`, and at a given level it
-  thinks more than Opus 5 did. Keeping `high` on the planner and synthesizer would spend more
-  output tokens than the table assumes. Use `medium`, then raise it only if DRB-II scores ask for it.
-- **GPT-6 Sol and Luna** are in the OpenAI profile, with reasoning effort and prompt-cache
-  breakpoints. Like GPT-5.6, they do not accept `minimal`; no route uses it.
-- `research-diagnose --smoke` should still pass on each new ID before a paid run. GPT-6 Sol and
-  Opus 5.5 are three days old.
+  thinks more than Opus 5 did. Keeping `high` would spend more output tokens than modeled here.
+- **GPT-6 Sol and Luna have reasoning effort and prompt-cache breakpoints.** Like GPT-5.6, they
+  do not accept `minimal`, which no route uses.
+- **Check new IDs first.** Run `research-diagnose --smoke` on each new ID before a paid run. GPT-6
+  Sol and Opus 5.5 are three days old.
 
 ## What to change
 
-1. **Model IDs (configuration only).** In `.env`:
+1. **Models (configuration only).** In `.env`:
 
    ```
    RESEARCH_PLANNER_MODEL=anthropic:claude-opus-5-5
@@ -107,55 +176,63 @@ The pinned `pydantic-ai-slim` 2.48.0 already has profiles for every recommended 
    RESEARCH_GAP_MODEL=openai:gpt-6-sol
    RESEARCH_DEEP_MODEL=openai:gpt-6-sol
    RESEARCH_VERIFY_MODEL=openai:gpt-6-sol
-   RESEARCH_CHEAP_SCOUT_MODEL=openai:gpt-6-luna
+   RESEARCH_CHEAP_SCOUT_MODEL=zai:glm-5.3-flash
    ```
 
-   `RESEARCH_CHEAP_SCOUT_MODEL` also moves from GPT-5.6 Luna ($0.20 / $1.20) to GPT-6 Luna
-   ($0.10 / $0.50). `RESEARCH_ALT_DEEP_MODEL` (`xai:grok-4.5`) returned HTTP 403 in the v4 rerun.
-   Point it at a provider you have, or leave verification rounds at 0 as the study does.
-2. **Thinking effort (code).** Environment overrides replace only the model, so the Opus 5.5
-   `medium` effort needs `policy.py` edits to the planner and synthesizer routes.
-3. **Prompt caching (code).** Add `{"anthropic_cache": True}` to Anthropic routes and a
-   per-route `openai_prompt_cache_key` to OpenAI routes, then compare
-   `usage.cache_read_tokens` for deep dives before and after. Caching changes what is billed,
-   not what the model sees, so it does not change `prompts_sha256`. It does change the policy
-   snapshot and the config fingerprint.
+   The cheap scout only takes low-difficulty questions that do not need primary sources, so moving
+   it from GPT-5.6 Luna to GLM-5.3-Flash is low risk. `RESEARCH_ALT_DEEP_MODEL` (`xai:grok-4.5`)
+   returned HTTP 403 in the v4 rerun. Point it at a provider you have, or leave verification rounds
+   at 0 as the study does.
+2. **Thinking effort (code).** Environment overrides replace only the model. Opus 5.5's `medium`
+   effort needs `policy.py` edits to the planner and synthesizer routes.
+3. **Prompt caching (code).** Add `{"anthropic_cache": True}` to Anthropic routes and a per-route
+   `openai_prompt_cache_key` to OpenAI routes. Then compare deep dives' `usage.cache_read_tokens`
+   before and after. Caching changes what is billed, not what the model sees, so `prompts_sha256`
+   stays the same. The policy snapshot and config fingerprint change.
+4. **OpenRouter (code, only if lineup G is wanted).** See [OpenRouter](#openrouter).
 
 ## How to confirm it
 
-Compare A against B, then B against each single-role change (C for the synthesizer, GPT-6 Luna
-scouts), with the core suite and graph version held fixed. Each lineup is a separate
-`research-bench` run with its own `.env`. The manifest's policy snapshot records the routes.
+Run A against B first, then B against one role change at a time, in order of expected saving:
+C (Flash scouts), D (GLM synthesizer), E (GLM deep dives). Keep the core suite and graph version
+fixed. Each lineup is a separate `research-bench` run with its own `.env`, and the manifest's policy
+snapshot records the routes.
 
 | Role changed | Lane | Watch |
 |---|---|---|
 | Scout | BrowseComp | exact-answer match, then the official grader; cost per correct answer; unique-search rate |
 | Deep dive | BrowseComp, DRB-II | primary-source rate, observed-source rate, salvage count |
 | Synthesizer | DRB-II through the official evaluator (`--export-reports`) | rubric score, supported-claim rate |
-| Verifier | DRB-II | **hold the grader fixed**: the supported-claim rates are judged by the run's own verifier, so changing the verifier changes the ruler. Rescore reports with one fixed judge, or use official graders |
+| Verifier | DRB-II | **Hold the grader fixed.** The supported-claim rates are judged by the run's own verifier, so changing the verifier changes the ruler. Rescore with one fixed judge, or use official graders |
 
-The core suite (20 BrowseComp and 12 DRB-II cases) costs about $65 per lineup at B's p01 rate,
-so five lineups cost about $325 before retries. Start with A and B on a few cases each.
+The core suite (20 BrowseComp and 12 DRB-II cases) costs about $65 per lineup at B's p01 rate.
+Start with A and B on a few cases each.
 
 ## Caveats
 
-- One token profile. p01 is a scholarly literature question; BrowseComp and GAIA cases use
+- **The cost model checks tokens, not prices.** The p01 costs in PROMPT_SIZES.md are PydanticAI
+  estimates from `genai-prices`, not provider invoices. The model's $3.20 for A against the
+  recorded $2.94 confirms the token profile and the cache shares, which come from provider-reported
+  usage. It does not confirm list prices. Check invoices after the first paid run.
+- **One token profile.** p01 is a scholarly literature question; BrowseComp and GAIA cases use
   different tools and loop lengths.
-- Tokenizers differ. The model scales Anthropic input by 1.52 and treats other vendors like
-  OpenAI. It does not model the different amounts of thinking output each model writes.
-- Cache shares for providers the pilot did not use are guesses. DeepSeek peak-hour prices and
-  Gemini 3.8 Flash's price doubling on 2027-01-01 are in `genai-prices`; run the script with
-  `--date` to see them.
-- [PROMPT_SIZES.md](../long_horizon/agentic_se/PROMPT_SIZES.md) calls the pilot's deep-dive
-  model GPT-6 Astra at $20 per million input tokens, and gives GPT-5.6 Sol's price as $2 / $10.
-  The pilot bills match GPT-5.6 Sol at $4 / $20, the default deep-dive route. The model here uses
-  that price.
+- **Tokenizers and thinking.** Anthropic input is scaled by 1.52, and every other vendor is treated
+  like OpenAI. The different amounts of thinking output each model writes are not modeled.
+- **Guessed cache shares.** Cache shares for vendors the pilot did not use are guesses (50%).
+- **Prices that change.** GPT-5.6 Sol's price is promotional. Gemini 3.8 Flash doubles on
+  2027-01-01, and DeepSeek has peak-hour rates. Rerun the script with `--date`.
+- **A mislabel in PROMPT_SIZES.md.** It calls the pilot's deep-dive model GPT-6 Astra at $20 per
+  million input tokens. The recorded cost matches GPT-5.6 Sol at $4 / $20, the default deep-dive
+  route.
 
 ## Sources
 
-- Prices: [`genai-prices`](https://pypi.org/project/genai-prices/) 0.1.8, cross-checked with
-  [VentureBeat on GPT-6 Sol and Luna](https://venturebeat.com/technology/openai-releases-gpt-6-sol-and-luna-models-slashing-api-costs-50-or-more)
-  and the [DeepSeek V4.1 Flash review](https://blog.buildfastwithai.com/deepseek-v4-1-flash-review)
+- Prices: [`genai-prices`](https://pypi.org/project/genai-prices/) 0.1.8, including its OpenRouter
+  catalog; [GPT-5.6 Sol model page (OpenAI)](https://developers.openai.com/api/docs/models/gpt-5.6-sol);
+  [VentureBeat on GPT-6 Sol and Luna](https://venturebeat.com/technology/openai-releases-gpt-6-sol-and-luna-models-slashing-api-costs-50-or-more);
+  [Hy4 preview on OpenRouter](https://openrouter.ai/tencent/hy4-preview)
+- OpenRouter usage: [tool-calling collection](https://openrouter.ai/collections/tool-calling-models),
+  [rankings](https://openrouter.ai/rankings)
 - [Introducing GPT-6 Sol and Luna (OpenAI)](https://openai.com/index/introducing-gpt-6-sol-and-luna/),
   [GPT-6 Sol vs GPT-5.6 Sol](https://www.orcarouter.ai/blog/gpt-6-sol-vs-gpt-5-6-sol)
 - [Claude Opus 5.5 benchmarks (Vellum)](https://www.vellum.ai/blog/claude-opus-5-5-benchmarks-explained),
@@ -163,5 +240,8 @@ so five lineups cost about $325 before retries. Start with A and B on a few case
   [Migrating to Claude Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide)
 - [BrowseComp leaderboard (BenchLM)](https://benchlm.ai/benchmarks/browsecomp),
   [GLM-5.3 on Artificial Analysis](https://artificialanalysis.ai/models/glm-5-3),
-  [Kimi K3 benchmarks](https://codersera.com/blog/kimi-k3-benchmarks-comparison-2026/)
+  [GLM-5.3-Flash benchmarks (DataCamp)](https://www.datacamp.com/blog/glm-5-3-flash),
+  [Kimi K3 benchmarks](https://codersera.com/blog/kimi-k3-benchmarks-comparison-2026/),
+  [Tencent Hy4 preview benchmarks](https://www.developersdigest.tech/blog/tencent-hy4-preview-770b-open-moe-2026),
+  [DeepSeek V4.1 Flash review](https://blog.buildfastwithai.com/deepseek-v4-1-flash-review)
 - [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II)
