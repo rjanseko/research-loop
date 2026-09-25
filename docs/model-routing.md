@@ -220,6 +220,33 @@ graph version fixed.
 The core suite (20 BrowseComp and 12 DRB-II cases) costs about $65 per lineup at B's p01 rate.
 Start with A and B on a few cases each.
 
+## Tool-loop context
+
+Scouts and deep dives resend their whole history each turn. `scripts/loop_costs.py` replays one
+loop request by request on the p01 profile and prices changes to that history. It simulates the
+provider cache instead of assuming a share: a request reads from cache the prefix it shares with
+the previous request. `value`'s loop models, USD per question:
+
+| Change to the loops | Caching works | No caching |
+|---|---:|---:|
+| Baseline, resend everything | 1.48 | 2.76 |
+| Mask tool results older than the last 3 turns | 1.63 (+10%) | 2.18 (−21%) |
+| The same, moving the cutoff only every 4 turns | 1.50 (+1%) | 2.31 (−16%) |
+| 40% fewer turns (budget awareness, as BATS reported) | 1.20 (−19%) | 1.70 (−38%) |
+| Two tool calls per turn | 1.34 (−10%) | 1.87 (−32%) |
+| Repeated fetches return a stub (20% of result tokens) | 1.44 (−3%) | 2.58 (−6%) |
+| Batched masking, two calls per turn, dedup, fewer turns | 1.15 (−22%) | 1.28 (−54%) |
+
+- **Masking fights caching.** Masking a result changes the prompt from that point, so everything
+  after it is billed fresh. When caching works, masking every turn costs more than it saves, even
+  though it sends a third fewer tokens. It pays only where the loop is not cached.
+- **Fewer turns save money under any caching.** Each turn saved removes one whole resend. The levers
+  are telling the loop its remaining budget and letting it make several tool calls per turn. The
+  loop gathering less in fewer turns is the risk to measure.
+- **The savings are a model, not a result.** Per-turn sizes are solved from the profile's totals
+  with an assumed 2,500-token starting prompt. Fetches are larger than searches in practice. Run
+  `--hit-rate 0.8` for imperfect caching and `--lineup` for other models.
+
 ## Caveats
 
 - **The cost model checks tokens, not prices.** The p01 costs in PROMPT_SIZES.md are PydanticAI
