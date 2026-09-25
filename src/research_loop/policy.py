@@ -25,6 +25,10 @@ class ModelRoute:
     cost_limit: float | None = None
     thinking: ThinkingEffort = None
     settings: dict[str, Any] = field(default_factory=dict)
+    # Ask the provider to cache the growing prompt prefix of a tool loop. Anthropic caches only
+    # when asked; OpenAI caches automatically, and a stable key raises its hit rate. Other
+    # providers cache on their own, so the flag adds nothing for them.
+    prompt_cache: bool = False
 
     def __post_init__(self) -> None:
         # Frozen, so this also checks every replace(), including salvage and study overrides.
@@ -48,6 +52,13 @@ class ModelRoute:
         result = dict(self.settings)
         if self.thinking is not None:
             result["thinking"] = self.thinking
+        if self.prompt_cache:
+            # Chosen from the model at call time, so a model override keeps caching working.
+            provider = self.model.partition(":")[0]
+            if provider == "anthropic":
+                result.setdefault("anthropic_cache", True)
+            elif provider == "openai":
+                result.setdefault("openai_prompt_cache_key", f"research-loop:{self.model}")
         return result or None
 
     def snapshot(self) -> dict[str, Any]:
@@ -59,6 +70,8 @@ class ModelRoute:
             "cost_limit": self.cost_limit,
             "thinking": self.thinking,
             "settings": self.settings,
+            # Recorded only when set, so presets without caching keep their earlier fingerprint.
+            **({"prompt_cache": True} if self.prompt_cache else {}),
         }
 
     def salvage(self) -> ModelRoute:
@@ -212,6 +225,11 @@ DEFAULT_MODELS: dict[str, str] = {
     "RESEARCH_BREADTH_SCOUT_MODEL": "openai:gpt-5.6-luna",
     "RESEARCH_GLM_GAP_MODEL": "zai:glm-5.3",
     "RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3-flash",
+    "RESEARCH_VALUE_PLANNER_MODEL": "anthropic:claude-opus-5-5",
+    "RESEARCH_VALUE_GAP_MODEL": "openai:gpt-6-sol",
+    "RESEARCH_VALUE_DEEP_MODEL": "openai:gpt-6-sol",
+    "RESEARCH_VALUE_SYNTH_MODEL": "anthropic:claude-opus-5-5",
+    "RESEARCH_VALUE_VERIFY_MODEL": "openai:gpt-6-sol",
 }
 
 
@@ -301,6 +319,39 @@ def _glm_heavy_policy() -> ModelPolicy:
     )
 
 
+def _value_policy() -> ModelPolicy:
+    """The lineup docs/model-routing.md recommends: newer models at `quality`'s limits, with caching.
+
+    Opus 5.5 thinks more than Opus 5 at the same level, so its routes use `medium`. The scout,
+    multimodal scout, and alternate deep dive keep `quality`'s models and overrides; the cheap
+    scout shares `glm-heavy`'s.
+    """
+    p = _quality_policy()
+    q = p.routes
+    routes = {
+        ResearchRole.PLANNER: replace(
+            q[ResearchRole.PLANNER], model=_model("RESEARCH_VALUE_PLANNER_MODEL"), thinking="medium",
+        ),
+        ResearchRole.SCOUT: q[ResearchRole.SCOUT],
+        ResearchRole.GAP_ANALYST: replace(q[ResearchRole.GAP_ANALYST], model=_model("RESEARCH_VALUE_GAP_MODEL")),
+        ResearchRole.DEEP_DIVE: replace(q[ResearchRole.DEEP_DIVE], model=_model("RESEARCH_VALUE_DEEP_MODEL")),
+        ResearchRole.SYNTHESIZER: replace(
+            q[ResearchRole.SYNTHESIZER], model=_model("RESEARCH_VALUE_SYNTH_MODEL"), thinking="medium",
+        ),
+        ResearchRole.VERIFIER: replace(q[ResearchRole.VERIFIER], model=_model("RESEARCH_VALUE_VERIFY_MODEL")),
+    }
+    cheap_scout = ModelRoute(_model("RESEARCH_GLM_CHEAP_MODEL"), 10, 20, 80_000, 0.30, "low")
+    cached = {role: replace(route, prompt_cache=True) for role, route in routes.items()}
+    return ModelPolicy(
+        "value",
+        cached,
+        cheap_scout=replace(cheap_scout, prompt_cache=True),
+        multimodal_scout=replace(p.multimodal_scout, prompt_cache=True),
+        alternate_deep_dive=replace(p.alternate_deep_dive, prompt_cache=True),
+        planner_question_range=p.planner_question_range,
+    )
+
+
 def _synthetic_policy() -> ModelPolicy:
     route = ModelRoute("synthetic:fake", 5, 5, 5_000)
     return ModelPolicy("synthetic", {role: route for role in ResearchRole}, planner_question_range=(1, 1))
@@ -310,6 +361,7 @@ _POLICY_FACTORIES = {
     "quality": _quality_policy,
     "breadth": _breadth_policy,
     "glm-heavy": _glm_heavy_policy,
+    "value": _value_policy,
     "synthetic": _synthetic_policy,
 }
 # Built at import from the environment at that time; get_policy() builds fresh routes.
@@ -333,13 +385,22 @@ def get_policy(name: str, *, model_overrides: Mapping[str, str] | None = None) -
         ResearchRole.SYNTHESIZER: "RESEARCH_SYNTH_MODEL",
         ResearchRole.VERIFIER: "RESEARCH_VERIFY_MODEL",
     }
+    if name == "value":
+        # Its own names, so pointing `quality` at another model leaves this lineup as it is.
+        route_names |= {
+            ResearchRole.PLANNER: "RESEARCH_VALUE_PLANNER_MODEL",
+            ResearchRole.GAP_ANALYST: "RESEARCH_VALUE_GAP_MODEL",
+            ResearchRole.DEEP_DIVE: "RESEARCH_VALUE_DEEP_MODEL",
+            ResearchRole.SYNTHESIZER: "RESEARCH_VALUE_SYNTH_MODEL",
+            ResearchRole.VERIFIER: "RESEARCH_VALUE_VERIFY_MODEL",
+        }
     for role, env_name in route_names.items():
         if model := model_overrides.get(env_name):
             policy.routes[role] = replace(policy.routes[role], model=model)
     if name == "breadth":
         policy.cheap_scout = policy.routes[ResearchRole.SCOUT]
     elif policy.cheap_scout:
-        env_name = "RESEARCH_GLM_CHEAP_MODEL" if name == "glm-heavy" else "RESEARCH_CHEAP_SCOUT_MODEL"
+        env_name = "RESEARCH_GLM_CHEAP_MODEL" if name in {"glm-heavy", "value"} else "RESEARCH_CHEAP_SCOUT_MODEL"
         if model := model_overrides.get(env_name):
             policy.cheap_scout = replace(policy.cheap_scout, model=model)
     if policy.multimodal_scout and (model := model_overrides.get("RESEARCH_MULTIMODAL_MODEL")):

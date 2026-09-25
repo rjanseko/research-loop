@@ -54,8 +54,8 @@ chmod 600 .env
 | Variable | Default | Used for |
 |---|---|---|
 | `DATABASE_URL` | unset | Postgres DSN for `research-db`, `--persist`, and `--repository postgres` |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY` | unset | Provider credentials |
-| `RESEARCH_ENABLED_PROVIDERS` | providers with a key | Comma-separated subset of `openai,anthropic,google,xai,zai` |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY` | unset | Provider credentials |
+| `RESEARCH_ENABLED_PROVIDERS` | providers with a key | Comma-separated subset of `openai,anthropic,google,xai,zai,openrouter` |
 | `RESEARCH_*_MODEL` | see below | Model route overrides, each `provider:model` |
 | `RESEARCH_BENCHMARK_CACHE` | `.cache/research-loop` | Downloaded datasets and the acquisition cache |
 | `RESEARCH_BENCHMARK_OUTPUT` | `benchmark_outputs` | Experiment manifests and pilot outputs (ignored by git) |
@@ -76,10 +76,10 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | Variable | Route |
 |---|---|
 | `RESEARCH_PLANNER_MODEL` | Planner |
-| `RESEARCH_SCOUT_MODEL` | Scout (`quality`, `glm-heavy`) |
+| `RESEARCH_SCOUT_MODEL` | Scout (`quality`, `glm-heavy`, `value`) |
 | `RESEARCH_BREADTH_SCOUT_MODEL` | Scout and cheap scout (`breadth`) |
 | `RESEARCH_CHEAP_SCOUT_MODEL` | Cheap scout for low-difficulty questions that do not need primary sources (`quality`) |
-| `RESEARCH_GLM_CHEAP_MODEL` | Cheap scout (`glm-heavy`) |
+| `RESEARCH_GLM_CHEAP_MODEL` | Cheap scout (`glm-heavy`, `value`) |
 | `RESEARCH_MULTIMODAL_MODEL` | Scout for questions that need image input |
 | `RESEARCH_GAP_MODEL` | Gap analyst (`quality`, `breadth`) |
 | `RESEARCH_GLM_GAP_MODEL` | Gap analyst (`glm-heavy`) |
@@ -87,8 +87,11 @@ Each policy in `policy.py` routes every role to a model. These variables replace
 | `RESEARCH_ALT_DEEP_MODEL` | Deep dives in verification rounds |
 | `RESEARCH_SYNTH_MODEL` | Synthesizer, including long-horizon synthesis |
 | `RESEARCH_VERIFY_MODEL` | Verifier |
+| `RESEARCH_VALUE_PLANNER_MODEL`, `RESEARCH_VALUE_GAP_MODEL`, `RESEARCH_VALUE_DEEP_MODEL`, `RESEARCH_VALUE_SYNTH_MODEL`, `RESEARCH_VALUE_VERIFY_MODEL` | Planner, gap analyst, deep dive, synthesizer, and verifier (`value`) |
 
-An override must be `provider:model` for one of the providers above; any other value, such as an `openrouter:` id, stops the CLIs when settings load, before any job starts. Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
+Planner, gap analyst, deep dive, synthesizer, and verifier variables without `VALUE` apply to every preset except `value`, which has its own, so pointing `quality` at another model leaves the `value` lineup unchanged. Every other variable is shared by the presets named beside it.
+
+An override must be `provider:model` for one of the providers above; any other value, such as a `together:` id, stops the CLIs when settings load, before any job starts. OpenRouter serves many vendors' models under one key, written `openrouter:vendor/model`, for example `openrouter:tencent/hy4-preview`. PydanticAI prices calls from the `genai-prices` table, not from OpenRouter's reported cost, so a model missing from that table has no known cost and the job's dollar cap stops working. `research-diagnose --smoke` warns about such a route. Without an override, each route uses its entry in `DEFAULT_MODELS` in `policy.py`. `.env.example` lists the same values, and a test fails if the two drift apart. Model IDs still go stale, and a model listed by a provider is not proof of inference access, so confirm every route with `research-diagnose --smoke` before a paid run.
 
 ## Postgres
 
@@ -166,6 +169,7 @@ Sandboxed environments often allow only some hosts. Each provider you use must b
 | Google | `generativelanguage.googleapis.com` |
 | xAI | `api.x.ai` |
 | Z.ai | `api.z.ai` |
+| OpenRouter | `openrouter.ai` |
 
 The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, `api.crossref.org`, `api.opencitations.net`, `aclanthology.org`, and `api.semanticscholar.org` for basis papers), the search engines the web search tool tries in turn (the `ddgs` library queries Wikipedia, DuckDuckGo, Brave, Google, Mojeek, Yahoo, and others, not only DuckDuckGo), and whatever pages `web_fetch` follows. Those pages can be on any site, so under a domain allowlist most fetches fail. For real research runs, use a level of network access that allows general public web access.
 
@@ -173,7 +177,7 @@ The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, 
 
 ### Before the first query
 
-- **Budget and scope.** Decide how many queries, which policy (`quality` or `breadth`), and whether to use benchmark cases or your own questions. Each route has a cost cap per call, but that does not limit the total spend of a batch.
+- **Budget and scope.** Decide how many queries, which policy (`quality`, `breadth`, or `value`), and whether to use benchmark cases or your own questions. Each route has a cost cap per call, but that does not limit the total spend of a batch.
 - **Model IDs.** The defaults can go stale. Run `research-diagnose --policy quality --smoke` ([below](#checking-readiness)), which makes one small paid call per distinct model, and fix any failing route with an override rather than by editing `policy.py`.
 - **Postgres (optional).** Without `DATABASE_URL`, runs stay in memory. To keep jobs and evidence, point `DATABASE_URL` at a Postgres database ([above](#postgres)); the Compose service needs Docker.
 

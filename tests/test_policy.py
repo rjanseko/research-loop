@@ -27,7 +27,7 @@ def test_primary_source_question_uses_main_scout():
 
 def test_structured_output_roles_raise_default_output_cap():
     # Anthropic sends max_tokens=4096 unless set, shared by adaptive thinking and the output.
-    for name in ("quality", "breadth", "glm-heavy"):
+    for name in ("quality", "breadth", "glm-heavy", "value"):
         policy = get_policy(name, model_overrides={"RESEARCH_SYNTH_MODEL": "openai:override"})
         for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
             assert policy.for_role(role).model_settings()["max_tokens"] >= 16_000
@@ -64,7 +64,7 @@ def test_routes_fall_back_to_default_models(monkeypatch) -> None:
 
     for name in DEFAULT_MODELS:
         monkeypatch.delenv(name, raising=False)  # a test may have loaded the local .env
-    quality, breadth, glm = (get_policy(name) for name in ("quality", "breadth", "glm-heavy"))
+    quality, breadth, glm, value = (get_policy(name) for name in ("quality", "breadth", "glm-heavy", "value"))
     used = {
         "RESEARCH_PLANNER_MODEL": quality.for_role(ResearchRole.PLANNER).model,
         "RESEARCH_SCOUT_MODEL": quality.for_role(ResearchRole.SCOUT).model,
@@ -78,6 +78,11 @@ def test_routes_fall_back_to_default_models(monkeypatch) -> None:
         "RESEARCH_BREADTH_SCOUT_MODEL": breadth.for_role(ResearchRole.SCOUT).model,
         "RESEARCH_GLM_GAP_MODEL": glm.for_role(ResearchRole.GAP_ANALYST).model,
         "RESEARCH_GLM_CHEAP_MODEL": glm.cheap_scout.model,
+        "RESEARCH_VALUE_PLANNER_MODEL": value.for_role(ResearchRole.PLANNER).model,
+        "RESEARCH_VALUE_GAP_MODEL": value.for_role(ResearchRole.GAP_ANALYST).model,
+        "RESEARCH_VALUE_DEEP_MODEL": value.for_role(ResearchRole.DEEP_DIVE).model,
+        "RESEARCH_VALUE_SYNTH_MODEL": value.for_role(ResearchRole.SYNTHESIZER).model,
+        "RESEARCH_VALUE_VERIFY_MODEL": value.for_role(ResearchRole.VERIFIER).model,
     }
     assert used == DEFAULT_MODELS
 
@@ -118,10 +123,11 @@ def test_retry_budget_refuses_the_rerun_finishing_prompts_and_allows_the_first_p
 
 def test_quality_finishing_routes_fit_a_retry_of_prompts_nearly_twice_p01() -> None:
     # The trimmed p01 rerun prompts (PROMPT_SIZES.md) at 1.8x: a deeper question still gets its retry.
-    policy = get_policy("quality")
-    for role, chars in ((ResearchRole.SYNTHESIZER, 94_390), (ResearchRole.VERIFIER, 123_055)):
-        route = policy.for_role(role)
-        assert retry_token_budget("x" * int(chars * 1.8), route, role) <= route.total_tokens_limit
+    for name in ("quality", "value"):
+        policy = get_policy(name)
+        for role, chars in ((ResearchRole.SYNTHESIZER, 94_390), (ResearchRole.VERIFIER, 123_055)):
+            route = policy.for_role(role)
+            assert retry_token_budget("x" * int(chars * 1.8), route, role) <= route.total_tokens_limit
 
 
 @pytest.mark.parametrize(
@@ -147,7 +153,7 @@ def test_route_rejects_limits_no_call_could_run_under(fields, message) -> None:
 
 def test_tool_free_route_and_every_preset_are_valid() -> None:
     assert ModelRoute("test", 1, 0, 1).max_tool_calls == 0
-    for name in ("quality", "breadth", "glm-heavy", "synthetic"):
+    for name in ("quality", "breadth", "glm-heavy", "value", "synthetic"):
         policy = get_policy(name)
         policy.validate()
         for route in policy.routes.values():
@@ -188,3 +194,55 @@ async def test_job_creation_rechecks_a_policy_changed_after_construction() -> No
     loop.policy.job_reserve_usd = 3.0
     with pytest.raises(ValueError, match="job_reserve_usd"):
         await loop.run("objective")
+
+
+def test_prompt_cache_asks_each_provider_in_its_own_terms() -> None:
+    anthropic = ModelRoute("anthropic:claude-opus-5-5", 5, 5, 10_000, prompt_cache=True)
+    openai = replace(anthropic, model="openai:gpt-6-sol")
+    zai = replace(anthropic, model="zai:glm-5.3")
+    assert anthropic.model_settings() == {"anthropic_cache": True}
+    assert openai.model_settings() == {"openai_prompt_cache_key": "research-loop:openai:gpt-6-sol"}
+    assert zai.model_settings() is None
+    # A setting the route gives explicitly wins, and salvage keeps caching.
+    assert replace(anthropic, settings={"anthropic_cache": "1h"}).model_settings() == {"anthropic_cache": "1h"}
+    assert anthropic.salvage().prompt_cache
+
+
+def test_prompt_cache_is_in_the_snapshot_only_when_set() -> None:
+    # Presets without caching keep the configuration fingerprint of earlier manifests.
+    assert "prompt_cache" not in ModelRoute("test", 5, 5, 10_000).snapshot()
+    assert ModelRoute("test", 5, 5, 10_000, prompt_cache=True).snapshot()["prompt_cache"] is True
+    quality = get_policy("quality").snapshot()
+    assert all("prompt_cache" not in route for route in quality["routes"].values())
+
+
+def test_value_preset_caches_every_route_and_thinks_less_on_opus(monkeypatch) -> None:
+    from research_loop.policy import DEFAULT_MODELS
+
+    for name in DEFAULT_MODELS:
+        monkeypatch.delenv(name, raising=False)
+    value, quality = get_policy("value"), get_policy("quality")
+    routes = [*value.routes.values(), value.cheap_scout, value.multimodal_scout, value.alternate_deep_dive]
+    assert all(route.prompt_cache for route in routes)
+    for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
+        assert value.for_role(role).model == "anthropic:claude-opus-5-5"
+        assert value.for_role(role).thinking == "medium"
+    for role in ResearchRole:
+        # Same limits as quality, so a comparison changes models, effort, and caching only.
+        mine, theirs = value.for_role(role), quality.for_role(role)
+        assert (mine.max_requests, mine.max_tool_calls, mine.total_tokens_limit, mine.cost_limit) == (
+            theirs.max_requests, theirs.max_tool_calls, theirs.total_tokens_limit, theirs.cost_limit)
+
+
+def test_value_overrides_leave_quality_alone_and_the_reverse() -> None:
+    value = get_policy("value", model_overrides={
+        "RESEARCH_DEEP_MODEL": "openai:quality-deep",
+        "RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3",
+        "RESEARCH_GLM_CHEAP_MODEL": "zai:cheap",
+    })
+    assert value.for_role(ResearchRole.DEEP_DIVE).model != "openai:quality-deep"
+    assert value.for_role(ResearchRole.SYNTHESIZER).model == "zai:glm-5.3"
+    assert value.for_role(ResearchRole.SYNTHESIZER).prompt_cache
+    assert value.cheap_scout.model == "zai:cheap"
+    quality = get_policy("quality", model_overrides={"RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"})
+    assert quality.for_role(ResearchRole.SYNTHESIZER).model != "zai:glm-5.3"

@@ -911,7 +911,7 @@ def main() -> None:
     parser.add_argument("--basis-papers", action="store_true",
                         help="Rank the works completed questions' sources cite (Semantic Scholar; no model calls)")
     parser.add_argument("--allow-partial", action="store_true", help="Synthesize even if some questions are not completed")
-    parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy"), default="quality")
+    parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy", "value"), default="quality")
     parser.add_argument("--paid", action="store_true", help="Authorize model provider calls")
     parser.add_argument("--dry-run", action="store_true", help="Validate and report what would run, without calls or writes")
     parser.add_argument("--persist", action="store_true", help="Store runs in Postgres")

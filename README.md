@@ -378,7 +378,7 @@ The `EvidenceLedger` (`ledger.py`) collects every `ResearchResult` from a run, i
 
 **A finished run isn't a correct run.** Check `review_reasons`. It lists missing evidence, unchecked claims, unsupported claims, research the verifier still wanted, and web and scholarly tools that mostly could not reach their sources.
 
-**Models and budgets are configuration.** A `ModelPolicy` (`policy.py`) maps each role to a model and per-call limits on requests, tool calls, tokens, and dollars. Presets are `quality`, `breadth`, `glm-heavy`, and `synthetic`. A `ResearchConfig` sets how much work the loop does: parallelism, deep dives per round, verification rounds, and deadline. The only built-in spending limit is per call; set `job_cost_limit` if you want a cap per run.
+**Models and budgets are configuration.** A `ModelPolicy` (`policy.py`) maps each role to a model and per-call limits on requests, tool calls, tokens, and dollars. Presets are `quality`, `breadth`, `glm-heavy`, `value`, and `synthetic`. A `ResearchConfig` sets how much work the loop does: parallelism, deep dives per round, verification rounds, and deadline. The only built-in spending limit is per call; set `job_cost_limit` if you want a cap per run.
 
 **The model can change per question.** A question that needs images goes to the policy's multimodal scout. An easy question that doesn't need primary sources goes to a cheaper scout. Deep dives in a verification round switch to an alternate model. Each of these routes is optional; without it, the regular scout or deep-dive model is used.
 
@@ -421,6 +421,7 @@ The code is layered: each layer uses only the layers below it.
 - [docs/graph.md](docs/graph.md): the workflow graph and its parity with the legacy loop
 - [docs/acquisition.md](docs/acquisition.md) and [docs/attachments.md](docs/attachments.md): tools, caching, and file handling
 - [docs/benchmarks.md](docs/benchmarks.md): benchmark lanes and metrics
+- [docs/model-routing.md](docs/model-routing.md): which model to run each role on, by cost and quality
 - [long_horizon/agentic_se/README.md](long_horizon/agentic_se/README.md): the first long-horizon study
 - [AGENTS.md](AGENTS.md): rules for changing the code
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to send a pull request

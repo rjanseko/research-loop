@@ -55,6 +55,7 @@ PROVIDER_HOSTS = {
     "google": "https://generativelanguage.googleapis.com",
     "xai": "https://api.x.ai",
     "zai": "https://api.z.ai",
+    "openrouter": "https://openrouter.ai",
 }
 # Engines the web search tool (ddgs with its "auto" backend) tries in turn.
 SEARCH_HOSTS = (
@@ -452,7 +453,7 @@ def _network_checks(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check research-loop local readiness")
-    parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy"), default="quality")
+    parser.add_argument("--policy", choices=("quality", "breadth", "glm-heavy", "value"), default="quality")
     parser.add_argument("--attachments", action="store_true", help="Check normalized attachment dependencies")
     parser.add_argument("--multimodal", action="store_true", help="Check image input route and dependencies")
     parser.add_argument("--smoke", action="store_true", help="Make bounded, paid model calls for each unique configured model")
