@@ -101,7 +101,7 @@ research-db migrate
 research-db status
 ```
 
-Migrations live in `src/research_loop/migrations/`, ship in the installed package, and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-long-horizon --persist`) check for pending migrations before any model call.
+Migrations live in `src/research_loop/migrations/`, ship in the installed package, and are checksummed: `research-db migrate` refuses to continue if an applied file has changed. Commands that persist (`research-bench --persist`, `research-long-horizon --persist`, `examples/run_research.py --persist`) check for pending migrations before any model call.
 
 The database keeps jobs, the plan, every role task with its prompt, effective configuration, output, usage, and parent task, tool events, and attachment manifests. Each finished job also keeps its evidence ledger, whose unique claim IDs are the ones its report and verification cite (task outputs keep each worker's own IDs), and its `review_reasons`; a failed job keeps the evidence gathered before it failed. Text in tool arguments is stored as hashes and lengths, and fetched content as hashes and sizes, so protected benchmark inputs and article text stay out of it. Graph and policy versions are recorded in each job's effective configuration, so topology changes need no migration.
 
@@ -187,12 +187,25 @@ A synthetic run persists real jobs, tasks, and tool events without any provider 
 
 ```bash
 research-bench examples/benchmark_cases.json --policies synthetic --repository postgres --max-concurrency 1
+python examples/run_research.py "Your question" --persist    # one question; prints its job ID
+```
+
+A stored job is a row in `research_jobs`, keyed by that ID:
+
+```sql
+select status, review_reasons, final_report->>'answer' from research_jobs where id = '<job_id>';
 ```
 
 Once `--smoke` passes, a first paid benchmark run is one case by default:
 
 ```bash
 research-bench examples/benchmark_suite.toml --policies quality --paid --repository postgres --max-concurrency 1
+```
+
+The built-in policies cap each call but set no total per run (`job_cost_limit`). For a first single question with a total cap, `examples/readme_example.py` runs the README's example question on the `quality` policy under a $4 cap (`--budget`), $1.50 of it held for synthesis and verification (`--reserve`), with three to five questions, two deep dives per round, and one verification round. It writes the report, verification, review reasons, cost, and the policy and configuration it ran with to `benchmark_outputs/readme_example/`; add `--persist` to store the job in Postgres too. Without `--paid` it runs the synthetic policy, for free. The cap is soft, and holds only while every model has pricing data, which `--smoke` checks.
+
+```bash
+python examples/readme_example.py --paid --persist
 ```
 
 See [benchmarks.md](benchmarks.md) for suites and manifests, and the [long-horizon README](../long_horizon/agentic_se/README.md) for long-horizon runs.

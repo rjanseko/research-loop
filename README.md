@@ -11,6 +11,7 @@ make setup && source .venv/bin/activate
 pytest -q                                          # offline tests
 python examples/run_research.py "Your question"    # scripted models: free, no network
 python examples/run_research.py "Your question" --policy quality --paid   # real models
+python examples/run_research.py "Your question" --policy quality --paid --persist   # and store the job in Postgres
 ```
 
 Before your first paid run, set up provider keys and network access with [docs/setup.md](docs/setup.md#preparing-for-paid-runs) and check them with `research-diagnose --smoke`.
@@ -111,7 +112,7 @@ flowchart TB
 
 ## Example: one question through the graph
 
-The question below shows the loop at full stretch. It needs scholarly search. Its sources mix preprints, published papers, and vendor posts. And its evidence disagrees, so it takes every branch of the graph. The outputs are illustrative and shortened, but every ID, route, and decision shown is what the code does with them.
+The question below shows the loop at full stretch. It needs scholarly search. Its sources mix preprints, published papers, and vendor posts. And its evidence disagrees, so it takes every branch of the graph. The outputs are illustrative and shortened, but every ID, route, and decision shown is what the code does with them. To run this question for real, use `python examples/readme_example.py --paid`: it runs the `quality` policy under a $4 total cap with fewer questions, deep dives, and verification rounds, and saves the report, verification, and the exact configuration as JSON.
 
 ```python
 outcome = await ResearchLoop(get_policy("quality")).run(

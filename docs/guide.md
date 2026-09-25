@@ -52,7 +52,7 @@ print(outcome.report.answer)
 
 The returned `outcome` holds the plan, the report, the verification, the evidence ledger, the attachment corpus, what the job spent, and its `review_reasons`. Models never see file paths on your machine; they reach attachments through stable IDs and a small set of attachment tools.
 
-To try a single question from the command line, run `examples/run_research.py`. It uses the synthetic policy unless you pass `--paid`. `LegacyResearchLoop` accepts the same arguments as `ResearchLoop`.
+To try a single question from the command line, run `examples/run_research.py`. It uses the synthetic policy unless you pass `--paid`, and keeps the run in memory unless you pass `--persist`, which stores the job in Postgres at `DATABASE_URL` and prints its job ID ([setup.md](setup.md#postgres)). `LegacyResearchLoop` accepts the same arguments as `ResearchLoop`.
 
 ## What happens during a run
 
