@@ -51,11 +51,11 @@ These are the models the configured keys can reach, with list prices in USD per 
 | Model | Input | Cached input | Output | Tried for |
 |---|---:|---:|---:|---|
 | `openai:gpt-6-luna` | 0.10 | 0.01 | 0.50 | Scout, deep dive, planner, synthesizer; the fixed synthesizer |
-| `zai:glm-5.3-flash` | 0.15 | 0.03 | 0.50 | Scout, deep dive, gap analyst |
+| `zai:glm-5.3-flash` | 0.15 | 0.03 | 0.50 | Scout, deep dive, gap analyst (the current scout, from the eighth pilot on) |
 | `zai:glm-5.3-flashx` | 0.37 | 0.075 | 1.25 | Scout, in the [FlashX test](#the-flashx-test) |
-| `zai:glm-5.3` | 1.40 | 0.26 | 4.40 | Every role (the current scout and alternate deep dive) |
+| `zai:glm-5.3` | 1.40 | 0.26 | 4.40 | Every role (the current synthesizer at `max` effort, from the eighth pilot on, and alternate deep dive; the scout until the seventh) |
 | `openai:gpt-6-sol` | 2.00 | 0.20 | 10.00 | Every role (the current planner, gap analyst, deep dive, and verifier) |
-| `anthropic:claude-opus-5-5` | 4.00 | 0.20 | 20.00 | Synthesizer (the current one, from the fifth pilot on), and planner in the fifth and sixth pilots |
+| `anthropic:claude-opus-5-5` | 4.00 | 0.20 | 20.00 | Synthesizer from the fifth to the seventh pilot, and planner in the fifth and sixth |
 | `openai:gpt-6-astra` | 10.00 | 1.00 | 50.00 | Synthesizer only, on three questions |
 
 `genai-prices` is up to date: its latest data matches the 0.1.8 release the repository pins. But it prices `glm-5.3-flash` at 0.075, 0.015, and 0.25, half of Z.ai's list price, and has no entry for `glm-5.3-flashx`. The 0.1.9 release does not change either. Without a correction, a cap on a Flash route would let through about twice the spend it names, and a FlashX route would have no cost at all, so no cap could hold on it. `src/research_loop/prices.toml` now supplies both prices (see [setup.md](setup.md#model-routing)), so the caps hold.
@@ -298,3 +298,9 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Method.* `scripts/plan_trial.py` plans each deep case (`task2+`, `task8`, `task17+`, `task26`) twice in each of three arms: `single`, today's call; `best-of-3`, three calls and a `gpt-6-luna` selector choosing against fixed criteria; and `landscape`, a Flash scout survey (8 requests, 16 tool calls) whose summary and findings the planner is given. Measured without a model: agreement, how alike a case's two plans are, question by question by shared words; and coverage, the share of the entities the objective names that some question names.
 - *Decision rules.* An arm is adopted if its mean agreement exceeds `single`'s by at least 0.15 and its mean coverage is no more than 0.02 below. If both pass, the one with the higher agreement goes into the next pilot, and the other is tried with it only if that pilot's plan still varies. Otherwise planning stays as it is.
 - *Cap.* $2.50.
+
+**Model change, 25 September 2026, after the scout trial.**
+
+- *Changed.* The study scouts on `zai:glm-5.3-flash`, as the scout trial's rules decided, and synthesizes on `zai:glm-5.3` at Z.ai's highest reasoning effort (`max`, PydanticAI's `xhigh`) with a 64,000-token output allowance for its reasoning and report, in place of Opus 5.5. `examples/settings_study.py` sets both routes itself; the `value` preset keeps `glm-5.3` scouting and Opus 5.5 synthesizing until a pilot confirms the change. The verifier stays `gpt-6-sol`, from another vendor than the synthesizer, and a refused synthesis still falls back to it.
+- *Why.* Opus 5.5 cost $0.55 to $1.12 a synthesis without better-supported reports, which the verifier's run-to-run variation made impossible to tell apart; `glm-5.3` costs about a third as much. At `high` effort it needed a validation retry in the first and fourth pilots, which `max` may or may not change. Step 7 still compares synthesizers on the same ledgers; this sets the one the study runs with in the meantime.
+- *Checked.* A live call confirmed Z.ai receives `reasoning_effort: max` and `max_completion_tokens: 64000`, and returns structured output.

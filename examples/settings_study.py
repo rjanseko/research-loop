@@ -70,16 +70,23 @@ STUDY_QUESTION_RANGE = (3, 8)
 # which needs RESEARCH_ALT_DEEP_MODEL=zai:glm-5.3, since the preset's own alternate is on xAI.
 STUDY_MODELS = {
     "planner": "openai:gpt-6-sol",
-    "scout": "zai:glm-5.3",
+    # Flash, as the scout trial decided (docs/settings-study.md), and glm-5.3 synthesizing at SYNTHESIS_EFFORT,
+    # both chosen 25 September 2026. The value preset keeps glm-5.3 scouting and Opus 5.5 synthesizing until a
+    # pilot confirms them, so build() sets these two routes itself.
+    "scout": "zai:glm-5.3-flash",
     "gap_analyst": "openai:gpt-6-sol",
     "deep_dive": "openai:gpt-6-sol",
-    "synthesizer": "anthropic:claude-opus-5-5",
+    "synthesizer": "zai:glm-5.3",
     "verifier": "openai:gpt-6-sol",
     "cheap_scout": "zai:glm-5.3-flash",
     "alternate_deep_dive": "zai:glm-5.3",
-    # Where the planner and synthesizer go when Opus 5.5 refuses a question, as it refused task26.
+    # Where the planner and synthesizer go when a model refuses a question, as Opus 5.5 refused task26.
     "refusal_fallback": "openai:gpt-6-sol",
 }
+# GLM-5.3's highest reasoning effort: PydanticAI maps the unified `xhigh` to Z.ai's `max`. Its output
+# allowance covers the reasoning as well as the report, so it is raised from the preset's 32,000.
+SYNTHESIS_EFFORT = "xhigh"
+SYNTHESIS_MAX_TOKENS = 64_000
 CACHE_MODES = ("record", "reuse", "replay", "off")
 
 
@@ -118,6 +125,12 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings,
     for role in FINISHING_ROLES:
         policy.routes[role] = _limited(policy.routes[role], {"total_tokens_limit": FINISHING_TOKENS})
     if policy_name == "value":
+        scout = replace(policy.routes[ResearchRole.SCOUT], model=STUDY_MODELS["scout"])
+        policy.routes[ResearchRole.SCOUT] = scout
+        synthesizer = policy.routes[ResearchRole.SYNTHESIZER]
+        policy.routes[ResearchRole.SYNTHESIZER] = replace(
+            synthesizer, model=STUDY_MODELS["synthesizer"], thinking=SYNTHESIS_EFFORT,
+            settings={**synthesizer.settings, "max_tokens": SYNTHESIS_MAX_TOKENS})
         lineup = {role.value: route.model for role, route in policy.routes.items()} | {
             "cheap_scout": policy.cheap_scout.model, "alternate_deep_dive": policy.alternate_deep_dive.model,
             "refusal_fallback": policy.routes[ResearchRole.SYNTHESIZER].refusal_fallback}

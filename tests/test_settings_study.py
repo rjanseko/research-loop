@@ -52,13 +52,17 @@ def test_paid_setup_gives_every_research_route_the_study_limits_and_keeps_dollar
     for route, preset_route in ((policy.routes[ResearchRole.SCOUT], preset.routes[ResearchRole.SCOUT]),
                                 (policy.cheap_scout, preset.cheap_scout)):
         assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (24, 48, 2_000_000)
-        assert route.cost_limit == preset_route.cost_limit and route.model == preset_route.model
+        assert route.cost_limit == preset_route.cost_limit and route.model == "zai:glm-5.3-flash"
     for route in (policy.routes[ResearchRole.DEEP_DIVE], policy.alternate_deep_dive):
         assert (route.max_requests, route.max_tool_calls, route.total_tokens_limit) == (12, 80, 2_000_000)
-    for role in (ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER):
+    for role in (ResearchRole.GAP_ANALYST, ResearchRole.VERIFIER):
         route = policy.routes[role]
         assert route.total_tokens_limit == 600_000 and route.model == preset.routes[role].model
-        assert route.settings == preset.routes[role].settings  # e.g. the synthesizer's max_tokens stays
+        assert route.settings == preset.routes[role].settings
+    # The study's synthesizer: glm-5.3 at Z.ai's highest effort, with room for its reasoning.
+    synthesizer = policy.routes[ResearchRole.SYNTHESIZER]
+    assert (synthesizer.model, synthesizer.thinking, synthesizer.settings["max_tokens"]) == ("zai:glm-5.3", "xhigh", 64_000)
+    assert synthesizer.total_tokens_limit == 600_000 and synthesizer.refusal_fallback == "openai:gpt-6-sol"
     assert config.salvage_exhausted_research and config.scholarly_cache_mode == "reuse"
     assert config.tool_mode.value == "normalized"
     assert config.budget_notes == ()
@@ -72,9 +76,13 @@ def test_budget_notes_reach_the_run_config() -> None:
 
 
 def test_a_paid_step_refuses_an_environment_that_moves_the_study_models() -> None:
-    env = {"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3", "RESEARCH_VALUE_SYNTH_MODEL": "zai:glm-5.3"}
-    with pytest.raises(ValueError, match="synthesizer is zai:glm-5.3, not anthropic:claude-opus-5-5"):
+    env = {"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3", "RESEARCH_VALUE_VERIFY_MODEL": "zai:glm-5.3"}
+    with pytest.raises(ValueError, match="verifier is zai:glm-5.3, not openai:gpt-6-sol"):
         settings_study.build(True, 5.0, 1.0, ResearchSettings.from_env(env))
+    # The scout and synthesizer are the study's own, whatever the environment says.
+    moved = {"RESEARCH_ALT_DEEP_MODEL": "zai:glm-5.3", "RESEARCH_VALUE_SYNTH_MODEL": "openai:gpt-6-luna"}
+    policy, _ = settings_study.build(True, 5.0, 1.0, ResearchSettings.from_env(moved))
+    assert policy.routes[ResearchRole.SYNTHESIZER].model == "zai:glm-5.3"
     with pytest.raises(ValueError, match="alternate_deep_dive is xai:grok-4.5"):
         settings_study.build(True, 5.0, 1.0, ResearchSettings.from_env({}))
     settings_study.build(False, 5.0, 1.0, ResearchSettings.from_env({}))  # the synthetic rehearsal has no models to move
