@@ -230,3 +230,14 @@ def test_contradicting_evidence_does_not_back_an_inline_citation() -> None:
         ]),
     ]))
     assert ledger.claim_source_ids() == {"q1/c1": frozenset({"s1"})}
+
+
+
+def test_an_unlisted_source_label_becomes_unknown_instead_of_failing_the_result() -> None:
+    from research_loop.schemas import SourceRef
+
+    # A paid run's salvage call was redone because a model wrote source_type "dataset".
+    source = SourceRef(url="https://a.example", title="t", source_type="dataset", publication_status="magazine")
+    assert (source.source_type, source.publication_status) == ("unknown", "unknown")
+    kept = SourceRef(url="https://a.example", title="t", source_type="paper", publication_status="dataset")
+    assert (kept.source_type, kept.publication_status) == ("paper", "dataset")

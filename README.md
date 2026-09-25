@@ -287,12 +287,68 @@ The first cites the SWE-bench paper as the preprint it is. The second cites a ve
 
 </details>
 
-Why this question makes a good showcase:
+### A real run of this question
 
-- **It splits cleanly.** Four independent questions run in parallel, and the easy one goes to a cheaper model.
-- **Its sources are uneven.** Papers, preprints, and vendor posts sit side by side, so publication status and the quote and source checks matter.
-- **Its evidence disagrees.** The contradiction and the low confidence both become deep dives, most severe first.
-- **Its weakest claim gets caught.** A quote no tool returned sinks a report statement, and a verification round with a different model replaces it.
+The illustrative outputs above show every branch of the graph. A real run, from `python examples/readme_example.py --paid` on 25 September 2026, took a shorter path:
+
+- **Routes:** the `quality` policy under a $4 cap, with `openai:gpt-5.6-sol` planning, analysing gaps, deep diving, synthesizing, and verifying, and `zai:glm-5.3` scouting.
+- **Work:** 3 questions and 3 scouts; the q1 scout used its 12 requests and was salvaged. Gap analysis sent q1 and q2 to deep dives, both of which reached their tool-call limit and were salvaged. One synthesis and one verification followed.
+- **Result:** $2.26 in 11.8 minutes. The verifier checked 15 statements: all supported, 3 with minor wording or citation notes, and no further research requested.
+
+The report's bottom line, as written:
+
+> **Bottom line:** SWE-bench Verified is still useful as a **narrow, controlled regression test**, but it is no longer trustworthy as a **standalone measure of frontier coding-agent progress**. Its score measures whether an agent can patch 500 selected Python/GitHub issues so that all hidden FAIL_TO_PASS and PASS_TO_PASS tests pass; it does not directly measure general software-engineering quality or model ability independent of the scaffold [[1]](https://web.archive.org/web/2024/https://openai.com/index/introducing-swe-bench-verified/)[[2]](https://www.swebench.com/verified.html).
+
+<details>
+<summary>The full report, with its sources</summary>
+
+**Why it retains value**
+- The benchmark improved substantially on the original SWE-bench: 93 Python-experienced developers reviewed 1,699 random samples, yielding 500 human-filtered instances intended to have clear specifications, correctly scoped tests, and solvable environments [[3]](https://openai.com/index/introducing-swe-bench-verified/)[[2]](https://www.swebench.com/verified.html).
+- Its official Docker harness standardizes patch application and test execution, improving reproducibility at the evaluation layer [[4]](https://github.com/SWE-bench/SWE-bench/blob/main/docs/reference/harness.md).
+- Independent evidence indicates that coding agents really have improved: METR reports rapidly increasing task-completion horizons driven by greater reliability, mistake recovery, reasoning, and tool use; newer frontier models also outperform older or smaller models on the more contamination-resistant SWE-bench Pro under a unified scaffold [[5]](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)[[6]](https://arxiv.org/abs/2503.14499)[[7]](https://arxiv.org/html/2509.16941v2).
+
+**Why the headline score is no longer enough**
+1. **It is a system score, not a model-only score.** The unrestricted leaderboard mixes simple loops, retrieval systems, multi-rollout systems, and review systems. Even the controlled Bash Only track warns that its 1.x and 2.x results are not necessarily comparable [[2]](https://www.swebench.com/verified.html). Historically, the same model family could vary dramatically with scaffold—for example, GPT-4 ranged from 2.7% to 28.3% on SWE-bench Lite [[1]](https://web.archive.org/web/2024/https://openai.com/index/introducing-swe-bench-verified/).
+2. **Single runs can overstate small gains.** A preprint based on 60,000 trajectories reports that single-run Verified estimates varied by 2.2–6.0 percentage points, with standard deviations above 1.5 points even at temperature zero; consequently, a two- or three-point improvement may be evaluation noise [[8]](https://arxiv.org/abs/2602.07150).
+3. **The tests make errors in both directions.** OpenAI’s later vendor audit of 138 difficult instances reported material specification or test flaws in 59.4% of them, potentially rejecting valid solutions [[9]](https://web.archive.org/web/2026/https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/). Conversely, the SWE-ABS preprint found that strengthened tests rejected 19.71% of previously passing patches and reduced the top score from 78.80% to 62.20%, suggesting weak tests also accept incorrect solutions [[10]](https://arxiv.org/abs/2603.00520v1). These findings concern selected subsets and should not be extrapolated mechanically to all 500 tasks.
+4. **Public, static tasks are increasingly vulnerable to contamination.** The dataset exposes gold and test patches [[11]](https://www.swebench.com/SWE-bench/guides/datasets/)[[12]](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified). A separate preprint found Claude models localized buggy files about three times better on Verified than on similar benchmarks and found edited files six times better, a pattern consistent with training overlap [[13]](https://arxiv.org/abs/2512.10218). OpenAI later reported that all frontier models it tested could reproduce some gold patches or verbatim task details and stopped reporting Verified scores, although that remains a vendor’s audit and recommendation [[9]](https://web.archive.org/web/2026/https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
+5. **Passing tests is not the same as producing mergeable work.** METR reports that blinded maintainer merge decisions were about 24 percentage points below automated SWE-bench scores on average, with roughly half of test-passing PRs in its study judged unmergeable [[14]](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/).
+6. **Historical comparability is conditional.** Dataset files have been revised, historical metadata does not consistently expose every artifact needed for exact forensic reproduction, and the harness can reuse stale results if a run ID and instance ID are repeated with a changed prediction [[15]](https://github.com/swe-bench/experiments/tree/main)[[16]](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/commits/main)[[17]](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/commit/c104f84)[[18]](https://github.com/SWE-bench/SWE-bench/blob/main/README.md). OpenAI also disclosed that some historical vendor results used 477 runnable tasks rather than all 500 [[19]](https://openai.com/index/introducing-upgrades-to-codex/).
+
+**Practical verdict:** Treat SWE-bench Verified as one diagnostic, not as the coding-agent equivalent of a definitive capability meter. It remains informative when the dataset and harness versions, scaffold, model, rollout budget, timeout, and denominator are fixed; runs are repeated with uncertainty reported; and predictions are reevaluated under identical conditions. Claims of broad progress should also reproduce on fresh or held-out tasks and ideally undergo stronger tests or maintainer review [[8]](https://arxiv.org/abs/2602.07150)[[2]](https://www.swebench.com/verified.html)[[7]](https://arxiv.org/html/2509.16941v2)[[14]](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/)[[10]](https://arxiv.org/abs/2603.00520v1).
+
+Thus, Verified can still answer **“Did this fixed system get better on this fixed public test suite?”** It cannot, by itself, reliably answer **“How much did general real-world coding ability improve?”**
+
+**Caveats**
+
+- Most quantitative evidence challenging the benchmark—including randomness, contamination, and adversarial test-strengthening results—comes from preprints rather than peer-reviewed publications [[8]](https://arxiv.org/abs/2602.07150)[[13]](https://arxiv.org/abs/2512.10218)[[10]](https://arxiv.org/abs/2603.00520v1).
+- OpenAI’s later contamination and test-quality findings are vendor claims, even though they criticize a benchmark OpenAI helped validate [[9]](https://web.archive.org/web/2026/https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
+- The evidence does not provide a per-model decomposition of how much Verified improvement comes from genuine capability, contamination, scaffold optimization, or evaluation noise [[5]](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)[[13]](https://arxiv.org/abs/2512.10218).
+- METR’s maintainer-review result covered only part of SWE-bench Verified, so its reported mergeability gap should not be assumed to apply uniformly to all repositories or agents [[14]](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/).
+
+**Sources**
+
+1. [Introducing SWE-bench Verified (OpenAI blog, via web.archive.org)](https://web.archive.org/web/2024/https://openai.com/index/introducing-swe-bench-verified/)
+2. [SWE-bench Verified](https://www.swebench.com/verified.html)
+3. [Introducing SWE-bench Verified](https://openai.com/index/introducing-swe-bench-verified/)
+4. [SWE-bench Docker-based evaluation harness reference](https://github.com/SWE-bench/SWE-bench/blob/main/docs/reference/harness.md)
+5. [Measuring AI Ability to Complete Long Software Tasks (METR blog post)](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)
+6. [Measuring AI Ability to Complete Long Software Tasks (arXiv:2503.14499)](https://arxiv.org/abs/2503.14499)
+7. [SWE-Bench Pro: Can AI Agents Solve Long-Horizon Software Engineering Tasks? (arXiv:2509.16941)](https://arxiv.org/html/2509.16941v2)
+8. [On Randomness in Agentic Evals (arXiv:2602.07150)](https://arxiv.org/abs/2602.07150)
+9. [Why SWE-bench Verified no longer measures frontier coding capabilities (OpenAI, archived)](https://web.archive.org/web/2026/https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/)
+10. [SWE-ABS: Adversarial Benchmark Strengthening Exposes Inflated Success Rates on Test-based Benchmark (arXiv:2603.00520)](https://arxiv.org/abs/2603.00520v1)
+11. [SWE-bench Datasets](https://www.swebench.com/SWE-bench/guides/datasets/)
+12. [princeton-nlp/SWE-bench_Verified](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified)
+13. [Does SWE-Bench-Verified Test Agent Ability or Model Memory? (arXiv:2512.10218)](https://arxiv.org/abs/2512.10218)
+14. [Many SWE-bench-Passing PRs Would Not be Merged into Main (METR)](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/)
+15. [SWE-bench experiments repository organization and artifact policy](https://github.com/swe-bench/experiments/tree/main)
+16. [SWE-bench Verified dataset commit history](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/commits/main)
+17. [SWE-bench Verified dataset commit c104f84](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/commit/c104f84)
+18. [SWE-bench repository README — result caching note](https://github.com/SWE-bench/SWE-bench/blob/main/README.md)
+19. [Introducing upgrades to Codex](https://openai.com/index/introducing-upgrades-to-codex/)
+
+</details>
 
 ## The data
 

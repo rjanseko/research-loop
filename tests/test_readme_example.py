@@ -32,6 +32,8 @@ def test_paid_setup_caps_the_quality_policy_and_trims_the_run() -> None:
     assert config.tool_mode is ResearchToolMode.NORMALIZED  # fetch errors come back as results, not exceptions
     assert policy.routes[ResearchRole.SCOUT].total_tokens_limit == policy.cheap_scout.total_tokens_limit == 400_000
     assert policy.routes[ResearchRole.SCOUT].cost_limit == 0.80  # the dollar cap is unchanged
+    for route in (policy.routes[ResearchRole.DEEP_DIVE], policy.alternate_deep_dive):
+        assert (route.max_tool_calls, route.total_tokens_limit, route.cost_limit) == (80, 400_000, 5.0)
 
 
 @pytest.mark.parametrize("argv", [
