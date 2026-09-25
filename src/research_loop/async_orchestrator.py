@@ -697,6 +697,7 @@ class AsyncResearchLoop:
                 events = extract_tool_events(new_messages)
                 self._record_reach(job_id, events)
                 await self.repository.record_tool_events(task_id, events)
+                await self.repository.record_task_messages(task_id, list(new_messages))
                 output = result.output
                 if isinstance(output, ResearchResult):
                     texts = [*tool_texts(events), *(quote_texts or ())]
@@ -728,6 +729,7 @@ class AsyncResearchLoop:
                             events = extract_tool_events(run_messages)
                             self._record_reach(job_id, events)
                             await self.repository.record_tool_events(task_id, events)
+                            await self.repository.record_task_messages(task_id, list(run_messages))
                     await self.repository.finish_task(
                         task_id,
                         status="failed",

@@ -168,3 +168,42 @@ async def test_failures_are_recorded_and_reconcile_closes_abandoned_runs(dsn: st
         assert reconcile(conn, 60, apply=True) == (0, 0)
     ((status, error),) = _rows(dsn, "select status, error from research_jobs where id = %s", (abandoned,))
     assert status == "failed" and error["type"] == "Abandoned"
+
+
+@pytest.mark.asyncio
+async def test_capture_stores_each_task_transcript_only_when_asked(dsn: str) -> None:
+    from pydantic_ai import Agent
+
+    from research_loop.async_orchestrator import AsyncResearchLoop
+    from research_loop.db import open_migrated_pool
+    from research_loop.policy import ModelPolicy, ModelRoute
+    from research_loop.repository import PostgresResearchRepository
+    from research_loop.schemas import ResearchRole
+    from research_loop.settings import ResearchSettings
+
+    _migrate(dsn)
+    route = ModelRoute("test", 5, 5, 10_000)
+    agent = Agent(output_type=str)
+
+    @agent.tool_plain
+    def lookup() -> str:
+        return "the looked-up value"
+
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, dsn)
+        for objective, capture in (("captured", True), ("not captured", False)):
+            loop = AsyncResearchLoop(ModelPolicy("p", {role: route for role in ResearchRole}),
+                                     repository=PostgresResearchRepository(pool, capture_transcripts=capture),
+                                     settings=ResearchSettings.from_env({}))
+            await loop.run_agent_job(objective, agent=agent, role=ResearchRole.SYNTHESIZER, route=route, prompt="x")
+
+    ((messages, count, cut),) = _rows(dsn, """select m.messages, m.message_count, m.truncated_values
+                                              from research_task_messages m join research_tasks t on t.id = m.task_id
+                                              join research_jobs j on j.id = t.job_id where j.objective = 'captured'""")
+    kinds = [part["part_kind"] for message in messages for part in message["parts"]]
+    assert count == len(messages) and cut == 0
+    assert "tool-call" in kinds and "tool-return" in kinds
+    assert "the looked-up value" in str(messages)  # the real tool result, not a hash
+    assert all(message.get("usage") for message in messages if message["kind"] == "response")  # per-response usage
+    assert _rows(dsn, """select count(*) from research_task_messages m join research_tasks t on t.id = m.task_id
+                         join research_jobs j on j.id = t.job_id where j.objective = 'not captured'""") == [(0,)]

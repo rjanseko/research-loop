@@ -286,6 +286,50 @@ async def test_run_whose_fetches_mostly_reached_no_source_needs_review(workflow,
 
 
 @pytest.mark.asyncio
+async def test_capture_stores_every_task_transcript_only_when_the_repository_opts_in(workflow, monkeypatch):
+    from research_loop import web
+
+    loop, script = workflow
+    script.fetch_urls = ["https://site0.example/page"]
+
+    async def download(self, url: str) -> dict[str, Any]:
+        return {"text": "The measurement is approximate.", "extraction": "trafilatura", "content_sha256": "0"}
+
+    async def public(url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web, "public_url", public)
+    monkeypatch.setattr(web.WebAcquisition, "_extract", download)
+    await run(loop)
+    assert loop.repository.task_messages == {}  # off by default
+
+    loop.repository = InMemoryResearchRepository(capture_transcripts=True)
+    await run(loop)
+    transcripts = loop.repository.task_messages
+    assert set(transcripts) == set(loop.repository.tasks)
+    (scout_id,) = [task_id for task_id, task in loop.repository.tasks.items() if task["role"] is ResearchRole.SCOUT]
+    parts = [part for message in transcripts[scout_id]["messages"] for part in message["parts"]]
+    # The real fetch argument and fetched text, which tool telemetry keeps only as hashes.
+    assert any(part.get("args") == {"url": "https://site0.example/page"} for part in parts)
+    assert any("The measurement is approximate." in json.dumps(part.get("content")) for part in parts
+               if part["part_kind"] == "tool-return")
+    assert all(entry["truncated_values"] == 0 for entry in transcripts.values())
+
+
+@pytest.mark.asyncio
+async def test_capture_keeps_the_transcript_of_a_failed_task(workflow):
+    loop, script = workflow
+    loop.repository = InMemoryResearchRepository(capture_transcripts=True)
+    script.fail_role = "scout"
+    with pytest.raises(ModelHTTPError):
+        await run(loop)
+
+    (failed_id,) = [task_id for task_id, task in loop.repository.tasks.items() if task["status"] == "failed"]
+    messages = loop.repository.task_messages[failed_id]["messages"]
+    assert messages[0]["parts"][-1]["part_kind"] == "user-prompt"  # the request the provider refused
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("rounds", [0, 1, 2])
 async def test_repeated_verifier_requests_stop_at_round_limit_and_keep_findings(workflow, rounds):
     loop, script = workflow

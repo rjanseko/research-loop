@@ -35,6 +35,7 @@ def test_paid_setup_caps_the_quality_policy_and_trims_the_run() -> None:
     ["--paid", "--budget", "1", "--reserve", "1.5"],  # the reserve must stay below the cap
     ["--paid", "--budget", "0"],
     ["--persist"],  # no DATABASE_URL
+    ["--capture"],  # transcripts go to Postgres, so capture needs --persist
 ])
 def test_unrunnable_options_are_refused_before_any_run(argv, monkeypatch) -> None:
     monkeypatch.setattr(readme_example, "ResearchSettings", _empty_settings)

@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from .schemas import ResearchRole, ToolEvent
-from .telemetry import jsonable, safe_tool_args, safe_tool_result
+from .telemetry import jsonable, safe_tool_args, safe_tool_result, transcript
 
 
 def _pg_json(value: Any):
@@ -60,6 +60,10 @@ class ResearchRepository(Protocol):
 
     async def record_tool_events(self, task_id: UUID, events: list[ToolEvent]) -> None: ...
 
+    async def record_task_messages(self, task_id: UUID, messages: list[Any]) -> None:
+        """Keep a task's full PydanticAI messages; repositories without capture ignore them."""
+        ...
+
     async def finish_job(
         self,
         job_id: UUID,
@@ -92,6 +96,9 @@ class NullResearchRepository:
     async def record_tool_events(self, *_: Any, **__: Any) -> None:
         return None
 
+    async def record_task_messages(self, *_: Any, **__: Any) -> None:
+        return None
+
     async def finish_job(self, *_: Any, **__: Any) -> None:
         return None
 
@@ -101,6 +108,9 @@ class InMemoryResearchRepository:
     jobs: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     tasks: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
+    # Off by default: transcripts hold prompts, fetched text, and tool arguments whole.
+    capture_transcripts: bool = False
+    task_messages: dict[UUID, dict[str, Any]] = field(default_factory=dict)
 
     async def create_job(self, **kwargs: Any) -> UUID:
         job_id = uuid4()
@@ -142,6 +152,12 @@ class InMemoryResearchRepository:
                 }
             )
 
+    async def record_task_messages(self, task_id: UUID, messages: list[Any]) -> None:
+        if not self.capture_transcripts:
+            return
+        dumped, cut = transcript(messages)
+        self.task_messages[task_id] = {"messages": dumped, "message_count": len(dumped), "truncated_values": cut}
+
     async def finish_job(self, job_id: UUID, **kwargs: Any) -> None:
         self.jobs[job_id].update(kwargs)
         self.jobs[job_id]["finished_at"] = datetime.now(UTC)
@@ -154,8 +170,11 @@ class PostgresResearchRepository:
     Postgres is infrastructure rather than agent semantics.
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: Any, *, capture_transcripts: bool = False) -> None:
         self.pool = pool
+        # Off by default: transcripts hold prompts, fetched text, and tool arguments whole, so
+        # benchmark runs, whose inputs must stay out of the database, never turn it on.
+        self.capture_transcripts = capture_transcripts
 
     async def create_job(self, **kwargs: Any) -> UUID:
         job_id = uuid4()
@@ -303,6 +322,24 @@ class PostgresResearchRepository:
                     ),
                 )
 
+    async def record_task_messages(self, task_id: UUID, messages: list[Any]) -> None:
+        if not self.capture_transcripts:
+            return
+        dumped, cut = transcript(messages)
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                """
+                insert into research_task_messages (task_id, messages, message_count, truncated_values)
+                values (%s, %s, %s, %s)
+                on conflict (task_id) do update set
+                    messages = excluded.messages,
+                    message_count = excluded.message_count,
+                    truncated_values = excluded.truncated_values,
+                    recorded_at = now()
+                """,
+                (task_id, _pg_json(dumped), len(dumped), cut),
+            )
+
     async def finish_job(self, job_id: UUID, **kwargs: Any) -> None:
         async with self.pool.connection() as conn:
             await conn.execute(
@@ -368,6 +405,9 @@ class CapturingResearchRepository:
     async def record_tool_events(self, task_id: UUID, events: list[ToolEvent]) -> None:
         await self.backend.record_tool_events(task_id, events)
         await self.memory.record_tool_events(task_id, events)
+
+    async def record_task_messages(self, task_id: UUID, messages: list[Any]) -> None:
+        await self.backend.record_task_messages(task_id, messages)
 
     async def finish_job(self, job_id: UUID, **kwargs: Any) -> None:
         await self.backend.finish_job(job_id, **kwargs)

@@ -66,7 +66,8 @@ def test_migrations_reject_changed_sql(tmp_path: Path) -> None:
 def test_repository_migrations_are_numbered_in_order() -> None:
     names = [migration.name for migration in migration_files()]
     assert names == sorted(names)
-    assert names[:3] == ["001_research.sql", "002_research_attachments.sql", "003_research_evidence.sql"]
+    assert names[:4] == ["001_research.sql", "002_research_attachments.sql", "003_research_evidence.sql",
+                         "004_research_task_messages.sql"]
 
 
 class _ReconcileConnection:

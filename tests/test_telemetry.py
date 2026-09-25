@@ -4,7 +4,12 @@ import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from research_loop.schemas import ToolEvent
-from research_loop.telemetry import SourceReach, error_snapshot, unreached_source
+from research_loop.telemetry import (
+    SourceReach,
+    error_snapshot,
+    transcript,
+    unreached_source,
+)
 
 
 def test_error_snapshot_omits_provider_response_body() -> None:
@@ -90,3 +95,28 @@ def test_source_reach_asks_for_review_when_most_web_and_scholarly_calls_reached_
     )
     reach.add([ToolEvent(tool_name="web_fetch", result={"text": "page"})] * 3)
     assert reach.review_reason() is None  # under half
+
+
+def test_transcript_keeps_messages_whole_and_cuts_only_oversized_strings() -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="Which benchmark?")]),
+        ModelResponse(parts=[ToolCallPart("web_fetch", {"url": "https://a.example/page"}, tool_call_id="t1")]),
+        ModelRequest(parts=[ToolReturnPart("web_fetch", {"text": "x" * 120}, tool_call_id="t1")]),
+        ModelResponse(parts=[TextPart(content="done")]),
+    ]
+    dumped, cut = transcript(messages, max_chars=100)
+
+    assert len(dumped) == 4 and cut == 1
+    assert dumped[0]["parts"][0]["content"] == "Which benchmark?"
+    assert dumped[1]["parts"][0]["args"] == {"url": "https://a.example/page"}  # real arguments, not hashes
+    fetched = dumped[2]["parts"][0]["content"]["text"]
+    assert fetched == "x" * 100 + " [truncated 20 chars]"
