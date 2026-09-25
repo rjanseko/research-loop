@@ -304,3 +304,15 @@ One entry per step, newest last: the date, what ran, its cost, what it found, an
 - *Changed.* The study scouts on `zai:glm-5.3-flash`, as the scout trial's rules decided, and synthesizes on `zai:glm-5.3` at Z.ai's highest reasoning effort (`max`, PydanticAI's `xhigh`) with a 64,000-token output allowance for its reasoning and report, in place of Opus 5.5. `examples/settings_study.py` sets both routes itself; the `value` preset keeps `glm-5.3` scouting and Opus 5.5 synthesizing until a pilot confirms the change. The verifier stays `gpt-6-sol`, from another vendor than the synthesizer, and a refused synthesis still falls back to it.
 - *Why.* Opus 5.5 cost $0.55 to $1.12 a synthesis without better-supported reports, which the verifier's run-to-run variation made impossible to tell apart; `glm-5.3` costs about a third as much. At `high` effort it needed a validation retry in the first and fourth pilots, which `max` may or may not change. Step 7 still compares synthesizers on the same ledgers; this sets the one the study runs with in the meantime.
 - *Checked.* A live call confirmed Z.ai receives `reasoning_effort: max` and `max_completion_tokens: 64000`, and returns structured output.
+
+**Planner trial, ran 25 September 2026. $0.70 of the $1.50 cap.**
+
+| Arm | Agreement | Coverage | Questions | Cost |
+|---|---:|---:|---:|---:|
+| `single` | 0.43 | 0.46 | 4.4 | $0.11 |
+| `best-of-3` | 0.41 | 0.45 | 4.6 | $0.33 |
+| `landscape` | 0.40 | 0.45 | 4.6 | $0.26 |
+
+- *Decided, by the rules set before the run.* Neither arm is adopted: neither beat `single`'s agreement by 0.15. Planning stays one call, without a survey.
+- *The measure was flawed.* Agreement matched questions by shared words, so it measured wording, not how a case was split. On `task2+`, `best-of-3`'s two plans split the countries identically (Indonesia with Malaysia, Pakistan with Sri Lanka, then the Philippines, Thailand, and Vietnam alone) but were worded differently and scored 0.20, while `single` split once by topic and once by country, and `landscape` by country with different pairings. Coverage counted every capitalized word the objective uses mid-sentence, table headings among them, and barely moved. So the trial could not have shown the steadiness it was meant to measure. What it does show, not as a result, is that on `task2+` only `best-of-3` gave the same split twice.
+- *Next, if pursued.* Measure agreement by which of the objective's named entities each question covers, and log that before rerunning `single` against `best-of-3` three times each on `task2+` and `task17+`, the cases that name their entities; about $0.60.
