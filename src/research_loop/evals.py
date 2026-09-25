@@ -53,8 +53,9 @@ class BenchmarkOutput:
     sources_not_found: int = 0
     # What the finished run left unresolved (async_orchestrator.review_reasons).
     review_reasons: list[str] = field(default_factory=list)
-    # The "Sources" section a reader sees under the answer, listing what its [sN] citations name.
-    sources_text: str = ""
+    # The report as a reader reads it: the answer, its key statements and caveats, and the Sources list
+    # its [sN] citations name, without the verifier's verdicts. The rubric judge grades this.
+    report_text: str = ""
     # False for a run reloaded from Postgres without a transcript, whose tool arguments are hashes:
     # search queries and fetched URLs are then unknown, and the checks built on them are skipped.
     tool_args_known: bool = True
@@ -183,8 +184,10 @@ class AttachmentCitationCoverage(Evaluator[Any, BenchmarkOutput]):
 
 
 # Recorded with every rubric score; bump when JUDGE_INSTRUCTIONS or the verdict schema changes, since
-# scores are comparable only under one judge prompt. 1: one call per report, a verdict for every point.
-JUDGE_VERSION = 1
+# scores are comparable only under one judge prompt. 1: one call per report, a verdict for every point,
+# on the answer and its Sources list. 2: the whole report a reader sees, key statements and caveats too;
+# v1 missed rubric points a report stated only as a key statement.
+JUDGE_VERSION = 2
 JUDGE_INSTRUCTIONS = """\
 You grade a research report against a rubric. Each rubric point says one thing a good answer contains.
 
@@ -221,7 +224,9 @@ class RubricJudge(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
     """
 
     model: Any = "openai:gpt-6-sol"
-    thinking: str | bool | None = "low"
+    # At low effort it missed points reports stated plainly, one of them in a section heading (step 1 of
+    # docs/settings-study.md). The effort is recorded with each judge, so scores stay comparable by it.
+    thinking: str | bool | None = "high"
     name: str = "rubric"
 
     def get_default_evaluation_name(self) -> str:
@@ -251,7 +256,7 @@ class RubricJudge(Evaluator[BenchmarkCaseSpec, BenchmarkOutput]):
             "question": ctx.inputs.objective,
             "rubric": {category: [{"point": number, "text": text} for number, text in enumerate(points, 1)]
                        for category, points in rubric.items()},
-            "report": ctx.output.answer + ctx.output.sources_text,
+            "report": ctx.output.report_text or ctx.output.answer,
         }, ensure_ascii=False)
         settings = {"thinking": self.thinking} if self.thinking is not None else None
         result = await agent.run(prompt, model_settings=settings)

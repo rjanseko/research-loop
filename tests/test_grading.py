@@ -28,7 +28,7 @@ def _output(**changes: Any) -> BenchmarkOutput:
                 "root_run_id": "root", "answer": "GPT-3 has 175B parameters [s1].", "extracted_answer": None,
                 "source_urls": [], "primary_source_urls": [], "unsupported_claims": 0, "major_unsupported_claims": 0,
                 "total_claims": 1, "tool_calls": 0, "research_tool_calls": 0, "total_tokens": 0, "cost_usd": 0.0,
-                "search_queries": [], "sources_text": "\n\n## Sources\n\n- [s1] GPT-3 paper https://arxiv.org/abs/2005.14165\n"}
+                "search_queries": [], "report_text": "GPT-3 has 175B parameters [s1].\n\n## Sources\n\n- [s1] GPT-3 paper https://arxiv.org/abs/2005.14165\n"}
     return BenchmarkOutput(**(base | changes))
 
 
@@ -93,6 +93,8 @@ def test_judge_specs_name_a_second_judge() -> None:
     assert (parse_judge("openai:gpt-6-sol").name, parse_judge("openai:gpt-6-sol").model) == ("rubric", "openai:gpt-6-sol")
     second = parse_judge("opus=anthropic:claude-opus-5-5")
     assert (second.name, second.model) == ("opus", "anthropic:claude-opus-5-5")
+    # Low effort missed plainly stated points, so judges think hard unless told otherwise.
+    assert parse_judge("openai:gpt-6-sol").thinking == second.thinking == "high"
 
 
 async def _synthetic_job(**changes: Any) -> StoredJob:
@@ -198,3 +200,16 @@ def test_research_grade_refuses_unusable_options(argv, message, capsys) -> None:
     with pytest.raises(SystemExit):
         main(argv)
     assert message in capsys.readouterr().err
+
+
+def test_the_judge_reads_key_statements_and_caveats_but_not_verdicts() -> None:
+    from research_loop.benchmark import reader_text
+    from research_loop.ledger import EvidenceLedger
+    from research_loop.schemas import FinalReport, ReportClaim
+
+    report = FinalReport(answer="Short answer.", caveats=["Scores are vendor claims."],
+                         claims=[ReportClaim(statement="Verified has 500 instances.", claim_ids=["q1/c1"])])
+    text = reader_text(report, EvidenceLedger())
+    assert text.startswith("Short answer.\n\n## Key statements\n\n1. Verified has 500 instances.")
+    assert "## Caveats\n\n- Scores are vendor claims." in text
+    assert "q1/c1" not in text and "supported" not in text

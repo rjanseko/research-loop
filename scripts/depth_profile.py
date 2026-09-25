@@ -7,7 +7,9 @@ reports:
   `source_check` matches (quotes.ToolOutputIndex): URL ignoring scheme, `www.`, query, and
   fragment, or DOI or arXiv ID. A source no tool returned is counted as not matched;
 - whether the loop stopped on its own limit, in which case a salvage call wrote its result and its
-  curve is cut off: it shows only that the task needed at least that many requests;
+  curve is cut off: it shows only that the task needed at least that many requests. `stopped_by`
+  names the limit it was closest to: tokens, requests, tool calls, or dollars. A limit that should not
+  bind showing up here, as tokens did in the first pilot, means the study's limits need changing;
 - its time split into model time (a request sent until its response arrived) and tool time (the
   response arrived until the next request went out with the tool results), and the salvage call's
   time.
@@ -44,6 +46,24 @@ class LoopProfile:
     model_seconds: float = 0.0
     tool_seconds: float = 0.0
     salvage_seconds: float | None = None
+    stopped_by: str | None = None
+
+
+# The route limits a task records in effective_config, and the usage each is measured against.
+_LIMITS = (("tokens", "total_tokens_limit", "total_tokens"), ("requests", "max_requests", "requests"),
+           ("tool calls", "max_tool_calls", "tool_calls"), ("dollars", "cost_limit", "cost"))
+
+
+def stopping_limit(usage: dict[str, Any], config: dict[str, Any]) -> str:
+    """The limit a stopped loop had used the largest share of.
+
+    PydanticAI stops a loop when its next request would pass a limit, so the one that stopped it need
+    not be fully used; the closest to full is the best evidence without the error message, which
+    Postgres does not keep.
+    """
+    shares = {name: float(usage.get(used) or 0) / float(config[limit])
+              for name, limit, used in _LIMITS if config.get(limit)}
+    return max(shares, key=shares.get) if shares else "unknown"
 
 
 def _cited_sources(result: ResearchResult) -> list[SourceRef]:
@@ -99,13 +119,14 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
     async with await psycopg.AsyncConnection.connect(dsn) as conn:
         rows = await (await conn.execute(
             "select t.id, t.role, t.question_id, t.status, t.parent_task_id, t.output, t.started_at, t.finished_at,"
-            " m.messages from research_tasks t left join research_task_messages m on m.task_id = t.id"
+            " m.messages, t.usage, t.effective_config"
+            " from research_tasks t left join research_task_messages m on m.task_id = t.id"
             " where t.job_id = %s and t.role = any(%s) order by t.started_at", (job_id, list(RESEARCH_ROLES)))).fetchall()
     tasks = {row[0]: row for row in rows}
     # A salvage call is a child of the loop it wrote the result for, with the same role and question.
     salvage = {row[4]: row for row in rows if row[4] in tasks and tasks[row[4]][1] == row[1] and tasks[row[4]][2] == row[2]}
     profiles = []
-    for task_id, role, question_id, status, _parent, output, _started, _finished, messages in rows:
+    for task_id, role, question_id, status, _parent, output, _started, _finished, messages, usage, config in rows:
         if task_id in {row[0] for row in salvage.values()}:
             continue
         if messages is None:
@@ -118,16 +139,17 @@ async def load_profiles(dsn: str, job_id: UUID) -> list[LoopProfile]:
             role=role, question_id=question_id or "", requests=requests, cut_off=child is not None,
             first_seen=first_seen, model_seconds=model_s, tool_seconds=tool_s,
             salvage_seconds=(child[7] - child[6]).total_seconds() if child else None,
+            stopped_by=stopping_limit(usage or {}, config or {}) if child else None,
         ))
     return profiles
 
 
 def render(profiles: list[LoopProfile]) -> str:
-    lines = ["role       question requests cut_off model_s tool_s salvage_s  first seen at request (- = not matched)"]
+    lines = ["role       question requests stopped_by model_s tool_s salvage_s  first seen at request (- = not matched)"]
     for p in profiles:
         seen = ", ".join(str(k) if k else "-" for k in sorted(p.first_seen, key=lambda k: (k is None, k or 0)))
         salvage = f"{p.salvage_seconds:9.1f}" if p.salvage_seconds is not None else " " * 9
-        lines.append(f"{p.role:<10} {p.question_id:<8} {p.requests:>8} {'yes' if p.cut_off else 'no':>7} "
+        lines.append(f"{p.role:<10} {p.question_id:<8} {p.requests:>8} {p.stopped_by or '-':>10} "
                      f"{p.model_seconds:7.1f} {p.tool_seconds:6.1f} {salvage}  {seen}")
     for role in RESEARCH_ROLES:
         group = [p for p in profiles if p.role == role]

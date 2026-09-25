@@ -1,7 +1,20 @@
-# The settings study (docs/settings-study.md): seven questions with reference answers or rubrics.
+# The settings study (docs/settings-study.md). Our own questions cover shallow and medium depth: facts
+# a model knows, a two-hop fact, a number from one source, a false premise, and a table from three papers.
+# The deep questions are four English DeepResearch Bench II tasks with expert-written rubrics, one each
+# from its four largest themes: within a theme, the lowest-idx CC BY 4.0 task with 50 to 80 rubric points.
+# st06 and st07 are retired (metadata "retired"): their rubrics were our own, and they stay listed only so
+# earlier runs of them can still be graded.
 name = "settings-study"
 
 [[sources]]
 name = "settings-study"
 kind = "jsonl"
 path = "settings_study_cases.jsonl"
+
+[[sources]]
+name = "drb2"
+kind = "deepresearch_bench_2"
+languages = ["en"]
+# Positions among the English tasks: task2+ (Finance & Business), task8 (Science & Technology),
+# task17+ (Software Development), task26 (Health).
+indices = [1, 7, 20, 31]
