@@ -3,13 +3,15 @@
 The default synthetic policy runs the real graph without model or web calls; any
 other policy calls paid model providers and needs --paid. With --persist, the job is
 stored in Postgres (DATABASE_URL) like a benchmark run with --persist; --capture also
-stores every agent's full messages there.
+stores every agent's full messages there. With --report-dir, the report is also written
+there as a document: PDF (through LaTeX) and Markdown by default, see --report-format.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 from research_loop import (
     POLICY_PRESETS,
@@ -21,6 +23,7 @@ from research_loop import (
 from research_loop.db import open_migrated_pool
 from research_loop.ledger import sources_markdown
 from research_loop.observability import configure_logfire
+from research_loop.render import FORMATS, LatexError, ReportDocument, write_report
 from research_loop.repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
@@ -30,7 +33,8 @@ from research_loop.synthetic import SyntheticResearchLoop
 
 
 async def run(objective: str, policy_name: str, tool_mode: str, settings: ResearchSettings,
-              persist: bool, capture: bool = False) -> None:
+              persist: bool, capture: bool = False, report_dir: Path | None = None,
+              report_formats: tuple[str, ...] = ("pdf", "md")) -> None:
     configure_logfire(settings)
     async with AsyncExitStack() as stack:
         if persist:
@@ -62,6 +66,18 @@ async def run(objective: str, policy_name: str, tool_mode: str, settings: Resear
         print(f"job_id={outcome.job_id} cost_usd={outcome.cost_usd}")
     for reason in outcome.review_reasons:
         print(f"needs review: {reason}")
+    if report_dir is not None:
+        document = ReportDocument.from_outcome(outcome)
+        # The JSON record first: `research-report` can render it again if the PDF fails.
+        for name, path in write_report(document, report_dir, ["json"]).items():
+            print(f"report {name}: {path}")
+        try:
+            written = write_report(document, report_dir, [f for f in report_formats if f != "json"])
+        except LatexError as exc:
+            print(f"report pdf not written: {exc}")
+        else:
+            for name, path in written.items():
+                print(f"report {name}: {path}")
 
 
 def main() -> None:
@@ -73,7 +89,14 @@ def main() -> None:
     parser.add_argument("--persist", action="store_true", help="Store the job in Postgres at DATABASE_URL")
     parser.add_argument("--capture", action="store_true",
                         help="With --persist, also store every agent's full messages (research_task_messages)")
+    parser.add_argument("--report-dir", type=Path,
+                        help="Also write the report, sources, and evidence ledger as documents here")
+    parser.add_argument("--report-format", default="pdf,md",
+                        help=f"Comma-separated formats for --report-dir: {', '.join(FORMATS)} (default: pdf,md)")
     args = parser.parse_args()
+    report_formats = tuple(name.strip() for name in args.report_format.split(",") if name.strip())
+    if unknown := [name for name in report_formats if name not in FORMATS]:
+        parser.error(f"unknown report format(s) {', '.join(unknown)}; choose from {', '.join(FORMATS)}")
     if args.policy != "synthetic" and not args.paid:
         parser.error("real model policies require --paid")
     # Resolve settings first: it loads .env, which carries the model overrides and DATABASE_URL.
@@ -82,7 +105,8 @@ def main() -> None:
         parser.error("--persist needs DATABASE_URL; see docs/setup.md#postgres")
     if args.capture and not args.persist:
         parser.error("--capture stores transcripts in Postgres; add --persist")
-    asyncio.run(run(args.objective, args.policy, args.tool_mode, settings, args.persist, args.capture))
+    asyncio.run(run(args.objective, args.policy, args.tool_mode, settings, args.persist, args.capture,
+                    args.report_dir, report_formats))
 
 
 if __name__ == "__main__":

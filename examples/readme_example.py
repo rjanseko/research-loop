@@ -107,6 +107,8 @@ async def run(*, paid: bool, persist: bool, capture: bool, budget: float, reserv
         # The answer with a "Sources" section for the IDs it cites, as printed.
         "report_markdown": outcome.report.answer + sources_markdown(outcome.report, outcome.ledger),
         "verification": outcome.verification.model_dump(mode="json"),
+        # All the evidence, so `research-report <record>` can render the run as a PDF with its sources.
+        "ledger": outcome.ledger.to_json(),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(record, indent=2, default=str) + "\n", encoding="utf-8")
@@ -146,6 +148,7 @@ def main(argv: list[str] | None = None) -> None:
     for reason in record["review_reasons"]:
         print(f"needs review: {reason}")
     print(f"record: {output}")
+    print(f"render it as a PDF: research-report {output}")
 
 
 if __name__ == "__main__":
