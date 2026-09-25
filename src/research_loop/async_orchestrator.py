@@ -499,8 +499,13 @@ class AsyncResearchLoop:
         root_run_id: UUID | None,
         kind: str,
         graph_version: str | None = None,
+        trial: dict[str, Any] | None = None,
     ) -> UUID:
-        """Persist a research job with its effective configuration; no local paths or file contents."""
+        """Persist a research job with its effective configuration; no local paths or file contents.
+
+        `trial` marks a job a trial script made (scripts/prompt_trial.py, scripts/scout_trial.py): which
+        trial and which of its arms, so trial jobs are never mistaken for study runs.
+        """
         self.policy.validate()
         return await self.repository.create_job(
             session_id=session_id or uuid4(),
@@ -519,7 +524,7 @@ class AsyncResearchLoop:
                     "notes": constraints.notes,
                     "attachment_count": len(constraints.attachment_paths),
                 },
-            },
+            } | ({"trial": trial} if trial else {}),
         )
 
     @asynccontextmanager

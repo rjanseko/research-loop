@@ -68,20 +68,31 @@ def test_evidence_metrics_count_sources_and_unfound_quotes() -> None:
                        "quotes_not_found": 1, "sources_not_found": 0}
 
 
-def test_an_arm_scouts_every_question_as_one_capped_unit() -> None:
+def test_an_arm_is_one_stored_job_of_its_scouts_and_the_fixed_synthesizers_report() -> None:
+    from research_loop.agents import synthesizer_agent
+    from research_loop.repository import CapturingResearchRepository
+
     prompt_trial = scout_trial._load("prompt_trial", Path(__file__).parents[1] / "scripts" / "prompt_trial.py")
 
-    def respond(messages, info: AgentInfo) -> ModelResponse:
+    def scout(messages, info: AgentInfo) -> ModelResponse:
         result = _result("q1").model_dump(mode="json") | {"question_id": "q1"}
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, result)])
 
+    def synthesize(messages, info: AgentInfo) -> ModelResponse:
+        report = {"title": "T", "answer": "Findings [s1].", "claims": [{"statement": "s", "claim_ids": ["q1/c1"]}]}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, report)])
+
     route = ModelRoute("test", 3, 4, 100_000)
+    repo = CapturingResearchRepository(InMemoryResearchRepository())
     loop = AsyncResearchLoop(ModelPolicy("p", {role: route for role in ResearchRole}),
-                             ResearchConfig(scholarly_tools=False), InMemoryResearchRepository(),
-                             settings=ResearchSettings.from_env({}))
+                             ResearchConfig(scholarly_tools=False), repo, settings=ResearchSettings.from_env({}))
     plan = ResearchPlan(objective="o", questions=[ResearchQuestion(id="q1", question="q", priority=3)])
-    with scout_agent.override(model=FunctionModel(respond)):
-        results, metrics, error = asyncio.run(scout_trial.scout_arm(
-            loop, prompt_trial.TrialBudget(1.0), prompt_trial, plan, ResearchConstraints()))
-    assert error is None and [r.question_id for r in results] == ["q1"]
+    trial = {"name": "scout", "arm": "flash-1", "model": "zai:glm-5.3-flash"}
+    with scout_agent.override(model=FunctionModel(scout)), synthesizer_agent.override(model=FunctionModel(synthesize)):
+        unit, metrics = asyncio.run(scout_trial.scout_arm(
+            loop, prompt_trial.TrialBudget(1.0), prompt_trial, plan, "o", ResearchConstraints(), trial))
+    assert unit.error is None and [r.question_id for r in unit.result[0]] == ["q1"]
+    job = repo.jobs[unit.job_id]
+    assert job["status"] == "succeeded" and job["config"]["trial"] == trial
+    assert job["final_report"]["title"] == "T" and job["evidence_ledger"]["q1"]
     assert metrics["requests"] == 1 and metrics["salvage_calls"] == 0

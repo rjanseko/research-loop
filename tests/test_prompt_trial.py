@@ -66,7 +66,7 @@ def test_synthesis_rows_count_the_verifiers_findings() -> None:
         ClaimCheck(statement="s2", supported=True, severity="none", explanation="e")])
     counts = prompt_trial._counts(verification, report)
     assert counts == {"statements": 2, "checked": 2, "unsupported": 1, "major": 1, "follow_ups": 0}
-    row = {"job_id": "3bccbe6d-x", "variant": "candidate", "synthesis_usd": 0.5, "verification_usd": 0.2,
+    row = {"job_id": "3bccbe6d-x", "variant": "candidate", "synthesis_usd": 0.5, "verification_usd": 0.2, "requests": 2,
            "synthesis_requests": 1, "error": None, **counts}
     table = prompt_trial.render_synthesis([row], {"3bccbe6d-x": counts})
     assert "candidate" in table and "stored" in table
@@ -123,3 +123,27 @@ def test_a_unit_records_its_requests() -> None:
         rows = asyncio.run(prompt_trial.trial_plans(loop, prompt_trial.TrialBudget(1.0), cases,
                                                     prompt_trial.CANDIDATES["planner"]))
     assert [row["requests"] for row in rows] == [1, 1]
+
+
+def test_each_unit_is_a_job_marked_as_the_trial_and_arm_that_made_it() -> None:
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if "refuse me" in str(messages[0].parts[0].content):
+            raise RuntimeError("refused")
+        plan = {"objective": "o", "questions": [{"id": "Q1", "question": "q", "priority": 3}]}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, plan)])
+
+    route = ModelRoute("test", 2, 0, 100_000)
+    loop = prompt_trial._loop(ModelPolicy("p", {role: route for role in ResearchRole}), ResearchSettings.from_env({}))
+    cases = [SimpleNamespace(case_id=case_id, blocked_urls=[], benchmark_id=None, render_objective=lambda o=objective: o)
+             for case_id, objective in (("ok", "fine"), ("bad", "refuse me"))]
+    with planner_agent.override(model=FunctionModel(respond)):
+        rows = asyncio.run(prompt_trial.trial_plans(loop, prompt_trial.TrialBudget(1.0), cases,
+                                                    prompt_trial.CANDIDATES["planner"]))
+    jobs = loop.repository.jobs
+    assert {row["job_id"] for row in rows} == set(jobs)
+    for row in rows:
+        job = jobs[row["job_id"]]
+        assert job["config"]["trial"] == {"name": "prompt", "mode": "planner", "variant": row["variant"],
+                                          "case_id": row["case_id"]}
+        assert job["config"]["orchestrator"]["kind"] == "trial"
+        assert job["status"] == ("failed" if row["case_id"] == "bad" else "succeeded")

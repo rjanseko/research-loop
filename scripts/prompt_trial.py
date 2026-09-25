@@ -8,9 +8,9 @@ validators, and limits are the ones a study run uses; only the role's instructio
 - `planner`: plans each study question with the current and the candidate planner instructions.
   No research runs; the comparison is the shape of the plans.
 - `synthesis`: for each stored job, writes a report from its final evidence ledger with the current
-  and the candidate synthesizer instructions, and verifies both with the current verifier. The
-  comparison is the verifier's counts: statements checked, unsupported, and rated major. One
-  verifier sample per report, so a difference of a few statements is within its variation.
+  and the candidate synthesizer instructions, and verifies both with the current verifier, as one job
+  each. The comparison is the verifier's counts: statements checked, unsupported, and rated major.
+  One verifier sample per report, so a difference of a few statements is within its variation.
 
 `--max-usd` is required and is a hard cap on the trial's spend: no unit starts once the units that
 finished have spent it, and at most `--concurrency` units run at once, so the trial can pass the cap by
@@ -18,8 +18,11 @@ no more than the units running when it is reached. A unit's model requests are r
 validation retry, which resends the whole prompt, shows up. Estimate a trial from the costliest
 call seen, retries included, not the average.
 
-Nothing is stored in Postgres. The trial record, with plans and reports, goes to
-benchmark_outputs/settings_study/prompt-trial/; the terminal gets counts and costs.
+Every unit is a job in Postgres, with its calls, transcripts, and cost, as a study run is, and its
+config names the trial and the arm (`trial`) so it is never taken for a study run. A synthesis unit's
+job keeps its report and verification, so `research-report` renders it and `research-grade` grades it.
+The trial record, with the job IDs, goes to benchmark_outputs/settings_study/prompt-trial/; the
+terminal gets counts and costs.
 
     .venv/bin/python scripts/prompt_trial.py --max-usd 1 planner
     .venv/bin/python scripts/prompt_trial.py --max-usd 3 synthesis <job_id> [<job_id> ...]
@@ -32,6 +35,7 @@ import importlib.util
 import json
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,7 +45,10 @@ from uuid import UUID
 from research_loop.agents import INSTRUCTIONS, planner_agent, synthesizer_agent
 from research_loop.async_orchestrator import AsyncResearchLoop
 from research_loop.policy import ModelPolicy
-from research_loop.repository import InMemoryResearchRepository
+from research_loop.repository import (
+    CapturingResearchRepository,
+    InMemoryResearchRepository,
+)
 from research_loop.schemas import FinalReport, ResearchConstraints, VerificationReport
 
 _SCRIPTS = Path(__file__).parent
@@ -108,40 +115,57 @@ class Unit:
     cost: float
     requests: int
     error: str | None
+    job_id: UUID | None = None
+    # Dollars by role, such as a scout run's scouting apart from its synthesis.
+    cost_by_role: dict[str, float] = field(default_factory=dict)
 
 
-def _usage(repo: InMemoryResearchRepository, job_id: UUID) -> tuple[float, int]:
-    """Dollars and model requests of one unit's job; units run at once, so it goes by job, not by order."""
-    usages = [task.get("usage") or {} for task in repo.tasks.values() if task.get("job_id") == job_id]
-    return sum(float(u.get("cost") or 0) for u in usages), sum(int(u.get("requests") or 0) for u in usages)
+def _usage(repo: Any, job_id: UUID) -> tuple[float, int, dict[str, float]]:
+    """Dollars, model requests, and dollars by role of one unit's job; units run at once, so it goes by job."""
+    tasks = [task for task in repo.tasks.values() if task.get("job_id") == job_id]
+    by_role: dict[str, float] = {}
+    for task in tasks:
+        role = str(getattr(task.get("role"), "value", task.get("role")))
+        by_role[role] = by_role.get(role, 0.0) + float((task.get("usage") or {}).get("cost") or 0)
+    requests = sum(int((task.get("usage") or {}).get("requests") or 0) for task in tasks)
+    return sum(by_role.values()), requests, by_role
 
 
 async def _unit(loop: AsyncResearchLoop, budget: TrialBudget, constraints: ResearchConstraints,
-                body: Callable[[UUID], Awaitable[Any]]) -> Unit:
-    """Run `body` as one job under the study's job cap and the trial's cap.
+                body: Callable[[UUID], Awaitable[Any]], *, objective: str, trial: dict[str, Any],
+                finish: Callable[[Any], dict[str, Any]] | None = None) -> Unit:
+    """Run `body` as one stored job under the study's job cap and the trial's cap.
 
-    A failed unit, such as a refusal, is recorded rather than stopping the trial's other units; one
-    that would start after the trial's cap is spent is skipped as `cap_reached`.
+    The job's config records `trial`. When `body` returns, the job is finished as succeeded with the
+    fields `finish` makes from its result (a report, verification, and ledger); when it raises, the job
+    scope records it failed. A failed unit, such as a refusal, is recorded rather than stopping the
+    trial's other units; one that would start after the trial's cap is spent is skipped as `cap_reached`.
     """
     async with budget.slots:
         if budget.spent >= budget.max_usd:
             return Unit(None, 0.0, 0, CAP_REACHED)
         repo = loop.repository
-        job_id = await repo.create_job(objective="prompt trial")
+        job_id = await loop._create_job(objective, constraints, session_id=None, root_run_id=None,
+                                        kind="trial", trial=trial)
         result, error = None, None
         try:
             async with loop._job_scope(job_id, constraints):
                 result = await body(job_id)
+                await repo.finish_job(job_id, status="succeeded", **(finish(result) if finish else {}))
         except Exception as exc:  # noqa: BLE001 - one unit's failure must not stop the others; the type only, as bodies can leak
             error = type(exc).__name__
-        cost, requests = _usage(repo, job_id)
+        cost, requests, by_role = _usage(repo, job_id)
         budget.spent += cost
-        return Unit(result, cost, requests, error)
+        return Unit(result, cost, requests, error, job_id, by_role)
 
 
-def _loop(policy: ModelPolicy, settings: Any) -> AsyncResearchLoop:
-    # The study's job cap stays: the planner is shown it, and it shapes the plan.
-    return AsyncResearchLoop(policy, repository=InMemoryResearchRepository(), settings=settings)
+def _loop(policy: ModelPolicy, settings: Any, repository: Any = None) -> AsyncResearchLoop:
+    """A loop writing to `repository` (the trial's Postgres, captured) or, in tests, to memory.
+
+    The study's job cap stays: the planner is shown it, and it shapes the plan.
+    """
+    return AsyncResearchLoop(policy, repository=repository or CapturingResearchRepository(InMemoryResearchRepository()),
+                             settings=settings)
 
 
 async def trial_plans(loop: AsyncResearchLoop, budget: TrialBudget, cases: list[Any],
@@ -151,10 +175,13 @@ async def trial_plans(loop: AsyncResearchLoop, budget: TrialBudget, cases: list[
         constraints = ResearchConstraints(blocked_urls=case.blocked_urls, benchmark_id=case.benchmark_id,
                                           benchmark_case_id=case.case_id)
         with planner_agent.override(instructions=candidate if variant == "candidate" else INSTRUCTIONS["planner"]):
-            unit = await _unit(loop, budget, constraints, lambda job_id: loop._plan(
-                job_id, case.render_objective(), constraints, None))
+            objective = case.render_objective()
+            unit = await _unit(loop, budget, constraints, lambda job_id: loop._plan(job_id, objective, constraints, None),
+                               objective=objective,
+                               trial={"name": "prompt", "mode": "planner", "variant": variant, "case_id": case.case_id})
         return {"case_id": case.case_id, "variant": variant, "cost_usd": unit.cost, "requests": unit.requests,
-                "error": unit.error, "questions": [q.question for q in unit.result.questions] if unit.result else []}
+                "error": unit.error, "job_id": unit.job_id,
+                "questions": [q.question for q in unit.result.questions] if unit.result else []}
 
     # An override is held in a context variable, so it applies only to the task that set it.
     return list(await asyncio.gather(*(plan(case, variant) for variant in VARIANTS for case in cases)))
@@ -170,38 +197,34 @@ def _counts(verification: VerificationReport, report: FinalReport) -> dict[str, 
 
 async def trial_synthesis(loop: AsyncResearchLoop, budget: TrialBudget, jobs: list[tuple[str, tuple[Any, ...]]],
                           candidate: str) -> list[dict[str, Any]]:
-    """Each job's ledger synthesized with the current and the candidate instructions, each report verified."""
-    async def synthesize(job_id: str, job: tuple[Any, ...], variant: str) -> dict[str, Any]:
+    """Each job's ledger synthesized with the current and the candidate instructions and verified, one job each."""
+    async def unit(job_id: str, job: tuple[Any, ...], variant: str) -> dict[str, Any]:
         objective, _plan, ledger, stored, _report = job
         constraints = ResearchConstraints(blocked_urls=stored["blocked_urls"], benchmark_id=stored["benchmark_id"],
                                           notes=stored["notes"])
+
+        async def body(trial_id: UUID) -> tuple[FinalReport, VerificationReport]:
+            report = await loop._synthesize(trial_id, objective, ledger, constraints, None)
+            return report, await loop._verify(trial_id, objective, report, ledger, constraints, None)
+
+        # Only the synthesizer's instructions change; the verifier is the current one for both variants.
         with synthesizer_agent.override(
                 instructions=candidate if variant == "candidate" else INSTRUCTIONS["synthesizer"]):
-            unit = await _unit(loop, budget, constraints, lambda trial_id: loop._synthesize(
-                trial_id, objective, ledger, constraints, None))
-        return {"job_id": job_id, "variant": variant, "report": unit.result, "synthesis_usd": unit.cost,
-                "synthesis_requests": unit.requests, "error": unit.error,
-                "objective": objective, "ledger": ledger, "constraints": constraints}
-
-    reports = await asyncio.gather(*(synthesize(job_id, job, variant) for variant in VARIANTS for job_id, job in jobs))
-
-    async def verify(row: dict[str, Any]) -> dict[str, Any]:
-        entry = {"job_id": row["job_id"], "variant": row["variant"], "synthesis_usd": row["synthesis_usd"],
-                 "synthesis_requests": row["synthesis_requests"], "verification_usd": 0.0,
-                 "verification_requests": 0, "error": row["error"]}
-        if row["report"] is None:
+            done = await _unit(loop, budget, constraints, body, objective=objective,
+                               trial={"name": "prompt", "mode": "synthesis", "variant": variant, "source_job": job_id},
+                               finish=lambda result: {"final_report": result[0].model_dump(mode="json"),
+                                                      "verification": result[1].model_dump(mode="json"),
+                                                      "evidence_ledger": ledger.to_json()})
+        entry = {"job_id": job_id, "variant": variant, "trial_job_id": done.job_id, "error": done.error,
+                 "synthesis_usd": done.cost_by_role.get("synthesizer", 0.0),
+                 "verification_usd": done.cost_by_role.get("verifier", 0.0), "requests": done.requests}
+        if done.result is None:
             return entry
-        unit = await _unit(loop, budget, row["constraints"], lambda trial_id: loop._verify(
-            trial_id, row["objective"], row["report"], row["ledger"], row["constraints"], None))
-        entry |= {"verification_usd": unit.cost, "verification_requests": unit.requests}
-        if unit.result is None:
-            return entry | {"error": unit.error, "report": row["report"].model_dump(mode="json")}
-        verification = unit.result
-        return entry | {**_counts(verification, row["report"]),
-                "report": row["report"].model_dump(mode="json"),
-                "verification": verification.model_dump(mode="json")}
+        report, verification = done.result
+        return entry | {**_counts(verification, report), "report": report.model_dump(mode="json"),
+                        "verification": verification.model_dump(mode="json")}
 
-    return list(await asyncio.gather(*(verify(row) for row in reports)))
+    return list(await asyncio.gather(*(unit(job_id, job, variant) for variant in VARIANTS for job_id, job in jobs)))
 
 
 def render_plans(rows: list[dict[str, Any]]) -> str:
@@ -213,14 +236,14 @@ def render_plans(rows: list[dict[str, Any]]) -> str:
 
 
 def render_synthesis(rows: list[dict[str, Any]], stored: dict[str, dict[str, Any] | None]) -> str:
-    lines = ["job       variant    statements checked unsupported major follow_ups synth_usd (requests) verify_usd"]
+    lines = ["job       variant    statements checked unsupported major follow_ups synth_usd verify_usd requests"]
     for row in sorted(rows, key=lambda r: (r["job_id"], VARIANTS.index(r["variant"]))):
         if row.get("error"):
             lines.append(f"{row['job_id'][:8]}  {row['variant']:<10} failed: {row['error']}")
             continue
         lines.append(f"{row['job_id'][:8]}  {row['variant']:<10} {row['statements']:>10} {row['checked']:>7} "
                      f"{row['unsupported']:>11} {row['major']:>5} {row['follow_ups']:>10} "
-                     f"{row['synthesis_usd']:>9.3f} ({row['synthesis_requests']:>8}) {row['verification_usd']:>10.3f}")
+                     f"{row['synthesis_usd']:>9.3f} {row['verification_usd']:>10.3f} {row['requests']:>8}")
     for job_id, counts in stored.items():
         if counts:
             lines.append(f"{job_id[:8]}  {'stored':<10} {counts['statements']:>10} {counts['checked']:>7} "
@@ -240,8 +263,38 @@ async def _stored_verification(dsn: str, job_id: UUID) -> dict[str, Any] | None:
     return _counts(VerificationReport.model_validate(row[1]), FinalReport.model_validate(row[0]))
 
 
-def main(argv: list[str] | None = None) -> None:
+async def open_trial_repository(stack: AsyncExitStack, dsn: str) -> CapturingResearchRepository:
+    """The trial's store: Postgres, transcripts included, with a local copy for the trial's own measures."""
+    from research_loop.db import open_migrated_pool
+    from research_loop.repository import PostgresResearchRepository
+
+    # Refuses before any model call if migrations are pending or changed.
+    pool = await open_migrated_pool(stack, dsn)
+    return CapturingResearchRepository(PostgresResearchRepository(pool, capture_transcripts=True))
+
+
+async def _run(args: argparse.Namespace, settings: Any, budget: TrialBudget,
+               record: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     from research_loop.benchmarks import load_suite
+
+    preflight = _load("study_preflight", _SCRIPTS / "study_preflight.py")
+    async with AsyncExitStack() as stack:
+        loop = _loop(preflight.study_policy("value", settings), settings,
+                     await open_trial_repository(stack, settings.database_dsn))
+        if args.mode == "planner":
+            study = _load("settings_study", _STUDY)
+            _manifest, specs = load_suite(study.SUITE)
+            cases = [spec for spec in specs if not spec.metadata.get("retired")]
+            rows = await trial_plans(loop, budget, cases, CANDIDATES["planner"])
+            return rows, render_plans(rows)
+        jobs = [(str(job_id), await preflight.load_job(settings.database_dsn, job_id)) for job_id in args.job_ids]
+        rows = await trial_synthesis(loop, budget, jobs, CANDIDATES["synthesizer"])
+        stored = {str(job_id): await _stored_verification(settings.database_dsn, job_id) for job_id in args.job_ids}
+        record["stored"] = stored
+        return rows, render_synthesis(rows, stored)
+
+
+def main(argv: list[str] | None = None) -> None:
     from research_loop.settings import ResearchSettings
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -259,24 +312,11 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--max-usd must be positive and --concurrency at least 1")
     budget = TrialBudget(args.max_usd, args.concurrency)
     settings = ResearchSettings.from_env()
-    preflight = _load("study_preflight", _SCRIPTS / "study_preflight.py")
-    loop = _loop(preflight.study_policy("value", settings), settings)
+    if not settings.database_dsn:
+        parser.error("trials store their jobs in Postgres; set DATABASE_URL (see docs/setup.md#postgres)")
     record: dict[str, Any] = {"mode": args.mode, "started_at": datetime.now(UTC).isoformat(),
                               "candidate_addition": PLANNER_ADDITION if args.mode == "planner" else SYNTHESIZER_ADDITION}
-    if args.mode == "planner":
-        study = _load("settings_study", _STUDY)
-        _manifest, specs = load_suite(study.SUITE)
-        cases = [spec for spec in specs if not spec.metadata.get("retired")]
-        rows = asyncio.run(trial_plans(loop, budget, cases, CANDIDATES["planner"]))
-        summary = render_plans(rows)
-    else:
-        if not settings.database_dsn:
-            parser.error("reads the jobs from Postgres; set DATABASE_URL (see docs/setup.md#postgres)")
-        jobs = [(str(job_id), asyncio.run(preflight.load_job(settings.database_dsn, job_id))) for job_id in args.job_ids]
-        rows = asyncio.run(trial_synthesis(loop, budget, jobs, CANDIDATES["synthesizer"]))
-        stored = {str(job_id): asyncio.run(_stored_verification(settings.database_dsn, job_id)) for job_id in args.job_ids}
-        record["stored"] = stored
-        summary = render_synthesis(rows, stored)
+    rows, summary = asyncio.run(_run(args, settings, budget, record))
     record["rows"] = rows
     output = args.output or settings.benchmark_output / "settings_study" / "prompt-trial" / (
         f"{args.mode}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json")
