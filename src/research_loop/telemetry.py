@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Iterable
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
@@ -156,3 +158,69 @@ def extract_tool_events(messages: Iterable[Any]) -> list[ToolEvent]:
                 event.provider_name = getattr(part, "provider_name", None)
 
     return [calls[call_id] for call_id in order]
+
+
+def _subclass_names(cls: type) -> set[str]:
+    return {name for sub in cls.__subclasses__() for name in (sub.__name__, *_subclass_names(sub))}
+
+
+# Failures before any HTTP status: no connection, a proxy that refused the host, a timeout, or a
+# broken protocol. Web and scholarly tools report them by exception class name.
+NETWORK_ERRORS = frozenset(_subclass_names(httpx.TransportError))
+
+
+def unreached_source(result: Any) -> str | None:
+    """Why a web or scholarly tool result reached no source, or None when it did or failed otherwise.
+
+    A fetch names a network error; a search counts when it failed twice on one (`SearchUnavailable
+    (TimeoutException)`); a scholarly call counts only when it returned nothing and a provider failed
+    on the network. HTTP statuses, blocked sources, and empty results reached their source and are
+    not counted. Neither is `SearchUnavailable (DDGSException)`: ddgs raises that both when every
+    engine failed and when a search found nothing, and the result does not say which.
+    """
+    if isinstance(result, str) and result[:1] == "{":
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    if not isinstance(result, dict):
+        return None
+    error = str(result.get("error") or "")
+    if error in NETWORK_ERRORS:
+        return error
+    if error.startswith("SearchUnavailable (") and error[len("SearchUnavailable ("):-1] in NETWORK_ERRORS:
+        return "SearchUnavailable"
+    if result.get("works") or result.get("text"):
+        return None
+    for provider_error in result.get("provider_errors") or ():
+        name = str(provider_error).rpartition(":")[2]
+        if name in NETWORK_ERRORS:
+            return name
+    return None
+
+
+@dataclass
+class SourceReach:
+    """A job's web and scholarly tool calls, and those that reached no source, by reason."""
+
+    calls: int = 0
+    unreached: Counter[str] = field(default_factory=Counter)
+
+    def add(self, events: Iterable[ToolEvent]) -> None:
+        for event in events:
+            name = event.tool_name.lower()
+            # scholar_get, scholar_references, and scholar_citations match no research-tool token.
+            web_or_scholarly = event.is_research_tool or name.startswith("scholar_")
+            if not web_or_scholarly or "attachment" in name or event.result is None:
+                continue
+            self.calls += 1
+            if reason := unreached_source(event.result):
+                self.unreached[reason] += 1
+
+    def review_reason(self) -> str | None:
+        """A review reason when at least three calls, and at least half, reached no source."""
+        failed = self.unreached.total()
+        if failed < 3 or failed * 2 < self.calls:
+            return None
+        reasons = ", ".join(reason for reason, _ in self.unreached.most_common(3))
+        return f"{failed} of {self.calls} web and scholarly tool calls reached no source ({reasons})"

@@ -41,7 +41,7 @@ The files are written to a hidden staging folder that then replaces the question
 
 Each invocation also writes its own manifest under `<output>/manifests/`, with the redacted policy, run limits and full run configuration, the prompt fingerprint, acquisition, evidence version, git state including a hash of uncommitted changes, and each question's outcome and cost.
 
-Completed is not the same as sound. Each completed question records `review_reasons`: what it left unresolved, such as unsupported or major verifier findings or a verifier still asking for research. The CLI lists completed questions that need review, and long-horizon synthesis records each input's reasons in its manifest. The pilot's p01, for example, completed with 13 of 42 verifier checks unsupported, 2 rated major, and the verifier still asking for research.
+Completed is not the same as sound. Each completed question records `review_reasons`: what it left unresolved, such as unsupported or major verifier findings, a verifier still asking for research, or research tools that mostly could not reach their sources. The CLI lists completed questions that need review, and long-horizon synthesis records each input's reasons in its manifest. The pilot's p01, for example, completed with 13 of 42 verifier checks unsupported, 2 rated major, and the verifier still asking for research.
 
 ## Budgets
 

@@ -68,6 +68,14 @@ class ScholarWork(BaseModel):
     license_urls: list[str] = Field(default_factory=list)
 
 
+# The metadata API each scholarly provider is reached at.
+SCHOLAR_HOSTS = {
+    "openalex": "https://api.openalex.org", "crossref": "https://api.crossref.org",
+    "arxiv": "https://export.arxiv.org", "opencitations": "https://api.opencitations.net",
+    "acl": "https://aclanthology.org",
+}
+
+
 class ScholarResponse(BaseModel):
     operation: str
     works: list[ScholarWork] = Field(default_factory=list)
@@ -169,11 +177,6 @@ class ScholarClient:
         self.cache_hits = 0
 
     async def _request(self, provider: str, path: str, params: dict[str, Any] | None = None, *, text: bool = False) -> Any:
-        hosts = {
-            "openalex": "https://api.openalex.org", "crossref": "https://api.crossref.org",
-            "arxiv": "https://export.arxiv.org", "opencitations": "https://api.opencitations.net",
-            "acl": "https://aclanthology.org",
-        }
         params = dict(params or {})
         if provider == "openalex" and self.api_key:
             params["api_key"] = self.api_key
@@ -194,9 +197,9 @@ class ScholarClient:
                 await wait_rate_slot(provider)
                 if self.client is None:
                     async with httpx.AsyncClient(follow_redirects=False) as client:
-                        response = await self._get(client, hosts[provider] + path, params, headers)
+                        response = await self._get(client, SCHOLAR_HOSTS[provider] + path, params, headers)
                 else:
-                    response = await self._get(self.client, hosts[provider] + path, params, headers)
+                    response = await self._get(self.client, SCHOLAR_HOSTS[provider] + path, params, headers)
                 if response.status_code not in (429, 503) or attempt == 1:
                     break
                 try:

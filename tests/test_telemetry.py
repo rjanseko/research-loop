@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
-from research_loop.telemetry import error_snapshot
+from research_loop.schemas import ToolEvent
+from research_loop.telemetry import SourceReach, error_snapshot, unreached_source
 
 
 def test_error_snapshot_omits_provider_response_body() -> None:
@@ -44,3 +46,47 @@ def test_scholar_telemetry_omits_full_text_and_query() -> None:
     args = safe_tool_args({"query": secret, "limit": 5})
     assert secret not in str(args)
     assert args["limit"] == 5
+
+
+@pytest.mark.parametrize(("result", "reason"), [
+    ({"url": "https://a.example", "error": "ProxyError"}, "ProxyError"),
+    ('{"url": "https://a.example", "error": "ConnectTimeout"}', "ConnectTimeout"),
+    ({"error": "SearchUnavailable (TimeoutException)"}, "SearchUnavailable"),
+    ({"operation": "search", "provider_errors": ["openalex:ConnectError", "arxiv:HTTPStatusError"]}, "ConnectError"),
+    ({"operation": "references", "provider_errors": ["references:ProxyError"]}, "ProxyError"),
+    # Reached a source: a status, a refusal of our own, or a search that still returned works.
+    ({"url": "https://a.example", "error": "HTTPStatusError", "status": 403}, None),
+    ({"url": "https://a.example", "error": "BlockedSource"}, None),
+    ({"operation": "search", "works": [{"title": "t"}], "provider_errors": ["crossref:ConnectError"]}, None),
+    ({"operation": "search", "provider_errors": ["query is empty"]}, None),
+    # ddgs raises DDGSException for a search that found nothing, too.
+    ({"error": "SearchUnavailable (DDGSException)"}, None),
+    ([{"href": "https://a.example"}], None),
+], ids=["proxy", "json-timeout", "search", "scholar", "references", "status", "blocked", "partial", "empty",
+        "search-empty-or-failed", "results"])
+def test_unreached_source_names_network_failures_only(result, reason) -> None:
+    assert unreached_source(result) == reason
+
+
+def test_source_reach_asks_for_review_when_most_web_and_scholarly_calls_reached_nothing() -> None:
+    reach = SourceReach()
+    reach.add([
+        ToolEvent(tool_name="web_fetch", result={"error": "ProxyError"}),
+        ToolEvent(tool_name="scholar_search", result={"provider_errors": ["openalex:ProxyError"]}),
+        ToolEvent(tool_name="web_fetch", result={"text": "page"}),
+        # Not counted: an empty search is indistinguishable from one whose engines all failed.
+        ToolEvent(tool_name="duckduckgo_search", result={"error": "SearchUnavailable (DDGSException)"}),
+        # Neither counts: attachments are local, and an unanswered call has no result.
+        ToolEvent(tool_name="read_attachment", result={"error": "ProxyError"}),
+        ToolEvent(tool_name="web_fetch"),
+    ])
+    assert (reach.calls, reach.review_reason()) == (4, None)  # two failures are too few to judge
+    reach.add([
+        ToolEvent(tool_name="duckduckgo_search", result={"error": "SearchUnavailable (TimeoutException)"}),
+        ToolEvent(tool_name="scholar_citations", result={"provider_errors": ["citations:ProxyError"]}),
+    ])
+    assert reach.review_reason() == (
+        "4 of 6 web and scholarly tool calls reached no source (ProxyError, SearchUnavailable)"
+    )
+    reach.add([ToolEvent(tool_name="web_fetch", result={"text": "page"})] * 3)
+    assert reach.review_reason() is None  # under half

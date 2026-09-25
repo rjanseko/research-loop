@@ -114,15 +114,70 @@ research-db reconcile --older-than 120 --apply  # mark them failed (Abandoned)
 
 It also closes running tasks whose job has already finished. Choose a threshold longer than any run still in progress; `finished_at` stays empty, because when the process died is unknown.
 
+## Preparing for paid runs
+
+A paid run needs keys for the providers its policy routes to, network access to those providers and to the sources the tools fetch, and a spending plan.
+
+### Provider keys
+
+By default the `quality` policy spreads its roles across five providers (`DEFAULT_MODELS` in `policy.py`):
+
+| Key | Roles it serves by default |
+|---|---|
+| `ANTHROPIC_API_KEY` | Planner, synthesizer |
+| `OPENAI_API_KEY` | Gap analyst, deep dive, verifier, cheap scout |
+| `ZAI_API_KEY` | Scout |
+| `GOOGLE_API_KEY` | Multimodal scout, used only for questions that need image input |
+| `XAI_API_KEY` | Deep dives in verification rounds |
+
+Routes do not fall back to another provider on their own, so every route a policy uses needs either its provider's key or a `RESEARCH_*_MODEL` override that points it at a provider you do have (see [Model routing](#model-routing)). To run on one provider, override every route to it, for example `RESEARCH_DEEP_MODEL=anthropic:<model>`, and set only that provider's key.
+
+`OPENALEX_API_KEY` and `CROSSREF_MAILTO` are optional but worth setting: OpenAlex is rate-limited without a key, and Crossref gives better service to requests that include a contact address.
+
+Put the keys in `.env` locally. In a hosted or sandboxed environment, such as a Claude Code cloud session, add them as environment variables in the environment's settings instead, and never paste them into a chat or a log. A new session picks up changed variables.
+
+### Network access
+
+Sandboxed environments often allow only some hosts. Each provider you use must be reachable:
+
+| Provider | Host |
+|---|---|
+| Anthropic | `api.anthropic.com` |
+| OpenAI | `api.openai.com` |
+| Google | `generativelanguage.googleapis.com` |
+| xAI | `api.x.ai` |
+| Z.ai | `api.z.ai` |
+
+The tools also need the scholarly APIs (`api.openalex.org`, `export.arxiv.org`, `api.crossref.org`, `api.opencitations.net`, `aclanthology.org`, and `api.semanticscholar.org` for basis papers), the search engines the web search tool tries in turn (the `ddgs` library queries Wikipedia, DuckDuckGo, Brave, Google, Mojeek, Yahoo, and others, not only DuckDuckGo), and whatever pages `web_fetch` follows. Those pages can be on any site, so under a domain allowlist most fetches fail. For real research runs, use a level of network access that allows general public web access.
+
+`research-diagnose --network` checks all of this without model calls; see [Checking readiness](#checking-readiness). If a run's web and scholarly tools still mostly fail to reach their sources, its `review_reasons` say so.
+
+### Before the first query
+
+- **Budget and scope.** Decide how many queries, which policy (`quality` or `breadth`), and whether to use benchmark cases or your own questions. Each route has a cost cap per call, but that does not limit the total spend of a batch.
+- **Model IDs.** The defaults can go stale. Run `research-diagnose --policy quality --smoke` ([below](#checking-readiness)), which makes one small paid call per distinct model, and fix any failing route with an override rather than by editing `policy.py`.
+- **Postgres (optional).** Without `DATABASE_URL`, runs stay in memory. To keep jobs and evidence, point `DATABASE_URL` at a Postgres database ([above](#postgres)); the Compose service needs Docker.
+
+Then run a single case before you run more:
+
+```bash
+make setup
+research-diagnose --policy quality --network --smoke
+research-bench examples/benchmark_suite.toml --policies quality --paid --max-concurrency 1
+```
+
 ## Checking readiness
 
 ```bash
 research-diagnose                                    # local checks only; no provider calls
 research-diagnose --scholar-live                     # also probe the public scholarly endpoints
+research-diagnose --network                          # also check the network reaches providers, tools, and the web
 research-diagnose --policy quality --attachments --smoke   # bounded paid calls to each configured model
 ```
 
 Without `--smoke`, diagnosis checks dependencies, graph construction, tool construction, writable directories, the database and its migrations, provider credentials, and each route's model profile. `--smoke` makes one small structured-output call per distinct model, with a tool call where the role needs tools and an image where `--multimodal` asks for one. It reports `WARN` for a model without pricing data, because cost caps cannot be enforced for it.
+
+`--network` sends one HEAD request to each host a run needs, through `HTTPS_PROXY` when one is set, and counts any HTTP response as reachable. It checks the API host of each provider the policy routes to (`FAIL` for a provider with a credential, `WARN` otherwise), then three groups: the scholarly APIs, the search engines, and three ordinary sites standing in for the pages `web_fetch` follows. A group fails when none of its hosts answer and warns when some do not. A proxy that refuses a host is reported as `refused by the proxy`. Providers passing while the ordinary sites fail means the network allows only listed domains: models will answer, but evidence gathering will not work.
 
 Failed smoke checks give a short reason without the provider's response body. A credit-balance failure, including HTTP 402, needs funding on that provider account; HTTP 403 needs account or model access checked; HTTP 404 usually means a wrong model ID.
 

@@ -57,11 +57,13 @@ from .schemas import (
     ResearchQuestion,
     ResearchResult,
     ResearchRole,
+    ToolEvent,
     VerificationReport,
 )
 from .scholar import ScholarClient, build_scholar_toolset
 from .settings import ResearchSettings
 from .telemetry import (
+    SourceReach,
     error_snapshot,
     extract_tool_events,
     jsonable,
@@ -224,13 +226,21 @@ def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
     )
 
 
-def review_reasons(report: FinalReport, verification: VerificationReport, ledger: EvidenceLedger) -> list[str]:
+def review_reasons(
+    report: FinalReport,
+    verification: VerificationReport,
+    ledger: EvidenceLedger,
+    reach: SourceReach | None = None,
+) -> list[str]:
     """What a finished run left unresolved, as short reasons; empty when nothing needs review.
 
     Execution status says whether a run finished. This says whether its result holds up:
-    a report without evidence, one the verifier never checked, or one it did not fully support.
+    a report without evidence, one the verifier never checked, one it did not fully support,
+    or one gathered while most web and scholarly tool calls could not reach their sources.
     """
     reasons = []
+    if reach and (unreached := reach.review_reason()):
+        reasons.append(unreached)
     if not ledger.claim_count():
         reasons.append("no evidence claims were gathered")
     elif not report.claim_ids_used:
@@ -256,11 +266,12 @@ class ResearchOutcome:
     ledger: EvidenceLedger
     attachments: AttachmentCorpus | None = None
     cost_usd: Decimal | None = None
+    reach: SourceReach | None = None
 
     @property
     def review_reasons(self) -> list[str]:
         """Why this run, though it finished, needs review; empty when nothing is unresolved."""
-        return review_reasons(self.report, self.verification, self.ledger)
+        return review_reasons(self.report, self.verification, self.ledger, self.reach)
 
 
 @dataclass
@@ -342,6 +353,8 @@ class AsyncResearchLoop:
         self._http_clients: dict[UUID, _JobHttp] = {}
         # Per-job blocked sources, enforced by the fetch tools and the research output check.
         self._source_policies: dict[UUID, SourcePolicy] = {}
+        # Per-job counts of web and scholarly tool calls that reached no source, for review reasons.
+        self._source_reach: dict[UUID, SourceReach] = {}
 
     async def _create_job(
         self,
@@ -388,6 +401,7 @@ class AsyncResearchLoop:
         self._fetch_memos[job_id] = FetchMemo()
         self._http_clients[job_id] = _JobHttp()
         self._source_policies[job_id] = SourcePolicy(tuple(constraints.blocked_urls) if constraints else ())
+        self._source_reach[job_id] = SourceReach()
         try:
             with job_span(job_id, self.policy.name):
                 async with asyncio.timeout(self.config.max_run_seconds):
@@ -409,6 +423,7 @@ class AsyncResearchLoop:
             self._budget_released.pop(job_id, None)
             self._fetch_memos.pop(job_id, None)
             self._source_policies.pop(job_id, None)
+            self._source_reach.pop(job_id, None)
             if http := self._http_clients.pop(job_id, None):
                 # Shielded and bounded like failure records, so a cancelled run still closes them.
                 with anyio.move_on_after(_FAILURE_WRITE_SECONDS, shield=True):
@@ -438,6 +453,10 @@ class AsyncResearchLoop:
         ledger: EvidenceLedger,
         attachments: AttachmentCorpus | None,
     ) -> ResearchOutcome:
+        outcome = ResearchOutcome(
+            job_id, plan, report, verification, ledger, attachments,
+            cost_usd=self._job_spend.get(job_id), reach=self._source_reach.get(job_id),
+        )
         # The ledger is stored whole: its unique claim IDs are the ones the report and verification cite.
         await self.repository.finish_job(
             job_id,
@@ -445,12 +464,9 @@ class AsyncResearchLoop:
             final_report=report.model_dump(mode="json"),
             verification=verification.model_dump(mode="json"),
             evidence_ledger=ledger.to_json(),
-            review_reasons=review_reasons(report, verification, ledger),
+            review_reasons=outcome.review_reasons,
         )
-        return ResearchOutcome(
-            job_id, plan, report, verification, ledger, attachments,
-            cost_usd=self._job_spend.get(job_id),
-        )
+        return outcome
 
     @staticmethod
     def _limits(route: ModelRoute, remaining_budget: float | None = None) -> UsageLimits:
@@ -513,6 +529,10 @@ class AsyncResearchLoop:
             self._job_holds.pop(job_id, None)
         if released := self._budget_released.pop(job_id, None):
             released.set()
+
+    def _record_reach(self, job_id: UUID, events: list[ToolEvent]) -> None:
+        if (reach := self._source_reach.get(job_id)) is not None:
+            reach.add(events)
 
     def _record_spend(self, job_id: UUID, usage: RunUsage) -> None:
         spent = self._job_spend.get(job_id)
@@ -675,6 +695,7 @@ class AsyncResearchLoop:
                 # Tool telemetry and the quote and source checks read what the tools returned.
                 new_messages = trimmer.restore(result.new_messages()) if trimmer else result.new_messages()
                 events = extract_tool_events(new_messages)
+                self._record_reach(job_id, events)
                 await self.repository.record_tool_events(task_id, events)
                 output = result.output
                 if isinstance(output, ResearchResult):
@@ -704,7 +725,9 @@ class AsyncResearchLoop:
                     if run_messages:
                         # Keep the original failure; the task row still records it.
                         with suppress(Exception):
-                            await self.repository.record_tool_events(task_id, extract_tool_events(run_messages))
+                            events = extract_tool_events(run_messages)
+                            self._record_reach(job_id, events)
+                            await self.repository.record_tool_events(task_id, events)
                     await self.repository.finish_task(
                         task_id,
                         status="failed",
