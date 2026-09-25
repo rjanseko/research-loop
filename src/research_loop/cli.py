@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     settings = _settings(parser)
     if args.command in ("show", "db") and not settings.database_dsn:
-        parser.error("this command needs DATABASE_URL; see docs/setup.md")
+        parser.error("this command needs DATABASE_URL; see README.md")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
     try:

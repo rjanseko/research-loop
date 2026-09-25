@@ -21,7 +21,7 @@ if command -v uvx >/dev/null 2>&1; then
     VIRTUAL_ENV="$PWD/.venv" uvx library-skills --claude --yes >/dev/null \
         || echo "Could not repair agent skill links; run 'make skills' to retry." >&2
 else
-    echo "uvx not found; skipping agent skill links (see docs/setup.md#coding-agents)." >&2
+    echo "uvx not found; skipping agent skill links (run `make skills` after installing uv)." >&2
 fi
 
 echo

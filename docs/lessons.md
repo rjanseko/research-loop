@@ -78,5 +78,5 @@ Rubric points should state one fact each and carry no incidental details. The ju
 ## Where the old work is
 
 - **Code:** git tag `archive/pre-scout-2026-09`. It holds the graph, the legacy loop, long-horizon studies, benchmark adapters, the settings study and its trial scripts, attachments, and LaTeX reports.
-- **Data:** `~/research-loop-archive/`, with a `pg_dump` of the `research_loop` database, one JSONL file per table, `benchmark_outputs/` with the study records, and the recorded search cache. `docs/setup.md` explains how to restore it.
+- **Data:** `~/research-loop-archive/`, with a `pg_dump` of the `research_loop` database, one JSONL file per table, `benchmark_outputs/` with the study records, and the recorded search cache. Its `README.md` explains how to restore it.
 - **The settings study's full decision log** is in `docs/settings-study.md` at that tag.
