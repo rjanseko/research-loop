@@ -201,3 +201,7 @@ The code is layered: each layer uses only the layers below it.
 - [docs/benchmarks.md](docs/benchmarks.md): benchmark lanes and metrics
 - [long_horizon/agentic_se/README.md](long_horizon/agentic_se/README.md): the first long-horizon study
 - [AGENTS.md](AGENTS.md): rules for changing the code
+
+## License
+
+MIT. See [LICENSE](LICENSE).
