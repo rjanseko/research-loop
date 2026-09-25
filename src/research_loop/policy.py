@@ -238,12 +238,12 @@ class ModelPolicy:
 # Default model for each route override. `.env.example` lists the same values (a test keeps
 # them equal). Model IDs go stale: confirm routes with `research-diagnose --smoke` before paid runs.
 DEFAULT_MODELS: dict[str, str] = {
-    "RESEARCH_PLANNER_MODEL": "anthropic:claude-opus-5",
+    "RESEARCH_PLANNER_MODEL": "anthropic:claude-opus-5-5",
     "RESEARCH_SCOUT_MODEL": "zai:glm-5.3",
     "RESEARCH_CHEAP_SCOUT_MODEL": "openai:gpt-5.6-luna",
     "RESEARCH_GAP_MODEL": "openai:gpt-5.6-sol",
     "RESEARCH_DEEP_MODEL": "openai:gpt-5.6-sol",
-    "RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5",
+    "RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5-5",
     "RESEARCH_VERIFY_MODEL": "openai:gpt-5.6-sol",
     "RESEARCH_MULTIMODAL_MODEL": "google:gemini-3.8-flash",
     "RESEARCH_ALT_DEEP_MODEL": "xai:grok-4.5",
@@ -390,9 +390,10 @@ def _value_policy() -> ModelPolicy:
 
 
 # The effort a route on one of these models runs at, whatever effort the preset gave the route. Decided
-# 25 September 2026 for Flash: its routes had been copied from glm-5.3's at `high` or `low`. `xhigh` is
-# Z.ai's `reasoning_effort: max`. A route moved off one of these models keeps its preset's effort.
-MODEL_EFFORT: dict[str, ThinkingEffort] = {"zai:glm-5.3-flash": "xhigh"}
+# 25 September 2026. Flash: its routes had been copied from glm-5.3's at `high` or `low`; `xhigh` is Z.ai's
+# `reasoning_effort: max`. Opus 5.5: it thinks more than Opus 5 at the same level, and `value` has run it at
+# `medium`, its own default. A route moved off one of these models keeps its preset's effort.
+MODEL_EFFORT: dict[str, ThinkingEffort] = {"zai:glm-5.3-flash": "xhigh", "anthropic:claude-opus-5-5": "medium"}
 
 
 def apply_model_effort(policy: ModelPolicy) -> ModelPolicy:

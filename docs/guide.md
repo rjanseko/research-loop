@@ -224,14 +224,14 @@ Each route's model can be overridden with a `RESEARCH_*_MODEL` environment varia
 
 | Route | Default model | Requests | Tool calls | Tokens | USD per call |
 |---|---|---:|---:|---:|---:|
-| planner | `anthropic:claude-opus-5` | 6 | 4 | 70k | 2.50 |
+| planner | `anthropic:claude-opus-5-5` | 6 | 4 | 70k | 2.50 |
 | scout | `zai:glm-5.3` | 12 | 24 | 100k | 0.80 |
 | cheap scout | `openai:gpt-5.6-luna` | 10 | 20 | 80k | 0.25 |
 | multimodal scout | `google:gemini-3.8-flash` | 12 | 20 | 100k | 0.75 |
 | gap analyst | `openai:gpt-5.6-sol` | 6 | 4 | 70k | 1.25 |
 | deep dive | `openai:gpt-5.6-sol` | 20 | 40 | 180k | 5.00 |
 | alternate deep dive | `xai:grok-4.5` | 20 | 40 | 180k | 5.00 |
-| synthesizer | `anthropic:claude-opus-5` | 8 | 4 | 180k | 3.50 |
+| synthesizer | `anthropic:claude-opus-5-5` | 8 | 4 | 180k | 3.50 |
 | verifier | `openai:gpt-5.6-sol` | 8 | 8 | 150k | 2.50 |
 
 Model IDs go out of date, and a model appearing in a provider's list doesn't mean your key can use it. Run `research-diagnose --smoke` to confirm every route before a paid run.

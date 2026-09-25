@@ -346,3 +346,13 @@ def test_every_flash_route_thinks_at_max_and_a_route_moved_off_flash_keeps_its_p
     moved = get_policy("value", model_overrides={"RESEARCH_GLM_CHEAP_MODEL": "zai:glm-5.3"})
     assert moved.cheap_scout.thinking == "low"
 
+
+def test_the_default_preset_plans_and_synthesizes_on_opus_5_5_at_medium() -> None:
+    for name in ("quality", "breadth", "glm-heavy"):
+        policy = get_policy(name)
+        for role in (ResearchRole.PLANNER, ResearchRole.SYNTHESIZER):
+            assert (policy.for_role(role).model, policy.for_role(role).thinking) == ("anthropic:claude-opus-5-5", "medium")
+    # Moved off Opus 5.5, a route keeps the preset's effort.
+    opus_5 = get_policy("quality", model_overrides={"RESEARCH_SYNTH_MODEL": "anthropic:claude-opus-5"})
+    assert opus_5.for_role(ResearchRole.SYNTHESIZER).thinking == "high"
+

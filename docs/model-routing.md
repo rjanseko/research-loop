@@ -175,6 +175,15 @@ GLM-5.3 and GLM-5.3-Flash, and DeepSeek V4:
 - **Check new IDs first.** Run `research-diagnose --smoke` on each new ID before a paid run. GPT-6
   Sol and Opus 5.5 are three days old.
 
+## Opus 5.5 in the default preset
+
+Since 25 September 2026, `quality`, and `breadth` and `glm-heavy`, which build on it, plan and synthesize on
+`anthropic:claude-opus-5-5` in place of Opus 5, at `medium`. Opus 5.5 costs $4 and $20 per million input and
+output tokens against Opus 5's $5 and $25, with cache reads at $0.20 against $0.50. `MODEL_EFFORT` in `policy.py`
+runs every route on Opus 5.5 at `medium`, as `value`'s synthesizer already ran, so an override that moves a
+route to Opus 5.5 gets it too. As a planner, Opus 5.5 refused a study question on T-cell exhaustion; the preset's
+planner falls back to its gap-analysis model when it refuses or its provider fails.
+
 ## Using the value preset
 
 `value` has `quality`'s limits, so a comparison changes models, thinking effort, and caching only:
