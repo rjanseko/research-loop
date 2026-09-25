@@ -33,7 +33,13 @@ CACHE_VERSION = 1
 # 2: fetch pages through a document with `start`, backed by a per-job memo.
 # 3: fetches refuse the task's blocked sources, including redirects to them.
 # 4: scholar_search year bounds also filter arXiv and Crossref, not only OpenAlex.
-FETCH_VERSION = 4
+# 5: web_fetch reads PDFs, and both fetches know a PDF by its signature as well as its content type.
+FETCH_VERSION = 5
+
+
+def is_pdf(media: str, content: bytes) -> bool:
+    """A PDF by its declared type or, as servers often send one as octet-stream, by its first bytes."""
+    return media == "application/pdf" or content[:5] == b"%PDF-"
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
 # settings.py and long_horizon_spec.py list the same modes; tests/test_acquisition.py keeps them equal.

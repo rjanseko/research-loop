@@ -253,3 +253,25 @@ async def test_document_parsing_leaves_the_event_loop_free(public_urls, monkeypa
     ticker.cancel()
     assert result.text == "Parsed paper text."
     assert ticks >= 10  # other tasks kept running while the paper was parsed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media", ["application/pdf", "application/octet-stream", "binary/octet-stream"])
+async def test_both_fetches_read_a_pdf_whatever_type_the_server_declares(serve, tmp_path, media) -> None:
+    from research_loop.web import WebAcquisition
+
+    body = _pdf(1)
+    serve(lambda _url: httpx.Response(200, headers={"content-type": media}, content=body))
+    scholarly = await ScholarClient(cache=AcquisitionCache(tmp_path / "s", "off")).fetch("https://example.org/r.pdf")
+    web = await WebAcquisition(cache_root=tmp_path / "w", cache_mode="off").fetch("https://example.org/r.pdf")
+    assert "Page 1 line 1 carries scholarly evidence text." in scholarly.text
+    assert "Page 1 line 1 carries scholarly evidence text." in web["text"] and web["extraction"] == "pypdf"
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_still_refuses_other_binary_content(serve, tmp_path) -> None:
+    from research_loop.web import WebAcquisition
+
+    serve(lambda _url: httpx.Response(200, headers={"content-type": "application/zip"}, content=b"PK\x03\x04"))
+    result = await WebAcquisition(cache_root=tmp_path, cache_mode="off").fetch("https://example.org/a.zip")
+    assert result["error"] == "ValueError" and result["detail"] == "unsupported content type"

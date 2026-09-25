@@ -174,8 +174,8 @@ async def _gather_or_cancel(awaitables: Iterable[Awaitable[Any]]) -> list[Any]:
 
 
 # Tool output replayed to a salvage call: a total bound, and the least each kept result gets.
-# The bound leaves room for one validation retry within the salvage route's 80k tokens even at
-# 2.5 characters per token with a 6k-token answer; tests/test_budget.py holds it to that.
+# The bound leaves room for one validation retry within the salvage route's token limit even at
+# 2.5 characters per token with a 20k-token answer; tests/test_budget.py holds it to that.
 _SALVAGE_EVIDENCE_CHARS = 64_000
 _SALVAGE_MIN_RESULT_CHARS = 800
 
@@ -240,12 +240,41 @@ def _gathered_evidence(messages: list[Any]) -> tuple[list[dict[str, Any]], dict[
     return gathered, counts
 
 
-def _budget_exhausted_result(question: ResearchQuestion) -> ResearchResult:
+# Pages an unsummarized loop read that its result names as follow-ups, so a deep dive can start from them.
+_UNSUMMARIZED_FOLLOWUP_URLS = 10
+
+
+def _budget_exhausted_result(question: ResearchQuestion, messages: list[Any] | None = None) -> ResearchResult:
+    """A claim-free result for research that ended without a structured one.
+
+    With the loop's messages, it keeps what the loop did: its search queries, and the pages it read
+    without an error as follow-ups. No claims are made from raw tool output, since a claim needs a
+    model to state it; gap analysis sees the follow-ups and can send a deep dive to those pages.
+    """
+    queries: list[str] = []
+    urls: list[str] = []
+    for event in extract_tool_events(messages or []):
+        args = event.args
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if not isinstance(args, dict):
+            continue
+        if isinstance(query := args.get("query"), str) and query not in queries:
+            queries.append(query)
+        url = args.get("url")
+        if isinstance(url, str) and event.result is not None and not _dead_result(event.result) and url not in urls:
+            urls.append(url)
+    read = f" It read {len(urls)} page{'' if len(urls) == 1 else 's'}, listed as follow-ups." if urls else ""
     return ResearchResult(
         question_id=question.id,
         question=question.question,
-        conclusion="No evidence summarized: the research budget ran out before a structured result.",
+        conclusion="No evidence summarized: the research budget ran out before a structured result." + read,
         unresolved_questions=[question.question],
+        suggested_followups=[f"Read and extract evidence from {url}" for url in urls[:_UNSUMMARIZED_FOLLOWUP_URLS]],
+        search_queries_used=queries,
         confidence=0.0,
     )
 
@@ -878,7 +907,7 @@ class AsyncResearchLoop:
             # not cost the job the rest of its research. Provider errors still fail it.
             gathered, gathered_counts = _gathered_evidence(messages)
         if not gathered:
-            return _budget_exhausted_result(question)
+            return _budget_exhausted_result(question, messages)
         request = json.loads(kwargs["prompt"]) | {
             "budget_exhausted": True,
             "instruction": (
@@ -913,7 +942,8 @@ class AsyncResearchLoop:
                 quote_texts=tool_texts(extract_tool_events(messages)),
             )
         except (JobBudgetExceeded, UsageLimitExceeded, UnexpectedModelBehavior):
-            return _budget_exhausted_result(question)
+            # The salvage call failed too; keep what the loop searched and read rather than nothing.
+            return _budget_exhausted_result(question, messages)
 
     async def _plan(
         self,

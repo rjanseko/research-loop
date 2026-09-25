@@ -277,6 +277,52 @@ async def test_exhausted_research_is_salvaged_without_persisting_tool_output() -
     assert "PRIVATE-FULL-TEXT" not in salvaged["prompt"]
 
 
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore:A `cost_limit` is set but cannot be enforced")
+async def test_a_failed_salvage_keeps_what_the_loop_searched() -> None:
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def respond(messages, info) -> ModelResponse:
+        if "budget_exhausted" in str(getattr(messages[-1].parts[-1], "content", "")) or len(messages) > 40:
+            return ModelResponse(parts=[TextPart("not a ResearchResult")])  # salvage never gives a valid answer
+        return ModelResponse(parts=[ToolCallPart("scholar_search", {"query": "SWE-bench"})])
+
+    loop, agent, route, question = _research_setup(salvage=True)
+    with agent.override(model=FunctionModel(respond)):
+        result = await loop._run_research(
+            question, job_id=uuid4(), agent=agent, role=ResearchRole.SCOUT, route=route,
+            prompt='{"question": {"id": "p01"}}', question_id="p01",
+        )
+    assert [task["status"] for task in loop.repository.tasks.values()] == ["failed", "failed"]
+    assert result.claims == [] and result.confidence == 0.0
+    assert result.search_queries_used == ["SWE-bench"]
+
+
+def test_an_unsummarized_result_names_the_pages_read_without_error() -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from research_loop.async_orchestrator import _budget_exhausted_result
+    from research_loop.schemas import ResearchQuestion
+
+    def fetch(i: str, url: str, result: dict) -> list:
+        return [ModelResponse(parts=[ToolCallPart("web_fetch", json.dumps({"url": url}), tool_call_id=i)]),
+                ModelRequest(parts=[ToolReturnPart("web_fetch", result, tool_call_id=i)])]
+
+    messages = [*fetch("a", "https://example.org/a", {"url": "https://example.org/a", "text": "A"}),
+                *fetch("b", "https://example.org/403", {"url": "https://example.org/403", "error": "HTTPStatusError"}),
+                *fetch("c", "https://example.org/a", {"url": "https://example.org/a", "text": "A"})]
+    result = _budget_exhausted_result(ResearchQuestion(id="q1", question="Q?"), messages)
+    assert result.suggested_followups == ["Read and extract evidence from https://example.org/a"]
+    assert result.conclusion.endswith("It read 1 page, listed as follow-ups.")
+    assert _budget_exhausted_result(ResearchQuestion(id="q1", question="Q?")).suggested_followups == []
+
 @pytest.mark.asyncio
 async def test_exhausted_research_fails_when_salvage_is_off() -> None:
     loop, agent, route, question = _research_setup(salvage=False)
@@ -374,4 +420,5 @@ def test_salvage_evidence_bound_leaves_room_for_one_retry() -> None:
 
     route = ModelRoute("anthropic:any", 20, 40, 180_000, 5.0).salvage()  # the densest tokenizer on record
     prompt = "x" * (_SALVAGE_EVIDENCE_CHARS + 4_000)                      # plus the question and instruction
-    assert retry_token_budget(prompt, route, ResearchRole.DEEP_DIVE, output_allowance=6_000) <= route.total_tokens_limit
+    # Stored salvage answers ran to 15k tokens with reasoning; 20k leaves a margin.
+    assert retry_token_budget(prompt, route, ResearchRole.DEEP_DIVE, output_allowance=20_000) <= route.total_tokens_limit

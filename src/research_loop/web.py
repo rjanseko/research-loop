@@ -20,10 +20,12 @@ from .acquisition import (
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    is_pdf,
     public_fetch_client,
     public_url,
     wait_rate_slot,
 )
+from .scholar import _pdf_text
 
 # Decoded HTML bytes read per page; some leaderboard pages embed a few MB of data.
 _MAX_PAGE_BYTES = 5_000_000
@@ -134,6 +136,13 @@ class WebAcquisition:
                 response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy)
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
+        if is_pdf(media, response.content):
+            # Parsing is CPU-bound; a worker thread keeps a long PDF from stalling the other agents.
+            extracted, more_pages = await asyncio.to_thread(_pdf_text, response.content)
+            if not extracted.strip():
+                raise ValueError("empty extraction")
+            return {"text": extracted, "extraction": "pypdf-first-pages" if more_pages else "pypdf",
+                    "content_sha256": hashlib.sha256(response.content).hexdigest()}
         if media not in ("text/html", "application/xhtml+xml"):
             raise ValueError("unsupported content type")
         # Parsing is CPU-bound; a worker thread keeps a large page from stalling the other agents.
@@ -162,7 +171,7 @@ def _html_text(html: str) -> tuple[str, str]:
 
 def build_web_toolset(acquisition: WebAcquisition) -> FunctionToolset:
     async def web_fetch(url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
-        """Fetch a public HTTPS HTML page and return up to max_chars characters of main text from `start`.
+        """Fetch a public HTTPS HTML page or PDF and return up to max_chars characters of its text from `start`.
 
         When the result has `next_start`, call again with start=next_start to read further.
         """

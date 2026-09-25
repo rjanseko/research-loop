@@ -485,7 +485,7 @@ usually the most targeted fetches. The new selection (`_gathered_evidence` in
 result, short ones whole and long ones cut to one shared allowance, the largest the bound allows.
 Only if even 800 characters each would not fit are the oldest left out. The bound rose to 64,000
 characters, which still leaves room for one validation retry within the salvage route's 80,000
-tokens at 2.5 characters per token with a 6,000-token answer; a test holds it to that. The salvage
+tokens at 2.5 characters per token with a 6,000-token answer; a test holds it to that. (2026-09-25: salvage answers in the settings study ran to 15,000 tokens with reasoning, and one validation retry took a call past 80,000, so the salvage route now has 140,000 tokens and the test assumes a 20,000-token answer.) The salvage
 prompt gains `gathered_counts`, which is stored with it: calls skipped as errors, unanswered, or
 repeated, and results kept, cut, or left out.
 

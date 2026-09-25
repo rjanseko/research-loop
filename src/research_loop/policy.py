@@ -75,14 +75,20 @@ class ModelRoute:
         }
 
     def salvage(self) -> ModelRoute:
-        """Tool-free wrap-up call after this route's research budget ran out."""
+        """Tool-free wrap-up call after this route's research budget ran out.
+
+        Room for one validation retry of the largest salvage prompt with a 20k-token answer, reasoning
+        included: stored salvage answers ran to 15k, and one retry pushed a call past the earlier 80k.
+        """
         return replace(
             self,
             max_requests=2,
-            total_tokens_limit=80_000,
+            total_tokens_limit=SALVAGE_TOKENS,
             cost_limit=None if self.cost_limit is None else round(self.cost_limit * 0.5, 4),
         )
 
+
+SALVAGE_TOKENS = 140_000
 
 # Steps after research that the job reserve pays for; salvage calls may also draw on it.
 _FINISHING_ROLES = frozenset({ResearchRole.GAP_ANALYST, ResearchRole.SYNTHESIZER, ResearchRole.VERIFIER})

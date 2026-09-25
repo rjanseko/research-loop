@@ -27,6 +27,7 @@ from .acquisition import (
     bounded_public_get,
     fetch_cache_key,
     fetch_window,
+    is_pdf,
     public_fetch_client,
     public_url,
     read_capped,
@@ -400,7 +401,7 @@ class ScholarClient:
         response.raise_for_status()
         media = response.headers.get("content-type", "").split(";")[0].lower()
         extraction_truncated = False
-        if media == "application/pdf":
+        if is_pdf(media, response.content):
             extracted, method = "", None
             if self.grobid_url:
                 try:

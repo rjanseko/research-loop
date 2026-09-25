@@ -191,7 +191,7 @@ The harness also tracks each job's spend. If you set `job_cost_limit`, every cal
 
 Before gap analysis, synthesis, or verification, the harness checks that the prompt leaves room for one validation retry within the role's token limit. If it doesn't, the call is refused before it is made, so you never pay for a call that cannot finish.
 
-With `salvage_exhausted_research` turned on, a scout or deep dive that hits a usage limit, or gives up after repeated tool or output errors (`UnexpectedModelBehavior`, for example a fetch tool that kept failing), gets one more call without tools, which summarizes the evidence that call had already gathered. It sees only that call's tool results, not the whole ledger. Unanswered, failed, and repeated tool calls are left out, and the remaining results share a 64,000-character allowance so that later, more targeted fetches aren't crowded out. Quote checks still run against the captured tool text, but the stored salvage prompt keeps only hashes and sizes of the replayed results.
+With `salvage_exhausted_research` turned on, a scout or deep dive that hits a usage limit, or gives up after repeated tool or output errors (`UnexpectedModelBehavior`, for example a fetch tool that kept failing), gets one more call without tools, which summarizes the evidence that call had already gathered. It sees only that call's tool results, not the whole ledger. Unanswered, failed, and repeated tool calls are left out, and the remaining results share a 64,000-character allowance so that later, more targeted fetches aren't crowded out. Quote checks still run against the captured tool text, but the stored salvage prompt keeps only hashes and sizes of the replayed results. The salvage call has 140,000 tokens, room for one validation retry with a long answer. If it fails as well, the question's result has no claims but keeps the loop's search queries and names the pages it read as follow-ups, so gap analysis can send a deep dive to them.
 
 The harness uses whatever settings the application passes in and reads environment variables only when none are given.
 
@@ -393,7 +393,7 @@ To compare two runs fairly, hold these fixed. When you are deliberately comparin
 | Graph topology | `research-graph-v1` | `graph.py` |
 | Model policy | `quality`, `breadth`, `glm-heavy`, `value`, `synthetic` | `policy.py`, `RESEARCH_*_MODEL` |
 | Evidence schema | `evidence_version` 4: an `excerpt`, plus a verbatim `quote` and cited source that code checks against tool output, and every role's output checked against the run's plan, ledger, and attachments | `schemas.py`, `quotes.py`, `agents.py` |
-| Fetch behavior | `fetch_version` 4: paged fetches, a per-job document memo, refusal of the task's forbidden sources, and year bounds on every scholarly search provider | `acquisition.py` |
+| Fetch behavior | `fetch_version` 5: paged fetches, a per-job document memo, refusal of the task's forbidden sources, year bounds on every scholarly search provider, and PDFs read by both fetches | `acquisition.py` |
 | Tool mode | `normalized` for benchmarks and studies, `adaptive` as the library default | `tools.py` |
 | Attachment mode | `normalized` or `multimodal` | `attachments.py` |
 | Scoring | `evaluator_version` 1, the metric definitions | `evals.py` |
