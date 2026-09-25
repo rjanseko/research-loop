@@ -8,7 +8,6 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
@@ -33,10 +32,9 @@ from .repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
 )
-from .schemas import ResearchConstraints, SourceRef, is_research_tool
+from .schemas import ResearchConstraints, ResearchRole, SourceRef, is_research_tool
 from .settings import ResearchSettings
 from .synthetic import SyntheticResearchLoop
-from .telemetry import jsonable
 from .tools import ResearchToolMode
 
 EXACT_ANSWER_RE = re.compile(r"(?im)^\s*Exact Answer\s*:\s*(.+?)\s*$")
@@ -191,6 +189,7 @@ async def _run_policy_case(
     suite_name: str | None = None,
     on_job_created: Callable[[UUID, UUID], None] | None = None,
     settings: ResearchSettings | None = None,
+    budget_notes: tuple[ResearchRole, ...] = (),
 ) -> BenchmarkOutput:
     if repository_mode == "postgres" and pool is None:
         raise ValueError("Postgres benchmark mode requires a connection pool")
@@ -203,7 +202,7 @@ async def _run_policy_case(
     loop_class = SyntheticResearchLoop if policy_name == "synthetic" else ResearchLoop
     loop = loop_class(
         get_policy(policy_name, model_overrides=settings.model_overrides if settings else None),
-        _benchmark_config(attachment_mode),
+        _benchmark_config(attachment_mode, budget_notes),
         repository=repo,
         settings=settings,
     )
@@ -313,10 +312,11 @@ _MEASURES = ("total_claims", "unsupported_claims", "major_unsupported_claims", "
              "attachment_count", "attachment_tool_calls")
 
 
-def _benchmark_config(attachment_mode: AttachmentMode) -> ResearchConfig:
+def _benchmark_config(attachment_mode: AttachmentMode,
+                      budget_notes: tuple[ResearchRole, ...] = ()) -> ResearchConfig:
     """The run configuration of every benchmark case: normalized tools, caches off."""
     return ResearchConfig(tool_mode=ResearchToolMode.NORMALIZED, attachment_mode=attachment_mode,
-                          scholarly_cache_mode="off")
+                          scholarly_cache_mode="off", budget_notes=budget_notes)
 
 
 def _case_name(spec: BenchmarkCaseSpec) -> str:
@@ -358,6 +358,7 @@ async def run_benchmark(
     manifest_path: Path | None = None,
     settings: ResearchSettings | None = None,
     max_cases: int | None = None,
+    budget_notes: tuple[ResearchRole, ...] = (),
 ) -> Path:
     settings = settings or ResearchSettings.from_env()
     configure_logfire(settings)
@@ -387,7 +388,7 @@ async def run_benchmark(
         tool_mode=ResearchToolMode.NORMALIZED.value,
         repository_mode=repository_mode,
         evaluator_version=EVALUATOR_VERSION,
-        run_config=jsonable(asdict(_benchmark_config(attachment_mode))),
+        run_config=_benchmark_config(attachment_mode, budget_notes).snapshot(),
         model_overrides=settings.model_overrides,
     )
     manifest["summary"] = {}
@@ -439,6 +440,7 @@ async def run_benchmark(
                             suite_name=suite_name,
                             on_job_created=record_job,
                             settings=settings,
+                            budget_notes=budget_notes,
                         )
                         if run_record:
                             run_record["status"] = "succeeded"
@@ -556,6 +558,11 @@ def main() -> None:
         default=None,
         help="Write model reports by policy/benchmark for official external evaluators",
     )
+    parser.add_argument(
+        "--budget-notes", nargs="+", default=[],
+        choices=[ResearchRole.SCOUT.value, ResearchRole.DEEP_DIVE.value],
+        help="Experimental: these tool-loop roles end each request with the requests and tool calls they have left",
+    )
     args = parser.parse_args()
     if any(policy != "synthetic" for policy in args.policies) and not args.paid:
         parser.error("real model policies require --paid")
@@ -582,6 +589,7 @@ def main() -> None:
                 manifest_path=args.manifest_output,
                 settings=settings,
                 max_cases=max_cases,
+                budget_notes=tuple(ResearchRole(role) for role in args.budget_notes),
             )
         )
     except Exception as exc:  # noqa: BLE001 - report the type only; provider errors can carry response bodies

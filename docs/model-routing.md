@@ -220,6 +220,60 @@ graph version fixed.
 The core suite (20 BrowseComp and 12 DRB-II cases) costs about $65 per lineup at B's p01 rate.
 Start with A and B on a few cases each.
 
+## Tool-loop context
+
+Scouts and deep dives resend their whole history each turn. `scripts/loop_costs.py` replays one
+loop request by request on the p01 profile and prices changes to that history. It simulates the
+provider cache instead of assuming a share: a request reads from cache the prefix it shares with
+the previous request. `value`'s loop models, USD per question:
+
+| Change to the loops | Caching works | No caching |
+|---|---:|---:|
+| Baseline, resend everything | 1.48 | 2.76 |
+| Mask tool results older than the last 3 turns | 1.63 (+10%) | 2.18 (−21%) |
+| The same, moving the cutoff only every 4 turns | 1.50 (+1%) | 2.31 (−16%) |
+| 40% fewer turns (budget awareness, as BATS reported) | 1.20 (−19%) | 1.70 (−38%) |
+| Two tool calls per turn | 1.34 (−10%) | 1.87 (−32%) |
+| Repeated fetches return a stub (20% of result tokens) | 1.44 (−3%) | 2.58 (−6%) |
+| Batched masking, two calls per turn, dedup, fewer turns | 1.15 (−22%) | 1.28 (−54%) |
+
+- **Masking fights caching.** Masking a result changes the prompt from that point, so everything
+  after it is billed fresh. When caching works, masking every turn costs more than it saves, even
+  though it sends a third fewer tokens. It pays only where the loop is not cached.
+- **Fewer turns save money under any caching.** Each turn saved removes one whole resend. The levers
+  are telling the loop its remaining budget and letting it make several tool calls per turn. The
+  loop gathering less in fewer turns is the risk to measure.
+- **`keep_recent_tool_results` is per-turn masking.** The existing experimental option trims
+  results as they age out of its window, so under working caching the model above expects it to
+  cost more, not less. Leave it off for cached routes unless a run shows otherwise.
+- **The savings are a model, not a result.** Per-turn sizes are solved from the profile's totals
+  with an assumed 2,500-token starting prompt. Fetches are larger than searches in practice. Run
+  `--hit-rate 0.8` for imperfect caching and `--lineup` for other models.
+
+### Budget notes experiment
+
+`ResearchConfig.budget_notes` tests the fewer-turns lever. The named loops end every model
+request with a note like this one (`budget_notes.py`):
+
+> [Research budget] 14 of 20 model requests and 31 of 40 tool calls left, this request included.
+> Put independent searches and fetches in one turn as parallel tool calls. Return your result while
+> a request is left: a run that reaches either limit is cut off, and its result is written from
+> truncated tool output.
+
+The note goes on the newest request only and later requests resend it unchanged, so caching still
+works. PydanticAI already runs parallel tool calls concurrently, and each call counts against
+`max_tool_calls`. Compare one run with and one without, on the same policy and cases:
+
+```
+research-bench examples/benchmark_suite.toml --policies value --paid --max-cases 10
+research-bench examples/benchmark_suite.toml --policies value --paid --max-cases 10 --budget-notes deep_dive
+```
+
+Watch the deep dives' requests per task, tool calls per request, and salvage count, then cost per
+correct answer on BrowseComp and the rubric score on DRB-II. Notes change what the model sees, so
+the two runs have different config fingerprints, and each deep-dive task's `effective_config`
+records `budget_notes`. Try `--budget-notes scout deep_dive` after the deep dive holds up.
+
 ## Caveats
 
 - **The cost model checks tokens, not prices.** The p01 costs in PROMPT_SIZES.md are PydanticAI

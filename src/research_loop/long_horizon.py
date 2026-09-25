@@ -8,7 +8,7 @@ import json
 import shutil
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -56,7 +56,6 @@ from .schemas import (
     VerificationReport,
 )
 from .settings import ResearchSettings
-from .telemetry import jsonable
 from .tools import ResearchToolMode
 
 SPEC_FILE = Path(__file__).resolve().parents[2] / "long_horizon" / "agentic_se" / "spec.toml"
@@ -294,12 +293,12 @@ def _questions_manifest(spec: dict[str, Any], path: Path, *, policy_name: str, s
                    "cache_mode": run_config.scholarly_cache_mode, "fetch_version": FETCH_VERSION}
     manifest = _manifest_base(spec, path, kind="questions", policy_snapshot=policy_snapshot,
                               fingerprint_extra={"acquisition": acquisition, "evidence_version": EVIDENCE_VERSION,
-                                                 "run_config": jsonable(asdict(run_config))},
+                                                 "run_config": run_config.snapshot()},
                               persist=persist)
     manifest |= {
         "evidence_version": EVIDENCE_VERSION,
         "tool_mode": "normalized", "acquisition": acquisition, "cache_mode": run_config.scholarly_cache_mode,
-        "run_config": jsonable(asdict(run_config)),
+        "run_config": run_config.snapshot(),
         "run_limits": {
             "max_parallel_scouts": run_config.max_parallel_scouts,
             "max_deep_dives_per_round": run_config.max_deep_dives_per_round,
