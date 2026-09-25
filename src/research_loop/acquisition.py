@@ -29,14 +29,16 @@ import httpx
 
 # Part of every cache key; bump it to invalidate recorded entries.
 CACHE_VERSION = 1
-# Recorded in manifests. 1: fetch returned only the first 12,000 characters.
+# Recorded on every run. 1: fetch returned only the first 12,000 characters.
 # 2: fetch pages through a document with `start`, backed by a per-job memo.
 # 3: fetches refuse the task's blocked sources, including redirects to them.
 # 4: scholar_search year bounds also filter arXiv and Crossref, not only OpenAlex.
 # 5: web_fetch reads PDFs, and both fetches know a PDF by its signature as well as its content type.
 # 6: web_fetch retries a 403 once as a browser, hints after a 404, and stops trying a host that did not
 #    answer twice; web search tells no results from an outage and tries three times.
-FETCH_VERSION = 6
+# 7: one fetch tool for pages and PDFs; every result says its access level (snippet, metadata,
+#    abstract, full text); scholarly records carry OpenAlex abstracts.
+FETCH_VERSION = 7
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -44,7 +46,6 @@ def is_pdf(media: str, content: bytes) -> bool:
     return media == "application/pdf" or content[:5] == b"%PDF-"
 # Longest text window one fetch returns; `start` pages through the rest.
 MAX_FETCH_CHARS = 12_000
-# settings.py and long_horizon_spec.py list the same modes; tests/test_acquisition.py keeps them equal.
 CacheMode = Literal["off", "live", "record", "replay", "reuse"]
 
 
@@ -132,8 +133,7 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "opencitations": 0.3, "acl": 0.3,
-                  "duckduckgo": 1.0, "semanticscholar": 1.1}
+_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0}
 
 
 async def wait_rate_slot(provider: str) -> None:

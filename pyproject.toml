@@ -5,51 +5,38 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "research-loop"
 version = "0.5.0"
-description = "Graph-backed, role-routed PydanticAI research loop with evidence provenance, benchmark adapters, and Postgres telemetry"
+description = "Cited answers to research questions, with every claim traced to the passage behind it"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
-  "anyio>=4",
-  "markdown-it-py>=3",
   "pydantic>=2.8",
-  "python-dotenv>=1.0",
-  "pydantic-ai[duckduckgo,web-fetch,xai]>=2.47,<3",
-  "pydantic-graph>=2.47,<3",
+  "pydantic-settings>=2.10",
+  "pydantic-ai[duckduckgo]>=2.47,<3",
+  "logfire>=5,<6",
+  # Page and PDF extraction for the research tools. fontTools lets pypdf read embedded CFF fonts
+  # instead of logging each one.
+  "httpx>=0.27",
+  "httpcore>=1",
+  "trafilatura>=2,<3",
+  "beautifulsoup4>=4.12",
+  "pypdf>=5",
+  "fonttools>=4",
 ]
 
 [project.optional-dependencies]
-eval = ["pydantic-evals>=1.0"]
+eval = ["pydantic-evals>=2.47,<3"]
 postgres = ["psycopg[binary,pool]>=3.2"]
-observability = ["logfire>=5,<6"]
-# fontTools lets pypdf read embedded CFF fonts instead of logging each one.
-scholarly = ["httpx>=0.27", "httpcore>=1", "trafilatura>=2,<3", "pypdf>=5", "fonttools>=4"]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17"]
-benchmark = ["pandas>=2.2", "pyarrow>=16"]
-attachments = [
-  "pypdf>=5",
-  "fonttools>=4",
-  "python-docx>=1.1",
-  "openpyxl>=3.1",
-  "beautifulsoup4>=4.12",
-  "Pillow>=10",
-]
-all = ["research-loop[eval,postgres,observability,scholarly,test,benchmark,attachments]"]
-
-[project.scripts]
-research-bench = "research_loop.benchmark:main"
-research-graph = "research_loop.graph_cli:main"
-research-db = "research_loop.db:main"
-research-diagnose = "research_loop.diagnose:main"
-research-long-horizon = "research_loop.long_horizon:main"
-research-report = "research_loop.render:main"
-research-grade = "research_loop.grading:main"
+all = ["research-loop[eval,postgres,test]"]
 
 [tool.setuptools.package-data]
 research_loop = ["migrations/*.sql", "prices.toml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Logfire's pytest plugin would trace the test run whenever LOGFIRE_TOKEN is set.
+addopts = "--no-logfire"
 pythonpath = ["src"]
 markers = ["postgres: integration tests against a disposable Postgres; set RESEARCH_TEST_DATABASE_URL to run them"]
 
@@ -57,6 +44,3 @@ markers = ["postgres: integration tests against a disposable Postgres; set RESEA
 # ruff 0.16's default rules, pinned with ruff itself in the `test` extra: upgrading ruff is a
 # deliberate change. Deliberate blind excepts carry `# noqa: BLE001` with the reason.
 
-[tool.ruff.lint.per-file-ignores]
-# Every readiness check reports its own failure as a result instead of raising.
-"src/research_loop/diagnose.py" = ["BLE001"]

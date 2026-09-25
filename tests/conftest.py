@@ -2,12 +2,13 @@
 
 Every test runs offline: model providers are refused and non-loopback DNS lookups and socket
 connections fail the test. Loopback stays open for tests that expect a local connection to fail.
-Settings never load the local .env.
+Settings never load the local .env, and Logfire never exports.
 """
 from __future__ import annotations
 
 import inspect
 import ipaddress
+import os
 import socket
 from collections.abc import Callable
 from typing import Any
@@ -16,7 +17,7 @@ import httpx
 import pytest
 from pydantic_ai import models
 
-_FETCH_MODULES = ("research_loop.acquisition", "research_loop.scholar", "research_loop.web")
+_FETCH_MODULES = ("research_loop.acquisition", "research_loop.web")
 
 
 def _loopback(host: Any) -> bool:
@@ -56,7 +57,21 @@ def _offline(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _no_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings see the environment a test sets up, never the developer's .env and its API keys."""
-    monkeypatch.setattr("research_loop.settings.load_dotenv", lambda *_args, **_kwargs: False)
+    from research_loop.config import Settings
+
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    exported = [name for name in os.environ if name.startswith("RESEARCH_") and name != "RESEARCH_TEST_DATABASE_URL"]
+    for name in (*exported, "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "GOOGLE_API_KEY",
+                 "LOGFIRE_TOKEN", "DATABASE_URL", "OPENALEX_API_KEY", "CROSSREF_MAILTO"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _logfire_local() -> None:
+    """Spans stay in the process: no test sends anything to Logfire."""
+    import logfire
+
+    logfire.configure(send_to_logfire=False, console=False)
 
 
 @pytest.fixture
@@ -84,8 +99,7 @@ def serve(monkeypatch: pytest.MonkeyPatch, public_urls: None) -> Callable[[Calla
             response.request = httpx.Request("GET", url)
             return response
 
-        for module in ("research_loop.scholar", "research_loop.web"):
-            monkeypatch.setattr(f"{module}.bounded_public_get", download)
+        monkeypatch.setattr("research_loop.web.bounded_public_get", download)
 
     return install
 
@@ -97,9 +111,8 @@ def go_offline(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
         raise AssertionError("replay must not touch DNS or network")
 
     def install() -> None:
-        for module in ("research_loop.scholar", "research_loop.web"):
-            monkeypatch.setattr(f"{module}.public_url", offline)
-            monkeypatch.setattr(f"{module}.bounded_public_get", offline)
+        monkeypatch.setattr("research_loop.web.public_url", offline)
+        monkeypatch.setattr("research_loop.web.bounded_public_get", offline)
 
     return install
 

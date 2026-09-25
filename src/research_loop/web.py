@@ -1,15 +1,16 @@
-"""Deterministic web-page extraction for the normalized research lane."""
+"""Web search and page fetching for research tools: bounded, cached, and public-HTTPS only."""
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import unicodedata
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from pydantic_ai import FunctionToolset, Tool, ToolReturn
 
 from .acquisition import (
     MAX_FETCH_CHARS,
@@ -27,17 +28,17 @@ from .acquisition import (
     public_url,
     wait_rate_slot,
 )
-from .scholar import _pdf_text
 
-# Decoded HTML bytes read per page; some leaderboard pages embed a few MB of data.
+# Decoded bytes read per page; some leaderboard pages embed a few MB of data.
 _MAX_PAGE_BYTES = 5_000_000
+# PDF pages extracted; a longer document is marked `pypdf-first-pages`.
+_PDF_PAGE_LIMIT = 30
 
 
 def search_cache_key(query: str) -> str:
     """A query as search engines read it: Unicode-normalized, case-folded, whitespace collapsed.
 
-    Engines ignore case and spacing, so queries differing only in those get the same results. Quotes,
-    operators such as `site:`, punctuation, and word order change results and are kept.
+    Quotes, operators such as `site:`, punctuation, and word order change results and are kept.
     """
     return " ".join(unicodedata.normalize("NFKC", query).casefold().split())
 
@@ -54,55 +55,62 @@ def _no_results(exc: Exception) -> bool:
     return "no results" in str(exc).lower()
 
 
-def resilient_duckduckgo_tool(*, retry_delays: tuple[float, ...] = SEARCH_RETRY_DELAYS,
-                              cache: AcquisitionCache | None = None) -> Tool:
-    """PydanticAI's DuckDuckGo search under the same name, with a shared rate slot and retries.
-
-    A query that finds nothing returns no results and a hint to broaden it, without a retry; the search
-    client raises that as an error, and reporting it as a failure sent scouts looking for other search
-    engines. Other failures are tried again after each of `retry_delays`, then returned to the model as an
-    error result instead of failing the run.
-    With a cache, results are stored under `search_cache_key` with the query as the model wrote it,
-    and served unchanged, so the model sees the same result a live search gave; failures are never
-    stored. Each return says in its metadata, which the model never sees, whether the result came
-    from the cache.
-    """
+def _duckduckgo() -> Callable[[str], Awaitable[list[dict[str, str]]]]:
     from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
 
-    inner = duckduckgo_search_tool()
+    return duckduckgo_search_tool().function
 
-    async def duckduckgo_search(query: str) -> Any:
+
+class WebSearch:
+    """DuckDuckGo search with a shared rate slot, retries, and an optional cache.
+
+    A query that finds nothing returns no results and a hint to broaden it, without a retry: the search
+    client raises that as an error, and reporting it as a failure sent scouts looking for other search
+    engines. Other failures are tried again after each of `retry_delays`, then returned as an error
+    result instead of failing the run. Failures are never cached.
+    """
+
+    def __init__(self, *, cache: AcquisitionCache | None = None,
+                 retry_delays: tuple[float, ...] = SEARCH_RETRY_DELAYS,
+                 engine: Callable[[str], Awaitable[list[dict[str, str]]]] | None = None) -> None:
+        self.cache = cache
+        self.retry_delays = retry_delays
+        self._engine = engine
+
+    async def search(self, query: str) -> dict[str, Any]:
         key = search_cache_key(query)
-        if cache is not None:
-            cached = cache.get("duckduckgo", key)
+        if self.cache is not None:
+            cached = self.cache.get("duckduckgo", key)
             if cached is not None:
-                return ToolReturn(cached["results"], metadata={"cache_hit": True})
-            if cache.mode == "replay":
-                # As a fetch reports a window the recording lacks.
-                return ToolReturn({"error": "CacheMiss"}, metadata={"cache_hit": False})
+                return {"results": cached["results"]}
+            if self.cache.mode == "replay":
+                return {"error": "CacheMiss"}
+        engine = self._engine or _duckduckgo()
         error = "unknown"
-        for delay in (*retry_delays, None):
+        for delay in (*self.retry_delays, None):
             await wait_rate_slot("duckduckgo")
             try:
-                results = await inner.function(query=query)
-                if cache is not None:
-                    cache.put("duckduckgo", key, {"query": query, "results": results})
-                return ToolReturn(results, metadata={"cache_hit": False})
+                raw = await engine(query)
             except Exception as exc:  # noqa: BLE001 - the search client raises its own types on rate limits and drops
                 if _no_results(exc):
-                    return ToolReturn({"results": [], "hint": NO_RESULTS_HINT}, metadata={"cache_hit": False})
+                    return {"results": [], "hint": NO_RESULTS_HINT}
                 error = type(exc).__name__
                 if delay is not None:
                     await asyncio.sleep(delay)
-        return ToolReturn({"error": f"SearchUnavailable ({error})",
-                           "hint": f"Web search failed {len(retry_delays) + 1} times; continue with scholar tools "
-                                   "or try again later with a different query."},
-                          metadata={"cache_hit": False})
-
-    return Tool(duckduckgo_search, name=inner.name, description=inner.description)
+                continue
+            results = [{"title": item.get("title", ""), "url": item.get("href", ""), "snippet": item.get("body", "")}
+                       for item in raw if item.get("href")]
+            if self.cache is not None:
+                self.cache.put("duckduckgo", key, {"query": query, "results": results})
+            return {"results": results} if results else {"results": [], "hint": NO_RESULTS_HINT}
+        return {"error": f"SearchUnavailable ({error})",
+                "hint": f"Web search failed {len(self.retry_delays) + 1} times; continue with scholar_search "
+                        "or try again later with a different query."}
 
 
 class WebAcquisition:
+    """Fetch a public HTTPS page or PDF and return a window of its extracted text."""
+
     def __init__(self, *, cache_root: Path, cache_mode: CacheMode = "live",
                  client: httpx.AsyncClient | None = None, memo: FetchMemo | None = None,
                  policy: SourcePolicy | None = None) -> None:
@@ -121,14 +129,14 @@ class WebAcquisition:
         cache_key = fetch_cache_key(url, max_chars, start)
         cached = self.cache.get("web", cache_key)
         if cached is not None:
-            return {**cached, "cache_hit": True}
+            return cached
         if self.cache.mode == "replay":
-            return {"url": url, "error": "CacheMiss", "cache_hit": False}
+            return {"url": url, "error": "CacheMiss"}
         document = self.memo.get("web", url)
         if document is None:
             host = (urlparse(url).hostname or "").lower()
             if self.memo.connection_failures.get(host, 0) >= UNREACHABLE_AFTER:
-                return {"url": url, "error": "HostUnreachable", "cache_hit": False,
+                return {"url": url, "error": "HostUnreachable",
                         "hint": "This site has not answered in this run; use another source for it."}
             if not await public_url(url):
                 return {"url": url, "error": "UnsafeURL"}
@@ -137,7 +145,7 @@ class WebAcquisition:
             except BlockedSource as exc:  # redirected to a blocked source
                 return {"url": url, "error": "BlockedSource", "blocked": exc.entry}
             except (httpx.HTTPError, ValueError, ImportError, TypeError) as exc:
-                failure: dict[str, Any] = {"url": url, "error": type(exc).__name__, "cache_hit": False}
+                failure: dict[str, Any] = {"url": url, "error": type(exc).__name__}
                 if isinstance(exc, httpx.HTTPStatusError):
                     failure["status"] = exc.response.status_code
                     if exc.response.status_code in (404, 410):
@@ -151,16 +159,17 @@ class WebAcquisition:
             self.memo.put("web", url, document)
         window = fetch_window(document["text"], start, max_chars)
         if window is None:
-            return {"url": url, "error": "StartBeyondEnd", "total_chars": len(document["text"]), "cache_hit": False}
+            return {"url": url, "error": "StartBeyondEnd", "total_chars": len(document["text"])}
         result = {"url": url, **window, "extraction": document["extraction"],
-                  "content_sha256": document["content_sha256"], "cache_hit": False}
+                  "content_sha256": document["content_sha256"]}
         self.cache.put("web", cache_key, result)
         return result
 
     async def _extract(self, url: str) -> dict[str, Any]:
-        """Download a public HTML page and extract its full main text.
+        """Download a public page or PDF and extract its full text.
 
-        A 403 to the fetcher's own User-Agent is tried once more as a browser (BROWSER_USER_AGENT).
+        A 403 to the fetcher's own User-Agent is tried once more as a browser (BROWSER_USER_AGENT):
+        5 of 12 sites that refused the fetcher in the pilots served a browser.
         """
         async def get(client: httpx.AsyncClient) -> httpx.Response:
             response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy)
@@ -178,23 +187,28 @@ class WebAcquisition:
         if is_pdf(media, response.content):
             # Parsing is CPU-bound; a worker thread keeps a long PDF from stalling the other agents.
             extracted, more_pages = await asyncio.to_thread(_pdf_text, response.content)
-            if not extracted.strip():
-                raise ValueError("empty extraction")
-            return {"text": extracted, "extraction": "pypdf-first-pages" if more_pages else "pypdf",
-                    "content_sha256": hashlib.sha256(response.content).hexdigest()}
-        if media not in ("text/html", "application/xhtml+xml"):
+            method = "pypdf-first-pages" if more_pages else "pypdf"
+        elif media in ("text/html", "application/xhtml+xml"):
+            extracted, method = await asyncio.to_thread(_html_text, response.text)
+        else:
             raise ValueError("unsupported content type")
-        # Parsing is CPU-bound; a worker thread keeps a large page from stalling the other agents.
-        extracted, method = await asyncio.to_thread(_html_text, response.text)
         if not extracted.strip():
             raise ValueError("empty extraction")
-        return {"text": extracted, "extraction": method,
-                "content_sha256": hashlib.sha256(response.content).hexdigest()}
+        return {"text": extracted, "extraction": method, "content_sha256": hashlib.sha256(response.content).hexdigest()}
+
+
+def _pdf_text(content: bytes) -> tuple[str, bool]:
+    """Text of a PDF's first pages, and whether it has more."""
+    from pypdf import PdfReader
+
+    pages = PdfReader(io.BytesIO(content)).pages
+    return "\n\n".join(page.extract_text() or "" for page in pages[:_PDF_PAGE_LIMIT]), len(pages) > _PDF_PAGE_LIMIT
 
 
 def _html_text(html: str) -> tuple[str, str]:
     """Main text of an HTML page and the extractor that produced it."""
     from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(html, "html.parser")
     for item in soup(["script", "style", "nav", "footer", "header"]):
         item.decompose()
@@ -206,14 +220,3 @@ def _html_text(html: str) -> tuple[str, str]:
     if extracted.strip():
         return extracted, "trafilatura"
     return soup.get_text(" ", strip=True), "beautifulsoup-fallback"
-
-
-def build_web_toolset(acquisition: WebAcquisition) -> FunctionToolset:
-    async def web_fetch(url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
-        """Fetch a public HTTPS HTML page or PDF and return up to max_chars characters of its text from `start`.
-
-        When the result has `next_start`, call again with start=next_start to read further.
-        """
-        return await acquisition.fetch(url, max_chars, start)
-
-    return FunctionToolset(tools=[web_fetch])

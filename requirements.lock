@@ -2,19 +2,12 @@
 #    uv pip compile pyproject.toml --extra all --universal --python-version 3.12 -o requirements.lock
 aiofile==3.12.3
     # via py-key-value-aio
-aiohappyeyeballs==2.7.1
-    # via aiohttp
-aiohttp==3.14.3
-    # via xai-sdk
-aiosignal==1.4.0
-    # via aiohttp
 annotated-types==0.8.0
     # via pydantic
 anthropic==1.8.0
     # via pydantic-ai-slim
 anyio==4.15.1
     # via
-    #   research-loop (pyproject.toml)
     #   anthropic
     #   google-genai
     #   httpx
@@ -31,7 +24,6 @@ argcomplete==3.7.2
     # via pydantic-ai-slim
 attrs==26.1.0
     # via
-    #   aiohttp
     #   jsonschema
     #   referencing
 authlib==1.8.0
@@ -41,9 +33,7 @@ babel==2.18.0
 beartype==0.22.9
     # via py-key-value-aio
 beautifulsoup4==4.15.0
-    # via
-    #   research-loop (pyproject.toml)
-    #   markdownify
+    # via research-loop (pyproject.toml)
 cachetools==7.2.0
     # via py-key-value-aio
 caio==0.12.4
@@ -89,8 +79,6 @@ docstring-parser==0.18.0
     # via anthropic
 email-validator==2.3.0
     # via pydantic
-et-xmlfile==2.0.0
-    # via openpyxl
 exceptiongroup==1.3.1
     # via fastmcp-slim
 executing==2.2.1
@@ -99,10 +87,6 @@ fastmcp-slim==4.0.8
     # via pydantic-ai-slim
 fonttools==4.66.0
     # via research-loop (pyproject.toml)
-frozenlist==1.8.0
-    # via
-    #   aiohttp
-    #   aiosignal
 genai-prices==0.1.8
     # via pydantic-ai-slim
 google-auth==2.58.0
@@ -110,13 +94,9 @@ google-auth==2.58.0
 google-genai==2.25.0
     # via pydantic-ai-slim
 googleapis-common-protos==1.75.3
-    # via
-    #   opentelemetry-exporter-otlp-proto-http
-    #   xai-sdk
+    # via opentelemetry-exporter-otlp-proto-http
 griffelib==2.3.0
     # via pydantic-ai-slim
-grpcio==1.84.0
-    # via xai-sdk
 h11==0.16.0
     # via
     #   httpcore
@@ -151,7 +131,6 @@ idna==3.20
     #   httpx
     #   httpx2
     #   requests
-    #   yarl
 iniconfig==2.3.0
     # via pytest
 jaraco-classes==3.4.0
@@ -192,16 +171,11 @@ lxml==6.1.3
     #   htmldate
     #   justext
     #   lxml-html-clean
-    #   python-docx
     #   trafilatura
 lxml-html-clean==0.4.5
     # via lxml
 markdown-it-py==4.2.0
-    # via
-    #   research-loop (pyproject.toml)
-    #   rich
-markdownify==1.2.3
-    # via pydantic-ai-slim
+    # via rich
 mcp==2.2.0
     # via fastmcp-slim
 mcp-types==2.2.0
@@ -214,16 +188,8 @@ more-itertools==11.1.0
     # via
     #   jaraco-classes
     #   jaraco-functools
-multidict==6.9.1
-    # via
-    #   aiohttp
-    #   yarl
-numpy==2.5.3
-    # via pandas
 openai==3.19.2
     # via pydantic-ai-slim
-openpyxl==3.1.5
-    # via research-loop (pyproject.toml)
 opentelemetry-api==1.44.0
     # via
     #   fastmcp-slim
@@ -254,7 +220,6 @@ opentelemetry-sdk==1.44.0
     # via
     #   logfire
     #   opentelemetry-exporter-otlp-proto-http
-    #   xai-sdk
 opentelemetry-semantic-conventions==0.65b0
     # via
     #   opentelemetry-instrumentation
@@ -266,13 +231,8 @@ packaging==25.0
     # via
     #   opentelemetry-instrumentation
     #   pytest
-    #   xai-sdk
-pandas==3.0.6
-    # via research-loop (pyproject.toml)
 pillow==12.3.0
-    # via
-    #   research-loop (pyproject.toml)
-    #   reportlab
+    # via reportlab
 platformdirs==4.11.12
     # via fastmcp-slim
 pluggy==1.6.0
@@ -281,16 +241,11 @@ primp==2.0.1
     # via ddgs
 prompt-toolkit==3.0.53
     # via pydantic-ai-slim
-propcache==0.5.4
-    # via
-    #   aiohttp
-    #   yarl
 protobuf==6.33.6
     # via
     #   googleapis-common-protos
     #   logfire
     #   opentelemetry-proto
-    #   xai-sdk
 psycopg==3.3.6
     # via research-loop (pyproject.toml)
 psycopg-binary==3.3.6 ; implementation_name != 'pypy'
@@ -299,8 +254,6 @@ psycopg-pool==3.3.3
     # via psycopg
 py-key-value-aio==0.4.6
     # via fastmcp-slim
-pyarrow==25.0.1
-    # via research-loop (pyproject.toml)
 pyasn1==0.6.4
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -321,7 +274,6 @@ pydantic==2.13.5
     #   pydantic-evals
     #   pydantic-graph
     #   pydantic-settings
-    #   xai-sdk
 pydantic-ai==2.48.0
     # via research-loop (pyproject.toml)
 pydantic-ai-slim==2.48.0
@@ -335,11 +287,11 @@ pydantic-evals==2.48.0
     #   research-loop (pyproject.toml)
     #   pydantic-ai-slim
 pydantic-graph==2.48.0
+    # via pydantic-ai-slim
+pydantic-settings==2.15.0
     # via
     #   research-loop (pyproject.toml)
-    #   pydantic-ai-slim
-pydantic-settings==2.15.0
-    # via fastmcp-slim
+    #   fastmcp-slim
 pygments==2.21.0
     # via
     #   pytest
@@ -360,12 +312,8 @@ python-dateutil==2.9.0.post0
     # via
     #   dateparser
     #   htmldate
-    #   pandas
-python-docx==1.2.0
-    # via research-loop (pyproject.toml)
 python-dotenv==1.2.3
     # via
-    #   research-loop (pyproject.toml)
     #   fastmcp-slim
     #   pydantic-settings
 python-multipart==0.0.32
@@ -396,7 +344,6 @@ requests==2.34.2
     #   google-genai
     #   opentelemetry-exporter-otlp-proto-http
     #   tiktoken
-    #   xai-sdk
 rich==15.0.0
     # via
     #   fastmcp-slim
@@ -412,9 +359,7 @@ ruff==0.16.8
 secretstorage==3.5.0 ; sys_platform == 'linux'
     # via keyring
 six==1.17.0
-    # via
-    #   markdownify
-    #   python-dateutil
+    # via python-dateutil
 sniffio==1.3.1
     # via
     #   anthropic
@@ -444,15 +389,12 @@ truststore==0.10.4 ; sys_platform != 'emscripten'
     #   httpx2
 typing-extensions==4.16.0
     # via
-    #   aiohttp
-    #   aiosignal
     #   anthropic
     #   anyio
     #   beautifulsoup4
     #   exceptiongroup
     #   fastmcp-slim
     #   google-genai
-    #   grpcio
     #   httpx2
     #   logfire
     #   mcp
@@ -468,11 +410,9 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   pytest-asyncio
-    #   python-docx
     #   referencing
     #   starlette
     #   typing-inspection
-    #   xai-sdk
 typing-inspection==0.4.4
     # via
     #   mcp
@@ -480,9 +420,8 @@ typing-inspection==0.4.4
     #   pydantic-ai-slim
     #   pydantic-graph
     #   pydantic-settings
-tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+tzdata==2026.4 ; sys_platform == 'win32'
     # via
-    #   pandas
     #   psycopg
     #   tzlocal
 tzlocal==5.4.4
@@ -505,7 +444,3 @@ wrapt==2.4.1
     # via
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-httpx
-xai-sdk==1.19.0
-    # via pydantic-ai-slim
-yarl==1.25.1
-    # via aiohttp

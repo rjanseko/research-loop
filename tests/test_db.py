@@ -66,8 +66,7 @@ def test_migrations_reject_changed_sql(tmp_path: Path) -> None:
 def test_repository_migrations_are_numbered_in_order() -> None:
     names = [migration.name for migration in migration_files()]
     assert names == sorted(names)
-    assert names[:4] == ["001_research.sql", "002_research_attachments.sql", "003_research_evidence.sql",
-                         "004_research_task_messages.sql"]
+    assert names[0] == "001_scout.sql"
 
 
 class _ReconcileConnection:
@@ -103,16 +102,4 @@ def test_reconcile_only_counts_unless_asked_to_apply() -> None:
 
     conn = _ReconcileConnection()
     assert reconcile(conn, 120, apply=True) == (2, 2)
-    assert conn.statements == [("update", True), ("update", True)]  # jobs first, then their tasks, in one transaction
-
-
-def test_reconcile_requires_an_age_threshold(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    import sys
-
-    from research_loop.db import main
-
-    monkeypatch.setattr(sys, "argv", ["research-db", "reconcile"])
-    with pytest.raises(SystemExit) as exc:
-        main()
-    assert exc.value.code == 2
-    assert "--older-than" in capsys.readouterr().err
+    assert conn.statements == [("update", True), ("update", True)]  # calls, then runs, in one transaction

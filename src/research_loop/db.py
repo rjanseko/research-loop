@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from .settings import ResearchSettings
 
 # Inside the package, so an installed wheel carries them.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
@@ -55,7 +52,7 @@ def pending_migrations(dsn: str, *, connect_timeout: int = 5) -> list[str]:
 async def open_migrated_pool(stack: AsyncExitStack, dsn: str) -> Any:
     """Open a connection pool on `stack`; fail before any paid model call if migrations are pending."""
     if await asyncio.to_thread(pending_migrations, dsn):
-        raise RuntimeError("database migrations are pending or changed; run research-db migrate")
+        raise RuntimeError("database migrations are pending or changed; run `research db migrate`")
     from psycopg_pool import AsyncConnectionPool
 
     return await stack.enter_async_context(AsyncConnectionPool(conninfo=dsn, open=False))
@@ -88,79 +85,32 @@ def apply_migrations(conn: Any, migrations: list[Migration]) -> list[str]:
     return applied
 
 
-_STALE_JOB = "status = 'running' and created_at < now() - make_interval(secs => %s)"
+_STALE_RUN = "status = 'running' and started_at < now() - make_interval(secs => %s)"
 _ABANDONED = {"type": "Abandoned",
-              "detail": "Still running when research-db reconcile ran; the process ended without recording a result."}
+              "message": "Still running when reconcile ran; the process ended without recording a result."}
 
 
 def reconcile(conn: Any, older_than_minutes: float, *, apply: bool) -> tuple[int, int]:
-    """Close out records a killed process left "running"; return (jobs, tasks) affected.
+    """Close out records a killed process left "running"; return (runs, calls) affected.
 
-    Jobs still running `older_than_minutes` after they were created are marked failed, and so are
-    running tasks of jobs that are no longer running. finished_at stays empty, since when the
-    process died is unknown. Without `apply`, nothing changes and the counts say what would.
+    Runs still running `older_than_minutes` after they started are marked failed, and so are running
+    calls of runs that are no longer running. finished_at stays empty, since when the process died
+    is unknown. Without `apply`, nothing changes and the counts say what would.
     """
     seconds = older_than_minutes * 60
+    stale_calls = f"""c.status = 'running' and (r.status <> 'running' or r.id in
+                      (select id from runs where {_STALE_RUN}))"""
     if not apply:
-        jobs = conn.execute(f"select count(*) from research_jobs where {_STALE_JOB}", (seconds,)).fetchone()[0]
-        tasks = conn.execute(
-            f"""select count(*) from research_tasks t join research_jobs j on j.id = t.job_id
-                 where t.status = 'running' and (j.status <> 'running' or j.id in
-                       (select id from research_jobs where {_STALE_JOB}))""",
-            (seconds,),
-        ).fetchone()[0]
-        return jobs, tasks
+        runs = conn.execute(f"select count(*) from runs where {_STALE_RUN}", (seconds,)).fetchone()[0]
+        calls = conn.execute(f"select count(*) from run_calls c join runs r on r.id = c.run_id where {stale_calls}",
+                             (seconds,)).fetchone()[0]
+        return runs, calls
     from psycopg.types.json import Jsonb
 
     with conn.transaction():
-        jobs = conn.execute(f"update research_jobs set status = 'failed', error = %s where {_STALE_JOB}",
+        calls = conn.execute(
+            f"update run_calls c set status = 'failed', error = %s from runs r where r.id = c.run_id and {stale_calls}",
+            (Jsonb(_ABANDONED), seconds)).rowcount
+        runs = conn.execute(f"update runs set status = 'failed', error = %s where {_STALE_RUN}",
                             (Jsonb(_ABANDONED), seconds)).rowcount
-        tasks = conn.execute(
-            """update research_tasks t set status = 'failed', error = %s from research_jobs j
-                where j.id = t.job_id and t.status = 'running' and j.status <> 'running'""",
-            (Jsonb(_ABANDONED),),
-        ).rowcount
-    return jobs, tasks
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage research-loop SQL migrations and stale records")
-    parser.add_argument("command", choices=("status", "migrate", "reconcile"))
-    parser.add_argument("--older-than", type=float, metavar="MINUTES",
-                        help="reconcile: jobs still running this long after they started count as abandoned")
-    parser.add_argument("--apply", action="store_true", help="reconcile: make the changes instead of listing counts")
-    args = parser.parse_args()
-    if args.command == "reconcile" and not (args.older_than and args.older_than > 0):
-        parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
-    settings = ResearchSettings.from_env()
-    if not settings.database_dsn:
-        parser.error("DATABASE_URL is required; set it in the environment")
-
-    try:
-        import psycopg
-    except ImportError:
-        parser.error("Postgres support is missing; install the postgres extra")
-
-    migrations = migration_files()
-    try:
-        with psycopg.connect(settings.database_dsn, autocommit=True, connect_timeout=5) as conn:
-            if args.command == "reconcile":
-                jobs, tasks = reconcile(conn, args.older_than, apply=args.apply)
-                if args.apply:
-                    print(f"Marked {jobs} job(s) and {tasks} task(s) failed (Abandoned).")
-                else:
-                    print(f"Would mark {jobs} job(s) and {tasks} task(s) failed; pass --apply to do it.")
-                return
-            if args.command == "migrate":
-                applied = apply_migrations(conn, migrations)
-                print(f"Applied {len(applied)} migration(s).")
-            for migration, state in migration_status(conn, migrations):
-                print(f"{state:7} {migration.name}")
-    except psycopg.Error as exc:
-        parser.exit(1, f"Database connection or migration failed ({type(exc).__name__}). Check DATABASE_URL and server status.\n")
-    except RuntimeError as exc:
-        parser.exit(1, f"{exc}\n")
-
-
-if __name__ == "__main__":
-    main()
+    return runs, calls
