@@ -1,0 +1,63 @@
+"""scripts/depth_profile.py: first-seen requests and the model/tool time split of one tool loop."""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+
+from research_loop.schemas import Claim, Evidence, ResearchResult, SourceRef
+
+_SPEC = importlib.util.spec_from_file_location("depth_profile", Path(__file__).parents[1] / "scripts" / "depth_profile.py")
+depth_profile = importlib.util.module_from_spec(_SPEC)
+sys.modules["depth_profile"] = depth_profile  # its dataclasses look their module up while being defined
+_SPEC.loader.exec_module(depth_profile)
+
+
+def _at(second: int) -> datetime:
+    return datetime(2026, 9, 25, 12, 0, second, tzinfo=UTC)
+
+
+def _result(*sources: SourceRef) -> ResearchResult:
+    evidence = [Evidence(source=source, excerpt="x", confidence=0.5) for source in sources]
+    return ResearchResult(question_id="q1", question="q", conclusion="c", confidence=0.5,
+                          claims=[Claim(id="c1", statement="s", evidence=evidence, confidence=0.5)])
+
+
+def test_sources_are_dated_by_the_request_whose_tools_returned_them() -> None:
+    def call(i: str, url: str) -> ToolCallPart:
+        return ToolCallPart("web_fetch", {"url": url}, tool_call_id=i)
+
+    messages = [
+        ModelRequest(parts=[UserPromptPart("q")], timestamp=_at(0)),
+        ModelResponse(parts=[call("a", "https://example.org/a")], timestamp=_at(5)),         # request 1: 5 s model
+        ModelRequest(parts=[ToolReturnPart("web_fetch", {"url": "https://example.org/a", "text": "A"},
+                                           tool_call_id="a")], timestamp=_at(7)),          # 2 s tools
+        ModelResponse(parts=[call("b", "https://doi.org/10.1/xyz")], timestamp=_at(15)),     # request 2: 8 s
+        ModelRequest(parts=[ToolReturnPart("web_fetch", {"text": "published as doi 10.1/XYZ"},
+                                           tool_call_id="b")], timestamp=_at(20)),         # 5 s tools
+        ModelResponse(parts=[TextPart("done")], timestamp=_at(26)),                          # request 3: 6 s
+    ]
+    cited = _result(SourceRef(url="https://www.example.org/a?utm=1", title="A"),   # matched ignoring www and query
+                    SourceRef(url="https://doi.org/10.1/xyz", title="B"),          # matched by DOI in the text
+                    SourceRef(url="https://example.org/never", title="C"))
+    requests, first_seen, model_s, tool_s = depth_profile.profile_loop(messages, cited)
+    assert requests == 3
+    assert first_seen == [1, 2, None]
+    assert (model_s, tool_s) == (19.0, 7.0)
+
+
+def test_render_marks_unmatched_sources_and_draws_the_curve() -> None:
+    profiles = [depth_profile.LoopProfile("scout", "q1", 3, True, [1, 2, None], 19.0, 7.0, 30.0)]
+    text = depth_profile.render(profiles)
+    assert "1, 2, -" in text and "yes" in text
+    assert "k=1:0.33  k=2:0.67  k=3:0.67" in text and "(1 not matched)" in text
