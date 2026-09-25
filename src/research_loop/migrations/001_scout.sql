@@ -1,5 +1,5 @@
 -- Baseline for the Scout design (2026-09). The first design's schema, migrations 001 to 005, was
--- archived with its data; see docs/setup.md for restoring it.
+-- archived with its data in ~/research-loop-archive/2026-09-25/; its README explains how to restore it.
 
 -- One research run: its question, configuration, results, and outcome.
 create table if not exists runs (
