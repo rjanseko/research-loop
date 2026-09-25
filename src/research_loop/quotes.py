@@ -133,18 +133,27 @@ def source_keys(source: SourceRef) -> frozenset[str]:
     return frozenset(keys or {f"title:{' '.join(source.title.lower().split())}"})
 
 
+class ToolOutputIndex:
+    """What `texts`, a run's tool output, show of sources: their URLs, and the text for DOIs and arXiv IDs."""
+
+    def __init__(self, texts: Iterable[str]) -> None:
+        texts = list(texts)
+        self.urls = {_url_key(url) for text in texts for url in find_urls(text)}
+        self.haystack = "\n".join(texts).lower()
+
+    def observed(self, source: SourceRef) -> bool:
+        """Whether a tool returned `source`: its URL, ignoring scheme, `www.`, query, and fragment, or its DOI or arXiv ID."""
+        return _url_key(str(source.url)) in self.urls or any(i in self.haystack for i in _source_ids(source))
+
+
 def check_sources(result: ResearchResult, texts: Iterable[str]) -> ResearchResult:
     """Set each URL-cited evidence item's source_check from `texts`, the tool output its run saw."""
-    texts = list(texts)
-    seen = {_url_key(url) for text in texts for url in find_urls(text)}
-    haystack = "\n".join(texts).lower()
+    index = ToolOutputIndex(texts)
 
     def check(source: SourceRef) -> Literal["observed", "not_found"] | None:
         if source.url is None:
             return None
-        if _url_key(str(source.url)) in seen or any(identifier in haystack for identifier in _source_ids(source)):
-            return "observed"
-        return "not_found"
+        return "observed" if index.observed(source) else "not_found"
 
     claims = [
         claim.model_copy(update={"evidence": [

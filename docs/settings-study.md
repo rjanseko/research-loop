@@ -1,6 +1,6 @@
 # Settings study: search depth, response size, and models per role
 
-Status: designed 2026-09-25, to be run in steps; nothing has been run yet apart from the free analysis in [First data](#first-data). Results and plan changes go in the [Decision log](#decision-log).
+Status: designed 2026-09-25, to be run in steps. Step 0, the free one, is done; step 1 needs the study runner and replay command first. Results and plan changes go in the [Decision log](#decision-log).
 
 The presets' limits were set by hand and checked against one calibration question. This study measures what those limits cost and buy, so they can become rules: how deep a scout or deep dive should search, how many questions a plan should have, how much a result and a report should say, and which model each role should run on. It is meant to cost as little as possible, so it runs every expensive research loop once, gets the other settings from that run, and runs in steps so each one's results decide what the next one spends.
 
@@ -34,7 +34,7 @@ The first three have short reference answers that `ReferenceAnswerMatch` scores 
 
 `ReferenceAnswerMatch` compares the whole normalized answer, so "93 developers" or "NeurIPS (then NIPS) 2017" scores 0 even though it is right. The case asks for a succinct `Exact Answer:` line, which makes this rare. Read every miss by hand before counting it.
 
-Two rubrics need checking against primary sources in step 0, before anything is graded against them. The `st07` points were written after the recorded README run, and several of them match what that run found, such as METR's finding on unmergeable patches and OpenAI no longer reporting SWE-bench Verified. Each point needs its own primary source, so that the rubric does not just reward repeating that run. For `st05`, confirm that the Chinchilla paper itself gives the 2,048-token context length. If the length comes from the Gopher paper, the point contradicts the question's "as reported in its original paper".
+The `st05` and `st07` rubrics were checked against primary sources in step 0; see the [Decision log](#decision-log). The Chinchilla paper gives no context length, so that point now asks the report to say so. The `st07` points were written after the recorded README run, so each was confirmed from its own primary source, and points that bundled several facts were split, since the judge gives no partial credit for a point half met.
 
 ## Models
 
@@ -143,22 +143,25 @@ Each rule is then checked in step 8.
 - **A replay command** that reruns a captured task on another model, and that can cut a research task at request *k* and run its salvage call. For depth and research models, it works on a whole question at once: it cuts or replays every research task of the question, then writes a report from the results with the fixed synthesizer. It reuses the role calls in `AsyncResearchLoop`, so the prompts and schemas are the ones real runs use.
 - **A grader.** Built: `RubricJudge` in `evals.py` and `research-grade`, which grades jobs stored in Postgres with the default metrics and any rubric judges, repeatedly; see [benchmarks.md](benchmarks.md#grading-stored-runs). Replays and fixed-synthesizer reports can be graded the same way once they are stored as jobs.
 - **A local price override.** Built: `src/research_loop/prices.toml` and `research_loop.prices`. The two Flash corrections are still worth sending upstream to `genai-prices`.
-- **A timing analysis** for earlier runs. Section 8 of `scripts/analyze_run.sql` splits each research task's time into model and tool time for runs from 2026-09-25 on; runs before that, including the recorded README run, need the split from captured transcripts, for step 0.
-- **The depth analysis** as a script, from the prototype used for [First data](#first-data).
+- **The depth and timing analysis.** Built: `scripts/depth_profile.py <job_id>` reads a captured job's transcripts and gives, for each scout and deep dive, the request at which each cited source was first returned, whether a limit cut it off, and its model, tool, and salvage time. Section 8 of `scripts/analyze_run.sql` gives the time split without transcripts for runs from 2026-09-25 on.
 
 ## First data
 
-The recorded README run (job `bf89797d`, 25 September 2026, on `quality` before the current optimizations: GLM-5.3 scouts limited to 12 requests and 24 tool calls, GPT-5.6 Sol deep dives limited to 40 tool calls, no prompt caching) gives a first look, from the transcripts alone and at no cost. For each research task, the numbers are the request at which each source its result cites was first fetched or seen:
+The recorded README run (job `bf89797d`, 25 September 2026, on `quality` before the current optimizations: GLM-5.3 scouts limited to 12 requests and 24 tool calls, GPT-5.6 Sol deep dives limited to 40 tool calls, no prompt caching) gives a first look, from its transcripts and at no cost, with `scripts/depth_profile.py`. For each research loop, the numbers are the request whose tool calls first returned each source its result cites, matched as `source_check` matches: by URL ignoring scheme, `www.`, query, and fragment, or by DOI or arXiv ID. Time is waiting on the model, waiting on tools, and the salvage call that wrote the result of a loop its limit stopped.
 
-| Task | Requests | Limit reached | Cited sources, by request first seen |
-|---|---:|---|---|
-| Scout q1 | 12 | Yes | 1, 2, 3, 3, 9, 10, and one not matched |
-| Scout q2 | 10 | No | 1, 2, 3, 5, 5, 7, 7, 9, and two not matched |
-| Scout q3 | 11 | No | 1, 2, 3, 3, 3, 3, 5, 7, and four not matched |
-| Deep dive q1 | 6 | Yes | 1, 1, 2, 2, 2, 2, 3, 3, 4, 4 |
-| Deep dive q2 | 6 | Yes | 2, 2, 2, 2, 2, 2, 2, 4, 4, 4, 4, 5, 5, 5, 5 |
+| Loop | Requests | Cut off | Model s | Tools s | Salvage s | Cited sources, by request first returned |
+|---|---:|---|---:|---:|---:|---|
+| Scout q1 | 12 | Yes | 74 | 9 | 101 | 1, 1, 1, 1, 3, 3, 9 |
+| Scout q2 | 10 | No | 151 | 12 | | 1, 1, 1, 3, 4, 4, 5, 7, 7, 8 |
+| Scout q3 | 11 | No | 200 | 20 | | 1, 1, 1, 1, 3, 3, 3, 3, 3, 4, 4, 4 |
+| Deep dive q1 | 6 | Yes | 34 | 28 | 151 | 1, 1, 1, 1, 1, 2, 3, 3, 3, 3 |
+| Deep dive q2 | 6 | Yes | 36 | 19 | 77 | 1, 1, 1, 1, 1, 1, 2, 3, 3, 3, 4, 4, 4, 5, 5 |
 
-Scouts found most of what they cited within three requests but kept adding sources up to request 10. Deep dives found everything they cited within five requests. Their stop at six came from that run's limit of 40 tool calls, since they make several tool calls per request; `readme_example.py` now allows 80. Seven cited sources did not match any tool output under the exact URL cited. The prototype compared URLs exactly, while `source_check` also ignores query strings and accepts a DOI or arXiv ID found in the output, and it marks all 101 of the run's URL-cited sources `observed`. So the seven are the prototype's stricter matching, not sources the run never saw, and the depth analysis script should match sources the way `source_check` does. Scout q1 and both deep dives reached their limits, so their curves are cut off, and they show only that those tasks needed at least that many requests. One run is too little for a rule. It shows that the method works on the data the repository already records.
+- **Depth.** Scouts had been returned 66% of what they cited by request 3, 83% by request 4, 97% by request 8, and all of it by request 9, three requests before scout q1's limit stopped it. Deep dives had 80% by request 3 and all of it by request 5; their stop at 6 came from that run's limit of 40 tool calls, and `readme_example.py` now allows 80. Every cited source was returned by some tool, as `source_check` also found. A first prototype, which compared URLs exactly, left seven unmatched.
+- **Time.** Scouts spent 91% of their loop time waiting on GLM-5.3, 6 to 18 seconds a request, and 9% on tools. Deep dives spent 60% on the model. So generation speed, not the web, sets how long a scout takes, which is what the [FlashX test](#the-flashx-test) needs to be worth running.
+- **Salvage.** The three salvage calls took 77 to 151 seconds each, more than their loops' own model time in both deep dives, likely because each sends a loop's whole gathered evidence, up to 64,000 characters, in one request. A limit that stops a loop early saves requests but adds a salvage call.
+
+One run is too little for a rule. It shows that the method works on the data the repository already records.
 
 ## Caveats
 
@@ -171,4 +174,9 @@ Scouts found most of what they cited within three requests but kept adding sourc
 
 One entry per step, newest last: the date, what ran, its cost, what it found, and what it changed in the later steps.
 
-No steps have run yet.
+**Step 0, 25 September 2026. Free, apart from one $0.008 judge call made while building the grader.**
+
+- *Ran.* The suite on the synthetic policy: all seven cases ran and were graded. `scripts/depth_profile.py` on the recorded README run ([First data](#first-data)). Primary sources for the `st05` and `st07` rubric points.
+- *Rubric sources.* `st05`: the GPT-3 paper gives a 2,048-token context and 300 billion training tokens (section 2.1), and the Llama 2 paper gives 70B at 4k context and 2.0T tokens (Table 1), as the rubric says. The Chinchilla paper gives no context length anywhere; 2,048 appears only as a model width in its hyperparameter tables. That point now reads "says the Chinchilla paper does not report a context length", which also tests whether a run invents a figure. `st07`: OpenAI announced SWE-bench Verified on 13 August 2024, from 1,699 samples screened by 93 developers into 500; it stopped reporting Verified scores on 23 February 2026, citing flawed tests in 59.4% of 138 audited tasks and frontier models reproducing gold patches; and METR's note of 10 March 2026 found about half of test-passing PRs would not be merged. Two compound points were split, taking `st07` from 7 points to 9. `st03`'s answer, 93, is confirmed. `st04` and `st06` were not rechecked.
+- *Judge.* The one real judge call, `openai:gpt-6-sol` at low effort on the README run's report against the old `st07` rubric, marked "OpenAI stopped evaluating on SWE-bench Verified, and why" unmet, though the report says OpenAI "stopped reporting Verified scores" and why. It is a false negative on a paraphrase, from one call.
+- *Changes to later steps.* Step 3 looks first at paraphrase: if the two judges disagree on points the report states in other words, the judge instructions get an explicit rule to credit equivalent wording, as `JUDGE_VERSION` 2, before any variant is graded. Step 4's cut points for deep questions are provisionally 2, 3, 4, 6, and 9 for scouts and 2, 3, and 4 for deep dives, to be set from step 2's curves. Step 6 keeps its full speed test, since model time is 91% of scout loop time. Salvage time is now recorded with each loop, since a depth limit trades requests for a salvage call.
