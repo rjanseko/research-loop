@@ -14,7 +14,7 @@ import argparse
 import asyncio
 import json
 from contextlib import AsyncExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,10 +26,12 @@ from research_loop.repository import (
     InMemoryResearchRepository,
     PostgresResearchRepository,
 )
+from research_loop.schemas import ResearchRole
 from research_loop.settings import ResearchSettings
 from research_loop.synthetic import SyntheticResearchLoop
 
 QUESTION = "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
+SCOUT_TOKENS = 400_000
 NOTES = [
     "Keep preprints and published papers distinct.",
     "Label scores a vendor reports about its own model as vendor claims.",
@@ -46,10 +48,18 @@ def build(paid: bool, budget: float, reserve: float, settings: ResearchSettings)
     # Held back from research so synthesis and verification can still run once it is spent.
     policy.job_reserve_usd = reserve
     policy.planner_question_range = (3, 5)
+    # A scout resends its growing tool history each request; the calibration pilot's scouts used
+    # about 250k tokens each, so quality's 100k stops them early. Their $ caps still apply.
+    policy.routes[ResearchRole.SCOUT] = replace(policy.routes[ResearchRole.SCOUT], total_tokens_limit=SCOUT_TOKENS)
+    if policy.cheap_scout:
+        policy.cheap_scout = replace(policy.cheap_scout, total_tokens_limit=SCOUT_TOKENS)
     policy.validate()
     config = ResearchConfig(
         max_verification_rounds=1,
         max_deep_dives_per_round=2,
+        # A scout or deep dive that runs out of tokens or budget writes its result from what it
+        # gathered, instead of failing the whole run; the job cap makes running out expected.
+        salvage_exhausted_research=True,
         scholarly_cache_mode=settings.scholarly_cache_mode,
     )
     return policy, config
