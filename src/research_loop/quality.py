@@ -201,7 +201,7 @@ async def judge_quality(report: FinalReport, ledger: EvidenceLedger, packet: Qua
 
     usage = RunUsage()
     messages: list[ModelMessage] = []
-    chosen = model or build_model(QUALITY_MODEL, "scout", settings, sdk_retries=0)
+    chosen = model or build_model(f"{QUALITY_MODEL}@{QUALITY_THINKING}", "scout", settings, sdk_retries=0)
     if budget is not None:
         chosen = StudyBudgetModel(chosen, QUALITY_MODEL, budget)
     try:

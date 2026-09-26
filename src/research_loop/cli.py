@@ -360,7 +360,7 @@ def main(argv: list[str] | None = None) -> None:
 
     synth = commands.add_parser("synthesize", help="Synthesize a stored Scout ledger with a chosen model (paid)")
     synth.add_argument("source_run_id", type=UUID)
-    synth.add_argument("--model", required=True, help="Synthesizer provider:model")
+    synth.add_argument("--model", required=True, help="Synthesizer provider:model@effort, such as anthropic:claude-opus-5-5@medium")
     synth.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this command")
     synth.add_argument("--out", type=Path, help="Also write report.md and run.json here")
     synth.add_argument("--study", help="Record this as part of a study")
@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> None:
     again = commands.add_parser("rescout", help="Research a stored Scout plan again with a chosen scout model, "
                                                 "without planning or synthesis (paid)")
     again.add_argument("source_run_id", type=UUID)
-    again.add_argument("--model", required=True, help="Scout provider:model")
+    again.add_argument("--model", required=True, help="Scout provider:model@effort, such as openai:gpt-6-luna@high")
     again.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this command")
     again.add_argument("--out", type=Path, help="Also write report.md and run.json here")
     again.add_argument("--study", help="Record this as part of a study")

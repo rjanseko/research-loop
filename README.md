@@ -33,8 +33,7 @@ Settings come from `.env` or the environment, and exported variables override th
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY` | Provider keys. A provider is enabled when its key is set. |
 | `RESEARCH_ENABLED_PROVIDERS` | Allow only these providers, comma-separated, even if other keys are set. |
 | `LOGFIRE_TOKEN` | Send traces to Logfire. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
-| `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK` | The model for each role, as `provider:model`. See [Models](#models). |
-| `RESEARCH_MODELS__SCOUT_EFFORT` | The scouts' reasoning effort: `low`, `medium`, `high`, or `xhigh`. |
+| `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
@@ -189,12 +188,12 @@ Models are configuration, separate from the workflow. The defaults come from the
 
 | Role | Default | Setting |
 |---|---|---|
-| Planner and gap analyzer | `openai:gpt-6-sol` | `RESEARCH_MODELS__PLANNER` |
-| Scouts and deep dive | `openai:gpt-6-luna` | `RESEARCH_MODELS__SCOUT` |
-| Synthesizer | `anthropic:claude-opus-5-5` | `RESEARCH_MODELS__SYNTHESIZER` |
-| Fallback after a refusal or provider error | `openai:gpt-6-sol` | `RESEARCH_MODELS__FALLBACK` |
+| Planner and gap analyzer | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__PLANNER` |
+| Scouts and deep dive | `openai:gpt-6-luna@high` | `RESEARCH_MODELS__SCOUT` |
+| Synthesizer | `anthropic:claude-opus-5-5@medium` | `RESEARCH_MODELS__SYNTHESIZER` |
+| Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
 
-A model is named as `provider:model`, where the provider is `openai`, `anthropic`, `zai`, or `google`. Z.ai GLM models think at their highest effort, Opus 5.5 at `medium`, and other models at `high`. `RESEARCH_MODELS__SCOUT_EFFORT` changes the scouts' level without touching the other roles. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails; scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+A model is named with the reasoning effort it runs at, as `provider:model@effort`, where the provider is `openai`, `anthropic`, `zai`, or `google` and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level. Each run records the model and effort every role was sent. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails; scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
 
 A model is refused at startup if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
 
@@ -206,8 +205,8 @@ Research Loop includes the tools used to choose its own configuration: labeled r
 research scout --case drb2-task8 --max-usd 3.00 --study drb2-pilot --arm baseline --replicate 1
 research grade <run id> --case drb2-task8 --max-usd 1.00
 research assess <run id> --case st07 --max-usd 1.00
-research synthesize <run id> --model openai:gpt-6-sol --max-usd 1.00 --study synthesis --arm sol --replicate 1
-research rescout <run id> --model zai:glm-5.3-flash --max-usd 3.00 --study scouts --arm flash --replicate 1
+research synthesize <run id> --model openai:gpt-6-sol@high --max-usd 1.00 --study synthesis --arm sol --replicate 1
+research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study scouts --arm flash --replicate 1
 ```
 
 `--study NAME --arm ARM --replicate N` labels a run as one repetition of one arm of a study, so that runs can be paired and compared later. Every run also records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent.

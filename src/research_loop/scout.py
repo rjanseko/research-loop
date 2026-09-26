@@ -72,7 +72,7 @@ from .agents import (
     synthesizer_agent,
 )
 from .budget_notes import LoopBudget
-from .config import ScoutLimits, Settings
+from .config import ScoutLimits, Settings, split_model
 from .evidence import (
     EvidenceLedger,
     Support,
@@ -83,8 +83,6 @@ from .evidence import (
 from .models import (
     Role,
     build_model,
-    effort_for,
-    role_effort,
     role_model,
     sent_settings,
     token_pacer,
@@ -209,9 +207,10 @@ class ScoutRun:
 def check_config(settings: Settings) -> None:
     """Refuse, before any call, models that cannot run or whose cost cannot be capped."""
     problems = settings.route_problems()
-    models = {settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback}
+    specs = {settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback}
+    models = {split_model(spec)[0] for spec in specs if spec}
     problems += [f"{model} has no price, so its cost cannot be capped; add it to prices.toml"
-                 for model in sorted(filter(None, models)) if price_per_million(model) is None]
+                 for model in sorted(models) if price_per_million(model) is None]
     if problems:
         raise ConfigError("; ".join(problems))
 
@@ -229,16 +228,16 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
                *, follow_up: bool = False) -> dict[str, Any]:
     """What a run records about how it was configured, so runs can be compared."""
     models = settings.models
-    roles: dict[str, Any] = {role: {"model": model_id, "thinking": role_effort(role, model_id, settings),
-                                    "sent": sent_settings(model_id, role, settings)}
-                             for role, model_id in (("planner", models.planner), ("scout", models.scout),
-                                                    ("synthesizer", models.synthesizer))}
+    roles: dict[str, Any] = {role: {"model": split_model(spec)[0], "thinking": split_model(spec)[1],
+                                    "sent": sent_settings(spec, role, settings)}
+                             for role, spec in (("planner", models.planner), ("scout", models.scout),
+                                                ("synthesizer", models.synthesizer))}
     if follow_up:
         roles["gap_analyzer"] = roles["planner"]
         roles["deep_dive"] = roles["scout"]
     if models.fallback:
         # The fallback takes planner and synthesizer calls, each with that role's settings.
-        roles["fallback"] = {"model": models.fallback, "thinking": effort_for(models.fallback),
+        roles["fallback"] = {"model": split_model(models.fallback)[0], "thinking": split_model(models.fallback)[1],
                              "sent": {role: sent_settings(models.fallback, role, settings)
                                       for role in ("planner", "synthesizer")}}
     return {
@@ -247,7 +246,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION,
-        "tokens_per_minute": settings.tokens_per_minute.get(models.scout),
+        "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
 
@@ -327,8 +326,9 @@ class _Run:
             if self.budget is None:
                 self.models[role] = role_model(role, self.settings)
             else:
-                model_id = getattr(self.settings.models, role)
-                guarded = StudyBudgetModel(build_model(model_id, role, self.settings, sdk_retries=0),
+                spec = getattr(self.settings.models, role)
+                model_id = split_model(spec)[0]
+                guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
                                            model_id, self.budget)
                 # The guard is inside the 429 wrapper, so every retry reserves a new request.
                 self.models[role] = (ScoutRateLimitModel(guarded, token_pacer(model_id, self.settings))
@@ -357,7 +357,7 @@ class _Run:
         The call's row records why it stopped: `finished` names it for a result, `cancelled` for a
         cancellation (usually a deadline), and a failure is named by its exception.
         """
-        model_id: str = getattr(self.settings.models, role)
+        model_id = split_model(getattr(self.settings.models, role))[0]
         call_id = await self.store.start_call(self.run_id, role=call_role or role, model=model_id, question_id=question_id)
         usage = RunUsage()
         messages: list[ModelMessage] = []
@@ -396,7 +396,7 @@ class _Run:
         if not fallback or fallback == primary or role == "scout":
             return
         names = {message.model_name for message in messages if isinstance(message, ModelResponse)}
-        if fallback.partition(":")[2] in names:
+        if split_model(fallback)[0].partition(":")[2] in names:
             self.notes.append(f"the {role} ran on {fallback} after {primary} refused or failed")
 
     async def _plan(self, research_deadline: float) -> ResearchPlan:
@@ -750,7 +750,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
                                   "sdk_retries": 0, "fallback": False}
         runner.models["synthesizer"] = StudyBudgetModel(
             build_model(settings.models.synthesizer, "synthesizer", settings, sdk_retries=0),
-            settings.models.synthesizer, budget)
+            split_model(settings.models.synthesizer)[0], budget)
     await store.start_run(runner.run_id, mode="fixed-ledger", workflow_version="scout-synthesis-v1",
                           question=runner.question, config=config, parent_run_id=source_id,
                           input_hash=hashlib.sha256((runner.question + "\n" + ledger_sha).encode()).hexdigest(),

@@ -9,7 +9,7 @@ from research_loop.config import ScoutLimits, Settings
 def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
     settings = Settings()
     assert (settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback) == (
-        "openai:gpt-6-sol", "openai:gpt-6-luna", "anthropic:claude-opus-5-5", "openai:gpt-6-sol")
+        "openai:gpt-6-sol@high", "openai:gpt-6-luna@high", "anthropic:claude-opus-5-5@medium", "openai:gpt-6-sol@high")
     limits = settings.limits
     assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 360, 4)
     assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (12, 16, 12)
@@ -19,15 +19,15 @@ def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
 
 def test_environment_beats_dotenv_and_arguments_beat_both(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("RESEARCH_MODELS__SCOUT=zai:glm-5.3\nRESEARCH_LIMITS__COST_USD=1.5\nZAI_API_KEY=from-dotenv\n")
+    env_file.write_text("RESEARCH_MODELS__SCOUT=zai:glm-5.3@xhigh\nRESEARCH_LIMITS__COST_USD=1.5\nZAI_API_KEY=from-dotenv\n")
     from_file = Settings(_env_file=env_file)
-    assert (from_file.models.scout, from_file.limits.cost_usd) == ("zai:glm-5.3", 1.5)
+    assert (from_file.models.scout, from_file.limits.cost_usd) == ("zai:glm-5.3@xhigh", 1.5)
     assert from_file.api_key("zai") == "from-dotenv"
 
-    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna")
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna@high")
     monkeypatch.setenv("ZAI_API_KEY", "from-environment")
     from_env = Settings(_env_file=env_file)
-    assert from_env.models.scout == "openai:gpt-6-luna" and from_env.api_key("zai") == "from-environment"
+    assert from_env.models.scout == "openai:gpt-6-luna@high" and from_env.api_key("zai") == "from-environment"
     assert from_env.limits.cost_usd == 1.5  # other nested values still come from the file
 
     assert Settings(_env_file=env_file, cache_mode="replay").cache_mode == "replay"
@@ -66,7 +66,7 @@ def test_route_problems_name_missing_keys_and_disabled_providers(monkeypatch: py
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     assert Settings().route_problems() == []
 
-    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "zai:glm-5.3-flash")
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "zai:glm-5.3-flash@high")
     assert Settings().route_problems() == ["scout: zai:glm-5.3-flash needs ZAI_API_KEY"]
 
     monkeypatch.setenv("ZAI_API_KEY", "k")

@@ -11,7 +11,6 @@ from pydantic_ai.models.fallback import FallbackModel
 from research_loop.config import Settings
 from research_loop.models import (
     build_model,
-    effort_for,
     model_settings,
     role_model,
     sent_settings,
@@ -25,33 +24,38 @@ def keyed(monkeypatch: pytest.MonkeyPatch) -> Settings:
     return Settings()
 
 
-@pytest.mark.parametrize(("model_id", "effort"), [
-    ("zai:glm-5.3", "xhigh"),
-    ("zai:glm-5.3-flash", "xhigh"),
-    ("zai:glm-5.3-flashx", "xhigh"),
-    ("anthropic:claude-opus-5-5", "medium"),
-    ("openai:gpt-6-sol", "high"),
-])
-def test_every_glm_model_thinks_at_max(model_id: str, effort: str) -> None:
-    assert effort_for(model_id) == effort
+def test_a_model_runs_at_the_effort_named_with_it(keyed: Settings) -> None:
+    assert model_settings("zai:glm-5.3-flash@high", "scout", keyed)["thinking"] == "high"
+    assert sent_settings("zai:glm-5.3-flash@high", "scout", keyed)["extra_body"]["reasoning_effort"] == "high"
+    assert sent_settings("zai:glm-5.3-flash@xhigh", "planner", keyed)["extra_body"]["reasoning_effort"] == "max"
+    with pytest.raises(ValueError, match="names no effort"):
+        build_model("zai:glm-5.3-flash", "scout", keyed)
 
 
-def test_scout_effort_overrides_only_the_scout(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_refuse_a_model_without_its_effort(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna")
+    with pytest.raises(ValueError, match="must name its effort"):
+        Settings()
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna@max")
+    with pytest.raises(ValueError, match="must name its effort"):
+        Settings()
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna@high")
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT_EFFORT", "high")
-    settings = Settings()
-    assert model_settings("zai:glm-5.3-flash", "scout", settings)["thinking"] == "high"
-    assert model_settings("zai:glm-5.3-flash", "planner", settings)["thinking"] == "xhigh"
-    assert sent_settings("zai:glm-5.3-flash", "scout", settings)["extra_body"]["reasoning_effort"] == "high"
-    assert sent_settings("zai:glm-5.3-flash", "planner", settings)["extra_body"]["reasoning_effort"] == "max"
+    with pytest.raises(ValueError, match="SCOUT_EFFORT was removed"):
+        Settings()
+    monkeypatch.delenv("RESEARCH_MODELS__SCOUT_EFFORT")
+    # A command-line model skips field validation, so the route check refuses it too.
+    bare = Settings().model_copy(update={"models": Settings().models.model_copy(update={"scout": "zai:glm-5.3"})})
+    assert bare.route_problems() == ["scout: 'zai:glm-5.3' must name its effort: zai:glm-5.3@<low|medium|high|xhigh>"]
 
 
 def test_each_model_carries_its_own_settings(keyed: Settings) -> None:
-    synthesizer = model_settings("anthropic:claude-opus-5-5", "synthesizer", keyed)
+    synthesizer = model_settings("anthropic:claude-opus-5-5@medium", "synthesizer", keyed)
     assert synthesizer == {"thinking": "medium", "timeout": 120, "max_tokens": 32_000, "anthropic_cache": True}
-    planner = model_settings("openai:gpt-6-sol", "planner", keyed)
+    planner = model_settings("openai:gpt-6-sol@high", "planner", keyed)
     assert planner["thinking"] == "high" and planner["openai_prompt_cache_key"] == "research-loop:openai:gpt-6-sol"
-    assert "max_tokens" not in model_settings("zai:glm-5.3-flash", "scout", keyed)
-    assert build_model("zai:glm-5.3-flash", "scout", keyed).settings["thinking"] == "xhigh"
+    assert "max_tokens" not in model_settings("zai:glm-5.3-flash@high", "scout", keyed)
+    assert build_model("zai:glm-5.3-flash@xhigh", "scout", keyed).settings["thinking"] == "xhigh"
 
 
 def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Settings) -> None:
@@ -66,7 +70,7 @@ def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Se
 
 
 def test_another_planner_falls_back_too(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:
-    monkeypatch.setenv("RESEARCH_MODELS__PLANNER", "anthropic:claude-opus-5-5")
+    monkeypatch.setenv("RESEARCH_MODELS__PLANNER", "anthropic:claude-opus-5-5@medium")
     planner = role_model("planner", Settings())
     assert isinstance(planner, FallbackModel) and planner.models[1].model_name == "gpt-6-sol"
 
@@ -74,7 +78,7 @@ def test_another_planner_falls_back_too(monkeypatch: pytest.MonkeyPatch, keyed: 
 def test_a_missing_key_fails_instead_of_reaching_for_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     with pytest.raises(ValueError, match="needs ZAI_API_KEY"):
-        build_model("zai:glm-5.3-flash", "scout", Settings())
+        build_model("zai:glm-5.3-flash@high", "scout", Settings())
 
 
 def test_a_scout_makes_one_attempt_and_other_roles_keep_the_client_default(keyed: Settings) -> None:
@@ -88,7 +92,7 @@ def test_a_scout_makes_one_attempt_and_other_roles_keep_the_client_default(keyed
 
 
 def test_a_google_scout_makes_one_attempt(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:
-    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "google:gemini-2.5-flash")
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "google:gemini-2.5-flash@high")
     scout = role_model("scout", Settings())
     retry = scout.client._api_client._http_options.retry_options
     assert retry is not None and retry.attempts == 1
@@ -128,7 +132,7 @@ async def test_glm_reaches_zai_with_reasoning_effort_max(keyed: Settings, monkey
 
     monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", True)
     provider = ZaiProvider(api_key="test-key", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
-    model = ZaiModel("glm-5.3-flash", provider=provider, settings=model_settings("zai:glm-5.3-flash", "scout", keyed))
+    model = ZaiModel("glm-5.3-flash", provider=provider, settings=model_settings("zai:glm-5.3-flash@xhigh", "scout", keyed))
     result = await Agent(model).run("hello")
     assert result.output == "ok"
     assert sent[0]["reasoning_effort"] == "max"

@@ -2,7 +2,7 @@
 
 Values come from, highest first: arguments passed to `Settings(...)`, environment variables, `.env`
 in the working directory, then the defaults below. Research Loop's own variables start with
-`RESEARCH_`; nested ones use a double underscore, such as `RESEARCH_MODELS__SCOUT=openai:gpt-6-luna`
+`RESEARCH_`; nested ones use a double underscore, such as `RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high`
 or `RESEARCH_LIMITS__COST_USD=1.5`. Provider keys, `DATABASE_URL`, and `LOGFIRE_TOKEN` keep their
 usual names. Keys are read into `SecretStr` values and handed to each provider directly; the
 process environment is never modified.
@@ -10,7 +10,7 @@ process environment is never modified.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     AliasChoices,
@@ -33,16 +33,38 @@ PROVIDER_KEYS = {
 }
 
 
+# Reasoning effort, named with every model as `provider:model@effort`. GLM's `xhigh` is sent as `max`.
+Effort = Literal["low", "medium", "high", "xhigh"]
+EFFORTS: tuple[str, ...] = get_args(Effort)
+
+
+def split_model(spec: str) -> tuple[str, str]:
+    """The `provider:model` ID and the effort of a `provider:model@effort` setting; the effort is empty
+    when the setting names none."""
+    model_id, separator, effort = spec.strip().rpartition("@")
+    return (model_id, effort) if separator else (spec.strip(), "")
+
+
+def model_spec_problem(spec: str) -> str | None:
+    """Why `spec` is not a usable `provider:model@effort`, or None when it is."""
+    model_id, effort = split_model(spec)
+    if model_provider(model_id) is None:
+        return f"{spec!r} is not provider:model@effort with a provider from {', '.join(PROVIDER_KEYS)}"
+    if effort not in EFFORTS:
+        return f"{spec!r} must name its effort: {model_id}@<{'|'.join(EFFORTS)}>"
+    return None
+
+
 def model_provider(model_id: str) -> str | None:
     """The provider of a `provider:model` ID, or None when it names no known provider or no model."""
     provider, separator, model = model_id.partition(":")
     return provider if separator and model.strip() and provider in PROVIDER_KEYS else None
 
 
-def _model_id(value: str) -> str:
+def _model_spec(value: str) -> str:
     value = value.strip()
-    if model_provider(value) is None:
-        raise ValueError(f"{value!r} is not provider:model with a provider from {', '.join(PROVIDER_KEYS)}")
+    if problem := model_spec_problem(value):
+        raise ValueError(problem)
     return value
 
 
@@ -53,19 +75,28 @@ class ScoutModels(BaseModel):
     scout is `gpt-6-luna`: on the screened cases it finished inside the deadline, and Flash at max did
     not. `fallback` takes a planner or synthesizer call when its model refuses it or its provider fails;
     Opus 5.5 refused to plan one ordinary research question as a biological risk.
+
+    Each is `provider:model@effort`, and a model without its effort is refused, so a model and the
+    reasoning effort it runs at are always chosen together.
     """
 
-    planner: str = "openai:gpt-6-sol"
-    scout: str = "openai:gpt-6-luna"
-    synthesizer: str = "anthropic:claude-opus-5-5"
-    fallback: str | None = "openai:gpt-6-sol"
-    # None keeps effort_for's default, which is xhigh for every GLM scout.
-    scout_effort: Literal["low", "medium", "high", "xhigh"] | None = None
+    planner: str = "openai:gpt-6-sol@high"
+    scout: str = "openai:gpt-6-luna@high"
+    synthesizer: str = "anthropic:claude-opus-5-5@medium"
+    fallback: str | None = "openai:gpt-6-sol@high"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_separate_effort(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "scout_effort" in data:
+            raise ValueError("RESEARCH_MODELS__SCOUT_EFFORT was removed; put the effort in the model, "
+                             "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
+        return data
 
     @field_validator("planner", "scout", "synthesizer", "fallback")
     @classmethod
     def _provider_model(cls, value: str | None) -> str | None:
-        return None if value is None or not value.strip() else _model_id(value)
+        return None if value is None or not value.strip() else _model_spec(value)
 
 
 class ScoutLimits(BaseModel):
@@ -178,11 +209,13 @@ class Settings(BaseSettings):
         roles = {"planner": self.models.planner, "scout": self.models.scout, "synthesizer": self.models.synthesizer}
         if self.models.fallback:
             roles["fallback"] = self.models.fallback
-        for role, model_id in roles.items():
-            provider = model_provider(model_id)
-            if provider is None:
-                problems.append(f"{role}: {model_id} names no known provider")
-            elif self.api_key(provider) is None:
+        for role, spec in roles.items():
+            if problem := model_spec_problem(spec):
+                problems.append(f"{role}: {problem}")
+                continue
+            model_id = split_model(spec)[0]
+            provider = str(model_provider(model_id))
+            if self.api_key(provider) is None:
                 problems.append(f"{role}: {model_id} needs {PROVIDER_KEYS[provider]}")
             elif not self.provider_enabled(provider):
                 problems.append(f"{role}: {model_id} needs {provider}, which is not enabled (RESEARCH_ENABLED_PROVIDERS)")

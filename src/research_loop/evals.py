@@ -213,7 +213,7 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     }, ensure_ascii=False)
     usage = RunUsage()
     messages: list[ModelMessage] = []
-    chosen = model or build_model(JUDGE_MODEL, "scout", settings, sdk_retries=0 if budget else None)
+    chosen = model or build_model(f"{JUDGE_MODEL}@{JUDGE_THINKING}", "scout", settings, sdk_retries=0 if budget else None)
     if budget is not None:
         chosen = StudyBudgetModel(chosen, JUDGE_MODEL, budget)
     model_settings = {"thinking": JUDGE_THINKING, "timeout": _JUDGE_TIMEOUT_SECONDS}
