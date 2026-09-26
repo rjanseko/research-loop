@@ -253,7 +253,7 @@ run.to_record() # the run as JSON, the same record `--out` writes to run.json
 
 Postgres keeps each run: its question, configuration, plan, report, evidence ledger, and checks, plus every model call with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades and quality assessments are kept in separate tables. `research db migrate` applies the schema in `src/research_loop/migrations/`.
 
-Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Traces include prompts and tool results. They are sent only when `LOGFIRE_TOKEN` is set.
+Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role (planner, scout, gap_analyzer, synthesizer) and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. The research tools' page fetches and scholarly lookups appear as HTTP spans with their status and latency, with any secret query parameter, such as OpenAlex's `api_key`, redacted; web searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results. They are sent only when `LOGFIRE_TOKEN` is set.
 
 ## Troubleshooting
 

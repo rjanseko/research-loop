@@ -109,7 +109,7 @@ from .study_budget import (
     StudyBudgetModel,
     StudyBudgetRefusal,
 )
-from .telemetry import run_span, trace_id
+from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
 from .web import WebAcquisition, WebSearch
 
@@ -693,8 +693,9 @@ class _Run:
         """The run's research tools, sharing one fetch memo and one pair of HTTP clients across its scouts."""
         cache, settings = self.settings.cache_dir, self.settings
         memo = FetchMemo()
-        pages_client = await stack.enter_async_context(public_fetch_client(timeout=15))
-        metadata_client = await stack.enter_async_context(httpx.AsyncClient(follow_redirects=False, timeout=15))
+        pages_client = await stack.enter_async_context(trace_http(public_fetch_client(timeout=15), settings))
+        metadata_client = await stack.enter_async_context(
+            trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))
         search = WebSearch(cache=AcquisitionCache(cache / "search", settings.cache_mode))
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
