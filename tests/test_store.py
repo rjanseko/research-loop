@@ -87,12 +87,13 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
     )
     from research_loop.store import load_calls, load_run, save_grade
 
-    assert pending_migrations(dsn) == ["001_scout.sql"]
+    names = [migration.name for migration in migration_files()]
+    assert names[0] == "001_scout.sql" and pending_migrations(dsn) == names
     async with AsyncExitStack() as stack:
         with pytest.raises(RuntimeError, match="research db migrate"):
             await open_migrated_pool(stack, dsn)
     with psycopg.connect(dsn, autocommit=True) as conn:
-        assert apply_migrations(conn, migration_files()) == ["001_scout.sql"]
+        assert apply_migrations(conn, migration_files()) == names
 
     async with AsyncExitStack() as stack:
         pool = await open_migrated_pool(stack, dsn)
