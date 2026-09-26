@@ -37,9 +37,10 @@ class Assignment:
 
 @dataclass(frozen=True)
 class GapRefs:
-    """The planned question IDs a gap may refer to."""
+    """The planned question IDs a gap may refer to, and how many gaps may be chosen."""
 
     question_ids: frozenset[str]
+    max_gaps: int = 1
 
 
 @dataclass(frozen=True)
@@ -78,9 +79,13 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
 
 @gap_agent.output_validator
 def _gaps_name_plan_questions(ctx: RunContext[GapRefs], output: GapAnalysis) -> GapAnalysis:
-    unknown = sorted({gap.question_id for gap in output.gaps} - ctx.deps.question_ids)
-    if unknown:
-        _retry_on([f"Unknown question IDs: {', '.join(unknown)}. Use an ID in the supplied plan."])
+    problems = []
+    if unknown := sorted({gap.question_id for gap in output.gaps} - ctx.deps.question_ids):
+        problems.append(f"Unknown question IDs: {', '.join(unknown)}. Use an ID in the supplied plan.")
+    if len(output.gaps) > ctx.deps.max_gaps:
+        problems.append(f"{len(output.gaps)} gaps were selected; select at most {ctx.deps.max_gaps}, "
+                        "keeping those most likely to change the answer.")
+    _retry_on(problems)
     return output
 
 

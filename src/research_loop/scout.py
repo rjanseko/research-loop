@@ -13,8 +13,8 @@ A normal run has three steps, each bounded:
 3. The synthesizer writes the report from the evidence ledger. If it cannot finish, the run returns the
    ledger's claims without a written answer.
 
-Opt-in follow-up mode inserts a material-gap analysis after step 2 and at most one targeted deep dive,
-then synthesizes the enlarged ledger. It has a separate dollar and time envelope.
+Opt-in follow-up mode inserts a material-gap analysis after step 2 and up to `max_gaps` targeted deep dives,
+run in parallel, then synthesizes the enlarged ledger. It has a separate dollar and time envelope.
 
 Dollars are allocated before the run starts: the planner's share, the synthesizer's share, and the rest
 split evenly across the scouts. Each call's share is its PydanticAI `cost_limit`, checked before every
@@ -118,12 +118,14 @@ from .web import WebAcquisition, WebSearch
 # longer show a result's self-rated confidence. Earlier runs stay valid sources for `synthesize_stored`
 # and `rescout_stored`.
 WORKFLOW_VERSION = "scout-v3"
-FOLLOWUP_VERSION = "scout-followup-v3"
+# Follow-up v4: up to `max_gaps` gaps, each researched by its own deep dive in parallel.
+FOLLOWUP_VERSION = "scout-followup-v4"
 RESCOUT_VERSION = "scout-research-v3"
 # The synthesis prompt no longer shows result confidence.
 SYNTHESIS_VERSION = "scout-synthesis-v2"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2)))
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2)),
+                    "scout-followup-v3")
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
@@ -511,13 +513,14 @@ class _Run:
     async def _analyze_gap(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> GapAnalysis | None:
         prompt = json.dumps({"question": self.question, "notes": self.notes_in, "blocked_urls": self.blocked_urls,
                              "plan": plan.model_dump(mode="json"), "research": ledger.prompt_view(),
-                             "not_established": _not_established(plan, ledger)}, ensure_ascii=False)
+                             "not_established": _not_established(plan, ledger),
+                             "max_gaps": self.limits.max_gaps}, ensure_ascii=False)
         try:
             with logfire.span("gap analysis"):
                 async with asyncio.timeout_at(deadline):
                     return await self._call(
                         role="planner", call_role="gap_analyzer", agent=gap_agent, prompt=prompt,
-                        deps=GapRefs(frozenset(q.id for q in plan.questions)),
+                        deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps),
                         limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
                                            cost_limit=Decimal(str(self.limits.gap_usd))),
                         cancelled=lambda: "the gap-analysis deadline passed")
@@ -527,6 +530,8 @@ class _Run:
 
     async def _deep_dive(self, gap: MaterialGap, plan: ResearchPlan, ledger: EvidenceLedger,
                          toolset: TimedToolset, deadline: float) -> ResearchResult:
+        """One gap's research, filed under the planned question it names. Every deep dive of a run sees the
+        same ledger, which the caller extends only after all of them finish."""
         original = next(q for q in plan.questions if q.id == gap.question_id)
         question = original.model_copy(update={"question": gap.follow_up_question})
         attempt = _Attempt(question)
@@ -536,7 +541,6 @@ class _Run:
                                            toolset, deadline, gap=gap.reason, ledger=ledger)
         except TimeoutError:
             result = _cut_off(question, attempt.messages, "the deep-dive deadline passed")
-        ledger.add(result)
         if result.cut_off:
             self.notes.append(f"deep dive for {gap.question_id} did not finish ({result.cut_off})")
         return result
@@ -593,11 +597,14 @@ class _Run:
                                        deadline - self.limits.deep_dive_seconds - 90)
                     analysis = await self._analyze_gap(plan, ledger, gap_deadline)
                     if analysis and analysis.gaps:
-                        gap = analysis.gaps[0]
                         dive_deadline = min(loop.time() + self.limits.deep_dive_seconds, deadline - 90)
-                        deep_result = await self._deep_dive(gap, plan, ledger, toolset, dive_deadline)
-                        follow_up_unresolved = bool(deep_result.cut_off or not deep_result.claims
-                                                    or deep_result.unresolved)
+                        dives = await asyncio.gather(*(self._deep_dive(gap, plan, ledger, toolset, dive_deadline)
+                                                       for gap in analysis.gaps))
+                        # Added in gap order, so claim IDs do not depend on which dive finished first.
+                        for result in dives:
+                            ledger.add(result)
+                        follow_up_unresolved = any(result.cut_off or not result.claims or result.unresolved
+                                                   for result in dives)
                     elif analysis is None:
                         follow_up_unresolved = True
                 if ledger.claims():

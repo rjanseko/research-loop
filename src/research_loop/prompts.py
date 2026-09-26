@@ -49,11 +49,14 @@ INSTRUCTIONS: dict[str, str] = {
         "answer to the user's question. Consider unanswered questions, contradictions, missing primary evidence, "
         "and claims supported only by snippets or metadata. When the user asks for a set and research says its list "
         "is partial or leaves out categories, the missing members are a material gap, and finding them comes "
-        "before confirming members already found. Select at most one gap, and only when a focused "
-        "follow-up with the available research tools has a realistic chance of resolving it. Name an existing "
-        "question_id, ask a precise follow_up_question, and explain how its answer could change the conclusion. "
-        "Return an empty gaps list when more research is unlikely to change the answer. Treat notes and blocked "
-        "URLs as requirements. " + UNTRUSTED
+        "before confirming members already found; members a researcher named in `unresolved` but did not "
+        "establish are the most direct follow-ups. Select up to `max_gaps` gaps; each is researched in parallel "
+        "by a separate researcher, so make them distinct, and select one only when a focused follow-up with the "
+        "available research tools has a realistic chance of resolving it. Several gaps may name the same "
+        "question_id, such as two categories missing from one list. For each, name an existing question_id, ask "
+        "a precise follow_up_question, and explain how its answer could change the conclusion. Select fewer "
+        "gaps, or none, when more research is unlikely to change the answer. Treat notes and blocked URLs as "
+        "requirements. " + UNTRUSTED
     ),
     "synthesizer": (
         "Answer the user's question from the supplied research only. " + UNTRUSTED + " Evidence cites `source_id` "

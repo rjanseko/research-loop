@@ -107,16 +107,18 @@ class ScoutLimits(BaseModel):
     planner_usd: float = Field(0.05, gt=0)
     # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25; this leaves room for one validation retry.
     synthesis_usd: float = Field(0.40, gt=0)
-    # Opt-in gap analysis and one targeted follow-up use a separate envelope, keeping the plain Scout envelope unchanged.
-    followup_cost_usd: float = Field(1.25, gt=0)
+    # Opt-in gap analysis and up to `max_gaps` parallel deep dives use a separate envelope, keeping the plain
+    # Scout envelope unchanged. Each deep dive gets `deep_dive_usd`.
+    followup_cost_usd: float = Field(2.00, gt=0)
     gap_usd: float = Field(0.10, gt=0)
+    max_gaps: int = Field(3, ge=1, le=6)
     deep_dive_usd: float = Field(0.25, gt=0)
     followup_deadline_seconds: float = Field(900, gt=0)
     gap_seconds: float = Field(45, gt=0)
-    deep_dive_seconds: float = Field(180, gt=0)
-    deep_dive_requests: int = Field(8, ge=2)
-    deep_dive_productive_calls: int = Field(10, ge=1)
-    deep_dive_misses: int = Field(6, ge=1)
+    deep_dive_seconds: float = Field(240, gt=0)
+    deep_dive_requests: int = Field(12, ge=2)
+    deep_dive_productive_calls: int = Field(16, ge=1)
+    deep_dive_misses: int = Field(8, ge=1)
     max_questions: int = Field(4, ge=1, le=8)
     parallel_scouts: int = Field(4, ge=1)
     # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
@@ -140,7 +142,8 @@ class ScoutLimits(BaseModel):
             raise ValueError("planner_usd + synthesis_usd must leave part of cost_usd for scouts")
         if self.research_seconds >= self.deadline_seconds:
             raise ValueError("research_seconds must end before deadline_seconds")
-        if self.planner_usd + self.synthesis_usd + self.gap_usd + self.deep_dive_usd >= self.followup_cost_usd:
+        if (self.planner_usd + self.synthesis_usd + self.gap_usd + self.max_gaps * self.deep_dive_usd
+                >= self.followup_cost_usd):
             raise ValueError("followup_cost_usd must leave part of the budget for initial scouts")
         if self.research_seconds + self.gap_seconds + self.deep_dive_seconds + 90 > self.followup_deadline_seconds:
             raise ValueError("followup_deadline_seconds must reserve 90 seconds for synthesis")
@@ -148,7 +151,7 @@ class ScoutLimits(BaseModel):
 
     def followup_scout_usd(self, questions: int) -> float:
         return round((self.followup_cost_usd - self.planner_usd - self.synthesis_usd
-                      - self.gap_usd - self.deep_dive_usd) / max(questions, 1), 4)
+                      - self.gap_usd - self.max_gaps * self.deep_dive_usd) / max(questions, 1), 4)
 
     def scout_usd(self, questions: int) -> float:
         """Each scout's share when `questions` scouts run."""

@@ -61,9 +61,9 @@ research scout "..." --follow-up
 
 Scout prints its models and limits before it starts, then prints the report as Markdown when it finishes. With `--out DIR` it also writes `report.md` and `run.json`, the full run record, into that directory. When `DATABASE_URL` is set the run is stored, and the last line gives its run ID for the commands below.
 
-`--note` adds a requirement that every role follows, and can be repeated. `--block URL` names a source that no tool may fetch and no evidence may cite, and can also be repeated. `--max-usd` sets a hard ceiling that is checked before every model request (see [Hard caps](#hard-caps)). `--follow-up` adds a gap analysis and one targeted deep dive before the report is written. `--no-persist` keeps the run in memory even when a database is configured.
+`--note` adds a requirement that every role follows, and can be repeated. `--block URL` names a source that no tool may fetch and no evidence may cite, and can also be repeated. `--max-usd` sets a hard ceiling that is checked before every model request (see [Hard caps](#hard-caps)). `--follow-up` adds a gap analysis and up to three targeted deep dives, run in parallel, before the report is written. `--no-persist` keeps the run in memory even when a database is configured.
 
-A run ends in one of four states. It is `complete` when every research question returned evidence and the report cites only claims that exist. It is `partial` when the report was written but something is missing: a research question returned no evidence, a citation was wrong, or a follow-up left its gap open. If the synthesis itself did not finish, the report lists the claims found without a written answer, and the run is also `partial`. A run that found no evidence at all is `failed`. Pressing Ctrl-C records the run as `cancelled`.
+A run ends in one of four states. It is `complete` when every research question returned evidence and the report cites only claims that exist. It is `partial` when the report was written but something is missing: a research question returned no evidence, a citation was wrong, or a follow-up left a gap open. If the synthesis itself did not finish, the report lists the claims found without a written answer, and the run is also `partial`. A run that found no evidence at all is `failed`. Pressing Ctrl-C records the run as `cancelled`.
 
 ### Reading the report
 
@@ -72,7 +72,7 @@ A report has these sections, in this order. Sections with nothing to say are lef
 | Section | What it holds |
 |---|---|
 | Needs review | Every reason code flagged the run, such as statements that rest only on search snippets, or questions that returned no evidence. |
-| Gap follow-up | In follow-up mode, which gap was chosen and why, and what the deep dive found. |
+| Gap follow-up | In follow-up mode, which gaps were chosen and why, and whether the deep dives settled them. |
 | Summary and Answer | The written report. Each statement carries inline citations such as [s3], which name sources. |
 | Caveats | Limits the synthesizer found in the evidence. |
 | Statements resting on thin evidence | Statements whose only support is a search snippet, a record's metadata, an unverified quote, or a source no tool returned. |
@@ -102,7 +102,7 @@ flowchart LR
     check --> ledger[("Evidence ledger")]
     ledger --> synthesize["Write the report<br/>every statement cites claim IDs"]
     ledger -. "--follow-up" .-> gap{"Material gap?"}
-    gap -- "one gap" --> dive["Deep dive with the research tools"]
+    gap -- "up to three gaps" --> dive[["Deep dives in parallel<br/>one per gap"]]
     dive --> ledger
     gap -- "none" --> synthesize
     prior_ledger[("Ledger from a prior run")] -. "research synthesize" .-> synthesize
@@ -119,7 +119,7 @@ Code then checks every piece of evidence against what the tools actually returne
 
 Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
 
-With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks at most one missing piece of evidence that could change the answer, and a deep dive researches it with the same tools, checks, and budget notes as a scout. The deep dive's claims join the ledger under the original question. The gap analyzer's decision is saved with the run, and the run is marked `partial` if the analysis failed or the deep dive did not settle the gap. Follow-up mode has its own, larger budget and deadline.
+With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish, and a deep dive researches each one in parallel with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run, and the run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
 
 Tool output is treated as untrusted data. The prompts say so, the fetcher only reads public HTTPS addresses and refuses private and loopback hosts, and blocked URLs are refused by every tool and rejected as evidence.
 
@@ -150,13 +150,14 @@ Every run has a fixed budget. The defaults are these:
 | Research questions | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 4 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
 | Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
-| Follow-up total cost | $1.25 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
-| Follow-up gap analysis and deep dive shares | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
+| Follow-up total cost | $2.00 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
+| Follow-up gap analysis share, and each deep dive's | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
+| Gaps followed up | at most 3 | `RESEARCH_LIMITS__MAX_GAPS` |
 | Follow-up whole run | 15 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
-| Follow-up gap analysis and deep dive windows | 45 and 180 seconds | `RESEARCH_LIMITS__GAP_SECONDS`, `RESEARCH_LIMITS__DEEP_DIVE_SECONDS` |
-| Deep dive calls | 8 requests, 10 useful tool calls, 6 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
+| Follow-up gap analysis and deep dive windows | 45 and 240 seconds | `RESEARCH_LIMITS__GAP_SECONDS`, `RESEARCH_LIMITS__DEEP_DIVE_SECONDS` |
+| Each deep dive | 12 requests, 16 useful tool calls, 8 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 
-The money is divided before the run starts. The planner and synthesizer get their shares and the scouts split the rest evenly, so four scouts get $0.075 each. In follow-up mode, the gap analysis and deep dive shares come off the top as well. Each call stops before a request that would take it past its share, which means the total can exceed the limit by at most one request per call. These are soft limits; for a hard ceiling, use `--max-usd`.
+The money is divided before the run starts. The planner and synthesizer get their shares and the scouts split the rest evenly, so four scouts get $0.075 each. In follow-up mode, the gap analysis share and three deep dive shares come off the top as well, leaving four scouts $0.175 each. Each call stops before a request that would take it past its share, which means the total can exceed the limit by at most one request per call. These are soft limits; for a hard ceiling, use `--max-usd`.
 
 A useful tool call is a search that found something, a fetch that returned text, or a scholarly call that returned works. A failed one is an empty search, an HTTP error, or a blocked address. Counting them apart lets a scout that is only failing stop early without cutting short one that is working. The framework's own limit on tool calls sits 12 above the sum, so that a batch of parallel calls asked for just before the budget ran out can still run. A turn that asks for more tool calls than that limit leaves runs only the calls that fit, and the next request tells the model how many were dropped.
 

@@ -26,14 +26,13 @@ def render_markdown(record: dict[str, Any]) -> str:
     if analysis := checks.get("gap_analysis"):
         gaps = analysis.get("gaps") or []
         lines += ["## Gap follow-up", ""]
-        if gaps:
-            gap = gaps[0]
+        for gap in gaps:
             lines += [f"- Selected {gap['question_id']}: {gap['follow_up_question']}",
-                      f"- Why it matters: {gap['reason']}"]
-            if checks.get("follow_up_unresolved"):
-                lines.append("- The follow-up did not fully resolve this gap.")
-        else:
+                      f"  - Why it matters: {gap['reason']}"]
+        if not gaps:
             lines.append("- No material gap selected.")
+        elif checks.get("follow_up_unresolved"):
+            lines.append("- The follow-up did not fully resolve " + ("this gap." if len(gaps) == 1 else "these gaps."))
         lines.append("")
     if report:
         if report.get("executive_summary"):

@@ -424,7 +424,7 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
-    assert run.config["limits"]["followup_cost_usd"] == 1.25
+    assert run.config["limits"]["followup_cost_usd"] == 2.0
 
 
 async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -> None:
@@ -540,3 +540,50 @@ async def test_an_unexpected_error_in_one_scout_leaves_the_rest_of_the_run(setti
     cut = next(result for result in run.ledger.all() if result.question_id == "q2")
     assert cut.cut_off == "unexpected error UnicodeEncodeError"
     assert "research on q2 stopped on an unexpected error (UnicodeEncodeError); this is a bug" in run.notes
+
+
+async def test_follow_up_researches_several_gaps_in_parallel(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    store = MemoryStore()
+    running: set[str] = set()
+    overlapped: list[bool] = []
+
+    async def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question = prompt["question"]
+        topic = question["question"]
+        if "material_gap" in prompt and len(messages) == 1:
+            # Both deep dives are in flight together before either returns.
+            running.add(topic)
+            await asyncio.sleep(0.05)
+            overlapped.append(len(running) == 2)
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        running.discard(topic)
+        return _output(info, {"question_id": question["id"], "question": topic, "conclusion": "found",
+                              "confidence": 0.8,
+                              "claims": [{"id": "c1", "statement": f"Finding for {topic}", "confidence": 0.8,
+                                          "evidence": [{"source": {"url": url, "title": "Page"},
+                                                        "excerpt": "summary", "confidence": 0.8}]}]})
+
+    gaps = [{"question_id": "q2", "follow_up_question": f"Which {kind} databases were used?", "reason": "Missing."}
+            for kind in ("experimental", "alloy", "electrolyte", "polymer")]
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        assert prompt["max_gaps"] == 3
+        # Four gaps are refused with a retry; two are accepted.
+        return _output(info, {"gaps": gaps if len(messages) == 1 else gaps[:2]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, store, research=FunctionModel(research), follow_up=True)
+    assert [g.follow_up_question for g in run.checks.gap_analysis.gaps] == [
+        "Which experimental databases were used?", "Which alloy databases were used?"]
+    assert [c["role"] for c in store.calls.values()].count("deep_dive") == 2
+    assert overlapped and all(overlapped)
+    deep = [claim.statement for result in run.ledger.all() if result.question.startswith("Which")
+            for claim in result.claims]
+    assert deep == ["Finding for Which experimental databases were used?", "Finding for Which alloy databases were used?"]
+    assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1", "q2/c1~2", "q2/c1~3"]

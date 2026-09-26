@@ -112,9 +112,10 @@ class MaterialGap(BaseModel):
 
 
 class GapAnalysis(BaseModel):
-    """At most one decisive follow-up; an empty list means synthesize what is known."""
+    """Up to `max_gaps` decisive follow-ups, each researched in parallel; an empty list means synthesize
+    what is known."""
 
-    gaps: list[MaterialGap] = Field(default_factory=list, max_length=1)
+    gaps: list[MaterialGap] = Field(default_factory=list)
 
 
 class UnreachedSource(BaseModel):
