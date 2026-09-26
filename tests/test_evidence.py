@@ -225,7 +225,7 @@ def test_prompt_view_keeps_the_checks_and_drops_bookkeeping() -> None:
                                 "source_type": "unknown", "publication_status": "unknown", "access": "full_text"}]
     (research,) = view["research"]
     assert research["unresolved"] == ["still open"] and research["cut_off"] == "request limit"
-    assert not {"searches", "pages_read", "unreached"} & set(research)
+    assert not {"searches", "pages_read", "unreached", "confidence"} & set(research)
     read, glimpsed, invented = research["claims"][0]["evidence"]
     assert read == {"source_id": "s1", "quote": "exact words", "confidence": 1.0, "quote_check": "verified",
                     "quote_access": "full_text", "source_check": "observed", "source_access": "full_text"}

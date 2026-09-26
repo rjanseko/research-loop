@@ -113,12 +113,17 @@ from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
 from .web import WebAcquisition, WebSearch
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
-# partial set as a gap. Runs made under v1 stay valid sources for `synthesize_stored` and `rescout_stored`.
-WORKFLOW_VERSION = "scout-v2"
-FOLLOWUP_VERSION = "scout-followup-v2"
-RESCOUT_VERSION = "scout-research-v2"
+# partial set as a gap.
+# v3: larger scout budgets and research window, a planner that asks for whole sets, and prompts that no
+# longer show a result's self-rated confidence. Earlier runs stay valid sources for `synthesize_stored`
+# and `rescout_stored`.
+WORKFLOW_VERSION = "scout-v3"
+FOLLOWUP_VERSION = "scout-followup-v3"
+RESCOUT_VERSION = "scout-research-v3"
+# The synthesis prompt no longer shows result confidence.
+SYNTHESIS_VERSION = "scout-synthesis-v2"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    "scout-v1", "scout-followup-v1", "scout-research-v1")
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2)))
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
@@ -757,7 +762,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
         runner.models["synthesizer"] = StudyBudgetModel(
             build_model(settings.models.synthesizer, "synthesizer", settings, sdk_retries=0),
             split_model(settings.models.synthesizer)[0], budget)
-    await store.start_run(runner.run_id, mode="fixed-ledger", workflow_version="scout-synthesis-v1",
+    await store.start_run(runner.run_id, mode="fixed-ledger", workflow_version=SYNTHESIS_VERSION,
                           question=runner.question, config=config, parent_run_id=source_id,
                           input_hash=hashlib.sha256((runner.question + "\n" + ledger_sha).encode()).hexdigest(),
                           study_id=study.study_id if study else None, arm=study.arm if study else None,
@@ -766,7 +771,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     span_trace = None
     report = None
     try:
-        with run_span(runner.run_id, "fixed-ledger", "scout-synthesis-v1") as span:
+        with run_span(runner.run_id, "fixed-ledger", SYNTHESIS_VERSION) as span:
             span_trace = trace_id(span)
             # The production run reserves this much of its six-minute window after research.
             window = settings.limits.deadline_seconds - settings.limits.research_seconds

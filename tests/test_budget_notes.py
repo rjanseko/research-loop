@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.messages import (
     ModelRequest,
@@ -173,3 +174,14 @@ async def test_a_turn_past_the_tool_call_limit_loses_only_its_excess_calls() -> 
     # The second request carries the first request's note, then the dropped calls, then its own note.
     assert len(notes[1]) == 3 and notes[1][0] == notes[0][0]
     assert notes[1][1].startswith(NOTE_PREFIX + "Only the first 15 of the 50 tool calls in your last turn ran")
+
+
+def test_the_prompt_fingerprint_covers_every_budget_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop import budget_notes, prompts
+
+    notes = {name for name, value in vars(budget_notes).items()
+             if name.isupper() and isinstance(value, str) and name != "NOTE_PREFIX"}
+    assert notes == set(prompts.BUDGET_NOTES)
+    before = prompts.prompt_fingerprint()
+    monkeypatch.setitem(prompts.BUDGET_NOTES, "NOTE", "changed")
+    assert prompts.prompt_fingerprint() != before

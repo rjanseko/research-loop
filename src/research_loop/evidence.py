@@ -169,6 +169,9 @@ def support_level(claims: Iterable[Claim]) -> Support:
 
 # Research bookkeeping that prompts for synthesis leave out.
 _BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached")
+# Left out of prompts though stored: scouts rated a result 0.93 to 0.97 while writing that it was partial,
+# so the number misleads the gap analysis and synthesis; cut-offs and `unresolved` say more.
+_UNINFORMATIVE_FIELDS = ("confidence",)
 # Paraphrases longer than this are cut in prompts. A quote replaces the excerpt unless it was not found.
 _EXCERPT_CHARS = 300
 
@@ -313,7 +316,7 @@ def _project_result(result: ResearchResult, numbering: dict[str, str]) -> dict[s
         if claim.evidence:
             body["evidence"] = [_project_evidence(item, numbering) for item in claim.evidence]
         claims.append(body)
-    rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS}))
+    rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS, *_UNINFORMATIVE_FIELDS}))
     projected = {key: rest.pop(key) for key in ("question_id", "question", "conclusion") if key in rest}
     if claims:
         projected["claims"] = claims

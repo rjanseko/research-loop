@@ -111,7 +111,7 @@ class ScoutLimits(BaseModel):
     followup_cost_usd: float = Field(1.25, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     deep_dive_usd: float = Field(0.25, gt=0)
-    followup_deadline_seconds: float = Field(600, gt=0)
+    followup_deadline_seconds: float = Field(900, gt=0)
     gap_seconds: float = Field(45, gt=0)
     deep_dive_seconds: float = Field(180, gt=0)
     deep_dive_requests: int = Field(8, ge=2)
@@ -119,16 +119,19 @@ class ScoutLimits(BaseModel):
     deep_dive_misses: int = Field(6, ge=1)
     max_questions: int = Field(4, ge=1, le=8)
     parallel_scouts: int = Field(4, ge=1)
-    # The settings study's scout budget: requests, productive calls, and misses (budget_notes.py).
-    scout_requests: int = Field(12, ge=2)
-    scout_productive_calls: int = Field(16, ge=1)
-    scout_misses: int = Field(12, ge=1)
-    scout_tokens: int = Field(400_000, ge=1_000)
+    # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
+    # 12, 16, and 12 to stop Flash loops that only failed; with Luna, 39 of 68 scouts stopped on the 16
+    # productive calls after reading one to eight pages, while spending about 15% of their dollar share.
+    scout_requests: int = Field(20, ge=2)
+    scout_productive_calls: int = Field(32, ge=1)
+    scout_misses: int = Field(16, ge=1)
+    # Billed input across a scout's requests; each request resends the loop's history.
+    scout_tokens: int = Field(1_000_000, ge=1_000)
     guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
-    deadline_seconds: float = Field(360, gt=0, description="Wall-clock limit for the whole run")
-    research_seconds: float = Field(270, gt=0, description="Scouts still running after this are stopped")
+    deadline_seconds: float = Field(720, gt=0, description="Wall-clock limit for the whole run")
+    research_seconds: float = Field(480, gt=0, description="Scouts still running after this are stopped")
     request_timeout_seconds: float = Field(120, gt=0, description="One model request, or between streamed chunks")
 
     @model_validator(mode="after")

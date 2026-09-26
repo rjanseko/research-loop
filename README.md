@@ -2,7 +2,7 @@
 
 Research Loop answers a research question with a short report in which every statement cites the evidence behind it. It splits the question into a few research questions, researches them in parallel with web search, page and PDF reading, and scholarly search, and then writes a report from the evidence it found. Code checks that evidence before the report is written: a quote counts as verified only if the research tools actually returned those words, and each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report tells you which statements rest on thin evidence and which questions it could not answer.
 
-The workflow is called Scout. A normal run costs about $0.25 and takes two to five minutes. Every run has a fixed dollar budget and deadline, and each model call is stored with its messages, usage, and cost so that a run can be examined, re-checked, or compared with others afterwards.
+The workflow is called Scout. A normal run costs about $0.25 and stops within twelve minutes. Every run has a fixed dollar budget and deadline, and each model call is stored with its messages, usage, and cost so that a run can be examined, re-checked, or compared with others afterwards.
 
 Research Loop is built on [PydanticAI](https://ai.pydantic.dev). Runs are stored in Postgres and traced in [Logfire](https://logfire.pydantic.dev).
 
@@ -144,15 +144,15 @@ Every run has a fixed budget. The defaults are these:
 | Total cost | $0.75 | `RESEARCH_LIMITS__COST_USD` |
 | Planner's share | $0.05 | `RESEARCH_LIMITS__PLANNER_USD` |
 | Synthesizer's share | $0.40 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
-| Whole run | 6 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
-| Research phase | 4.5 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
+| Whole run | 12 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
+| Research phase | 8 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
 | One model request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
 | Research questions | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 4 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
-| Per scout | 12 requests, 16 useful tool calls, 12 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
+| Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 | Follow-up total cost | $1.25 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis and deep dive shares | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
-| Follow-up whole run | 10 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
+| Follow-up whole run | 15 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
 | Follow-up gap analysis and deep dive windows | 45 and 180 seconds | `RESEARCH_LIMITS__GAP_SECONDS`, `RESEARCH_LIMITS__DEEP_DIVE_SECONDS` |
 | Deep dive calls | 8 requests, 10 useful tool calls, 6 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 

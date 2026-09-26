@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from . import budget_notes
 from .schemas import FinalReport, GapAnalysis, ResearchPlan, ResearchResult
 
 UNTRUSTED = (
@@ -18,7 +19,10 @@ INSTRUCTIONS: dict[str, str] = {
         "inquiry, answerable from primary or authoritative sources, and they do not overlap. Use a single question "
         "when the question is narrow; never more than `max_questions`. When the question compares several subjects, "
         "give each subject its own question if that fits, otherwise group them. Set requires_primary_sources when "
-        "the answer must rest on original papers, official documentation, or official data. Treat the notes as "
+        "the answer must rest on original papers, official documentation, or official data. When the user asks for a "
+        "set, such as databases, methods, or criteria, ask for the whole set and its categories, and leave how "
+        "closely to check each member to the researcher: requiring every member to be verified at its own source "
+        "spends the research on a few members. Treat the notes as "
         "requirements. Do not answer the questions yourself."
     ),
     "scout": (
@@ -73,9 +77,16 @@ INSTRUCTIONS: dict[str, str] = {
 OUTPUTS = {"planner": ResearchPlan, "scout": ResearchResult, "gap_analyzer": GapAnalysis, "synthesizer": FinalReport}
 
 
+# The notes that end a scout's requests (budget_notes.py) are text the model sees, so they count too.
+BUDGET_NOTES = {name: getattr(budget_notes, name) for name in (
+    "LAST_REQUEST_NOTE", "DEADLINE_NOTE", "PRODUCTIVE_SPENT_NOTE", "MISS_SPENT_NOTE", "NOTE", "PARALLEL", "NARROW",
+    "DROPPED_NOTE")}
+
+
 def prompt_fingerprint(*, follow_up: bool = False) -> str:
-    """SHA-256 of instructions and schemas used by this mode; Scout v1's digest stays comparable."""
+    """SHA-256 of the instructions, output schemas, and scout budget notes used by this mode."""
     roles = [role for role in INSTRUCTIONS if follow_up or role != "gap_analyzer"]
-    spec = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
-            for role in roles}
+    spec: dict[str, object] = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
+                               for role in roles}
+    spec["budget_notes"] = BUDGET_NOTES
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
