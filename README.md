@@ -180,7 +180,7 @@ Pacing is per run, so two runs at once against the same account can still reach 
 
 ### The research cache
 
-Searches, fetched pages, and scholarly records are cached under `.cache/research-loop` so that repeated lookups within a day are free and fast. `RESEARCH_CACHE_MODE` controls it. `live`, the default, reads entries up to a day old and writes new ones. `record` only writes. `replay` reads entries of any age and never goes to the network, so a miss is an error; it makes a run's research reproducible. `reuse` reads entries of any age and fetches and records any miss. `off` neither reads nor writes. A run records how many lookups the cache served, by provider.
+Searches, fetched pages, and scholarly records are cached under `.cache/research-loop` so that repeated lookups within a day are free and fast. `RESEARCH_CACHE_MODE` controls it. `live`, the default, reads entries up to a day old and writes new ones. `record` only writes. `replay` reads entries of any age and never goes to the network, so a miss is an error; it makes a run's research reproducible. `reuse` reads entries of any age and fetches and records any miss. `off` neither reads nor writes. A run records the cache's directory and mode and how many lookups it served, by provider. A run labeled with `--study` uses its study's own cache instead, as described under [Studies and evaluation](#studies-and-evaluation).
 
 ## Models
 
@@ -209,7 +209,7 @@ research synthesize <run id> --model openai:gpt-6-sol@high --max-usd 1.00 --stud
 research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study scouts --arm flash --replicate 1
 ```
 
-`--study NAME --arm ARM --replicate N` labels a run as one repetition of one arm of a study, so that runs can be paired and compared later. Every run also records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent.
+`--study NAME --arm ARM --replicate N` labels a run as one repetition of one arm of a study, so that runs can be paired and compared later. Every run also records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent. A `scout` or `rescout` run with `--study` keeps its searches, pages, and scholarly records in `.cache/studies/NAME` in `reuse` mode: a lookup any run of the study has made returns the same answer to every later run, on any day, and a new lookup is made once and kept. This removes changes in the web from a comparison where the arms look up the same things; the models themselves cannot be made deterministic, so arms still need repeated runs. Strict `replay` suits only a rerun that makes exactly the same lookups, since any new lookup is an error. Setting `RESEARCH_CACHE_MODE` or `RESEARCH_CACHE_DIR` overrides the study cache.
 
 The study cases are in `src/research_loop/study_cases.jsonl`. `drb2-task8` (52 rubric points) and `drb2-task68-plus` (54 points) keep the exact English tasks, expert rubrics, and blocked expert-report URLs from a pinned snapshot of [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II). `research scout --case` sends only the task to the research agents, blocks the expert reports as sources, records the case's identity, and requires a database and `--max-usd`. It cannot add notes or change the blocked URLs.
 

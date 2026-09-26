@@ -9,6 +9,7 @@ process environment is never modified.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -180,6 +181,8 @@ class Settings(BaseSettings):
 
     cache_dir: Path = Path(".cache/research-loop")
     cache_mode: CacheMode = "live"
+    # Where a study's runs keep their lookups (`for_study`).
+    study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
     crossref_mailto: str | None = Field(None, validation_alias="CROSSREF_MAILTO")
 
@@ -198,6 +201,19 @@ class Settings(BaseSettings):
 
     def provider_enabled(self, provider: str) -> bool:
         return provider in self.enabled_providers if self.enabled_providers else self.api_key(provider) is not None
+
+    def for_study(self, study: str) -> Settings:
+        """These settings for a run labeled with `study`: its research tools use the study's own cache in
+        `reuse` mode, so every arm, on any day, gets the same answer to the same lookup, and a new lookup
+        is made once and kept. RESEARCH_CACHE_MODE or RESEARCH_CACHE_DIR, when set, still win."""
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", study):
+            raise ValueError(f"study name {study!r} may use only letters, digits, '.', '_', and '-'")
+        update: dict[str, Any] = {}
+        if "cache_mode" not in self.model_fields_set:
+            update["cache_mode"] = "reuse"
+        if "cache_dir" not in self.model_fields_set:
+            update["cache_dir"] = self.study_cache_root / study
+        return self.model_copy(update=update)
 
     @property
     def database_dsn(self) -> str | None:

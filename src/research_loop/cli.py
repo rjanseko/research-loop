@@ -46,8 +46,10 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
 
     try:
         case = find_case(args.case) if args.case else None
+        if args.study:
+            settings = settings.for_study(args.study)
         check_config(settings)
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         print(exc.args[0], file=sys.stderr)
         return 2
     except ConfigError as exc:
@@ -70,7 +72,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     mode = "Scout with gap analysis and one deep dive" if args.follow_up else "Scout"
     guard = f"; ${budget.cap_usd:.2f} pre-dispatch cap" if budget else ""
     print(f"{mode}: soft limit ${cost:.2f}{guard}, {seconds / 60:.0f} minutes; planner {models.planner}, "
-          f"scouts {models.scout}, synthesizer {models.synthesizer}.", file=sys.stderr)
+          f"scouts {models.scout}, synthesizer {models.synthesizer}; cache {settings.cache_dir} ({settings.cache_mode}).",
+          file=sys.stderr)
     async with AsyncExitStack() as stack:
         if settings.database_dsn and not args.no_persist:
             store: Any = PostgresStore(await open_migrated_pool(stack, settings.database_dsn))
@@ -148,8 +151,10 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
 
     settings = settings.model_copy(update={"models": settings.models.model_copy(update={"scout": args.model})})
     try:
+        if args.study:
+            settings = settings.for_study(args.study)
         check_config(settings)
-    except ConfigError as exc:
+    except (ConfigError, ValueError) as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
     faulthandler.enable(file=sys.stderr, all_threads=True)
@@ -163,7 +168,8 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
         study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
         budget = StudyBudget(args.max_usd)
         print(f"Fixed-plan research: scouts {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap, "
-              f"{settings.limits.research_seconds / 60:.1f} minutes; this is a paid run.", file=sys.stderr)
+              f"{settings.limits.research_seconds / 60:.1f} minutes, cache {settings.cache_dir} ({settings.cache_mode}); "
+              "this is a paid run.", file=sys.stderr)
         try:
             run = await rescout_stored(source, settings=settings, store=PostgresStore(pool), study=study,
                                        budget=budget)

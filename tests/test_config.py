@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from research_loop.config import ScoutLimits, Settings
+from research_loop.scout import run_config
 
 
 def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
@@ -75,3 +78,19 @@ def test_route_problems_name_missing_keys_and_disabled_providers(monkeypatch: py
     assert Settings().enabled_providers == ("openai", "zai")
     assert Settings().route_problems() == [
         "synthesizer: anthropic:claude-opus-5-5 needs anthropic, which is not enabled (RESEARCH_ENABLED_PROVIDERS)"]
+
+
+def test_a_study_gets_its_own_reused_cache_unless_the_cache_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RESEARCH_CACHE_MODE", raising=False)
+    monkeypatch.delenv("RESEARCH_CACHE_DIR", raising=False)
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(name, "test-key")
+    study = Settings().for_study("set-coverage")
+    assert (study.cache_mode, study.cache_dir) == ("reuse", Path(".cache/studies/set-coverage"))
+    assert run_config(study, [], [])["cache_dir"] == ".cache/studies/set-coverage"
+    monkeypatch.setenv("RESEARCH_CACHE_MODE", "replay")
+    assert Settings().for_study("set-coverage").cache_mode == "replay"
+    monkeypatch.setenv("RESEARCH_CACHE_DIR", "/tmp/elsewhere")
+    assert Settings().for_study("set-coverage").cache_dir == Path("/tmp/elsewhere")
+    with pytest.raises(ValueError, match="study name"):
+        Settings().for_study("../escape")

@@ -244,7 +244,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "models": roles,
         "limits": settings.limits.model_dump(),
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
-        "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "git_commit": _git_commit(),
+        "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION,
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
