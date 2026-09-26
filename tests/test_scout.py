@@ -135,8 +135,15 @@ async def _run(settings: Settings, store: MemoryStore | None = None, *, plan=Non
 
 
 async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(settings, pages, capfire) -> None:
+    import logfire
+    from pydantic_ai import Agent
+
     store = MemoryStore()
-    run = await _run(settings, store)
+    logfire.instrument_pydantic_ai()
+    try:
+        run = await _run(settings, store)
+    finally:
+        Agent.instrument_all(False)
     assert run.status == "complete" and reasons(run) == []
     assert [q.id for q in run.plan.questions] == ["q1", "q2"]  # renumbered in plan order
     assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
@@ -163,8 +170,14 @@ async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(setting
     scout_call = next(c for c in store.calls.values() if c["role"] == "scout")
     assert scout_call["output"]["pages_read"] and scout_call["output"]["claims"][0]["evidence"][0]["source_access"]
 
-    spans = capfire.exporter.exported_spans_as_dict()
-    assert {s["attributes"].get("run_id") for s in spans if s["name"].startswith("scout")} == {str(run.run_id)}
+    # Each agent run's span is named for its role and carries the run ID and what it worked on.
+    spans = [s for s in capfire.exporter.exported_spans_as_dict() if s["name"].startswith("invoke_agent")]
+    assert sorted(s["name"] for s in spans) == ["invoke_agent planner", "invoke_agent scout", "invoke_agent scout",
+                                                "invoke_agent synthesizer"]
+    assert {s["attributes"]["run_id"] for s in spans} == {str(run.run_id)}
+    scouted = [json.loads(s["attributes"]["metadata"]) for s in spans if s["name"] == "invoke_agent scout"]
+    assert sorted(m["question_id"] for m in scouted) == ["q1", "q2"]
+    assert {(m["role"], m["run_id"], m["depth"]) for m in scouted} == {("scout", str(run.run_id), "standard")}
 
     markdown = render_markdown(run.to_record())
     assert "## Answer" in markdown and "[s1] Page. https://example.org/verified (read in full)" in markdown
@@ -649,3 +662,23 @@ async def test_a_quick_plan_with_too_many_questions_is_retried(settings, pages) 
 
     run = await _run(settings, plan=FunctionModel(respond))
     assert run.plan.depth == "quick" and len(run.plan.questions) == 2
+
+
+async def test_span_metadata_never_reaches_the_models(settings, pages) -> None:
+    sent: list[str] = []
+
+    def recording(inner: FunctionModel) -> FunctionModel:
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            sent.append(repr(messages) + repr(info.model_request_parameters))
+            return inner.function(messages, info)
+
+        async def stream(messages: list[ModelMessage], info: AgentInfo):
+            sent.append(repr(messages) + repr(info.model_request_parameters))
+            async for chunk in inner.stream_function(messages, info):
+                yield chunk
+
+        return FunctionModel(stream_function=stream) if inner.function is None else FunctionModel(respond)
+
+    run = await _run(settings, plan=recording(planner()), research=recording(researcher()), write=recording(writer()))
+    assert run.status == "complete" and sent
+    assert not any(str(run.run_id) in text or "question_id': 'q" in text or '"depth"' in text for text in sent)

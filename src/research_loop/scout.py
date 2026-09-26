@@ -378,6 +378,9 @@ class _Run:
         """
         model_id = split_model(getattr(self.settings.models, role))[0]
         call_id = await self.store.start_call(self.run_id, role=call_role or role, model=model_id, question_id=question_id)
+        # Labels the agent run's span in the trace; PydanticAI keeps it out of the model's requests.
+        metadata = {"run_id": str(self.run_id), "role": call_role or role, "question_id": question_id,
+                    "depth": self.depth}
         usage = RunUsage()
         messages: list[ModelMessage] = []
         try:
@@ -388,7 +391,7 @@ class _Run:
                               if role == "scout" else self.limits.synthesis_max_output_tokens)
                 result = await agent.run(prompt, model=self._model(role), deps=deps, usage_limits=limits, usage=usage,
                                          model_settings={"max_tokens": output_cap} if self.budget else None,
-                                         capabilities=capabilities, toolsets=toolsets,
+                                         capabilities=capabilities, toolsets=toolsets, metadata=metadata,
                                          event_stream_handler=_ignore_events if stream else None)
             output = finish(result) if finish else result.output
         except BaseException as exc:
@@ -430,13 +433,12 @@ class _Run:
         if research_deadline <= deadline:
             deadline, timed_out = research_deadline, _reason(TimeoutError())
         try:
-            with logfire.span("plan"):
-                async with asyncio.timeout_at(deadline):
-                    plan: ResearchPlan = await self._call(
-                        role="planner", agent=planner_agent, prompt=prompt, deps=PlanLimits(caps, asked),
-                        limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
-                                           cost_limit=Decimal(str(self.limits.planner_usd))),
-                        cancelled=lambda: timed_out)
+            async with asyncio.timeout_at(deadline):
+                plan: ResearchPlan = await self._call(
+                    role="planner", agent=planner_agent, prompt=prompt, deps=PlanLimits(caps, asked),
+                    limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
+                                       cost_limit=Decimal(str(self.limits.planner_usd))),
+                    cancelled=lambda: timed_out)
         except _CALL_FAILURES as exc:
             reason = timed_out if isinstance(exc, TimeoutError) else _reason(exc)
             self.notes.append(f"planning failed ({reason}), so the question was researched as one")
@@ -496,29 +498,28 @@ class _Run:
                 "searches": outcomes.searches, "pages_read": outcomes.pages_read, "unreached": outcomes.unreached})
 
         async with semaphore:
-            with logfire.span("deep dive {question_id}" if deep else "scout {question_id}", question_id=question.id):
-                try:
-                    return await self._call(
-                        role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
-                        prompt=prompt, question_id=question.id,
-                        deps=Assignment(question, self.policy), toolsets=[toolset], capabilities=budget.capabilities(),
-                        limits=UsageLimits(
-                            request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,
-                            tool_calls_limit=budget.tool_call_limit),
-                        attempt=attempt, finish=checked,
-                        finished=lambda result: budget.finish_reason(result.usage.requests, result.all_messages()),
-                        cancelled=lambda: ("the deep-dive deadline passed" if deep else
-                                           _reason(TimeoutError()) if self.research_timed_out else
-                                           "the run was cancelled"),
-                        tool_seconds=lambda: toolset.seconds(question.id) - tool_seconds_before)
-                except _CALL_FAILURES as exc:
-                    return _cut_off(question, attempt.messages, _reason(exc))
-                except Exception as exc:  # noqa: BLE001 - a bug in one scout must not discard the others' paid research
-                    # A UnicodeEncodeError from one PDF failed a run whose other three scouts had finished.
-                    logfire.exception("scout {question_id} stopped on an unexpected error", question_id=question.id)
-                    self.notes.append(f"research on {question.id} stopped on an unexpected error "
-                                      f"({type(exc).__name__}); this is a bug")
-                    return _cut_off(question, attempt.messages, f"unexpected error {type(exc).__name__}")
+            try:
+                return await self._call(
+                    role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
+                    prompt=prompt, question_id=question.id,
+                    deps=Assignment(question, self.policy), toolsets=[toolset], capabilities=budget.capabilities(),
+                    limits=UsageLimits(
+                        request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,
+                        tool_calls_limit=budget.tool_call_limit),
+                    attempt=attempt, finish=checked,
+                    finished=lambda result: budget.finish_reason(result.usage.requests, result.all_messages()),
+                    cancelled=lambda: ("the deep-dive deadline passed" if deep else
+                                       _reason(TimeoutError()) if self.research_timed_out else
+                                       "the run was cancelled"),
+                    tool_seconds=lambda: toolset.seconds(question.id) - tool_seconds_before)
+            except _CALL_FAILURES as exc:
+                return _cut_off(question, attempt.messages, _reason(exc))
+            except Exception as exc:  # noqa: BLE001 - a bug in one scout must not discard the others' paid research
+                # A UnicodeEncodeError from one PDF failed a run whose other three scouts had finished.
+                logfire.exception("scout {question_id} stopped on an unexpected error", question_id=question.id)
+                self.notes.append(f"research on {question.id} stopped on an unexpected error "
+                                  f"({type(exc).__name__}); this is a bug")
+                return _cut_off(question, attempt.messages, f"unexpected error {type(exc).__name__}")
 
     async def _research(self, plan: ResearchPlan, deadline: float, toolset: TimedToolset) -> list[ResearchResult]:
         """Every question's result in plan order; questions still running at `deadline` are cut off."""
@@ -552,14 +553,13 @@ class _Run:
                              "not_established": _not_established(plan, ledger),
                              "max_gaps": self.limits.max_gaps}, ensure_ascii=False)
         try:
-            with logfire.span("gap analysis"):
-                async with asyncio.timeout_at(deadline):
-                    return await self._call(
-                        role="planner", call_role="gap_analyzer", agent=gap_agent, prompt=prompt,
-                        deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps),
-                        limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
-                                           cost_limit=Decimal(str(self.limits.gap_usd))),
-                        cancelled=lambda: "the gap-analysis deadline passed")
+            async with asyncio.timeout_at(deadline):
+                return await self._call(
+                    role="planner", call_role="gap_analyzer", agent=gap_agent, prompt=prompt,
+                    deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps),
+                    limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
+                                       cost_limit=Decimal(str(self.limits.gap_usd))),
+                    cancelled=lambda: "the gap-analysis deadline passed")
         except _CALL_FAILURES as exc:
             self.notes.append(f"gap analysis did not finish ({_reason(exc)})")
             return None
@@ -586,14 +586,13 @@ class _Run:
                              "not_established": _not_established(plan, ledger)}, ensure_ascii=False)
         limits = self.limits
         try:
-            with logfire.span("synthesize"):
-                async with asyncio.timeout_at(deadline):
-                    return await self._call(
-                        role="synthesizer", agent=synthesizer_agent, prompt=prompt, stream=True,
-                        deps=LedgerRefs(frozenset(ledger.claim_ids()), ledger.claim_source_ids()),
-                        limits=UsageLimits(request_limit=2, total_tokens_limit=limits.synthesis_tokens,
-                                           cost_limit=Decimal(str(limits.synthesis_usd))),
-                        cancelled=lambda: "the run deadline passed")
+            async with asyncio.timeout_at(deadline):
+                return await self._call(
+                    role="synthesizer", agent=synthesizer_agent, prompt=prompt, stream=True,
+                    deps=LedgerRefs(frozenset(ledger.claim_ids()), ledger.claim_source_ids()),
+                    limits=UsageLimits(request_limit=2, total_tokens_limit=limits.synthesis_tokens,
+                                       cost_limit=Decimal(str(limits.synthesis_usd))),
+                    cancelled=lambda: "the run deadline passed")
         except _CALL_FAILURES as exc:
             self.notes.append(f"the synthesis did not finish ({_reason(exc).replace('research deadline', 'run deadline')})")
             return None

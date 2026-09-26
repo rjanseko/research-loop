@@ -55,10 +55,10 @@ class LedgerRefs:
     claim_sources: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
-planner_agent = Agent(output_type=ResearchPlan, deps_type=PlanLimits, instructions=INSTRUCTIONS["planner"])
-scout_agent = Agent(output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"])
-gap_agent = Agent(output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
-synthesizer_agent = Agent(output_type=FinalReport, deps_type=LedgerRefs, instructions=INSTRUCTIONS["synthesizer"])
+planner_agent = Agent(name="planner", output_type=ResearchPlan, deps_type=PlanLimits, instructions=INSTRUCTIONS["planner"])
+scout_agent = Agent(name="scout", output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"])
+gap_agent = Agent(name="gap_analyzer", output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
+synthesizer_agent = Agent(name="synthesizer", output_type=FinalReport, deps_type=LedgerRefs, instructions=INSTRUCTIONS["synthesizer"])
 
 
 def _retry_on(problems: Iterable[str]) -> None:
