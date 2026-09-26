@@ -502,6 +502,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     model = runner._model("scout")
     assert isinstance(model, ScoutRateLimitModel)
     assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
+    assert model.pacer is not None and model.pacer.tokens_per_minute == 200_000  # gpt-6-luna's configured limit
     with pytest.raises(StudyBudgetRefusal):
         await runner._call(role="planner", agent=planner_agent, prompt='{"question":"Q?"}',
                            deps=PlanLimits(1), limits=UsageLimits(request_limit=2, cost_limit=Decimal(1)))

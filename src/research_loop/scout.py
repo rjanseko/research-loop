@@ -87,6 +87,7 @@ from .models import (
     role_effort,
     role_model,
     sent_settings,
+    token_pacer,
 )
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
@@ -240,6 +241,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION,
+        "tokens_per_minute": settings.tokens_per_minute.get(models.scout),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
 
@@ -321,7 +323,8 @@ class _Run:
                 guarded = StudyBudgetModel(build_model(model_id, role, self.settings, sdk_retries=0),
                                            model_id, self.budget)
                 # The guard is inside the 429 wrapper, so every retry reserves a new request.
-                self.models[role] = ScoutRateLimitModel(guarded) if role == "scout" else guarded
+                self.models[role] = (ScoutRateLimitModel(guarded, token_pacer(model_id, self.settings))
+                                     if role == "scout" else guarded)
         return self.models[role]
 
     def _spend(self, usage: RunUsage, *, refused: bool = False) -> None:

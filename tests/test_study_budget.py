@@ -150,3 +150,16 @@ def test_a_request_after_a_reply_is_bounded_from_its_billed_tokens() -> None:
     # Without billed usage, the whole request falls back to the byte bound.
     unbilled = [history[0], ModelResponse(parts=history[1].parts), added]
     assert upper_input_tokens(unbilled, ModelRequestParameters(), {"max_tokens": 100}) > 2 * 70_000
+
+
+async def test_a_rate_limited_request_releases_its_reservation() -> None:
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    def respond(_messages: list[ModelMessage], _info) -> ModelResponse:
+        raise ModelHTTPError(429, "gpt-6-luna", body={"message": "Rate limit reached", "code": "rate_limit_exceeded"})
+
+    budget = StudyBudget(Decimal(10))
+    model = StudyBudgetModel(FunctionModel(respond), "openai:gpt-6-sol", budget)
+    with pytest.raises(ModelHTTPError):
+        await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 100})
+    assert budget.reserved_usd == 0

@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     env: str = "development"
     models: ScoutModels = Field(default_factory=ScoutModels)
     limits: ScoutLimits = Field(default_factory=ScoutLimits)
+    # Provider token rate limits per minute, by provider:model; scouts on a listed model are paced under
+    # it (rate_limit.py). The default is this account's OpenAI tier. Set as JSON, such as
+    # RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna": 200000}'; '{}' turns pacing off.
+    tokens_per_minute: dict[str, int] = Field(default_factory=lambda: {"openai:gpt-6-luna": 200_000})
 
     openai_api_key: SecretStr | None = Field(None, validation_alias="OPENAI_API_KEY")
     anthropic_api_key: SecretStr | None = Field(None, validation_alias="ANTHROPIC_API_KEY")

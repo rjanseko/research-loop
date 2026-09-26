@@ -21,7 +21,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import PROVIDER_KEYS, Settings, model_provider
-from .rate_limit import ScoutRateLimitModel
+from .rate_limit import ScoutRateLimitModel, TokenPacer
 
 Role = Literal["planner", "scout", "synthesizer"]
 Effort = Literal["low", "medium", "high", "xhigh"]
@@ -109,6 +109,12 @@ def build_model(model_id: str, role: Role, settings: Settings, *, sdk_retries: i
     return model
 
 
+def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
+    """A pacer for one run's requests to `model_id`, when its token rate limit is configured."""
+    limit = settings.tokens_per_minute.get(model_id)
+    return TokenPacer(limit) if limit else None
+
+
 def role_model(role: Role, settings: Settings) -> Model:
     """The model `role` runs on. The planner and synthesizer fall back to `models.fallback` when their
     model refuses a call (ContentFilterError) or its provider fails (ModelAPIError); scouts do not, since
@@ -119,7 +125,7 @@ def role_model(role: Role, settings: Settings) -> Model:
     primary = build_model(model_id, role, settings, sdk_retries=0 if role == "scout" else None)
     fallback = settings.models.fallback
     if role == "scout":
-        return ScoutRateLimitModel(primary)
+        return ScoutRateLimitModel(primary, token_pacer(model_id, settings))
     if not fallback or fallback == model_id:
         return primary
     return FallbackModel(primary, build_model(fallback, role, settings),

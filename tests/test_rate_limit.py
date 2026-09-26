@@ -124,3 +124,73 @@ async def test_repeated_rate_limits_stop_after_two_retries() -> None:
     with pytest.raises(ModelHTTPError):
         await model.request([], None, ModelRequestParameters())
     assert attempts == 3
+
+
+async def test_pacer_holds_a_request_that_would_pass_the_limit_until_the_window_clears(monkeypatch) -> None:
+    from research_loop.rate_limit import TokenPacer
+
+    monkeypatch.setattr("research_loop.rate_limit._WINDOW_SECONDS", 0.2)
+    pacer = TokenPacer(1_000)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await pacer.acquire(600)
+    await pacer.acquire(300)  # 900 fits under 90% of 1,000
+    assert loop.time() - start < 0.1
+    await pacer.acquire(300)  # 1,200 does not, so it waits for the first two to leave the window
+    assert loop.time() - start >= 0.2
+    # A request larger than the paced share still goes once the window is empty.
+    await asyncio.sleep(0.25)
+    await pacer.acquire(5_000)
+
+
+async def test_pacer_counts_billed_tokens_in_place_of_the_estimate(monkeypatch) -> None:
+    from pydantic_ai.usage import RequestUsage
+
+    from research_loop.rate_limit import TokenPacer
+
+    monkeypatch.setattr("research_loop.rate_limit._WINDOW_SECONDS", 0.2)
+    pacer = TokenPacer(1_000)
+    loop = asyncio.get_running_loop()
+    entry = await pacer.acquire(800)
+    TokenPacer.settle(entry, RequestUsage(input_tokens=90, output_tokens=10))
+    start = loop.time()
+    await pacer.acquire(700)  # fits only because the first request billed 100, not 800
+    assert loop.time() - start < 0.1
+
+
+async def test_paced_scouts_wait_their_turn_before_dispatch(monkeypatch) -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from research_loop.rate_limit import TokenPacer
+
+    monkeypatch.setattr("research_loop.rate_limit._WINDOW_SECONDS", 0.2)
+    times: list[float] = []
+
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages, info
+        times.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.05)  # still in flight when the second asks, so its estimate is counted
+        return ModelResponse(parts=[TextPart("ok")])
+
+    model = ScoutRateLimitModel(FunctionModel(respond), TokenPacer(1_000))
+    messages = [ModelRequest(parts=[UserPromptPart("x" * 2_400)])]  # about 600 estimated tokens
+    await asyncio.gather(*(model.request(messages, None, ModelRequestParameters()) for _ in range(2)))
+    assert len(times) == 2 and times[1] - times[0] >= 0.2
+
+
+def test_the_estimate_starts_from_the_last_billed_reply() -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.usage import RequestUsage
+
+    from research_loop.rate_limit import estimated_tokens
+
+    history = [ModelRequest(parts=[UserPromptPart("x" * 100_000)]),
+               ModelResponse(parts=[ToolCallPart("fetch", {"url": "https://a.test"}, tool_call_id="t1")],
+                             usage=RequestUsage(input_tokens=20_000, output_tokens=500)),
+               ModelRequest(parts=[ToolReturnPart("fetch", "y" * 8_000, tool_call_id="t1")])]
+    assert 20_500 + 2_000 <= estimated_tokens(history, ModelRequestParameters()) < 20_500 + 2_500

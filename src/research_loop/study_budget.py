@@ -4,7 +4,8 @@ The new study commands disable SDK retries and fallback. PydanticAI validation m
 second request; this wrapper reserves before each one. The input bound starts from the last reply's
 billed tokens when there is one, and bounds the rest by bytes, including tool schemas and framing. When a response returns with priced usage, its
 reservation is replaced by the actual charge; a request that fails, or whose usage cannot be priced,
-keeps its full reservation because the provider may still have charged for it.
+keeps its full reservation because the provider may still have charged for it. A 429 rate-limit
+rejection is the exception: the provider did not process it, so its reservation is released.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from genai_prices import calc_price
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
@@ -96,6 +98,10 @@ class StudyBudget:
             self.reserved_usd += charge
         return charge
 
+    def release(self, charge: Decimal) -> None:
+        """Return a reservation the provider rejected with a 429, which it does not charge for."""
+        self.reserved_usd -= charge
+
     def settle(self, model_id: str, charge: Decimal, usage: RequestUsage) -> None:
         """Replace a returned request's reservation with its actual charge, if it can be priced."""
         provider, _, name = model_id.partition(":")
@@ -118,7 +124,12 @@ class StudyBudgetModel(WrapperModel):
                       model_request_parameters: ModelRequestParameters) -> ModelResponse:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
         charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
-        response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        try:
+            response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        except ModelHTTPError as error:
+            if error.status_code == 429:
+                self.budget.release(charge)
+            raise
         self.budget.settle(self._priced_model_id, charge, response.usage)
         return response
 
@@ -128,8 +139,15 @@ class StudyBudgetModel(WrapperModel):
                              run_context: Any = None) -> AsyncGenerator[StreamedResponse]:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
         charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
-        async with self.wrapped.request_stream(messages, model_settings, model_request_parameters,
-                                               run_context) as stream:
-            yield stream
+        opened = False
+        try:
+            async with self.wrapped.request_stream(messages, model_settings, model_request_parameters,
+                                                   run_context) as stream:
+                opened = True
+                yield stream
+        except ModelHTTPError as error:
+            if error.status_code == 429 and not opened:
+                self.budget.release(charge)
+            raise
         # Reached only when the stream was consumed without error.
         self.budget.settle(self._priced_model_id, charge, stream.usage)
