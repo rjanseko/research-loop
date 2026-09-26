@@ -334,6 +334,11 @@ class _Run:
         self.caches: list[AcquisitionCache] = []
         # Set when the research deadline, not a cancelled run, stopped the scouts still running.
         self.research_timed_out = False
+        # What `_recorded` stores at the end, however the run ends; the body fills them in as it goes.
+        self.config: dict[str, Any] = {}
+        self.plan: ResearchPlan | None = None
+        self.ledger = EvidenceLedger()
+        self.report: FinalReport | None = None
 
     def _model(self, role: Role) -> Model:
         if role not in self.models:
@@ -593,77 +598,87 @@ class _Run:
             self.notes.append(f"the synthesis did not finish ({_reason(exc).replace('research deadline', 'run deadline')})")
             return None
 
+    async def _recorded(self, mode: str, input_hash: str,
+                        body: Callable[[AsyncExitStack], Awaitable[tuple[Status, RunChecks]]]) -> ScoutRun:
+        """Record the run's start, run `body` in its trace, and record how the run ended, a failure or a
+        cancellation too. Every kind of run goes through here, so they all record the same fields."""
+        study = self.study
+        await self.store.start_run(self.run_id, mode=mode, workflow_version=self.workflow_version,
+                                   question=self.question, config=self.config, parent_run_id=self.parent_run_id,
+                                   input_hash=input_hash, study_id=study.study_id if study else None,
+                                   arm=study.arm if study else None, replicate=study.replicate if study else None)
+        started, span_trace = time.monotonic(), None
+        try:
+            async with AsyncExitStack() as stack:
+                span = stack.enter_context(run_span(self.run_id, mode, self.workflow_version))
+                span_trace = trace_id(span)
+                status, checks = await body(stack)
+                span.set_attributes({"status": status, "cost_usd": float(self.cost)})
+        except BaseException as exc:
+            failed = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
+            await _record(self.store.finish_run(
+                self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
+                checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd) if self.budget else None,
+                cost_usd=self.cost, error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
+                config=self.config, workflow_version=self.workflow_version))
+            raise
+        checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
+        # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
+        await self.store.finish_run(self.run_id, status=status, plan=self.plan, report=self.report,
+                                    ledger=self.ledger.to_json(), checks=checks, cost_usd=self.cost,
+                                    trace_id=span_trace, cache=self._cache_counts(), config=self.config,
+                                    workflow_version=self.workflow_version)
+        return ScoutRun(self.run_id, self.question, status, self.plan, self.report, self.ledger, checks, self.cost,
+                        time.monotonic() - started, span_trace, self.notes, self.config, self.workflow_version)
+
     async def execute(self) -> ScoutRun:
         if self.depth_asked:
             self._set_depth(self.depth_asked)
-        config = self._config()
-        await self.store.start_run(self.run_id, mode="scout", workflow_version=self.workflow_version,
-                                   question=self.question, config=config, parent_run_id=self.parent_run_id,
-                                   input_hash=input_hash(self.question, self.notes_in, self.blocked_urls),
-                                   study_id=self.study.study_id if self.study else None,
-                                   arm=self.study.arm if self.study else None,
-                                   replicate=self.study.replicate if self.study else None)
-        started, loop = time.monotonic(), asyncio.get_running_loop()
+        self.config = self._config()
+        loop = asyncio.get_running_loop()
         begun = loop.time()
-        ledger, plan, report, span_trace = EvidenceLedger(), None, None, None
-        analysis: GapAnalysis | None = None
-        follow_up_unresolved = False
-        try:
-            async with AsyncExitStack() as stack:
-                span = stack.enter_context(run_span(self.run_id, "scout", self.workflow_version))
-                span_trace = trace_id(span)
-                toolset = await self._toolset(stack)
-                plan = await self._plan(begun + self.limits.research_seconds)
-                if plan.depth != self.depth:
-                    self._set_depth(plan.depth)
-                    config = self._config()
-                # Both deadlines count from the start of the run, with the limits of the plan's depth.
-                research_deadline = begun + self.limits.research_seconds
-                deadline = begun + (self.limits.followup_deadline_seconds if self.follow_up
-                                    else self.limits.deadline_seconds)
-                for result in await self._research(plan, research_deadline, toolset):
-                    ledger.add(result)
-                if self.follow_up:
-                    gap_deadline = min(loop.time() + self.limits.gap_seconds,
-                                       deadline - self.limits.deep_dive_seconds - 90)
-                    analysis = await self._analyze_gap(plan, ledger, gap_deadline)
-                    if analysis and analysis.gaps:
-                        dive_deadline = min(loop.time() + self.limits.deep_dive_seconds, deadline - 90)
-                        dives = await asyncio.gather(*(self._deep_dive(gap, plan, ledger, toolset, dive_deadline)
-                                                       for gap in analysis.gaps))
-                        # Added in gap order, so claim IDs do not depend on which dive finished first.
-                        for result in dives:
-                            ledger.add(result)
-                        follow_up_unresolved = any(result.cut_off or not result.claims or result.unresolved
-                                                   for result in dives)
-                    elif analysis is None:
-                        follow_up_unresolved = True
-                if ledger.claims():
-                    report = await self._synthesize(plan, ledger, deadline)
-                checks = _checks(plan, ledger, report, self.unpriced)
-                checks.gap_analysis = analysis
-                checks.follow_up_unresolved = follow_up_unresolved
-                checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
-                if follow_up_unresolved:
-                    checks.review_reasons.append("the material gap follow-up did not establish a complete answer"
-                                                 if analysis else "gap analysis did not finish")
-                status = _status(plan, ledger, report, checks)
-                span.set_attributes({"status": status, "cost_usd": float(self.cost)})
-        except BaseException as exc:
-            status = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
-            failure_checks = (RunChecks(study_budget_reserved_usd=self.budget.reserved_usd)
-                              if self.budget else None)
-            await _record(self.store.finish_run(self.run_id, status=status, plan=plan, ledger=ledger.to_json(),
-                                                checks=failure_checks, cost_usd=self.cost, error=_error(exc),
-                                                trace_id=span_trace, cache=self._cache_counts(), config=config,
-                                                workflow_version=self.workflow_version))
-            raise
-        # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
-        await self.store.finish_run(self.run_id, status=status, plan=plan, report=report, ledger=ledger.to_json(),
-                                    checks=checks, cost_usd=self.cost, trace_id=span_trace, cache=self._cache_counts(),
-                                    config=config, workflow_version=self.workflow_version)
-        return ScoutRun(self.run_id, self.question, status, plan, report, ledger, checks, self.cost,
-                        time.monotonic() - started, span_trace, self.notes, config, self.workflow_version)
+
+        async def body(stack: AsyncExitStack) -> tuple[Status, RunChecks]:
+            toolset = await self._toolset(stack)
+            plan = self.plan = await self._plan(begun + self.limits.research_seconds)
+            if plan.depth != self.depth:
+                self._set_depth(plan.depth)
+                self.config = self._config()
+            # Both deadlines count from the start of the run, with the limits of the plan's depth.
+            research_deadline = begun + self.limits.research_seconds
+            deadline = begun + (self.limits.followup_deadline_seconds if self.follow_up
+                                else self.limits.deadline_seconds)
+            ledger = self.ledger
+            for result in await self._research(plan, research_deadline, toolset):
+                ledger.add(result)
+            analysis: GapAnalysis | None = None
+            follow_up_unresolved = False
+            if self.follow_up:
+                gap_deadline = min(loop.time() + self.limits.gap_seconds,
+                                   deadline - self.limits.deep_dive_seconds - 90)
+                analysis = await self._analyze_gap(plan, ledger, gap_deadline)
+                if analysis and analysis.gaps:
+                    dive_deadline = min(loop.time() + self.limits.deep_dive_seconds, deadline - 90)
+                    dives = await asyncio.gather(*(self._deep_dive(gap, plan, ledger, toolset, dive_deadline)
+                                                   for gap in analysis.gaps))
+                    # Added in gap order, so claim IDs do not depend on which dive finished first.
+                    for result in dives:
+                        ledger.add(result)
+                    follow_up_unresolved = any(result.cut_off or not result.claims or result.unresolved
+                                               for result in dives)
+                elif analysis is None:
+                    follow_up_unresolved = True
+            if ledger.claims():
+                self.report = await self._synthesize(plan, ledger, deadline)
+            checks = _checks(plan, ledger, self.report, self.unpriced)
+            checks.gap_analysis = analysis
+            checks.follow_up_unresolved = follow_up_unresolved
+            if follow_up_unresolved:
+                checks.review_reasons.append("the material gap follow-up did not establish a complete answer"
+                                             if analysis else "gap analysis did not finish")
+            return _status(plan, ledger, self.report, checks), checks
+
+        return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
 
     def _cache_counts(self) -> dict[str, Any]:
         """The run's cache mode and, by provider, the lookups its tools served, missed, and wrote."""
@@ -772,6 +787,26 @@ async def scout(question: str, *, settings: Settings | None = None, store: RunSt
     return await run.execute()
 
 
+def _rerun(source: dict[str, Any], settings: Settings, store: RunStore, study: StudyLabels | None,
+           budget: StudyBudget | None, workflow_version: str) -> _Run:
+    """A run that repeats one step of `source` with the same question, notes, blocked sources, and frozen
+    case, and with the limits of its plan's depth. A frozen case's identity carries over, so `research grade`
+    accepts what the new run writes."""
+    source_config = source.get("config") or {}
+    runner = _Run(source["question"], settings, store, source_config.get("notes") or [],
+                  source_config.get("blocked_urls") or [], UUID(str(source["id"])), study, budget=budget,
+                  case_identity=source_config.get("case"))
+    runner.plan = plan = ResearchPlan.model_validate(source["plan"])
+    runner.depth, runner.limits = plan.depth, settings.limits.for_depth(plan.depth)
+    runner.workflow_version = workflow_version
+    runner.config = runner._config()
+    return runner
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store: RunStore,
                             study: StudyLabels | None = None, budget: StudyBudget | None = None) -> ScoutRun:
     """Run production synthesis on an exact stored Scout ledger, without planning or retrieval.
@@ -782,55 +817,25 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     if (source.get("workflow_version") not in _SOURCE_VERSIONS
             or not source.get("plan") or not source.get("ledger")):
         raise SourceRunError("source must have a Scout plan and ledger")
-    plan = ResearchPlan.model_validate(source["plan"])
     ledger = EvidenceLedger.from_json(source["ledger"])
     if not ledger.claims():
         raise SourceRunError("source ledger has no claims to synthesize")
-    notes = (source.get("config") or {}).get("notes") or []
-    blocked = (source.get("config") or {}).get("blocked_urls") or []
-    source_id = UUID(str(source["id"]))
-    runner = _Run(source["question"], settings, store, notes, blocked, source_id, study)
-    ledger_json = json.dumps(ledger.to_json(), ensure_ascii=False, sort_keys=True)
-    ledger_sha = hashlib.sha256(ledger_json.encode()).hexdigest()
-    config = run_config(settings, notes, blocked)
-    config["fixed_ledger"] = {"source_run_id": str(source_id), "ledger_sha256": ledger_sha,
-                              "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
-    # A frozen case's identity carries over, so `research grade` accepts the new report.
-    if case := (source.get("config") or {}).get("case"):
-        config["case"] = case
-    if budget is not None:
-        config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
-                                  "sdk_retries": 0, "fallback": False}
-        runner.models["synthesizer"] = StudyBudgetModel(
-            build_model(settings.models.synthesizer, "synthesizer", settings, sdk_retries=0),
-            split_model(settings.models.synthesizer)[0], budget)
-    await store.start_run(runner.run_id, mode="fixed-ledger", workflow_version=SYNTHESIS_VERSION,
-                          question=runner.question, config=config, parent_run_id=source_id,
-                          input_hash=hashlib.sha256((runner.question + "\n" + ledger_sha).encode()).hexdigest(),
-                          study_id=study.study_id if study else None, arm=study.arm if study else None,
-                          replicate=study.replicate if study else None)
-    started = time.monotonic()
-    span_trace = None
-    report = None
-    try:
-        with run_span(runner.run_id, "fixed-ledger", SYNTHESIS_VERSION) as span:
-            span_trace = trace_id(span)
-            # The production run reserves this much of its six-minute window after research.
-            window = settings.limits.deadline_seconds - settings.limits.research_seconds
-            deadline = asyncio.get_running_loop().time() + window
-            report = await runner._synthesize(plan, ledger, deadline)
-            checks = _checks(plan, ledger, report, runner.unpriced)
-            status = _status(plan, ledger, report, checks)
-            span.set_attributes({"status": status, "cost_usd": float(runner.cost)})
-    except BaseException as exc:
-        status = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
-        await _record(store.finish_run(runner.run_id, status=status, plan=plan, ledger=ledger.to_json(),
-                                       cost_usd=runner.cost, error=_error(exc), trace_id=span_trace))
-        raise
-    await store.finish_run(runner.run_id, status=status, plan=plan, report=report, ledger=ledger.to_json(),
-                           checks=checks, cost_usd=runner.cost, trace_id=span_trace)
-    return ScoutRun(runner.run_id, runner.question, status, plan, report, ledger, checks, runner.cost,
-                    time.monotonic() - started, span_trace, runner.notes, config)
+    runner = _rerun(source, settings, store, study, budget, SYNTHESIS_VERSION)
+    runner.ledger = ledger
+    ledger_sha = _digest(ledger.to_json())
+    runner.config["fixed_ledger"] = {"source_run_id": str(source["id"]), "ledger_sha256": ledger_sha,
+                                     "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
+
+    async def body(stack: AsyncExitStack) -> tuple[Status, RunChecks]:
+        plan = runner.plan
+        assert plan is not None
+        # Production synthesis gets what is left of the run after the research window.
+        window = runner.limits.deadline_seconds - runner.limits.research_seconds
+        runner.report = await runner._synthesize(plan, ledger, asyncio.get_running_loop().time() + window)
+        checks = _checks(plan, ledger, runner.report, runner.unpriced)
+        return _status(plan, ledger, runner.report, checks), checks
+
+    return await runner._recorded("fixed-ledger", _digest_input(runner.question, ledger_sha), body)
 
 
 async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: RunStore,
@@ -841,58 +846,32 @@ async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: R
     identical questions. Its scouts use `_Run._research`, so prompts, tools, evidence checks, shares, and call
     recording match Scout. They get the whole research window, which in Scout also covers planning, so compare
     rescouts with each other rather than with their source. `research synthesize` writes a report from the ledger.
+    A rescout never follows up.
     """
     if source.get("workflow_version") not in _SOURCE_VERSIONS or not source.get("plan"):
         raise SourceRunError("source must have a Scout plan")
-    plan = ResearchPlan.model_validate(source["plan"])
-    source_config = source.get("config") or {}
-    notes, blocked = source_config.get("notes") or [], source_config.get("blocked_urls") or []
-    source_id = UUID(str(source["id"]))
-    runner = _Run(source["question"], settings, store, notes, blocked, source_id, study, budget=budget)
-    # The plan's depth sets the scouts' limits; a rescout never follows up.
-    runner.depth, runner.limits = plan.depth, settings.limits.for_depth(plan.depth)
+    runner = _rerun(source, settings, store, study, budget, RESCOUT_VERSION)
+    plan = runner.plan
+    assert plan is not None
     # A standard plan hashes without its depth, as plans did before depths existed, so rescouts of one
     # stored plan pair across versions.
-    plan_json = json.dumps(plan.model_dump(mode="json", exclude={"depth"} if plan.depth == "standard" else None),
-                           ensure_ascii=False, sort_keys=True)
-    plan_sha = hashlib.sha256(plan_json.encode()).hexdigest()
-    config = run_config(settings.model_copy(update={"limits": runner.limits}), notes, blocked)
-    config["depth"] = plan.depth
-    config["fixed_plan"] = {"source_run_id": str(source_id), "plan_sha256": plan_sha,
-                            "source_prompt_fingerprint": source_config.get("prompt_fingerprint")}
-    if case := source_config.get("case"):
-        config["case"] = case
-    if budget is not None:
-        config["study_budget"] = {"cap_usd": str(budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
-                                  "sdk_retries": 0, "fallback": False,
-                                  "scout_max_output_tokens": settings.limits.guarded_scout_max_output_tokens}
-    await store.start_run(runner.run_id, mode="fixed-plan", workflow_version=RESCOUT_VERSION,
-                          question=runner.question, config=config, parent_run_id=source_id,
-                          input_hash=hashlib.sha256((runner.question + "\n" + plan_sha).encode()).hexdigest(),
-                          study_id=study.study_id if study else None, arm=study.arm if study else None,
-                          replicate=study.replicate if study else None)
-    started, ledger, span_trace = time.monotonic(), EvidenceLedger(), None
-    try:
-        async with AsyncExitStack() as stack:
-            span = stack.enter_context(run_span(runner.run_id, "fixed-plan", RESCOUT_VERSION))
-            span_trace = trace_id(span)
-            toolset = await runner._toolset(stack)
-            deadline = asyncio.get_running_loop().time() + runner.limits.research_seconds
-            for result in await runner._research(plan, deadline, toolset):
-                ledger.add(result)
-            checks = _checks(plan, ledger, None, runner.unpriced, synthesized=False)
-            checks.study_budget_reserved_usd = budget.reserved_usd if budget else None
-            status: Status = ("failed" if not ledger.claims() else "partial" if checks.not_established
-                              else "complete")
-            span.set_attributes({"status": status, "cost_usd": float(runner.cost)})
-    except BaseException as exc:
-        status = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
-        failure_checks = RunChecks(study_budget_reserved_usd=budget.reserved_usd) if budget else None
-        await _record(store.finish_run(runner.run_id, status=status, plan=plan, ledger=ledger.to_json(),
-                                       checks=failure_checks, cost_usd=runner.cost, error=_error(exc),
-                                       trace_id=span_trace, cache=runner._cache_counts()))
-        raise
-    await store.finish_run(runner.run_id, status=status, plan=plan, ledger=ledger.to_json(), checks=checks,
-                           cost_usd=runner.cost, trace_id=span_trace, cache=runner._cache_counts())
-    return ScoutRun(runner.run_id, runner.question, status, plan, None, ledger, checks, runner.cost,
-                    time.monotonic() - started, span_trace, runner.notes, config, RESCOUT_VERSION)
+    plan_sha = _digest(plan.model_dump(mode="json", exclude={"depth"} if plan.depth == "standard" else None))
+    runner.config["fixed_plan"] = {"source_run_id": str(source["id"]), "plan_sha256": plan_sha,
+                                   "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
+
+    async def body(stack: AsyncExitStack) -> tuple[Status, RunChecks]:
+        toolset = await runner._toolset(stack)
+        deadline = asyncio.get_running_loop().time() + runner.limits.research_seconds
+        for result in await runner._research(plan, deadline, toolset):
+            runner.ledger.add(result)
+        checks = _checks(plan, runner.ledger, None, runner.unpriced, synthesized=False)
+        status: Status = ("failed" if not runner.ledger.claims() else "partial" if checks.not_established
+                          else "complete")
+        return status, checks
+
+    return await runner._recorded("fixed-plan", _digest_input(runner.question, plan_sha), body)
+
+
+def _digest_input(question: str, fixed_sha: str) -> str:
+    """A rerun's input: its question and the digest of the plan or ledger it holds fixed."""
+    return hashlib.sha256((question + "\n" + fixed_sha).encode()).hexdigest()

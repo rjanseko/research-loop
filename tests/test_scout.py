@@ -23,6 +23,7 @@ from research_loop.config import ScoutLimits, Settings
 from research_loop.render import render_markdown
 from research_loop.scout import (
     RESCOUT_VERSION,
+    SYNTHESIS_VERSION,
     ConfigError,
     SourceRunError,
     StudyLabels,
@@ -372,6 +373,13 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     with synthesizer_agent.override(model=writer()):
         written = await synthesize_stored(saved, settings=settings, store=store)
     assert written.status == "complete" and store.runs[written.run_id]["config"]["case"] == case
+    # A fixed-ledger synthesis reports its own version, and pairs by the same input digest as before.
+    stored = store.runs[written.run_id]
+    assert written.workflow_version == written.to_record()["workflow_version"] == SYNTHESIS_VERSION
+    assert stored["workflow_version"] == SYNTHESIS_VERSION and stored["mode"] == "fixed-ledger"
+    ledger_sha = hashlib.sha256(json.dumps(again.ledger.to_json(), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    assert stored["config"]["fixed_ledger"]["ledger_sha256"] == ledger_sha
+    assert stored["input_hash"] == hashlib.sha256((again.question + "\n" + ledger_sha).encode()).hexdigest()
 
 
 async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings, pages) -> None:
