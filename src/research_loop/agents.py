@@ -14,6 +14,7 @@ from .acquisition import SourcePolicy
 from .evidence import inline_source_ids, strip_inline_citations
 from .prompts import INSTRUCTIONS
 from .schemas import (
+    Depth,
     FinalReport,
     GapAnalysis,
     ResearchPlan,
@@ -24,7 +25,10 @@ from .schemas import (
 
 @dataclass(frozen=True)
 class PlanLimits:
-    max_questions: int
+    """The most questions a plan may have at each depth, and the depth the user chose, if any."""
+
+    max_questions: Mapping[str, int]
+    depth: Depth | None = None
 
 
 @dataclass(frozen=True)
@@ -70,11 +74,13 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
         problems.append("The plan has no research questions; return at least one.")
     if repeated := sorted({question_id for question_id in ids if ids.count(question_id) > 1}):
         problems.append(f"Question IDs must be unique; repeated: {', '.join(repeated)}.")
-    if len(ids) > ctx.deps.max_questions:
-        problems.append(f"The plan has {len(ids)} questions; return at most {ctx.deps.max_questions}, "
+    depth = ctx.deps.depth or output.depth
+    if len(ids) > (cap := ctx.deps.max_questions[depth]):
+        problems.append(f"The plan has {len(ids)} questions; a {depth} plan has at most {cap}, "
                         "merging overlapping ones.")
     _retry_on(problems)
-    return output
+    # The user's choice of depth wins over the planner's.
+    return output if output.depth == depth else output.model_copy(update={"depth": depth})
 
 
 @gap_agent.output_validator

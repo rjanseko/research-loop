@@ -57,11 +57,12 @@ research scout "Is SWE-bench Verified still a trustworthy measure of coding-agen
 research scout "..." --note "Keep preprints and published papers distinct." --out report/
 research scout "..." --block https://example.org/paywalled-review --max-usd 1.00
 research scout "..." --follow-up
+research scout "..." --depth deep
 ```
 
 Scout prints its models and limits before it starts, then prints the report as Markdown when it finishes. With `--out DIR` it also writes `report.md` and `run.json`, the full run record, into that directory. When `DATABASE_URL` is set the run is stored, and the last line gives its run ID for the commands below.
 
-`--note` adds a requirement that every role follows, and can be repeated. `--block URL` names a source that no tool may fetch and no evidence may cite, and can also be repeated. `--max-usd` sets a hard ceiling that is checked before every model request (see [Hard caps](#hard-caps)). `--follow-up` adds a gap analysis and up to three targeted deep dives, run in parallel, before the report is written. `--no-persist` keeps the run in memory even when a database is configured.
+`--note` adds a requirement that every role follows, and can be repeated. `--block URL` names a source that no tool may fetch and no evidence may cite, and can also be repeated. `--max-usd` sets a hard ceiling that is checked before every model request (see [Hard caps](#hard-caps)). `--follow-up` adds a gap analysis and up to three targeted deep dives, run in parallel, before the report is written. `--depth quick|standard|deep` sets how much research the run does; by default the planner chooses (see [Depth](#depth)). `--no-persist` keeps the run in memory even when a database is configured.
 
 A run ends in one of four states. It is `complete` when every research question returned evidence and the report cites only claims that exist. It is `partial` when the report was written but something is missing: a research question returned no evidence, a citation was wrong, or a follow-up left a gap open. If the synthesis itself did not finish, the report lists the claims found without a written answer, and the run is also `partial`. A run that found no evidence at all is `failed`. Pressing Ctrl-C records the run as `cancelled`.
 
@@ -95,13 +96,13 @@ research db reconcile --older-than 30 --apply   # close out runs that a killed p
 
 ```mermaid
 flowchart LR
-    question(["Question"]) --> plan["Plan<br/>one to four research questions"]
+    question(["Question"]) --> plan["Plan<br/>a depth and up to eight research questions"]
     plan --> scouts[["Scout each question in parallel<br/>search, fetch, read"]]
     prior_plan[("Plan from a prior run")] -. "research rescout" .-> scouts
     scouts --> check["Check the evidence<br/>quotes, sources, access level"]
     check --> ledger[("Evidence ledger")]
     ledger --> synthesize["Write the report<br/>every statement cites claim IDs"]
-    ledger -. "--follow-up" .-> gap{"Material gap?"}
+    ledger -. "--follow-up or a deep plan" .-> gap{"Material gap?"}
     gap -- "up to three gaps" --> dive[["Deep dives in parallel<br/>one per gap"]]
     dive --> ledger
     gap -- "none" --> synthesize
@@ -111,7 +112,7 @@ flowchart LR
 
 A run has three steps, and each one is bounded in money and time.
 
-First, a planner splits the question into one to four research questions. If planning fails or takes longer than 90 seconds, the whole question is researched as one.
+First, a planner chooses a depth for the question (see [Depth](#depth)) and splits it into research questions: at most two for a quick question, four for a standard one, and eight for a deep one. If planning fails or takes longer than 90 seconds, the whole question is researched as one.
 
 Second, a scout researches each question at the same time. A scout is a model with four research tools: web search, a fetcher that reads HTML pages and PDFs over public HTTPS, a scholarly search over OpenAlex and arXiv, and a lookup of one scholarly record by DOI, OpenAlex ID, or arXiv ID, which also draws on Crossref. It returns claims, and each claim carries evidence: a source, a summary of what the source says, and usually an exact quote. Each scout is told on every request how much of its budget is left. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A scout that fails or is still running at the deadline leaves its question unanswered but keeps the searches it made and the pages it read.
 
@@ -120,6 +121,10 @@ Code then checks every piece of evidence against what the tools actually returne
 Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish, and a deep dive researches each one in parallel with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run, and the run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
+
+### Depth
+
+The planner also decides how much research the question warrants, and the run takes the limits of that depth. A `quick` question, one that one or two sources can settle, such as a single fact or figure, gets at most two scouts, a $0.30 budget, and six minutes. A `standard` question gets the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $0.75, and twelve minutes. A `deep` question, such as a comprehensive report, a survey of a field, or a complete set spanning several categories, gets up to eight scouts and the gap follow-up, with its $2.00 budget and fifteen minutes. `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used. A rescout researches a stored plan with the limits of that plan's depth; plans made before depths existed count as standard.
 
 Tool output is treated as untrusted data. The prompts say so, the fetcher only reads public HTTPS addresses and refuses private and loopback hosts, and blocked URLs are refused by every tool and rejected as evidence.
 
@@ -137,7 +142,7 @@ From these marks, each statement in the report gets a support level. It is `read
 
 ## Limits and budgets
 
-Every run has a fixed budget. The defaults are these:
+Every run has a fixed budget. These are the defaults for a standard question; [Depth](#depth) describes the quick and deep ones:
 
 | Limit | Default | Setting |
 |---|---|---|
@@ -147,8 +152,10 @@ Every run has a fixed budget. The defaults are these:
 | Whole run | 12 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
 | Research phase | 8 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
 | One model request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
-| Research questions | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
-| Scouts at once | 4 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
+| Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
+| Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
+| Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
+| Deep depth | 8 questions and the gap follow-up | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `RESEARCH_LIMITS__DEEP__FOLLOW_UP` |
 | Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 | Follow-up total cost | $2.00 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |

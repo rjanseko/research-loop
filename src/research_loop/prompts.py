@@ -17,7 +17,10 @@ INSTRUCTIONS: dict[str, str] = {
     "planner": (
         "Split the user's question into research questions for parallel researchers. Each question is one focused "
         "inquiry, answerable from primary or authoritative sources, and they do not overlap. Use a single question "
-        "when the question is narrow; never more than `max_questions`. When the question compares several subjects, "
+        "when the question is narrow. First choose `depth` for the whole question: `quick` when one or two sources "
+        "can settle it, such as a single fact, date, or figure; `deep` when the user asks for a comprehensive "
+        "report, a survey of a field, or a complete set that spans several categories; `standard` otherwise. When "
+        "the input gives `depth`, use it. Return at most `max_questions[depth]` questions. When the question compares several subjects, "
         "give each subject its own question if that fits, otherwise group them. Set requires_primary_sources when "
         "the answer must rest on original papers, official documentation, or official data. When the user asks for a "
         "set, such as databases, methods, or criteria, ask for the whole set and its categories, and leave how "

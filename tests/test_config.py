@@ -94,3 +94,15 @@ def test_a_study_gets_its_own_reused_cache_unless_the_cache_is_set(monkeypatch: 
     assert Settings().for_study("set-coverage").cache_dir == Path("/tmp/elsewhere")
     with pytest.raises(ValueError, match="study name"):
         Settings().for_study("../escape")
+
+
+def test_each_depth_changes_only_what_it_sets() -> None:
+    limits = ScoutLimits()
+    assert limits.question_caps() == {"quick": 2, "standard": 4, "deep": 8}
+    quick = limits.for_depth("quick")
+    assert (quick.max_questions, quick.cost_usd, quick.synthesis_usd, quick.deadline_seconds) == (2, 0.30, 0.12, 360)
+    assert quick.scout_requests == limits.scout_requests and limits.for_depth("standard") is limits
+    assert limits.follows_up("deep") and not limits.follows_up("quick") and not limits.follows_up("standard")
+    assert limits.for_depth("deep").followup_scout_usd(8) == 0.0875
+    with pytest.raises(ValidationError, match="quick depth"):
+        ScoutLimits(quick={"cost_usd": 0.10})

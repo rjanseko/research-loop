@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from decimal import Decimal
 from typing import Any
@@ -21,6 +22,7 @@ from research_loop.agents import planner_agent, scout_agent, synthesizer_agent
 from research_loop.config import ScoutLimits, Settings
 from research_loop.render import render_markdown
 from research_loop.scout import (
+    RESCOUT_VERSION,
     ConfigError,
     StudyLabels,
     rescout_stored,
@@ -354,10 +356,15 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert again.status == "complete" and again.report is None and reasons(again) == []
     assert again.plan == original.plan and sorted(again.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
     saved = store.runs[again.run_id]
-    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == "scout-research-v3"
+    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == RESCOUT_VERSION
     assert saved["parent_run_id"] == original.run_id and saved["study_id"] == "scouts"
     assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
     assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case
+    # A standard plan hashes as plans did before depths existed, so rescouts pair across versions.
+    questions = json.dumps({"questions": [q.model_dump(mode="json") for q in original.plan.questions]},
+                           ensure_ascii=False, sort_keys=True)
+    assert saved["config"]["fixed_plan"]["plan_sha256"] == hashlib.sha256(questions.encode()).hexdigest()
+    assert saved["config"]["depth"] == "standard"
     calls = [store.calls[i] for i in set(store.calls) - before]
     assert sorted(call["role"] for call in calls) == ["scout", "scout"]
     # The new ledger can then be synthesized, and the report stays gradable against the frozen case.
@@ -587,3 +594,49 @@ async def test_follow_up_researches_several_gaps_in_parallel(settings, pages) ->
             for claim in result.claims]
     assert deep == ["Finding for Which experimental databases were used?", "Finding for Which alloy databases were used?"]
     assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1", "q2/c1~2", "q2/c1~3"]
+
+
+async def test_the_plan_sets_the_depth_and_its_limits(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+    from research_loop.scout import FOLLOWUP_VERSION, WORKFLOW_VERSION
+
+    seen: list[dict[str, Any]] = []
+
+    def plan_at(depth: str):
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.append(_prompt(messages))
+            return _output(info, {"questions": QUESTIONS, "depth": depth})
+        return FunctionModel(respond)
+
+    store = MemoryStore()
+    quick = await _run(settings, store, plan=plan_at("quick"))
+    assert seen[0]["max_questions"] == {"quick": 2, "standard": 4, "deep": 8} and "depth" not in seen[0]
+    assert quick.plan.depth == "quick" and quick.workflow_version == WORKFLOW_VERSION
+    saved = store.runs[quick.run_id]
+    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 0.30
+    assert saved["config"]["follow_up"] is False and not quick.checks.gap_analysis
+
+    # A deep plan turns the gap follow-up on, and the stored run says so.
+    with gap_agent.override(model=FunctionModel(lambda messages, info: _output(info, {"gaps": []}))):
+        deep = await _run(settings, store, plan=plan_at("deep"))
+    assert deep.workflow_version == FOLLOWUP_VERSION and deep.checks.gap_analysis is not None
+    saved = store.runs[deep.run_id]
+    assert saved["workflow_version"] == FOLLOWUP_VERSION
+    assert saved["config"]["depth"] == "deep" and saved["config"]["follow_up"] is True
+
+    # A depth the user chose wins over the planner's.
+    seen.clear()
+    with gap_agent.override(model=FunctionModel(lambda messages, info: _output(info, {"gaps": []}))):
+        chosen = await _run(settings, store, plan=plan_at("quick"), depth="deep")
+    assert seen[0]["depth"] == "deep" and seen[0]["max_questions"] == {"deep": 8}
+    assert chosen.plan.depth == "deep" and store.runs[chosen.run_id]["workflow_version"] == FOLLOWUP_VERSION
+
+
+async def test_a_quick_plan_with_too_many_questions_is_retried(settings, pages) -> None:
+    three = [*QUESTIONS, {"id": "c", "question": "Who maintains SWE-bench?"}]
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return _output(info, {"questions": three if len(messages) == 1 else QUESTIONS, "depth": "quick"})
+
+    run = await _run(settings, plan=FunctionModel(respond))
+    assert run.plan.depth == "quick" and len(run.plan.questions) == 2

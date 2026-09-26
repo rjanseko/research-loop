@@ -67,11 +67,18 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
         case_identity = frozen_case_identity(case)
         if case.metadata.get("role") == "held-out":
             print(f"{case.id} is a held-out case: run it to confirm a change, not while tuning one.", file=sys.stderr)
-    cost = limits.followup_cost_usd if args.follow_up else limits.cost_usd
-    seconds = limits.followup_deadline_seconds if args.follow_up else limits.deadline_seconds
-    mode = "Scout with gap analysis and one deep dive" if args.follow_up else "Scout"
+    depth = None if args.depth == "auto" else args.depth
+
+    def envelope(chosen: str) -> str:
+        tier, follow = limits.for_depth(chosen), args.follow_up or limits.follows_up(chosen)
+        cost = tier.followup_cost_usd if follow else tier.cost_usd
+        seconds = tier.followup_deadline_seconds if follow else tier.deadline_seconds
+        return f"{chosen}{' with gap follow-up' if follow else ''}: ${cost:.2f}, {seconds / 60:.0f} minutes"
+
+    limit_text = (envelope(depth) if depth else
+                  "depth chosen by the planner (" + "; ".join(envelope(d) for d in ("quick", "standard", "deep")) + ")")
     guard = f"; ${budget.cap_usd:.2f} pre-dispatch cap" if budget else ""
-    print(f"{mode}: soft limit ${cost:.2f}{guard}, {seconds / 60:.0f} minutes; planner {models.planner}, "
+    print(f"Scout, soft limits {limit_text}{guard}; planner {models.planner}, "
           f"scouts {models.scout}, synthesizer {models.synthesizer}; cache {settings.cache_dir} ({settings.cache_mode}).",
           file=sys.stderr)
     async with AsyncExitStack() as stack:
@@ -81,7 +88,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
             store = MemoryStore()
         study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
         run = await scout(question, settings=settings, store=store, notes=args.note, blocked_urls=blocked,
-                          study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity)
+                          study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity,
+                          depth=depth)
     record = run.to_record()
     markdown = render_markdown(record)
     print(markdown)
@@ -357,7 +365,9 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--block", action="append", default=[], metavar="URL",
                      help="A source no tool may fetch and no evidence may cite; repeat for more")
     run.add_argument("--follow-up", action="store_true",
-                     help="Analyze material gaps and research at most one before synthesis (paid)")
+                     help="Analyze material gaps and research up to three in parallel before synthesis (paid)")
+    run.add_argument("--depth", choices=("auto", "quick", "standard", "deep"), default="auto",
+                     help="How much research to do; auto lets the planner choose, and deep adds the gap follow-up")
     run.add_argument("--out", type=Path, help="Also write report.md and run.json here")
     run.add_argument("--no-persist", action="store_true", help="Keep the run in memory even when DATABASE_URL is set")
     run.add_argument("--study", help="Record the run as part of this study")

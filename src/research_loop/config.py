@@ -24,6 +24,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .acquisition import CacheMode
+from .schemas import Depth
 
 # The providers Research Loop can call, and the variable each one's API key is read from.
 PROVIDER_KEYS = {
@@ -100,6 +101,18 @@ class ScoutModels(BaseModel):
         return None if value is None or not value.strip() else _model_spec(value)
 
 
+class DepthTier(BaseModel):
+    """How one depth changes the standard limits: each field it sets replaces ScoutLimits' own."""
+
+    max_questions: int | None = Field(None, ge=1, le=8)
+    cost_usd: float | None = Field(None, gt=0)
+    synthesis_usd: float | None = Field(None, gt=0)
+    research_seconds: float | None = Field(None, gt=0)
+    deadline_seconds: float | None = Field(None, gt=0)
+    # A run at this depth adds the gap follow-up, with the follow-up envelope, as `--follow-up` does.
+    follow_up: bool = False
+
+
 class ScoutLimits(BaseModel):
     """What one Scout run may spend. Dollar shares are allocated before the run starts (scout.py)."""
 
@@ -120,7 +133,14 @@ class ScoutLimits(BaseModel):
     deep_dive_productive_calls: int = Field(16, ge=1)
     deep_dive_misses: int = Field(8, ge=1)
     max_questions: int = Field(4, ge=1, le=8)
-    parallel_scouts: int = Field(4, ge=1)
+    # Enough for a deep plan's questions at once; the token pacer (rate_limit.py) keeps them under the
+    # provider's rate limit.
+    parallel_scouts: int = Field(8, ge=1)
+    # The planner chooses a depth (`ResearchPlan.depth`); standard is these limits unchanged. A quick
+    # question gets two scouts and a small report; a deep one up to eight scouts and the gap follow-up.
+    quick: DepthTier = DepthTier(max_questions=2, cost_usd=0.30, synthesis_usd=0.12, research_seconds=240,
+                                 deadline_seconds=360)
+    deep: DepthTier = DepthTier(max_questions=8, follow_up=True)
     # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
     # 12, 16, and 12 to stop Flash loops that only failed; with Luna, 39 of 68 scouts stopped on the 16
     # productive calls after reading one to eight pages, while spending about 15% of their dollar share.
@@ -147,7 +167,29 @@ class ScoutLimits(BaseModel):
             raise ValueError("followup_cost_usd must leave part of the budget for initial scouts")
         if self.research_seconds + self.gap_seconds + self.deep_dive_seconds + 90 > self.followup_deadline_seconds:
             raise ValueError("followup_deadline_seconds must reserve 90 seconds for synthesis")
+        for depth in ("quick", "deep"):
+            if getattr(self, depth).model_dump(exclude_none=True, exclude={"follow_up"}):
+                try:
+                    self.for_depth(depth)
+                except ValueError as exc:
+                    raise ValueError(f"the {depth} depth's limits are inconsistent: {exc}") from exc
         return self
+
+    def question_caps(self) -> dict[str, int]:
+        """The most research questions a plan may have at each depth."""
+        return {"quick": self.for_depth("quick").max_questions, "standard": self.max_questions,
+                "deep": self.for_depth("deep").max_questions}
+
+    def for_depth(self, depth: Depth) -> ScoutLimits:
+        """These limits for a run at `depth`, checked as a whole. The result has no depths of its own."""
+        if depth == "standard":
+            return self
+        update = getattr(self, depth).model_dump(exclude_none=True, exclude={"follow_up"})
+        return ScoutLimits.model_validate(self.model_dump() | update | {"quick": {}, "deep": {}})
+
+    def follows_up(self, depth: Depth) -> bool:
+        """Whether a run at `depth` adds the gap follow-up."""
+        return depth != "standard" and getattr(self, depth).follow_up
 
     def followup_scout_usd(self, questions: int) -> float:
         return round((self.followup_cost_usd - self.planner_usd - self.synthesis_usd

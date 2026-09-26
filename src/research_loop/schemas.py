@@ -99,8 +99,14 @@ class ResearchQuestion(BaseModel):
     requires_primary_sources: bool = False
 
 
+# How much research a question warrants; each depth has its own limits (config.ScoutLimits.for_depth).
+Depth = Literal["quick", "standard", "deep"]
+
+
 class ResearchPlan(BaseModel):
     questions: list[ResearchQuestion]
+    # Plans made before depths existed read as standard, which is what they ran with.
+    depth: Depth = Field("standard", description="quick, standard, or deep: how much research the question warrants")
 
 
 class MaterialGap(BaseModel):
