@@ -354,7 +354,7 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert again.status == "complete" and again.report is None and reasons(again) == []
     assert again.plan == original.plan and sorted(again.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
     saved = store.runs[again.run_id]
-    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == "scout-research-v1"
+    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == "scout-research-v2"
     assert saved["parent_run_id"] == original.run_id and saved["study_id"] == "scouts"
     assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
     assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case

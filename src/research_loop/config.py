@@ -75,7 +75,7 @@ class ScoutLimits(BaseModel):
     planner_usd: float = Field(0.05, gt=0)
     # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25; this leaves room for one validation retry.
     synthesis_usd: float = Field(0.40, gt=0)
-    # Opt-in gap analysis and one targeted follow-up use a separate envelope, keeping scout-v1 unchanged.
+    # Opt-in gap analysis and one targeted follow-up use a separate envelope, keeping the plain Scout envelope unchanged.
     followup_cost_usd: float = Field(1.25, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     deep_dive_usd: float = Field(0.25, gt=0)

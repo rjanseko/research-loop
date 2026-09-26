@@ -114,9 +114,13 @@ from .telemetry import run_span, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
 from .web import WebAcquisition, WebSearch
 
-WORKFLOW_VERSION = "scout-v1"
-FOLLOWUP_VERSION = "scout-followup-v1"
-RESCOUT_VERSION = "scout-research-v1"
+# v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
+# partial set as a gap. Runs made under v1 stay valid sources for `synthesize_stored` and `rescout_stored`.
+WORKFLOW_VERSION = "scout-v2"
+FOLLOWUP_VERSION = "scout-followup-v2"
+RESCOUT_VERSION = "scout-research-v2"
+_SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
+                    "scout-v1", "scout-followup-v1", "scout-research-v1")
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
@@ -722,7 +726,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     The new run points at its source and records a digest of the fixed ledger. Its synthesis call
     uses `_Run._synthesize`, so prompts, validation, fallback, usage, and call recording match Scout.
     """
-    if (source.get("workflow_version") not in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION)
+    if (source.get("workflow_version") not in _SOURCE_VERSIONS
             or not source.get("plan") or not source.get("ledger")):
         raise ValueError("source must have a Scout plan and ledger")
     plan = ResearchPlan.model_validate(source["plan"])
@@ -785,7 +789,7 @@ async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: R
     recording match Scout. They get the whole research window, which in Scout also covers planning, so compare
     rescouts with each other rather than with their source. `research synthesize` writes a report from the ledger.
     """
-    if source.get("workflow_version") not in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION) or not source.get("plan"):
+    if source.get("workflow_version") not in _SOURCE_VERSIONS or not source.get("plan"):
         raise ValueError("source must have a Scout plan")
     plan = ResearchPlan.model_validate(source["plan"])
     source_config = source.get("config") or {}
