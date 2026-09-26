@@ -97,3 +97,42 @@ On this plan the two usable arms answered the same number of questions. Luna did
 Two fixes follow. The budget guard should reserve closer to the actual price of cheap models, so that tight study caps stop refusing requests. A scout response with more tool calls than its remaining limit should lose the excess calls rather than the whole question.
 
 Both fixes were then made. Budget policy `usage-anchor-v4` bounds a request from the billed tokens of the reply before it. Replayed over the study's 189 scout requests, it never fell below the billed input, and its median bound fell from 11.4 to 2.5 times the billed input. A scout turn that asks for more tool calls than its limit leaves now runs the calls that fit, and the next request tells the model how many were dropped.
+
+## Listing the set before confirming it (scout-v2)
+
+The graded runs on both development cases stopped short of the expected set, and their stored ledgers showed why. On every drb2-task8 run the database scout named the four or five computed-data databases its first search returned, then spent the rest of its budget confirming each one on its official site; replicate 4 made 28 searches, nearly all of them `site:` lookups of names it already had. Its own `unresolved` list said the list was not exhaustive, while it reported a confidence of 0.97. The drb2-task68-plus methods scout did the same with the cloud providers' scaling documentation. Commit 53fd75d (workflows `scout-v2`, `scout-followup-v2`, `scout-research-v2`) tells a scout to find a survey or overview that lists the set and its categories before confirming members, to list what it did not cover, and to let its confidence reflect coverage. It tells the gap analysis that a partial set is a material gap.
+
+On 26 September 2026 study `set-coverage-screen` compared the two scout prompts on fixed plans: drb2-task8's `b61f1b55` and drb2-task68-plus's `88b6017b`, two Luna rescouts per arm and case, in ABBA order, each with a $3 cap. The v1 arm ran from a worktree at e79a120. `scripts/ledger_coverage.py` counts the rubric's expected members that a claim or conclusion names (found) and those that appear only under `unresolved` (named).
+
+| Case and arm | Run | Found | Named only | Cost |
+|---|---|---|---|---|
+| task8 v1, r1 | `00f08fb2` | 3/7 | 0 | $0.059 |
+| task8 v1, r2 | `d7ee85a9` | 3/7 | 0 | $0.048 |
+| task8 v2, r1 | `df9e8e3c` | 2/7 | 1 (NOMAD) | $0.054 |
+| task8 v2, r2 | `a28ae597` | 3/7 | 2 (ICSD, CSD) | $0.053 |
+| task68-plus v1, r1 | `9cfebd57` | 2/6 | 0 | $0.055 |
+| task68-plus v1, r2 | `a4621804` | 4/6 | 0 | $0.046 |
+| task68-plus v2, r1 | `9057aaf7` | 5/6 | 0 | $0.052 |
+| task68-plus v2, r2 | `d496e94c` | failed | | $0.049 |
+
+The eight rescouts cost $0.42. On drb2-task68-plus the v2 scout found fuzzy logic and machine learning, which no earlier run had, but with one usable v2 run that is a direction, not a result. On drb2-task8 the v2 scouts did what the prompt asked: both searched for reviews first and read a 2020 guide to materials databases that names many more of them. They did not establish those members, because the planned question required each database to be verified against its official website and the productive-call budget ran out first; they listed them under `unresolved` instead. ICSD and CSD appear there, the first time any run has reached them. Quote verification and cut-offs did not change between arms. Under the study's decision rule the screen is undecided; v2 stays, since it cost nothing in quality, and the next change raises the research budget that now limits it.
+
+The failed run exposed a bug. pypdf extracted a math italic letter in a VLDB paper as two surrogate code points, the scout's next request could not be encoded as UTF-8, and that error was not a recognized call failure, so it failed the whole run after its other three scouts had finished. Commit 586bd21 makes every tool result valid Unicode (`FETCH_VERSION` 8) and cuts off only the question whose scout hits an unexpected error, with a note that names it as a bug.
+
+## A larger research budget (scout-v3)
+
+The set-coverage screen showed that scouts now find an overview of a requested set but run out of productive tool calls before establishing its members. Commit 5738676 (`scout-v3`) raised a scout's budget from 12 requests, 16 productive calls, and 12 misses to 20, 32, and 16; the research window from 270 to 480 seconds and the run deadline from 360 to 720; told the planner to ask for a whole set rather than per-member verification; hid a result's self-rated confidence from the gap analysis and synthesis; and added the budget notes to the prompt fingerprint.
+
+On 26 September 2026 study `scout-v3-screen` researched the same two stored plans again: two v3 rescouts per case, and one v2 rescout on drb2-task68-plus to replace the run that had crashed, from a worktree at 59c7c03. Every run used the study's own reused cache (`.cache/studies/scout-v3-screen`) and a $3 cap. The five rescouts cost $0.30.
+
+| Case and arm | Run | Found | Named only | Time | Cost |
+|---|---|---|---|---|---|
+| task68-plus v3, r1 | `1aaf2430` | 6/6 | 0 | 477 s | $0.067 |
+| task68-plus v2, r2 | `db2521db` | 6/6 | 0 | 206 s | $0.044 |
+| task68-plus v3, r2 | `fddd3bcb` | 6/6 | 0 | 430 s | $0.076 |
+| task8 v3, r1 | `259537d3` | 3/7 | 2 (ICSD, CSD) | 416 s | $0.063 |
+| task8 v3, r2 | `6337ed01` | 3/7 | 2 (ICSD, CSD) | 299 s | $0.052 |
+
+With the larger budget most scouts returned on their own rather than on a limit, and a v3 rescout cost $0.05 to $0.08 against about $0.05 before. On drb2-task68-plus every run in this study found all six method families, the v2 run included. That run followed the first v3 run and was served 8 of its 27 page lookups from the study cache, so this case no longer separates the arms; the earlier screen's v2 run found five. On drb2-task8 the database answer grew from five databases to eight or nine, now including AFLOW, JARVIS, Materials Cloud, the Crystallography Open Database, and an organic materials database, and both runs named ICSD and CSD under `unresolved` as members of the 2020 overview they did not check. The rubric's experimental and specialist databases are still not established: the scouts spend their reading on the computed-data databases first, several of whose official sites refuse the fetcher (Materials Project returns 403).
+
+The larger budget gives broader lists at about 40% more research cost and longer runs, with no loss of quote verification. What remains is the gap between members a scout names and members it establishes, which is what the parallel deep dives of `scout-followup-v4` target: a gap analysis that sees ICSD and CSD under `unresolved` can send a deep dive to each. The next screen is a deep run on drb2-task8, graded.

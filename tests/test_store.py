@@ -108,7 +108,9 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
                                 error=RuntimeError("boom"), stop_reason="limit reached", tool_seconds=12.5)
         await store.finish_run(run_id, status="partial", report={"title": "T"}, ledger={"q1": []},
                                checks={"citation_problems": []}, cost_usd=Decimal("0.0123"), trace_id="f" * 32,
-                               cache={"mode": "reuse", "by_provider": {}})
+                               cache={"mode": "reuse", "by_provider": {}},
+                               # A deep plan changes the recorded config and version at the end.
+                               config={"depth": "deep", "follow_up": True}, workflow_version="scout-followup-v4")
         await save_grade(pool, {"id": uuid4(), "run_id": run_id, "case_id": "st05-scaling-table",
                                 "judge_model": "openai:gpt-6-sol", "judge_thinking": "high", "judge_version": 2,
                                 "rubric_version": "1", "status": "succeeded", "score": 0.5,
@@ -121,6 +123,7 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
     assert (row["status"], row["question"], row["parent_run_id"], row["report"], row["cost_usd"]) == (
         "partial", "Q?", parent, {"title": "T"}, Decimal("0.0123"))
     assert (row["study_id"], row["arm"], row["replicate"], row["cache"]["mode"]) == ("s1", "high", 2, "reuse")
+    assert (row["workflow_version"], row["config"]) == ("scout-followup-v4", {"depth": "deep", "follow_up": True})
     assert (call["stop_reason"], call["tool_seconds"]) == ("limit reached", Decimal("12.5"))
     with psycopg.connect(dsn, autocommit=True) as conn:
         status, messages, error = conn.execute("select status, messages, error from run_calls").fetchone()

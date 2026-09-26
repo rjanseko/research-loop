@@ -99,8 +99,14 @@ class ResearchQuestion(BaseModel):
     requires_primary_sources: bool = False
 
 
+# How much research a question warrants; each depth has its own limits (config.ScoutLimits.for_depth).
+Depth = Literal["quick", "standard", "deep"]
+
+
 class ResearchPlan(BaseModel):
     questions: list[ResearchQuestion]
+    # Plans made before depths existed read as standard, which is what they ran with.
+    depth: Depth = Field("standard", description="quick, standard, or deep: how much research the question warrants")
 
 
 class MaterialGap(BaseModel):
@@ -112,9 +118,10 @@ class MaterialGap(BaseModel):
 
 
 class GapAnalysis(BaseModel):
-    """At most one decisive follow-up; an empty list means synthesize what is known."""
+    """Up to `max_gaps` decisive follow-ups, each researched in parallel; an empty list means synthesize
+    what is known."""
 
-    gaps: list[MaterialGap] = Field(default_factory=list, max_length=1)
+    gaps: list[MaterialGap] = Field(default_factory=list)
 
 
 class UnreachedSource(BaseModel):

@@ -87,6 +87,35 @@ def find_case(key: str) -> StudyCase:
     return matches[0]
 
 
+DRB2_REVISION = "b38f360603db9531b102aef8c166cedb8509b6f6"
+DRB2_SHA256 = "263aaabb8c279fb16cbe7c9499afe82d657a8ab3ccfb07ace084387e367d921a"
+DRB2_URL = f"https://raw.githubusercontent.com/imlrz/DeepResearch-Bench-II/{DRB2_REVISION}/tasks_and_rubrics.jsonl"
+
+
+def drb2_case(row: dict[str, Any], role: str | None = None) -> StudyCase:
+    """A frozen study case from one row of the pinned DeepResearch Bench II file, keeping its task, rubric, and blocks.
+
+    `role` marks a new case, such as "held-out"; the first two cases have none, and adding one would change
+    their identity and orphan their stored runs.
+    """
+    content = row["content"]
+    blocked = content.get("blocked") or {}
+    rubric, urls = content["rubric"], blocked.get("urls", [])
+    canonical = json.dumps({"task": content["task"], "rubric": rubric, "blocked_urls": urls},
+                           ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    metadata: dict[str, Any] = {
+        "kind": "expert-authored deep research stress case", "expected_depth": "deep",
+        "dataset": "DeepResearch Bench II", "official_id": row["id"], "idx": row["idx"], "theme": row["theme"],
+        "description": row["description"], "language": row["language"], "license": row["license"],
+        "blocked_title": blocked.get("title"), "dataset_revision": DRB2_REVISION, "dataset_sha256": DRB2_SHA256,
+        "source_url": f"https://github.com/imlrz/DeepResearch-Bench-II/blob/{DRB2_REVISION}/tasks_and_rubrics.jsonl",
+        "source_content_sha256": hashlib.sha256(canonical.encode()).hexdigest()}
+    if role:
+        metadata["role"] = role
+    return StudyCase(id="drb2-" + row["id"].replace("+", "-plus"), objective=content["task"], output_mode="report",
+                     rubric_version=f"drb2-{DRB2_REVISION[:7]}", rubrics=rubric, blocked_urls=urls, metadata=metadata)
+
+
 def case_identity(case: StudyCase) -> dict[str, str]:
     """Identity recorded on a frozen case run, independently of its report."""
     return {"id": case.id, "rubric_version": case.rubric_version,
@@ -184,7 +213,7 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     }, ensure_ascii=False)
     usage = RunUsage()
     messages: list[ModelMessage] = []
-    chosen = model or build_model(JUDGE_MODEL, "scout", settings, sdk_retries=0 if budget else None)
+    chosen = model or build_model(f"{JUDGE_MODEL}@{JUDGE_THINKING}", "scout", settings, sdk_retries=0 if budget else None)
     if budget is not None:
         chosen = StudyBudgetModel(chosen, JUDGE_MODEL, budget)
     model_settings = {"thinking": JUDGE_THINKING, "timeout": _JUDGE_TIMEOUT_SECONDS}

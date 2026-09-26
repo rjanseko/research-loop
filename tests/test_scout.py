@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from decimal import Decimal
 from typing import Any
@@ -21,7 +22,10 @@ from research_loop.agents import planner_agent, scout_agent, synthesizer_agent
 from research_loop.config import ScoutLimits, Settings
 from research_loop.render import render_markdown
 from research_loop.scout import (
+    RESCOUT_VERSION,
+    SYNTHESIS_VERSION,
     ConfigError,
+    SourceRunError,
     StudyLabels,
     rescout_stored,
     scout,
@@ -131,8 +135,15 @@ async def _run(settings: Settings, store: MemoryStore | None = None, *, plan=Non
 
 
 async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(settings, pages, capfire) -> None:
+    import logfire
+    from pydantic_ai import Agent
+
     store = MemoryStore()
-    run = await _run(settings, store)
+    logfire.instrument_pydantic_ai()
+    try:
+        run = await _run(settings, store)
+    finally:
+        Agent.instrument_all(False)
     assert run.status == "complete" and reasons(run) == []
     assert [q.id for q in run.plan.questions] == ["q1", "q2"]  # renumbered in plan order
     assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
@@ -159,8 +170,14 @@ async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(setting
     scout_call = next(c for c in store.calls.values() if c["role"] == "scout")
     assert scout_call["output"]["pages_read"] and scout_call["output"]["claims"][0]["evidence"][0]["source_access"]
 
-    spans = capfire.exporter.exported_spans_as_dict()
-    assert {s["attributes"].get("run_id") for s in spans if s["name"].startswith("scout")} == {str(run.run_id)}
+    # Each agent run's span is named for its role and carries the run ID and what it worked on.
+    spans = [s for s in capfire.exporter.exported_spans_as_dict() if s["name"].startswith("invoke_agent")]
+    assert sorted(s["name"] for s in spans) == ["invoke_agent planner", "invoke_agent scout", "invoke_agent scout",
+                                                "invoke_agent synthesizer"]
+    assert {s["attributes"]["run_id"] for s in spans} == {str(run.run_id)}
+    scouted = [json.loads(s["attributes"]["metadata"]) for s in spans if s["name"] == "invoke_agent scout"]
+    assert sorted(m["question_id"] for m in scouted) == ["q1", "q2"]
+    assert {(m["role"], m["run_id"], m["depth"]) for m in scouted} == {("scout", str(run.run_id), "standard")}
 
     markdown = render_markdown(run.to_record())
     assert "## Answer" in markdown and "[s1] Page. https://example.org/verified (read in full)" in markdown
@@ -319,7 +336,7 @@ async def test_fixed_ledger_synthesis_reuses_the_production_call(settings, pages
 
 
 async def test_fixed_ledger_synthesis_requires_claims(settings) -> None:
-    with pytest.raises(ValueError, match="no claims"):
+    with pytest.raises(SourceRunError, match="no claims"):
         await synthesize_stored({"id": "00000000-0000-0000-0000-000000000001",
                                  "workflow_version": "scout-v1", "question": "q",
                                  "plan": {"questions": [{"id": "q1", "question": "q"}]},
@@ -354,16 +371,28 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert again.status == "complete" and again.report is None and reasons(again) == []
     assert again.plan == original.plan and sorted(again.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
     saved = store.runs[again.run_id]
-    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == "scout-research-v1"
+    assert saved["mode"] == "fixed-plan" and saved["workflow_version"] == RESCOUT_VERSION
     assert saved["parent_run_id"] == original.run_id and saved["study_id"] == "scouts"
     assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
     assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case
+    # A standard plan hashes as plans did before depths existed, so rescouts pair across versions.
+    questions = json.dumps({"questions": [q.model_dump(mode="json") for q in original.plan.questions]},
+                           ensure_ascii=False, sort_keys=True)
+    assert saved["config"]["fixed_plan"]["plan_sha256"] == hashlib.sha256(questions.encode()).hexdigest()
+    assert saved["config"]["depth"] == "standard"
     calls = [store.calls[i] for i in set(store.calls) - before]
     assert sorted(call["role"] for call in calls) == ["scout", "scout"]
     # The new ledger can then be synthesized, and the report stays gradable against the frozen case.
     with synthesizer_agent.override(model=writer()):
         written = await synthesize_stored(saved, settings=settings, store=store)
     assert written.status == "complete" and store.runs[written.run_id]["config"]["case"] == case
+    # A fixed-ledger synthesis reports its own version, and pairs by the same input digest as before.
+    stored = store.runs[written.run_id]
+    assert written.workflow_version == written.to_record()["workflow_version"] == SYNTHESIS_VERSION
+    assert stored["workflow_version"] == SYNTHESIS_VERSION and stored["mode"] == "fixed-ledger"
+    ledger_sha = hashlib.sha256(json.dumps(again.ledger.to_json(), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    assert stored["config"]["fixed_ledger"]["ledger_sha256"] == ledger_sha
+    assert stored["input_hash"] == hashlib.sha256((again.question + "\n" + ledger_sha).encode()).hexdigest()
 
 
 async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings, pages) -> None:
@@ -424,7 +453,7 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
-    assert run.config["limits"]["followup_cost_usd"] == 1.25
+    assert run.config["limits"]["followup_cost_usd"] == 2.0
 
 
 async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -> None:
@@ -526,3 +555,130 @@ async def test_a_network_error_in_one_scout_leaves_the_rest_of_the_run(settings,
     cut = next(result for result in run.ledger.all() if result.question_id == "q2")
     assert cut.cut_off == "network error SSLError"
     assert reasons(run) == ["1 of 2 research questions returned no evidence"]
+
+
+async def test_an_unexpected_error_in_one_scout_leaves_the_rest_of_the_run(settings, pages) -> None:
+    def broken(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if _prompt(messages)["question"]["id"] == "q2":
+            "a\ud835".encode()
+        return researcher().function(messages, info)
+
+    run = await _run(settings, MemoryStore(), research=FunctionModel(broken))
+    assert run.status == "partial" and run.report is not None
+    assert sorted(run.ledger.claim_ids()) == ["q1/c1"]
+    cut = next(result for result in run.ledger.all() if result.question_id == "q2")
+    assert cut.cut_off == "unexpected error UnicodeEncodeError"
+    assert "research on q2 stopped on an unexpected error (UnicodeEncodeError); this is a bug" in run.notes
+
+
+async def test_follow_up_researches_several_gaps_in_parallel(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    store = MemoryStore()
+    running: set[str] = set()
+    overlapped: list[bool] = []
+
+    async def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question = prompt["question"]
+        topic = question["question"]
+        if "material_gap" in prompt and len(messages) == 1:
+            # Both deep dives are in flight together before either returns.
+            running.add(topic)
+            await asyncio.sleep(0.05)
+            overlapped.append(len(running) == 2)
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        running.discard(topic)
+        return _output(info, {"question_id": question["id"], "question": topic, "conclusion": "found",
+                              "confidence": 0.8,
+                              "claims": [{"id": "c1", "statement": f"Finding for {topic}", "confidence": 0.8,
+                                          "evidence": [{"source": {"url": url, "title": "Page"},
+                                                        "excerpt": "summary", "confidence": 0.8}]}]})
+
+    gaps = [{"question_id": "q2", "follow_up_question": f"Which {kind} databases were used?", "reason": "Missing."}
+            for kind in ("experimental", "alloy", "electrolyte", "polymer")]
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        assert prompt["max_gaps"] == 3
+        # Four gaps are refused with a retry; two are accepted.
+        return _output(info, {"gaps": gaps if len(messages) == 1 else gaps[:2]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, store, research=FunctionModel(research), follow_up=True)
+    assert [g.follow_up_question for g in run.checks.gap_analysis.gaps] == [
+        "Which experimental databases were used?", "Which alloy databases were used?"]
+    assert [c["role"] for c in store.calls.values()].count("deep_dive") == 2
+    assert overlapped and all(overlapped)
+    deep = [claim.statement for result in run.ledger.all() if result.question.startswith("Which")
+            for claim in result.claims]
+    assert deep == ["Finding for Which experimental databases were used?", "Finding for Which alloy databases were used?"]
+    assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1", "q2/c1~2", "q2/c1~3"]
+
+
+async def test_the_plan_sets_the_depth_and_its_limits(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+    from research_loop.scout import FOLLOWUP_VERSION, WORKFLOW_VERSION
+
+    seen: list[dict[str, Any]] = []
+
+    def plan_at(depth: str):
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.append(_prompt(messages))
+            return _output(info, {"questions": QUESTIONS, "depth": depth})
+        return FunctionModel(respond)
+
+    store = MemoryStore()
+    quick = await _run(settings, store, plan=plan_at("quick"))
+    assert seen[0]["max_questions"] == {"quick": 2, "standard": 4, "deep": 8} and "depth" not in seen[0]
+    assert quick.plan.depth == "quick" and quick.workflow_version == WORKFLOW_VERSION
+    saved = store.runs[quick.run_id]
+    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 0.30
+    assert saved["config"]["follow_up"] is False and not quick.checks.gap_analysis
+
+    # A deep plan turns the gap follow-up on, and the stored run says so.
+    with gap_agent.override(model=FunctionModel(lambda messages, info: _output(info, {"gaps": []}))):
+        deep = await _run(settings, store, plan=plan_at("deep"))
+    assert deep.workflow_version == FOLLOWUP_VERSION and deep.checks.gap_analysis is not None
+    saved = store.runs[deep.run_id]
+    assert saved["workflow_version"] == FOLLOWUP_VERSION
+    assert saved["config"]["depth"] == "deep" and saved["config"]["follow_up"] is True
+
+    # A depth the user chose wins over the planner's.
+    seen.clear()
+    with gap_agent.override(model=FunctionModel(lambda messages, info: _output(info, {"gaps": []}))):
+        chosen = await _run(settings, store, plan=plan_at("quick"), depth="deep")
+    assert seen[0]["depth"] == "deep" and seen[0]["max_questions"] == {"deep": 8}
+    assert chosen.plan.depth == "deep" and store.runs[chosen.run_id]["workflow_version"] == FOLLOWUP_VERSION
+
+
+async def test_a_quick_plan_with_too_many_questions_is_retried(settings, pages) -> None:
+    three = [*QUESTIONS, {"id": "c", "question": "Who maintains SWE-bench?"}]
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return _output(info, {"questions": three if len(messages) == 1 else QUESTIONS, "depth": "quick"})
+
+    run = await _run(settings, plan=FunctionModel(respond))
+    assert run.plan.depth == "quick" and len(run.plan.questions) == 2
+
+
+async def test_span_metadata_never_reaches_the_models(settings, pages) -> None:
+    sent: list[str] = []
+
+    def recording(inner: FunctionModel) -> FunctionModel:
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            sent.append(repr(messages) + repr(info.model_request_parameters))
+            return inner.function(messages, info)
+
+        async def stream(messages: list[ModelMessage], info: AgentInfo):
+            sent.append(repr(messages) + repr(info.model_request_parameters))
+            async for chunk in inner.stream_function(messages, info):
+                yield chunk
+
+        return FunctionModel(stream_function=stream) if inner.function is None else FunctionModel(respond)
+
+    run = await _run(settings, plan=recording(planner()), research=recording(researcher()), write=recording(writer()))
+    assert run.status == "complete" and sent
+    assert not any(str(run.run_id) in text or "question_id': 'q" in text or '"depth"' in text for text in sent)

@@ -1,33 +1,36 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from research_loop.config import ScoutLimits, Settings
+from research_loop.scout import run_config
 
 
 def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
     settings = Settings()
     assert (settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback) == (
-        "openai:gpt-6-sol", "openai:gpt-6-luna", "anthropic:claude-opus-5-5", "openai:gpt-6-sol")
+        "openai:gpt-6-sol@high", "openai:gpt-6-luna@high", "anthropic:claude-opus-5-5@medium", "openai:gpt-6-sol@high")
     limits = settings.limits
-    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 360, 4)
-    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (12, 16, 12)
+    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 720, 4)
+    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (20, 32, 16)
     assert limits.scout_usd(4) == 0.075 and limits.scout_usd(1) == 0.3
     assert settings.logfire is True and settings.cache_mode == "live"
 
 
 def test_environment_beats_dotenv_and_arguments_beat_both(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("RESEARCH_MODELS__SCOUT=zai:glm-5.3\nRESEARCH_LIMITS__COST_USD=1.5\nZAI_API_KEY=from-dotenv\n")
+    env_file.write_text("RESEARCH_MODELS__SCOUT=zai:glm-5.3@xhigh\nRESEARCH_LIMITS__COST_USD=1.5\nZAI_API_KEY=from-dotenv\n")
     from_file = Settings(_env_file=env_file)
-    assert (from_file.models.scout, from_file.limits.cost_usd) == ("zai:glm-5.3", 1.5)
+    assert (from_file.models.scout, from_file.limits.cost_usd) == ("zai:glm-5.3@xhigh", 1.5)
     assert from_file.api_key("zai") == "from-dotenv"
 
-    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna")
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna@high")
     monkeypatch.setenv("ZAI_API_KEY", "from-environment")
     from_env = Settings(_env_file=env_file)
-    assert from_env.models.scout == "openai:gpt-6-luna" and from_env.api_key("zai") == "from-environment"
+    assert from_env.models.scout == "openai:gpt-6-luna@high" and from_env.api_key("zai") == "from-environment"
     assert from_env.limits.cost_usd == 1.5  # other nested values still come from the file
 
     assert Settings(_env_file=env_file, cache_mode="replay").cache_mode == "replay"
@@ -66,7 +69,7 @@ def test_route_problems_name_missing_keys_and_disabled_providers(monkeypatch: py
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     assert Settings().route_problems() == []
 
-    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "zai:glm-5.3-flash")
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "zai:glm-5.3-flash@high")
     assert Settings().route_problems() == ["scout: zai:glm-5.3-flash needs ZAI_API_KEY"]
 
     monkeypatch.setenv("ZAI_API_KEY", "k")
@@ -75,3 +78,31 @@ def test_route_problems_name_missing_keys_and_disabled_providers(monkeypatch: py
     assert Settings().enabled_providers == ("openai", "zai")
     assert Settings().route_problems() == [
         "synthesizer: anthropic:claude-opus-5-5 needs anthropic, which is not enabled (RESEARCH_ENABLED_PROVIDERS)"]
+
+
+def test_a_study_gets_its_own_reused_cache_unless_the_cache_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RESEARCH_CACHE_MODE", raising=False)
+    monkeypatch.delenv("RESEARCH_CACHE_DIR", raising=False)
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(name, "test-key")
+    study = Settings().for_study("set-coverage")
+    assert (study.cache_mode, study.cache_dir) == ("reuse", Path(".cache/studies/set-coverage"))
+    assert run_config(study, [], [])["cache_dir"] == ".cache/studies/set-coverage"
+    monkeypatch.setenv("RESEARCH_CACHE_MODE", "replay")
+    assert Settings().for_study("set-coverage").cache_mode == "replay"
+    monkeypatch.setenv("RESEARCH_CACHE_DIR", "/tmp/elsewhere")
+    assert Settings().for_study("set-coverage").cache_dir == Path("/tmp/elsewhere")
+    with pytest.raises(ValueError, match="study name"):
+        Settings().for_study("../escape")
+
+
+def test_each_depth_changes_only_what_it_sets() -> None:
+    limits = ScoutLimits()
+    assert limits.question_caps() == {"quick": 2, "standard": 4, "deep": 8}
+    quick = limits.for_depth("quick")
+    assert (quick.max_questions, quick.cost_usd, quick.synthesis_usd, quick.deadline_seconds) == (2, 0.30, 0.12, 360)
+    assert quick.scout_requests == limits.scout_requests and limits.for_depth("standard") is limits
+    assert limits.follows_up("deep") and not limits.follows_up("quick") and not limits.follows_up("standard")
+    assert limits.for_depth("deep").followup_scout_usd(8) == 0.0875
+    with pytest.raises(ValidationError, match="quick depth"):
+        ScoutLimits(quick={"cost_usd": 0.10})

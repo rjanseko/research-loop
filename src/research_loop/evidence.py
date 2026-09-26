@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -169,6 +169,9 @@ def support_level(claims: Iterable[Claim]) -> Support:
 
 # Research bookkeeping that prompts for synthesis leave out.
 _BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached")
+# Left out of prompts though stored: scouts rated a result 0.93 to 0.97 while writing that it was partial,
+# so the number misleads the gap analysis and synthesis; cut-offs and `unresolved` say more.
+_UNINFORMATIVE_FIELDS = ("confidence",)
 # Paraphrases longer than this are cut in prompts. A quote replaces the excerpt unless it was not found.
 _EXCERPT_CHARS = 300
 
@@ -313,7 +316,7 @@ def _project_result(result: ResearchResult, numbering: dict[str, str]) -> dict[s
         if claim.evidence:
             body["evidence"] = [_project_evidence(item, numbering) for item in claim.evidence]
         claims.append(body)
-    rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS}))
+    rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS, *_UNINFORMATIVE_FIELDS}))
     projected = {key: rest.pop(key) for key in ("question_id", "question", "conclusion") if key in rest}
     if claims:
         projected["claims"] = claims
@@ -330,11 +333,6 @@ _INLINE_CITATION = re.compile(r"\[\s*(s\d+(?:\s*[,;]\s*s\d+)*)\s*\]")
 def inline_source_ids(text: str) -> list[str]:
     """The source IDs a text cites inline, in order."""
     return [source_id for group in _INLINE_CITATION.findall(text) for source_id in re.findall(r"s\d+", group)]
-
-
-def rewrite_inline_citations(text: str, rewrite: Callable[[list[str]], str]) -> str:
-    """`text` with each inline citation replaced by `rewrite` of its source IDs."""
-    return _INLINE_CITATION.sub(lambda match: rewrite(re.findall(r"s\d+", match.group(1))), text)
 
 
 def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> str:

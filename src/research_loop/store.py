@@ -90,7 +90,8 @@ class RunStore(Protocol):
                         study_id: str | None = None, arm: str | None = None, replicate: int | None = None) -> None: ...
 
     async def finish_run(self, run_id: UUID, **fields: Any) -> None:
-        """Set any of: status, plan, report, ledger, checks, cost_usd, usage, error, cache, trace_id."""
+        """Set any of: status, plan, report, ledger, checks, cost_usd, usage, error, cache, trace_id, config,
+        workflow_version."""
 
     async def start_call(self, run_id: UUID, *, role: str, model: str, question_id: str | None = None) -> UUID: ...
 
@@ -100,7 +101,10 @@ class RunStore(Protocol):
                           stop_reason: str | None = None, tool_seconds: float | None = None) -> None: ...
 
 
-_RUN_FIELDS = ("status", "plan", "report", "ledger", "checks", "cost_usd", "usage", "error", "cache", "trace_id")
+# `config` and `workflow_version` are set again at the end when planning changed them, such as a deep plan
+# that adds the gap follow-up.
+_RUN_FIELDS = ("status", "plan", "report", "ledger", "checks", "cost_usd", "usage", "error", "cache", "trace_id",
+               "config", "workflow_version")
 
 
 @dataclass
@@ -172,7 +176,8 @@ class PostgresStore:
         if unknown:
             raise TypeError(f"unknown run fields: {', '.join(sorted(unknown))}")
         columns = [name for name in _RUN_FIELDS if name in fields]
-        values = [fields[name] if name in ("status", "trace_id", "cost_usd") else _json(fields[name]) for name in columns]
+        values = [fields[name] if name in ("status", "trace_id", "cost_usd", "workflow_version") else _json(fields[name])
+                  for name in columns]
         # Column names come from _RUN_FIELDS, never from the caller; values are parameters.
         assignments = ", ".join(f"{name} = %s" for name in columns)
         async with self.pool.connection() as conn:

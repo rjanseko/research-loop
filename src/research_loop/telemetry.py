@@ -10,14 +10,21 @@ stays on.
 Each run is one trace under a `research run` span. The run ID is set as baggage, so every span in
 the trace carries it, and the trace ID is stored on the run's database row: a trace leads to its
 run, and a run to its trace. Postgres, not Logfire, is the durable record of runs and evidence.
+
+The research tools' own HTTP clients (page fetches and scholarly lookups) are traced too, so a trace
+shows each request's status and latency. A query parameter that carries a secret, such as OpenAlex's
+`api_key`, is redacted from the span before it is exported; Logfire's scrubbing does not catch a key
+inside a URL.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 from uuid import UUID
 
+import httpx
 import logfire
 
 from .config import Settings
@@ -41,6 +48,31 @@ def configure_logfire(settings: Settings) -> None:
     if settings.logfire:
         logfire.instrument_pydantic_ai(include_content=True)
     _configured = True
+
+
+_SECRET_PARAM = re.compile(r"key|token|secret|password", re.IGNORECASE)
+
+
+def _redact_url(span: Any, request: Any) -> None:
+    url = httpx.URL(str(request.url))
+    secrets = [name for name in url.params if _SECRET_PARAM.search(name)]
+    if not secrets:
+        return
+    for name in secrets:
+        url = url.copy_set_param(name, "[redacted]")
+    span.set_attribute("http.url", str(url))
+    span.set_attribute("logfire.msg", f"{request.method.decode() if isinstance(request.method, bytes) else request.method} {url}")
+
+
+async def _redact_url_async(span: Any, request: Any) -> None:
+    _redact_url(span, request)
+
+
+def trace_http(client: httpx.AsyncClient, settings: Settings) -> httpx.AsyncClient:
+    """`client`, with its requests traced when tracing is on and any secret query parameter redacted."""
+    if settings.logfire:
+        logfire.instrument_httpx(client, request_hook=_redact_url, async_request_hook=_redact_url_async)
+    return client
 
 
 @contextmanager

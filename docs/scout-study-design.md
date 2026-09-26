@@ -58,7 +58,7 @@ Validate existing answer keys against accessible original sources before paid ev
 
 ## Common evaluation protocol
 
-Use st01 and st03 for shallow behavior, st04 for false-premise handling, st05 for a medium comparison, and st07 only as a contested-topic diagnostic and historical bridge. It is retired as a selection case; do not restore it silently. A deep DRB-II case is a stress test, not a requirement that a six-minute Scout reproduce a full expert report.
+Use st01 and st03 for shallow behavior, st04 for false-premise handling, st05 for a medium comparison, and st07 only as a contested-topic diagnostic and historical bridge. It is retired as a selection case; do not restore it silently. A deep DRB-II case is a stress test, not a requirement that a time-bounded Scout run reproduce a full expert report.
 
 Record all planned runs, including failures. Report correctness and coverage alongside completion rate, cost, and elapsed time. Do not compute quality only over successful runs. Show case-level paired differences; rubric points within a report are not independent samples.
 
@@ -159,6 +159,14 @@ Separate model wait, tool time, queue time, and finalization time. Test FlashX o
 
 Hold effort, assignments, and budgets constant. Require useful completion improvement or at least a 20% latency reduction under the common quality gates. Measure cost per successful run as well as cost per call. A provider speed claim alone does not justify replacement. Confirm the decisive timing result with live retrieval.
 
+### Stage G: test a paid web search backend
+
+Web search is the weakest research tool. `WebSearch` in `web.py` scrapes DuckDuckGo through PydanticAI's `duckduckgo_search_tool`, with no service agreement: in the settings-study pilots 279 of 697 searches failed, from throttling or no results, and a result is a short snippet. Scouts fall back to `site:` searches for names they already know, and they rarely reach the survey pages that list a whole set, which is where the drb2-task8 databases are named. Every other change to research is capped by what search can surface.
+
+The stage adds one paid search API as a second engine behind the same `WebSearch` interface, which already accepts an `engine` callable, so caching, retries, blocked sources, access labels, and evidence checks stay as they are. The engine is recorded in the run config and `FETCH_VERSION`. Choosing the provider and getting its key is the user's decision, and paid search adds a per-query cost of its own, which must be priced into the run's budget like model calls.
+
+Screen it like the scout changes: rescouts of the stored development plans, DuckDuckGo against the paid engine, in ABBA order with each arm in its own study cache so neither is served the other's results. Measure search failures and empty results, how often a scout reaches an overview of the requested set, expected members found and named (`scripts/ledger_coverage.py`), pages read in full, cost including search fees, and time. Adopt the paid engine only if coverage improves on both development cases without new failures, then confirm on the held-out cases.
+
 ## Retrieval and regression reporting
 
 Retrieval measurement is passive across all paid stages; it needs no separate model calls. Report empty searches, provider failures, 403/404s, guessed URLs, cache hits, repeated failures, and useful retrievals by tool. Tool time is directly attributable; model tokens spent deciding what to do after failures are generally not exactly attributable. Report associations rather than inventing precise wasted-dollar figures.
@@ -180,6 +188,12 @@ Use the observed maximum only as an observed maximum. Do not label it a worst-ca
 
 ## The next decision
 
-Prepare the offline harness and bounded-dispatch design, confirm the proposed recording additions, then review the user's first st07 result. Approve at most the $3.00 stage-A ceiling, inclusive of any st07 spend assigned to this study. If st07 has already consumed part of that ceiling, subtract it.
+As of 26 September 2026 the workflow is `scout-v4`. The scout budget is larger (`scout-v3`), the planner chooses a depth that sets the run's limits, and a deep run adds a gap follow-up of up to three parallel deep dives (`scout-followup-v4`). The screens so far are recorded in `high-level-study-evaluation.md`. The larger budget broadened the drb2-task8 database list but left the rubric's specialist databases named under `unresolved` rather than established, which the parallel deep dives are meant to close.
 
-The first deliverable should be one reliable Scout cost breakdown and a clear account of where it fails. It is acceptable for the first study to conclude that model selection, intake scouting, overflow, or deep-task suitability remain undecided.
+The next paid steps, each needing its own approval:
+
+1. A deep run on drb2-task8 (`--depth deep`), graded, then a second replicate: do the deep dives establish the members scouts named but did not check, and does the rubric score move?
+2. A check of the planner's depth choice on the frozen cases: st01 and st03 should come out quick and the DRB-II cases deep.
+3. Stage G, once a search provider is chosen.
+4. The synthesizer comparison on the new, larger ledgers, before the models for every role are pinned.
+5. Confirmation of whatever is adopted on the held-out cases, with paired runs before and after.

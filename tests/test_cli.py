@@ -54,3 +54,15 @@ def test_invalid_configuration_is_reported_before_anything_runs(monkeypatch, cap
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "glm-5.3-flash")
     assert _exit(["doctor"]) == 2
     assert "Configuration is invalid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["rescout", "synthesize"])
+def test_reruns_refuse_what_cannot_run_before_opening_the_database(command, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/none")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    run_id = "00000000-0000-0000-0000-000000000000"
+    assert _exit([command, run_id, "--model", "openai:gpt-6-luna", "--max-usd", "1"]) == 2
+    assert "must name its effort" in capsys.readouterr().err
+    assert _exit([command, run_id, "--model", "openai:gpt-6-luna@high", "--max-usd", "1", "--study", "../x"]) == 2
+    assert "study name" in capsys.readouterr().err

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from pydantic_ai import Agent
@@ -10,7 +12,12 @@ from research_loop.acquisition import AcquisitionCache
 from research_loop.evidence import check_result
 from research_loop.schemas import Claim, Evidence, ResearchResult, SourceRef
 from research_loop.scholar import ScholarClient
-from research_loop.tools import labeled_texts, research_toolset, tool_outcomes
+from research_loop.tools import (
+    labeled_texts,
+    research_toolset,
+    tool_outcomes,
+    valid_unicode,
+)
 from research_loop.web import WebAcquisition, WebSearch
 
 PAGE = "<html><body><article><p>SWE-bench Verified has 500 human-validated tasks.</p></article></body></html>"
@@ -116,3 +123,10 @@ def test_failed_lookups_are_listed_as_unreached(tool: str, content: dict) -> Non
                 ModelRequest(parts=[ToolReturnPart(tool, content, tool_call_id="x")])]
     (unreached,) = tool_outcomes(messages).unreached
     assert unreached.reason in ("SearchUnavailable (RuntimeError)", "get:HTTPStatusError")
+
+
+def test_tool_text_is_always_sendable_as_utf8() -> None:
+    # pypdf extracted "𝐹" as a surrogate pair, which failed the scout's next request.
+    result = valid_unicode({"text": "size𝐹 set", "works": [{"title": "a\ud835b"}], "start": 12_000})
+    assert result == {"text": "size𝐹 set", "works": [{"title": "a�b"}], "start": 12_000}
+    json.dumps(result, ensure_ascii=False).encode("utf-8")

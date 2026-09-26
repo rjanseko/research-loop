@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 from pydantic_ai.exceptions import ModelHTTPError
 
-from .config import PROVIDER_KEYS, Settings, model_provider
+from .config import PROVIDER_KEYS, Settings, model_provider, split_model
 from .prices import override_for, price_per_million
 
 # Hosts a Scout run reaches besides the model providers.
@@ -74,7 +74,8 @@ async def run_doctor(settings: Settings, *, smoke: bool = False) -> int:
     problems = settings.route_problems()
     for problem in problems:
         report("FAIL", "models", problem)
-    for role, model_id in roles.items():
+    for role, spec in roles.items():
+        model_id = split_model(spec)[0]
         price = price_per_million(model_id)
         if price is None:
             report("FAIL", f"price {model_id}", "no price, so its cost cannot be capped; add it to prices.toml")

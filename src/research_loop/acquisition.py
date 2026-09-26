@@ -38,7 +38,8 @@ CACHE_VERSION = 1
 #    answer twice; web search tells no results from an outage and tries three times.
 # 7: one fetch tool for pages and PDFs; every result says its access level (snippet, metadata,
 #    abstract, full text); scholarly records carry OpenAlex abstracts.
-FETCH_VERSION = 7
+# 8: every tool result is valid Unicode: split surrogate pairs from PDF text are joined, lone ones replaced.
+FETCH_VERSION = 8
 
 
 def is_pdf(media: str, content: bytes) -> bool:
