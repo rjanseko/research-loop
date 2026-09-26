@@ -160,6 +160,10 @@ class ConfigError(RuntimeError):
     """The configured models cannot run: a missing key, a disabled provider, or no price to cap cost with."""
 
 
+class SourceRunError(ValueError):
+    """A stored run cannot be the source of a rescout or a fixed-ledger synthesis."""
+
+
 class StatementCheck(BaseModel):
     statement: str
     claim_ids: list[str]
@@ -777,11 +781,11 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     """
     if (source.get("workflow_version") not in _SOURCE_VERSIONS
             or not source.get("plan") or not source.get("ledger")):
-        raise ValueError("source must have a Scout plan and ledger")
+        raise SourceRunError("source must have a Scout plan and ledger")
     plan = ResearchPlan.model_validate(source["plan"])
     ledger = EvidenceLedger.from_json(source["ledger"])
     if not ledger.claims():
-        raise ValueError("source ledger has no claims to synthesize")
+        raise SourceRunError("source ledger has no claims to synthesize")
     notes = (source.get("config") or {}).get("notes") or []
     blocked = (source.get("config") or {}).get("blocked_urls") or []
     source_id = UUID(str(source["id"]))
@@ -839,7 +843,7 @@ async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: R
     rescouts with each other rather than with their source. `research synthesize` writes a report from the ledger.
     """
     if source.get("workflow_version") not in _SOURCE_VERSIONS or not source.get("plan"):
-        raise ValueError("source must have a Scout plan")
+        raise SourceRunError("source must have a Scout plan")
     plan = ResearchPlan.model_validate(source["plan"])
     source_config = source.get("config") or {}
     notes, blocked = source_config.get("notes") or [], source_config.get("blocked_urls") or []

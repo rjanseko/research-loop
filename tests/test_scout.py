@@ -24,6 +24,7 @@ from research_loop.render import render_markdown
 from research_loop.scout import (
     RESCOUT_VERSION,
     ConfigError,
+    SourceRunError,
     StudyLabels,
     rescout_stored,
     scout,
@@ -321,7 +322,7 @@ async def test_fixed_ledger_synthesis_reuses_the_production_call(settings, pages
 
 
 async def test_fixed_ledger_synthesis_requires_claims(settings) -> None:
-    with pytest.raises(ValueError, match="no claims"):
+    with pytest.raises(SourceRunError, match="no claims"):
         await synthesize_stored({"id": "00000000-0000-0000-0000-000000000001",
                                  "workflow_version": "scout-v1", "question": "q",
                                  "plan": {"questions": [{"id": "q1", "question": "q"}]},

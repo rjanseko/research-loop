@@ -107,7 +107,13 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
 async def _synthesize(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .render import render_markdown
-    from .scout import ConfigError, StudyLabels, check_config, synthesize_stored
+    from .scout import (
+        ConfigError,
+        SourceRunError,
+        StudyLabels,
+        check_config,
+        synthesize_stored,
+    )
     from .store import PostgresStore, load_run
     from .study_budget import StudyBudget
     from .telemetry import configure_logfire
@@ -133,7 +139,7 @@ async def _synthesize(args: argparse.Namespace, settings: Settings) -> int:
         try:
             run = await synthesize_stored(source, settings=settings, store=PostgresStore(pool), study=study,
                                           budget=budget)
-        except ValueError as exc:
+        except SourceRunError as exc:
             print(f"Cannot synthesize: {exc}", file=sys.stderr)
             return 2
     record = run.to_record()
@@ -152,7 +158,13 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
 
     from .db import open_migrated_pool
     from .render import render_markdown
-    from .scout import ConfigError, StudyLabels, check_config, rescout_stored
+    from .scout import (
+        ConfigError,
+        SourceRunError,
+        StudyLabels,
+        check_config,
+        rescout_stored,
+    )
     from .store import PostgresStore, load_run
     from .study_budget import StudyBudget
     from .telemetry import configure_logfire
@@ -181,7 +193,7 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
         try:
             run = await rescout_stored(source, settings=settings, store=PostgresStore(pool), study=study,
                                        budget=budget)
-        except ValueError as exc:
+        except SourceRunError as exc:
             print(f"Cannot rescout: {exc}", file=sys.stderr)
             return 2
     record = run.to_record()

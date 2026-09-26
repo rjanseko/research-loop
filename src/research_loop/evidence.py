@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -333,11 +333,6 @@ _INLINE_CITATION = re.compile(r"\[\s*(s\d+(?:\s*[,;]\s*s\d+)*)\s*\]")
 def inline_source_ids(text: str) -> list[str]:
     """The source IDs a text cites inline, in order."""
     return [source_id for group in _INLINE_CITATION.findall(text) for source_id in re.findall(r"s\d+", group)]
-
-
-def rewrite_inline_citations(text: str, rewrite: Callable[[list[str]], str]) -> str:
-    """`text` with each inline citation replaced by `rewrite` of its source IDs."""
-    return _INLINE_CITATION.sub(lambda match: rewrite(re.findall(r"s\d+", match.group(1))), text)
 
 
 def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> str:
