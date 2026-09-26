@@ -70,3 +70,28 @@ Run costs exclude separate judge calls. On the completed st04 and st05 pairs, Op
 The first approved st07 Luna retry used a shared 429 pause but did not finish. After a successful $0.003876 planner call, the process exited with code 139 while four scouts were active; the kernel reported a fault in the native `etree` extension. The database has no settled scout costs for that attempt, so actual provider billing is unknown. Its run and four scout rows were marked abandoned. A four-worker offline HTML extraction stress check passed, leaving the exact triggering path unresolved; both page extraction and web search use `lxml`. Do not count this attempt as a quality result.
 
 The immediate reliability gate is to capture a Python fault trace on the next authorized live attempt and isolate the native parser failure. In parallel, use existing reports to build the versioned high-level evaluator and independent decisive-claim audit. Once that evaluation is calibrated, compare synthesizers on identical stored ledgers. Only then use another broad live run to decide whether Luna's short-case advantage extends to research synthesis.
+
+## Fixed-plan scout comparison on drb2-task8
+
+On 25 September 2026 the scouts were compared on one fixed plan, so that planning and synthesis could not account for the difference. `research rescout` (commit e424ad2) took the four-question plan of drb2-task8 baseline replicate 4 (`b61f1b55`) and researched it again without synthesis. Each rescout had the production research window of 270 seconds and was recorded in study `drb2-task8-scouts`. Arms alternated so that neither benefited more from the fetch cache. The eight rescouts cost $0.32 in total.
+
+| Arm | Cap | Questions with claims | Evidence | Verified quotes | Evidence from sources the tools did not return | Time | Cost |
+|---|---|---|---|---|---|---|---|
+| Luna high, r1 | $0.50 | 3/4 | 35 | 29/31 | 1 | 135 s | $0.044 |
+| Luna high, r2 | $0.50 | 2/4 | 22 | 20/22 | 0 | 108 s | $0.031 |
+| Luna high, r3 | $3.00 | 3/4 | 40 | 37/39 | 0 | 124 s | $0.042 |
+| Luna high, r4 | $3.00 | 3/4 | 25 | 24/24 | 0 | 137 s | $0.035 |
+| Flash max, r1 | $0.50 | 1/4 | 11 | 10/11 | 0 | 270 s | $0.041 |
+| Flash max, r2 | $0.50 | 0/4 | 0 | 0/0 | 0 | 270 s | $0.027 |
+| Flash high, r1 | $3.00 | 3/4 | 44 | 23/26 | 11 | 217 s | $0.045 |
+| Flash high, r2 | $3.00 | 3/4 | 41 | 32/33 | 20 | 221 s | $0.058 |
+
+Flash at max effort does not fit the window. Seven of its eight scouts were still running at the deadline after two to five requests each. Nearly all of that time was model time; the tools ran for about ten seconds per scout. This repeats the earlier screen's finding.
+
+None of Luna's missing questions reflects its research. At the $0.50 cap all three were refused by the budget guard. `byte-reserve-v3` reserved about $0.09 to $0.11 for each Luna request that cost about $0.003, and the reservations of four parallel scouts filled the cap. With the $3 cap, one question failed on an OpenAI 429 without a retry time. Another was lost when a single response asked for 165 distinct web searches; PydanticAI refused the whole batch against the tool-call limit of 40, so that scout ended with nothing.
+
+Flash at high effort finished every scout inside the window, but it used about 80% of it. Each run had one question for which Flash returned a conclusion and no claims, because it could not open the review article it judged decisive and put that under unresolved instead. Its ledgers held more evidence than Luna's, but 11 and 20 of those items cite sources its own tools did not return, against at most one for Luna. They also read fewer pages in full.
+
+On this plan the two usable arms answered the same number of questions. Luna did so in about 60% of the time, with fewer unobserved sources. Its failures came from the budget guard, provider rate limits, and one unbounded tool batch, all of which code can address. Luna remains the default scout. Grading ledgers from both arms would not change this without a coverage difference to explain, so no synthesis or grading was run.
+
+Two fixes follow. The budget guard should reserve closer to the actual price of cheap models, so that tight study caps stop refusing requests. A scout response with more tool calls than its remaining limit should lose the excess calls rather than the whole question.
