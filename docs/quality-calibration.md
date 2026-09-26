@@ -98,3 +98,23 @@ charged about $0.06. All four scouts returned claims from 19 sources, 18 read as
 abstracts, and the guard dispatched synthesis with room to spare. Anthropic rejected that request with
 HTTP 400 because the configured API key is not scoped to a workspace. The run is partial with no
 report. It confirms the settled reservations, but it is a credential failure, not a quality result.
+
+After the key was replaced, replicate 4, run `b61f1b55-ef3e-43c8-9e34-510df86b9061`, completed in 2.6
+minutes for $0.22, of which Opus synthesis was $0.17. All four questions returned evidence, and 38 of
+42 quotes were verified. The version-2 judge gave it 20 of 52 points (0.385) for $0.043, recorded as
+grade `214fb3be-136f-4cd7-89d7-f902ee470660`. Presentation met 3 of 3, analysis 5 of 12, and
+information recall 12 of 37.
+
+Most of the loss is in the database list, which met 4 of its 21 points. The report lists five
+computed-data platforms (Materials Project, AFLOW, OQMD, JARVIS, NOMAD). The rubric expects the
+experimental and specialist databases ICSD, the Cambridge Structural Database, the ASM Alloy Center, and
+DDSE, each with a description and URL. The method section names most expected algorithms but does not
+explain how reinforcement learning, GANs, genetic algorithms, Bayesian optimization, or topology
+optimization work in inverse design. Its advantages and disadvantages are source-specific rather than
+the general trade-offs the rubric names. At least one verdict looks too strict: the report lists NOMAD
+with its official URL, but the judge marked "Novel materials discovery" as absent because the report
+does not spell out the name. That is at most three points and does not change the picture.
+
+This is the first Scout score on a DRB-II case, so there is no earlier score to compare it with. The
+missing databases are the kind of material gap that `--follow-up` is meant to find, which makes a
+follow-up run on this case a direct test of that mode.
