@@ -45,10 +45,23 @@ def _work(work: ScholarWork) -> dict[str, Any]:
     return {"access": "abstract" if work.abstract else "metadata", **record}
 
 
+def valid_unicode(value: Any) -> Any:
+    """`value` with every string sendable as UTF-8. pypdf can extract a character outside the Basic
+    Multilingual Plane, such as a math italic letter, as two surrogate code points; the pair is joined, and a
+    lone surrogate becomes U+FFFD. One such PDF failed a scout's next request with UnicodeEncodeError."""
+    if isinstance(value, str):
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, dict):
+        return {key: valid_unicode(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [valid_unicode(item) for item in value]
+    return value
+
+
 def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
     async def web_search(query: str) -> dict[str, Any]:
         """Search the web. Returns titles, URLs, and short snippets (access: snippet); fetch a result to read it."""
-        result = await search.search(query)
+        result = valid_unicode(await search.search(query))
         return {"access": "snippet", **result} if "results" in result else result
 
     async def fetch(url: str, start: int = 0) -> dict[str, Any]:
@@ -56,7 +69,7 @@ def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarC
 
         When the result has `next_start`, call again with start=next_start to read further.
         """
-        result = await pages.fetch(url, start=start)
+        result = valid_unicode(await pages.fetch(url, start=start))
         return {"access": "full_text", **result} if "text" in result else result
 
     async def scholar_search(query: str, year_from: int | None = None, year_to: int | None = None,
@@ -64,13 +77,13 @@ def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarC
         """Search scholarly records (OpenAlex and arXiv). Each work says its access: `abstract` when it
         includes one, else `metadata`. Preprint and published records are separate works."""
         response = await scholar.search(query, year_from, year_to, limit)
-        return {"works": [_work(w) for w in response.works], "provider_errors": response.provider_errors,
-                "truncated": response.truncated}
+        return valid_unicode({"works": [_work(w) for w in response.works],
+                              "provider_errors": response.provider_errors, "truncated": response.truncated})
 
     async def scholar_get(identifier: str) -> dict[str, Any]:
         """Look up one work by DOI (10.xxx), OpenAlex ID (W123), or arXiv ID (2310.06770)."""
         response = await scholar.get(identifier)
-        return {"works": [_work(w) for w in response.works], "provider_errors": response.provider_errors}
+        return valid_unicode({"works": [_work(w) for w in response.works], "provider_errors": response.provider_errors})
 
     return FunctionToolset(tools=[web_search, fetch, scholar_search, scholar_get])
 

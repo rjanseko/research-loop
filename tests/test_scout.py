@@ -526,3 +526,17 @@ async def test_a_network_error_in_one_scout_leaves_the_rest_of_the_run(settings,
     cut = next(result for result in run.ledger.all() if result.question_id == "q2")
     assert cut.cut_off == "network error SSLError"
     assert reasons(run) == ["1 of 2 research questions returned no evidence"]
+
+
+async def test_an_unexpected_error_in_one_scout_leaves_the_rest_of_the_run(settings, pages) -> None:
+    def broken(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if _prompt(messages)["question"]["id"] == "q2":
+            "a\ud835".encode()
+        return researcher().function(messages, info)
+
+    run = await _run(settings, MemoryStore(), research=FunctionModel(broken))
+    assert run.status == "partial" and run.report is not None
+    assert sorted(run.ledger.claim_ids()) == ["q1/c1"]
+    cut = next(result for result in run.ledger.all() if result.question_id == "q2")
+    assert cut.cut_off == "unexpected error UnicodeEncodeError"
+    assert "research on q2 stopped on an unexpected error (UnicodeEncodeError); this is a bug" in run.notes

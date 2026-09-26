@@ -470,6 +470,12 @@ class _Run:
                         tool_seconds=lambda: toolset.seconds(question.id) - tool_seconds_before)
                 except _CALL_FAILURES as exc:
                     return _cut_off(question, attempt.messages, _reason(exc))
+                except Exception as exc:  # noqa: BLE001 - a bug in one scout must not discard the others' paid research
+                    # A UnicodeEncodeError from one PDF failed a run whose other three scouts had finished.
+                    logfire.exception("scout {question_id} stopped on an unexpected error", question_id=question.id)
+                    self.notes.append(f"research on {question.id} stopped on an unexpected error "
+                                      f"({type(exc).__name__}); this is a bug")
+                    return _cut_off(question, attempt.messages, f"unexpected error {type(exc).__name__}")
 
     async def _research(self, plan: ResearchPlan, deadline: float, toolset: TimedToolset) -> list[ResearchResult]:
         """Every question's result in plan order; questions still running at `deadline` are cut off."""
