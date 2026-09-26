@@ -1,8 +1,8 @@
 """Conservative per-command reservation before a paid study model request.
 
 The new study commands disable SDK retries and fallback. PydanticAI validation may still make a
-second request; this wrapper reserves before each one. A generous byte-to-token upper bound includes
-serialized messages, tool schemas, and framing. When a response returns with priced usage, its
+second request; this wrapper reserves before each one. The input bound starts from the last reply's
+billed tokens when there is one, and bounds the rest by bytes, including tool schemas and framing. When a response returns with priced usage, its
 reservation is replaced by the actual charge; a request that fails, or whose usage cannot be priced,
 keeps its full reservation because the provider may still have charged for it.
 """
@@ -28,9 +28,34 @@ from .prices import install_price_overrides
 # The former factor of four falsely refused observed ~100k-token Scout requests as >1M tokens.
 # v3 settles each returned request to its actual charge; v2 kept every reservation, so parallel
 # scouts could hold most of the cap and leave no room for synthesis.
-BUDGET_POLICY_VERSION = "byte-reserve-v3"
+# v4 anchors a request that follows a reply on that reply's billed tokens: the request resends the
+# prompt the provider already counted, plus the reply, plus what was added since, and only the
+# added part is bounded by its bytes. Scout requests run about 5.3 bytes per billed token, so v3's
+# two tokens per byte reserved about eleven times their input and falsely refused four Luna scouts
+# at a $0.50 cap (docs/high-level-study-evaluation.md).
+BUDGET_POLICY_VERSION = "usage-anchor-v4"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
+# Framing for the messages, tool definitions, and settings added since the anchoring reply.
+_FIXED_ADDED_TOKENS = 4_000
+
+
+def upper_input_tokens(messages: list[ModelMessage], parameters: ModelRequestParameters,
+                       settings: ModelSettings | None) -> int:
+    """An upper bound on a request's input tokens.
+
+    After a reply with billed input, the bound is that reply's input and output tokens plus one token
+    per byte of everything since, with the tool definitions and settings counted again in full. Before
+    one, it is two tokens per byte of the whole request plus fixed overhead. A guarded model wraps
+    one model without fallback, so the reply was counted by the same tokenizer.
+    """
+    extra = len(repr(parameters).encode()) + len(repr(settings).encode())
+    for index in range(len(messages) - 1, -1, -1):
+        reply = messages[index]
+        if isinstance(reply, ModelResponse) and reply.usage.input_tokens > 0:
+            added = len(ModelMessagesTypeAdapter.dump_json(messages[index + 1:])) + extra
+            return reply.usage.input_tokens + reply.usage.output_tokens + added + _FIXED_ADDED_TOKENS
+    return (len(ModelMessagesTypeAdapter.dump_json(messages)) + extra) * _BYTE_FACTOR + _FIXED_INPUT_TOKENS
 
 
 class StudyBudgetRefusal(RuntimeError):
@@ -59,12 +84,10 @@ class StudyBudget:
                                      provider_id=provider).total_price * 10
         except LookupError as exc:
             raise StudyBudgetRefusal(f"no price for {model_id}") from exc
-        serialized = ModelMessagesTypeAdapter.dump_json(messages)
-        request_bytes = len(serialized) + len(repr(parameters).encode()) + len(repr(settings).encode())
-        upper_input_tokens = request_bytes * _BYTE_FACTOR + _FIXED_INPUT_TOKENS
-        if upper_input_tokens > 1_000_000:
+        upper = upper_input_tokens(messages, parameters, settings)
+        if upper > 1_000_000:
             raise StudyBudgetRefusal("input exceeds the priced one-million-token reservation range")
-        charge = (max(input_rates) * upper_input_tokens + output_rate * max_output) / 1_000_000
+        charge = (max(input_rates) * upper + output_rate * max_output) / 1_000_000
         async with self._lock:
             if self.reserved_usd + charge > self.cap_usd:
                 raise StudyBudgetRefusal(

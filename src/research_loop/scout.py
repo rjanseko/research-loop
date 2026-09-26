@@ -71,7 +71,7 @@ from .agents import (
     scout_agent,
     synthesizer_agent,
 )
-from .budget_notes import TOOL_BATCH_SLACK, LoopBudget
+from .budget_notes import LoopBudget
 from .config import ScoutLimits, Settings
 from .evidence import (
     EvidenceLedger,
@@ -450,7 +450,7 @@ class _Run:
                         deps=Assignment(question, self.policy), toolsets=[toolset], capabilities=budget.capabilities(),
                         limits=UsageLimits(
                             request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,
-                            tool_calls_limit=productive + misses + TOOL_BATCH_SLACK),
+                            tool_calls_limit=budget.tool_call_limit),
                         attempt=attempt, finish=checked,
                         finished=lambda result: budget.finish_reason(result.usage.requests, result.all_messages()),
                         cancelled=lambda: ("the deep-dive deadline passed" if deep else

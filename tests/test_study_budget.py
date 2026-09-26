@@ -127,3 +127,26 @@ async def test_parallel_reservations_share_one_ceiling() -> None:
     )
     assert sum(isinstance(item, StudyBudgetRefusal) for item in results) == 1
     assert shared.reserved_usd == one
+
+
+def test_a_request_after_a_reply_is_bounded_from_its_billed_tokens() -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from research_loop.study_budget import upper_input_tokens
+
+    page = "x" * 50_000
+    history = [ModelRequest(parts=[UserPromptPart(page)]),
+               ModelResponse(parts=[ToolCallPart("fetch", {"url": "https://a.test"}, tool_call_id="t1")],
+                             usage=RequestUsage(input_tokens=12_000, output_tokens=300))]
+    added = ModelRequest(parts=[ToolReturnPart("fetch", "y" * 20_000, tool_call_id="t1")])
+    anchored = upper_input_tokens([*history, added], ModelRequestParameters(), {"max_tokens": 100})
+    # The first 50 kB are counted as billed, not re-estimated at two tokens per byte.
+    assert 12_300 + 20_000 < anchored < 12_300 + 30_000
+    # Without billed usage, the whole request falls back to the byte bound.
+    unbilled = [history[0], ModelResponse(parts=history[1].parts), added]
+    assert upper_input_tokens(unbilled, ModelRequestParameters(), {"max_tokens": 100}) > 2 * 70_000

@@ -19,13 +19,16 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic_ai import RunContext
-from pydantic_ai.capabilities import PrepareTools, ProcessHistory
+from pydantic_ai.capabilities import Hooks, PrepareTools, ProcessHistory
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
+    ModelResponse,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import ToolDefinition
 
 from .tools import productive
@@ -51,6 +54,16 @@ PARALLEL = "Put independent searches and fetches in one turn as parallel tool ca
 NARROW = (
     "The last batch mostly missed. Use one or two broader searches, without quotes or site: operators, "
     "and fetch only addresses a search returned. "
+)
+
+
+# How far past its productive and miss budgets a loop's framework limit sits: tools are withdrawn once a
+# budget is spent, but a parallel batch asked for just before then still runs, instead of the whole loop
+# failing on the limit. The sixth settings-study pilot's broad scout failed that way at request 17.
+TOOL_BATCH_SLACK = 12
+DROPPED_NOTE = (
+    NOTE_PREFIX + "Only the first {kept} of the {asked} tool calls in your last turn ran; the rest were dropped "
+    "because they exceeded your tool-call limit."
 )
 
 
@@ -86,6 +99,11 @@ class LoopBudget:
     # would be cut off, and a cutoff keeps no claims.
     time_left: Callable[[], float] | None = None
     return_within: float = 0
+
+    @property
+    def tool_call_limit(self) -> int:
+        """The framework's limit on the loop's tool calls: its budgets plus `TOOL_BATCH_SLACK`."""
+        return self.max_productive + self.max_misses + TOOL_BATCH_SLACK
 
     def closing(self) -> bool:
         """Whether the next request must be the result so it can finish before the research deadline."""
@@ -134,24 +152,36 @@ class LoopBudget:
         return "returned on its own"
 
     def capabilities(self) -> list[Any]:
-        """A note on each request, and no tools once a budget is spent, so the loop returns its result
-        with its whole history in view instead of being cut off."""
+        """A note on each request, no tools once a budget is spent, and no more tool calls in a turn than
+        the limit leaves, so the loop returns its result with its whole history in view instead of being
+        cut off. PydanticAI refuses a whole turn that would pass the limit: one Luna turn asked for 165
+        searches against 40 and lost its question."""
+        dropped: list[tuple[int, int]] = []  # (kept, asked) for the latest trimmed turn, until it is noted
+
         def add_note(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
             if not messages or not isinstance(last := messages[-1], ModelRequest):
                 return messages
             if any(isinstance(part, UserPromptPart) and isinstance(part.content, str)
                    and part.content.startswith(NOTE_PREFIX) for part in last.parts):
                 return messages  # already noted
-            note = self.note(ctx.usage.requests, tool_yield(messages))
-            return [*messages[:-1], replace(last, parts=[*last.parts, UserPromptPart(note)])]
+            notes = [UserPromptPart(DROPPED_NOTE.format(kept=kept, asked=asked)) for kept, asked in dropped]
+            dropped.clear()
+            notes.append(UserPromptPart(self.note(ctx.usage.requests, tool_yield(messages))))
+            return [*messages[:-1], replace(last, parts=[*last.parts, *notes])]
 
         async def withdraw(ctx: RunContext[Any], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
             return [] if self.spent(ctx.usage.requests, ctx.messages) else tool_defs
 
-        return [ProcessHistory(add_note), PrepareTools(withdraw)]
+        def trim(ctx: RunContext[Any], /, *, request_context: ModelRequestContext,
+                 response: ModelResponse) -> ModelResponse:
+            names = {tool.name for tool in request_context.model_request_parameters.function_tools}
+            calls = [part for part in response.parts if isinstance(part, ToolCallPart) and part.tool_name in names]
+            left = self.tool_call_limit - ctx.usage.tool_calls
+            if len(calls) <= left or left <= 0:
+                return response
+            excess = {id(part) for part in calls[left:]}
+            dropped.append((left, len(calls)))
+            return replace(response, parts=[part for part in response.parts if id(part) not in excess])
 
+        return [ProcessHistory(add_note), PrepareTools(withdraw), Hooks(after_model_request=trim)]
 
-# How far past its productive and miss budgets a loop's framework limit sits: tools are withdrawn once a
-# budget is spent, but a parallel batch asked for just before then still runs, instead of the whole loop
-# failing on the limit. The sixth settings-study pilot's broad scout failed that way at request 17.
-TOOL_BATCH_SLACK = 12
