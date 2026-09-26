@@ -3,8 +3,9 @@
 genai-prices has no price for some models and a wrong one for others. A model without a price
 has no cost_usd, so no cost cap holds on it; a model priced too low lets a cap through at a
 multiple of what it names. `prices.toml` lists the corrections, and `install_price_overrides`
-applies them to the process-wide price data. `AsyncResearchLoop` and `research-diagnose` call
-it, so every run and every price check sees the corrected prices.
+applies them to the process-wide price data. `price_per_million`, which every run's configuration
+check and `research doctor` use, and the study budget guard call it, so every run and every price
+check sees the corrected prices.
 """
 from __future__ import annotations
 

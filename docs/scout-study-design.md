@@ -1,6 +1,6 @@
 # First Scout study design
 
-This is a proposed study, not authorization to run it. It is based solely on feedback.md, dated 25 September 2026. Model prices, measurements, and implementation descriptions below are supplied by that briefing; they have not been independently verified against the repository or providers. No paid calls or implementation changes were made while preparing this design.
+This is a proposed study, not authorization to run it. It is based solely on the briefing in scout-study-briefing.md, dated 25 September 2026. Model prices, measurements, and implementation descriptions below are supplied by that briefing; they have not been independently verified against the repository or providers. No paid calls or implementation changes were made while preparing this design.
 
 ## What the briefing changes
 

@@ -16,7 +16,7 @@ make test    # pytest, offline
 The test suite needs no API keys or network access. `tests/conftest.py` blocks model-provider
 requests and any non-loopback host. Script models with `FunctionModel`, and serve fetches with the
 `serve` and `public_urls` fixtures. The Postgres tests are skipped unless `RESEARCH_TEST_DATABASE_URL` names
-a database whose name contains `test`; see the top of `tests/test_postgres.py`.
+a database whose name contains `test`; see the top of `tests/test_store.py`.
 
 CI runs lint, the full test suite against Postgres, a lockfile check, and a wheel install on every
 pull request, including ones from forks. If you change dependencies in `pyproject.toml`, run
@@ -28,9 +28,10 @@ pull request, including ones from forks. If you change dependencies in `pyprojec
 document to update with each kind of change. It applies to human contributors as well as coding
 agents. The main points:
 
-- Keep the public `ResearchLoop.run(...)` contract working.
-- Change prompts and role calls in `AsyncResearchLoop`, not in a graph step. Any change to a
-  prompt the model sees counts as a behavior change, so say so in the pull request.
+- Keep the `research` command and the `scout(...)` function in `scout.py` working as documented.
+- Role instructions live in `prompts.py` and the agents in `agents.py`. Any change to text a
+  model sees, including the scouts' budget notes, counts as a behavior change, so say so in the
+  pull request.
 - Update the matching document in `docs/` along with the code.
 - Never commit `.env` files, API keys, or benchmark inputs.
 
