@@ -63,6 +63,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     case_identity = None
     if case:
         case_identity = frozen_case_identity(case)
+        if case.metadata.get("role") == "held-out":
+            print(f"{case.id} is a held-out case: run it to confirm a change, not while tuning one.", file=sys.stderr)
     cost = limits.followup_cost_usd if args.follow_up else limits.cost_usd
     seconds = limits.followup_deadline_seconds if args.follow_up else limits.deadline_seconds
     mode = "Scout with gap analysis and one deep dive" if args.follow_up else "Scout"
