@@ -509,3 +509,20 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     assert not dispatched and budget.reserved_usd == 0 and not runner.unpriced
     call = next(iter(store.calls.values()))
     assert call["role"] == "planner" and call["error"]["type"] == "StudyBudgetRefusal"
+
+
+async def test_a_network_error_in_one_scout_leaves_the_rest_of_the_run(settings, pages) -> None:
+    import ssl
+
+    def flaky(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if _prompt(messages)["question"]["id"] == "q2":
+            raise ssl.SSLError("[SSL: SSLV3_ALERT_BAD_RECORD_MAC] sslv3 alert bad record mac")
+        return researcher().function(messages, info)
+
+    store = MemoryStore()
+    run = await _run(settings, store, research=FunctionModel(flaky))
+    assert run.status == "partial" and run.report is not None
+    assert sorted(run.ledger.claim_ids()) == ["q1/c1"]
+    cut = next(result for result in run.ledger.all() if result.question_id == "q2")
+    assert cut.cut_off == "network error SSLError"
+    assert reasons(run) == ["1 of 2 research questions returned no evidence"]

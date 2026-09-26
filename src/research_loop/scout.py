@@ -119,9 +119,11 @@ FOLLOWUP_VERSION = "scout-followup-v1"
 RESCOUT_VERSION = "scout-research-v1"
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
-# not clear, a refusal, output that failed its checks twice, or a deadline.
+# not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
+# The OpenAI client raised a TLS `SSLError` (an OSError) from one scout's request unwrapped, which failed a
+# run whose other three scouts had finished.
 _CALL_FAILURES = (UsageLimitExceeded, ModelAPIError, ContentFilterError, UnexpectedModelBehavior,
-                  TimeoutError, StudyBudgetRefusal)
+                  TimeoutError, StudyBudgetRefusal, OSError)
 # How long recording a failed or cancelled call may take before it is given up.
 _RECORD_SECONDS = 5
 # Planning gets this long before the question is researched as one, so a slow plan cannot use up the scouts' time.
@@ -274,6 +276,8 @@ def _reason(exc: BaseException) -> str:
         return "the model's output failed its checks twice"
     if isinstance(exc, TimeoutError | asyncio.CancelledError):
         return "the research deadline passed"
+    if isinstance(exc, OSError):
+        return f"network error {type(exc).__name__}"
     return type(exc).__name__
 
 
