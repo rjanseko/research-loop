@@ -1,6 +1,6 @@
 # Repository instructions
 
-This repository implements Scout, a benchmarkable PydanticAI research workflow: a planner splits a question into research questions, parallel scouts research them, code checks their evidence, and a synthesizer writes a cited report. An opt-in follow-up adds one gap analysis and one deep dive before synthesis.
+This repository implements Scout, a benchmarkable PydanticAI research workflow: a planner splits a question into research questions, parallel scouts research them, code checks their evidence, and a synthesizer writes a cited report. The planner also chooses a depth that sets the run's limits, and a follow-up, opt-in or chosen by a deep plan, adds one gap analysis and up to three parallel deep dives before synthesis.
 
 ## Architectural boundaries
 

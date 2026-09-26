@@ -2,8 +2,9 @@
 
 A normal run has three steps, each bounded:
 
-1. The planner splits the question into one to `max_questions` research questions. If planning fails,
-   the whole question is researched as one.
+1. The planner chooses a depth (quick, standard, or deep), whose limits the run then takes, and splits
+   the question into at most that depth's number of research questions. If planning fails, the whole
+   question is researched as one.
 2. A scout researches each question with the web and scholarly tools, all at once up to
    `parallel_scouts`. Each scout is its own call with its own limits. When less than one request
    timeout remains, it is told to return and loses its tools, so it can write the claims it has.
@@ -13,17 +14,19 @@ A normal run has three steps, each bounded:
 3. The synthesizer writes the report from the evidence ledger. If it cannot finish, the run returns the
    ledger's claims without a written answer.
 
-Opt-in follow-up mode inserts a material-gap analysis after step 2 and up to `max_gaps` targeted deep dives,
-run in parallel, then synthesizes the enlarged ledger. It has a separate dollar and time envelope.
+Follow-up mode, opt-in or chosen by a deep plan, inserts a material-gap analysis after step 2 and up to
+`max_gaps` targeted deep dives, run in parallel, then synthesizes the enlarged ledger. It has a separate
+dollar and time envelope.
 
-Dollars are allocated before the run starts: the planner's share, the synthesizer's share, and the rest
+Dollars are allocated once the plan sets the depth: the planner's share, the synthesizer's share, and the rest
 split evenly across the scouts. Each call's share is its PydanticAI `cost_limit`, checked before every
 request, so a call can pass its share by at most the one request that crossed it. Time is bounded by
 `research_seconds` for the scouts and `deadline_seconds` for the whole run, and each model request by
 `request_timeout_seconds`. A scout's provider client does not retry a request that hits that timeout.
 
 Every call is recorded in the run store with its usage, cost, output, and messages, and the whole run is
-one Logfire trace carrying the run ID.
+one Logfire trace carrying the run ID. `rescout_stored` and `synthesize_stored` repeat one step of a stored
+run, and every kind of run is recorded through `_Run._recorded`.
 """
 from __future__ import annotations
 

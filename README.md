@@ -289,7 +289,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 
 | Module in `src/research_loop/` | What it does |
 |---|---|
-| `scout.py` | The workflow: allocate the budget, plan, scout, check, optionally analyze a gap and dive, synthesize; also fixed-ledger synthesis and fixed-plan rescouts |
+| `scout.py` | The workflow: plan and choose a depth, take its budget, scout, check, optionally analyze gaps and dive, synthesize; also fixed-ledger synthesis and fixed-plan rescouts |
 | `agents.py`, `prompts.py` | The planner, scout, gap analyzer, and synthesizer agents, their instructions, and their output checks |
 | `tools.py`, `web.py`, `scholar.py`, `acquisition.py` | The research tools, page and PDF extraction, the public-HTTPS fetch guard, and the cache |
 | `evidence.py`, `schemas.py` | The evidence ledger, the quote and source checks, and the data types |
@@ -299,6 +299,8 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `store.py`, `db.py`, `migrations/` | Run records in Postgres or memory, and the schema |
 | `render.py`, `cli.py`, `doctor.py`, `telemetry.py`, `breakdown.py` | Reports, the `research` command, setup checks, Logfire, and cost and time breakdowns |
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
+
+In `scripts/`, `bootstrap.sh` sets up the environment, `import_drb2.py` freezes DeepResearch Bench II tasks as study cases, and `ledger_coverage.py` counts how much of a development case's expected set a run's research found, without a model call.
 
 The `docs/` folder holds the project's records. `lessons.md` records what the first design taught. `quality-calibration.md` and `high-level-study-evaluation.md` record the evaluator calibration and every graded study run with its run IDs and costs. `scout-study-briefing.md` and `scout-study-design.md` are the briefing and proposed design for the first Scout study.
 
