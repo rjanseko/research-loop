@@ -140,3 +140,18 @@ one baseline run and two follow-up runs, this cannot separate the mode's effect 
 this case the gap analyzer treats the database question as complete once it holds a few computed-data
 platforms. It does not look for the experimental and specialist databases the expert report lists. Those
 account for 12 of the 21 database points, and no run found them.
+
+The first `drb2-task68-plus` baseline, run `88b6017b-f889-485c-ad21-8347d91c73e6`, completed in 4.8
+minutes for $0.23. All four questions returned evidence, 37 of 42 quotes were verified, and pacing
+kept it free of rate-limit errors. The same judge gave it 14 of 54 points (0.259), recorded as grade
+`8ba2bd7c-bdf2-4ac9-8eed-75db6301e532`. Presentation met 5 of 7, analysis 2 of 9, and information
+recall 7 of 38.
+
+The report follows the requested structure, with the reactive and proactive sections and each named
+challenge as a heading, but its taxonomy stops short. It covers threshold rules and general machine
+learning. It mentions queuing theory and reinforcement learning only in passing, and it omits fuzzy
+logic and time-series methods. Twenty-three of the 38 recall points ask for specific named papers,
+which suggests the expert report follows one survey closely. Open-web research is unlikely to land on
+those exact papers, so this case caps Scout's score lower than drb2-task8 does. The shared pattern is
+the one drb2-task8 showed: the research finds some members of the expected set and stops short of the
+full set, and the gap analysis cannot see what is missing without a checklist.
