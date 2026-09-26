@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from decimal import Decimal
 from pathlib import Path
@@ -32,32 +33,64 @@ def _record_from_row(row: dict[str, Any]) -> dict[str, Any]:
             "error": row["error"]}
 
 
-async def _scout(args: argparse.Namespace, settings: Settings) -> int:
+def _checked(settings: Settings, study: str | None) -> Settings | None:
+    """`settings` for a paid command, with its study's cache when it has one, or None after saying why the
+    configured models cannot run."""
+    from .scout import ConfigError, check_config
+
+    try:
+        if study:
+            settings = settings.for_study(study)
+        check_config(settings)
+    except (ConfigError, ValueError) as exc:
+        print(f"Cannot run: {exc}", file=sys.stderr)
+        return None
+    return settings
+
+
+def _start_tracing(settings: Settings) -> None:
     import faulthandler
 
+    from .telemetry import configure_logfire
+
+    # A native parser fault otherwise leaves only exit 139 and unfinished rows.
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    configure_logfire(settings)
+
+
+def _report(run: Any, out: Path | None, summary: str) -> int:
+    """Print a finished run as Markdown, write it to `out` when given, and end with `summary`."""
+    from .render import render_markdown
+
+    record = run.to_record()
+    markdown = render_markdown(record)
+    print(markdown)
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "report.md").write_text(markdown, encoding="utf-8")
+        (out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Wrote {out / 'report.md'} and {out / 'run.json'}", file=sys.stderr)
+    print(summary, file=sys.stderr)
+    return 1 if run.status == "failed" else 0
+
+
+async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evals import case_identity as frozen_case_identity
     from .evals import find_case
-    from .render import render_markdown
-    from .scout import ConfigError, StudyLabels, check_config, scout
+    from .scout import StudyLabels, scout
     from .store import MemoryStore, PostgresStore
     from .study_budget import StudyBudget
-    from .telemetry import configure_logfire
 
     try:
         case = find_case(args.case) if args.case else None
-        if args.study:
-            settings = settings.for_study(args.study)
-        check_config(settings)
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:
         print(exc.args[0], file=sys.stderr)
         return 2
-    except ConfigError as exc:
-        print(f"Cannot run: {exc}", file=sys.stderr)
+    if (checked := _checked(settings, args.study)) is None:
         return 2
-    # A native parser fault otherwise leaves only exit 139 and unfinished scout rows.
-    faulthandler.enable(file=sys.stderr, all_threads=True)
-    configure_logfire(settings)
+    settings = checked
+    _start_tracing(settings)
     limits, models = settings.limits, settings.models
     budget = StudyBudget(args.max_usd) if args.max_usd is not None else None
     question = case.objective if case else args.question
@@ -90,122 +123,57 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
         run = await scout(question, settings=settings, store=store, notes=args.note, blocked_urls=blocked,
                           study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity,
                           depth=depth)
-    record = run.to_record()
-    markdown = render_markdown(record)
-    print(markdown)
-    if args.out:
-        args.out.mkdir(parents=True, exist_ok=True)
-        (args.out / "report.md").write_text(markdown, encoding="utf-8")
-        (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"Wrote {args.out / 'report.md'} and {args.out / 'run.json'}", file=sys.stderr)
     stored = "stored" if isinstance(store, PostgresStore) else "not stored (no DATABASE_URL, or --no-persist)"
-    print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.2f}, {run.seconds / 60:.1f} minutes, {stored}.",
-          file=sys.stderr)
-    return 1 if run.status == "failed" else 0
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.2f}, "
+                                  f"{run.seconds / 60:.1f} minutes, {stored}.")
+
+
+async def _rerun(args: argparse.Namespace, settings: Settings, *, role: str, verb: str,
+                 rerun: Callable[..., Awaitable[Any]], describe: Callable[[Settings, Any], str]) -> int:
+    """A paid command that repeats one step of a stored run with the model in `--model` for `role`."""
+    from .db import open_migrated_pool
+    from .scout import SourceRunError, StudyLabels
+    from .store import PostgresStore, load_run
+    from .study_budget import StudyBudget
+
+    settings = settings.model_copy(update={"models": settings.models.model_copy(update={role: args.model})})
+    if (checked := _checked(settings, args.study)) is None:
+        return 2
+    settings = checked
+    _start_tracing(settings)
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        source = await load_run(pool, args.source_run_id)
+        if source is None:
+            print(f"No source run {args.source_run_id}", file=sys.stderr)
+            return 1
+        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
+        budget = StudyBudget(args.max_usd)
+        print(describe(settings, budget) + "; this is a paid run.", file=sys.stderr)
+        try:
+            run = await rerun(source, settings=settings, store=PostgresStore(pool), study=study, budget=budget)
+        except SourceRunError as exc:
+            print(f"Cannot {verb}: {exc}", file=sys.stderr)
+            return 2
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}, "
+                                  f"{run.seconds / 60:.1f} minutes; source {args.source_run_id}.")
 
 
 async def _synthesize(args: argparse.Namespace, settings: Settings) -> int:
-    from .db import open_migrated_pool
-    from .render import render_markdown
-    from .scout import (
-        ConfigError,
-        SourceRunError,
-        StudyLabels,
-        check_config,
-        synthesize_stored,
-    )
-    from .store import PostgresStore, load_run
-    from .study_budget import StudyBudget
-    from .telemetry import configure_logfire
+    from .scout import synthesize_stored
 
-    settings = settings.model_copy(update={"models": settings.models.model_copy(
-        update={"synthesizer": args.model})})
-    try:
-        check_config(settings)
-    except ConfigError as exc:
-        print(f"Cannot run: {exc}", file=sys.stderr)
-        return 2
-    configure_logfire(settings)
-    async with AsyncExitStack() as stack:
-        pool = await open_migrated_pool(stack, settings.database_dsn)
-        source = await load_run(pool, args.source_run_id)
-        if source is None:
-            print(f"No source run {args.source_run_id}", file=sys.stderr)
-            return 1
-        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
-        budget = StudyBudget(args.max_usd)
-        print(f"Fixed-ledger synthesis: {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap; "
-              f"this is a paid run.", file=sys.stderr)
-        try:
-            run = await synthesize_stored(source, settings=settings, store=PostgresStore(pool), study=study,
-                                          budget=budget)
-        except SourceRunError as exc:
-            print(f"Cannot synthesize: {exc}", file=sys.stderr)
-            return 2
-    record = run.to_record()
-    markdown = render_markdown(record)
-    print(markdown)
-    if args.out:
-        args.out.mkdir(parents=True, exist_ok=True)
-        (args.out / "report.md").write_text(markdown, encoding="utf-8")
-        (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}; source {args.source_run_id}.", file=sys.stderr)
-    return 1 if run.status == "failed" else 0
+    return await _rerun(args, settings, role="synthesizer", verb="synthesize", rerun=synthesize_stored,
+                        describe=lambda settings, budget: (f"Fixed-ledger synthesis: {args.model}, "
+                                                           f"${budget.cap_usd:.2f} pre-dispatch cap"))
 
 
 async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
-    import faulthandler
+    from .scout import rescout_stored
 
-    from .db import open_migrated_pool
-    from .render import render_markdown
-    from .scout import (
-        ConfigError,
-        SourceRunError,
-        StudyLabels,
-        check_config,
-        rescout_stored,
-    )
-    from .store import PostgresStore, load_run
-    from .study_budget import StudyBudget
-    from .telemetry import configure_logfire
-
-    settings = settings.model_copy(update={"models": settings.models.model_copy(update={"scout": args.model})})
-    try:
-        if args.study:
-            settings = settings.for_study(args.study)
-        check_config(settings)
-    except (ConfigError, ValueError) as exc:
-        print(f"Cannot run: {exc}", file=sys.stderr)
-        return 2
-    faulthandler.enable(file=sys.stderr, all_threads=True)
-    configure_logfire(settings)
-    async with AsyncExitStack() as stack:
-        pool = await open_migrated_pool(stack, settings.database_dsn)
-        source = await load_run(pool, args.source_run_id)
-        if source is None:
-            print(f"No source run {args.source_run_id}", file=sys.stderr)
-            return 1
-        study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
-        budget = StudyBudget(args.max_usd)
-        print(f"Fixed-plan research: scouts {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap, "
-              f"{settings.limits.research_seconds / 60:.1f} minutes, cache {settings.cache_dir} ({settings.cache_mode}); "
-              "this is a paid run.", file=sys.stderr)
-        try:
-            run = await rescout_stored(source, settings=settings, store=PostgresStore(pool), study=study,
-                                       budget=budget)
-        except SourceRunError as exc:
-            print(f"Cannot rescout: {exc}", file=sys.stderr)
-            return 2
-    record = run.to_record()
-    markdown = render_markdown(record)
-    print(markdown)
-    if args.out:
-        args.out.mkdir(parents=True, exist_ok=True)
-        (args.out / "report.md").write_text(markdown, encoding="utf-8")
-        (args.out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}, {run.seconds / 60:.1f} minutes; "
-          f"source {args.source_run_id}.", file=sys.stderr)
-    return 1 if run.status == "failed" else 0
+    return await _rerun(args, settings, role="scout", verb="rescout", rerun=rescout_stored,
+                        describe=lambda settings, budget: (
+                            f"Fixed-plan research: scouts {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap, "
+                            f"cache {settings.cache_dir} ({settings.cache_mode})"))
 
 
 async def _show(args: argparse.Namespace, settings: Settings) -> int:
