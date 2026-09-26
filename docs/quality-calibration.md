@@ -118,3 +118,25 @@ does not spell out the name. That is at most three points and does not change th
 This is the first Scout score on a DRB-II case, so there is no earlier score to compare it with. The
 missing databases are the kind of material gap that `--follow-up` is meant to find, which makes a
 follow-up run on this case a direct test of that mode.
+
+Two follow-up runs were then graded with the same judge. The first, `f157f38f-58b2-4ba2-9e08-fb42e4aac001`,
+cost $0.28. Its database scout was lost to an OpenAI token-rate 429, and the gap analysis spent the deep
+dive on that question. The deep dive found ICSD, COD, and Materials Cloud. It scored 24 of 52 (0.462),
+grade `e4c4247c-be2c-4ced-9bfa-6c09e67d74bf`. After scout pacing (commit bc749a7), the second attempt,
+`fbe4997b-e6aa-447b-b697-b6ff0e7971b0`, failed on an unwrapped TLS error from one scout after spending
+$0.047; commit 819d03c makes such an error end only its own call. The third, `302403c4-4cf5-4d35-94e6-c263c70c0663`,
+cost $0.27 and had no rate-limit errors. All four scouts returned claims, and the gap analysis
+chose to confirm NOMAD. It scored 21 of 52 (0.404), grade `6451fddf-6390-4c5d-91ac-5daf17b0d080`.
+
+| Run | Points | ICSD points | Other differences from replicate 4 |
+|---|---|---|---|
+| Replicate 4, no follow-up | 20 | 0 of 3 | |
+| Follow-up 1 | 24 | 3 of 3 | +3 method points; −2 database URLs, −1 presentation |
+| Follow-up 3 | 21 | 0 of 3 | +2 NOMAD points; −1 analysis point |
+
+The follow-up gained most when its deep dive recovered a named database that the rubric wanted. Otherwise,
+the gain was about the size of the run-to-run variation, which moves method and URL points either way. With
+one baseline run and two follow-up runs, this cannot separate the mode's effect from that variation. On
+this case the gap analyzer treats the database question as complete once it holds a few computed-data
+platforms. It does not look for the experimental and specialist databases the expert report lists. Those
+account for 12 of the 21 database points, and no run found them.
