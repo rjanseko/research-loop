@@ -230,7 +230,7 @@ Second, a scout researches each question at the same time. A scout is a model wi
 - a scholarly search over OpenAlex and arXiv;
 - a lookup of one scholarly record by DOI, OpenAlex ID, or arXiv ID, which also draws on Crossref.
 
-The fetcher reads pages up to 5 MB and PDFs up to 25 MB, and extracts a PDF's first 30 pages. Search results from blocked sources are left out, so a blocked page never reaches a scout even as a snippet.
+The fetcher reads pages up to 5 MB and PDFs up to 25 MB, and extracts a PDF's first 30 pages. Search results and scholarly records from blocked sources are left out, so a blocked page never reaches a scout even as a snippet or an abstract.
 
 A scout returns claims. Each claim carries evidence: a source, a summary of what the source says, and the exact passage the claim rests on.
 
@@ -242,7 +242,7 @@ Third, a synthesizer writes the report from the ledger. It sees only the checked
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish. A deep dive researches each one in parallel, with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run. The run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
 
-Tool output is treated as untrusted data. The prompts say so, the fetcher only reads public HTTPS addresses and refuses private and loopback hosts, and blocked URLs are refused by every tool and rejected as evidence.
+Tool output is treated as untrusted data. The prompts say so, the fetcher only reads public HTTPS addresses and refuses private and loopback hosts, and blocked sources are refused by every tool and rejected as evidence. A blocked source is matched by its address, and also by the DOI or arXiv ID that a blocked address names: a copy at another address that carries the DOI, a scholarly record with that DOI, and evidence that cites the DOI alone are all blocked. A copy that carries neither the address nor the identifier, such as a mirror under its own ID, is not recognized, so a blocked list should name the source's DOI when it has one.
 
 ### Coverage
 
@@ -324,7 +324,7 @@ What leaves your machine:
 - **To model providers:** everything a role's prompt contains, which includes text the tools returned.
 - **To search and reading services:** queries, and the addresses of pages our fetch could not read.
 - **To the pages themselves:** a fetch goes straight to the page's address, and the scholarly indexes see the identifiers looked up.
-- **Nothing for blocked sources:** a blocked URL is refused before any request, and blocked sources are dropped from search results.
+- **Nothing for blocked sources:** a blocked URL or scholarly identifier is refused before any request, and blocked sources are dropped from search results and scholarly records.
 - **Not your keys:** traces never capture request headers, and secret query parameters such as OpenAlex's `api_key` are redacted.
 - **Exa retention:** Exa's documentation lists `/search` among its zero-data-retention endpoints.
 
@@ -467,10 +467,10 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 `research study run SPEC.toml` runs a whole study from a spec, in this way:
 - every arm, case or stored run, and replicate runs one at a time;
 - each arm goes first on alternate replicates;
-- each run has its hard cap, and arms at other git refs run from temporary worktrees;
+- each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
 - when the spec says so, each run is graded (`grade = true`) and audited (`audit = true`).
 
-It refuses a spec whose planned runs could cost more than its ceiling by their estimates, and stops before any run that could take actual spend past the ceiling. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
+It refuses a spec whose planned runs could cost more than its ceiling by their estimates. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
 
 Every run records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent. A run labeled with `--study` keeps its searches, pages, and scholarly records in `.cache/studies/NAME` in `reuse` mode. A lookup any run of the study has made returns the same answer to every later run, on any day, which removes changes in the web from a comparison. The models themselves cannot be made deterministic, so arms still need repeated runs.
 

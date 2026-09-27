@@ -24,6 +24,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Exa against DuckDuckGo: comparison checks](#2026-09-27-exa-against-duckduckgo-dry-and-cheap-checks-of-the-comparison-specs) | $0.39 | Exa's uncapped highlights flood the scouts' context; the comparison is held |
 | 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | $0.10 and free-tier credits | A chain of our fetcher, open access, Exa, and Firecrawl reads 139 of 160 failed pages |
 | 09-27 | [Reading fallback: dry and cheap checks](#2026-09-27-reading-fallback-dry-and-cheap-checks) | $0.17 | A screen: with the fallback, failed page fetches fell from 12 to 0 on st07 and from 10 to 1 on drb2-task8 |
+| 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap. Both fixed |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -408,3 +409,30 @@ The reading fallback (commit cde6465, `RESEARCH_READ_FALLBACK=oa,exa,firecrawl`)
 
 The fallback did what it is for: on the two cases where our fetcher failed pages, it read them, with 12 and 10 failures falling to 0 and 1, for $0.002 and $0.014 of paid reads. On st04 our fetcher read everything, so the fallback never ran. Whether reading those pages makes reports better is the paid comparison's question.
 
+## 2026-09-27 Architectural audit: blocked sources and the study ceiling
+
+An outside review by gpt-6-astra of commit 1f9233a is kept as [architectural-audit-2026-09-27.md](architectural-audit-2026-09-27.md). It lists eleven findings, F01 to F11, each with an offline counterexample. All 15 of its counterexamples still reproduced on 41f7600. This entry covers the first two findings fixed, F05 and F06. The others are still open.
+
+**Blocked expert reports reached scouts through paths the block list did not cover (F06).** The web search and fetch tools matched a case's blocked list by address only. `scholar_search` and `scholar_get` did not apply it at all, and the scouts' evidence check looked only at a source's URL. A free scan of the stored runs found three paths:
+- **Scholarly records.** drb2-task8's blocked review (DOI 10.32604/cmc.2025.060109) was returned by a scholarly tool five times, in scout-research-v1 and v3 runs. drb2-task68-plus's blocked review was returned by `scholar_search` 42 times in scout-v1 and scout-research-v1 to v3 runs. Scouts then searched for it by its title, but no ledger cites it.
+- **A copy at another address.** The drb2-task8 review was read in full five times from `cdn.techscience.cn`, whose address names neither a blocked entry nor the DOI. The last time was in scout-research-v3.
+- **A copy whose address carries the DOI.** `sciopen.com/article/10.32604/cmc.2025.060109` appeared ten times in web search results, four of them in a scout-followup-v9 run.
+
+Five ledgers cite the drb2-task8 review by its DOI:
+- 9d2ac887, 5901c846, and fb9d1fce: scout-research-v1, study drb2-task8-scouts;
+- f157f38f: scout-followup-v1, study drb2-pilot;
+- 6337ed01: scout-research-v3, study scout-v3-screen.
+
+No ledger at scout-v6 or later cites it. So the drb2-task8 coverage figures of the fixed-plan scout comparison (25 September) and the scout-v3 screen (26 September) may be slightly inflated. This scan did not measure by how much. The blocked reports of drb2-task82, drb2-task59, and drb2-task78 were not found in any tool result.
+
+What changed, in fetch version 12:
+- A blocked source is matched by its address, and also by the DOI or arXiv ID that a blocked address names.
+- A fetched document whose first page prints a blocked DOI is refused, including a copy already in a study's cache.
+- The scholarly tools refuse a blocked lookup and leave blocked records out.
+- A scout's evidence that cites a blocked work by DOI alone is refused.
+
+Replayed over the stored tool results of the 37 runs with a blocked list, the new policy catches all 47 scholarly records, the five full reads from the CDN, and the ten sciopen results. A copy that carries neither the address nor the DOI, anywhere in its first page, is still not recognized. The blocked lists of drb2-task68-plus, drb2-task82, and drb2-task78 name no DOI, so for them only the addresses protect. The 42 drb2-task68-plus records are caught because their landing page is the blocked MDPI address.
+
+**The study ceiling was checked against estimates (F05).** The runner started a run whenever spend so far plus the run's estimates fit under the ceiling, and then gave the run its full `cap_usd`. A run that cost more than its estimate could therefore take a study past its ceiling. The audit's case was two $0.75 runs under a $1.00 ceiling. A grade or audit that failed, and a run that wrote no record, counted as free. Now each run, grade, and audit gets a hard cap no larger than what remains of the ceiling, rounded down to the cent, and a step whose cost cannot be read counts its whole cap.
+
+**Checks, all free.** 100 fuzz runs and the full offline suite passed. A two-seed dry run of `studies/reading-fallback-task8.toml` on the new code (runs 6c07eb9b, c490646f, 6fb53ecb, and 3f2e2126) had no invariant violations. One of its fake audits failed, and the summary counted that audit's whole $0.30 cap as spent. The dry check now also flags a scholarly record from a blocked source. The reading-fallback specs need their cheap checks rerun before the paid comparison, because the code they run has changed.
