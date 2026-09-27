@@ -337,4 +337,8 @@ def test_open_items_never_share_an_id_with_the_plans_items() -> None:
     ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.5,
                               open_items=["ICSD", "computed  databases", "CSD"]))
     ids = [(item.id, item.requirement) for item, _ in coverage_items(plan, ledger)]
-    assert ids == [("o1", "Computed databases"), ("d1", "URLs"), ("o2", "ICSD"), ("o3", "CSD")]
+    # The plan's items first; then one per new open item, whose ID comes from its name and is never the plan's.
+    assert ids[:2] == [("o1", "Computed databases"), ("d1", "URLs")]
+    assert [requirement for _, requirement in ids[2:]] == ["ICSD", "CSD"]
+    assert all(item_id.startswith("o") and item_id not in {"o1", "d1"} for item_id, _ in ids[2:])
+    assert len({item_id for item_id, _ in ids}) == 4

@@ -743,7 +743,8 @@ async def test_coverage_items_run_from_the_plan_through_research_to_the_report(s
         url = "https://example.org/verified"
         if len(messages) == 1:
             return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
-        covers = ["o1"] if deep else ["k1", "zz"] if question["id"] == "q1" else []
+        icsd = [item["id"] for item in prompt.get("coverage", []) if item["requirement"] == "ICSD"]
+        covers = icsd if deep else ["k1", "zz"] if question["id"] == "q1" else []
         return _output(info, {"question_id": question["id"], "question": question["question"], "conclusion": "c",
                               "confidence": 0.8, "open_items": [] if deep or question["id"] == "q1" else ["ICSD"],
                               "claims": [{"id": "c1", "statement": f"Finding {'deep' if deep else question['id']}",
@@ -755,7 +756,7 @@ async def test_coverage_items_run_from_the_plan_through_research_to_the_report(s
 
     def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         gap_prompts.append(_prompt(messages))
-        return _output(info, {"gaps": [{"question_id": "q2", "follow_up_question": "Is ICSD (o1) commonly used?",
+        return _output(info, {"gaps": [{"question_id": "q2", "follow_up_question": "Is ICSD commonly used?",
                                         "reason": "An open member of the set."}]})
 
     def write(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -768,14 +769,15 @@ async def test_coverage_items_run_from_the_plan_through_research_to_the_report(s
     with gap_agent.override(model=FunctionModel(gap)):
         run = await _run(settings, plan=plan, research=FunctionModel(research), write=streamed(write), follow_up=True)
     # Each scout works toward its question's items; the deep dive toward every item still open.
-    assert seen["q1"] == ["k1"] and seen["q2"] == ["k2"] and seen["deep"] == ["k2", "o1"]
+    icsd = next(state.id for state in run.checks.coverage if state.requirement == "ICSD")
+    assert seen["q1"] == ["k1"] and seen["q2"] == ["k2"] and seen["deep"] == ["k2", icsd]
     assert [(i["id"], i["status"]) for i in gap_prompts[0]["coverage"]] == [("k1", "covered"), ("k2", "open"),
-                                                                             ("o1", "open")]
+                                                                             (icsd, "open")]
     states = {state.id: state for state in run.checks.coverage}
-    assert set(states) == {"k1", "k2", "o1"}  # the assumption is shown to the synthesizer, not tracked
+    assert set(states) == {"k1", "k2", icsd}  # the assumption is shown to the synthesizer, not tracked
     assert (states["k1"].status, states["k1"].in_report) == ("covered", "cited")
     assert (states["k2"].status, states["k2"].in_report) == ("open", "not_established")
-    assert (states["o1"].origin, states["o1"].requirement, states["o1"].in_report) == ("q2", "ICSD", "cited")
+    assert (states[icsd].origin, states[icsd].requirement, states[icsd].in_report) == ("q2", "ICSD", "cited")
     q1_claim = next(claim for claim in run.ledger.claims() if claim.statement == "Finding q1")
     assert q1_claim.covers == ["k1"]  # the unknown ID zz was dropped
     assert run.status == "complete" and run.checks.answer_support == "weak"

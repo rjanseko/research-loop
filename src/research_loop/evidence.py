@@ -22,6 +22,7 @@ citations name the same source in every prompt and rendering built from one ledg
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -402,23 +403,35 @@ def _normal(text: str) -> str:
     return " ".join(_NON_WORD.sub(" ", unicodedata.normalize("NFKC", text).casefold()).split())
 
 
+def _open_item_id(key: str, taken: set[str]) -> str:
+    """An open item's ID from its normalized name: `o` and the name's hash, lengthened past any ID in use,
+    so the same item keeps its ID however much research arrives later and in whatever order."""
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    for length in range(4, len(digest) + 1):
+        if (candidate := f"o{digest[:length]}") not in taken:
+            return candidate
+    raise AssertionError("unreachable: a full SHA-256 digest collided")
+
+
 def coverage_items(plan: ResearchPlan, ledger: EvidenceLedger) -> list[tuple[CoverageItem, str]]:
-    """The plan's coverage items, then the open items research named, each once and in ledger order with
-    IDs o1, o2, ..., skipping any ID the plan already uses, paired with where each came from ("plan", or
-    the question that named it). A live planner named its dimensions d1 to d4, which open items named d1,
-    d2, ... then shared."""
+    """The plan's coverage items, then the open items research named, each once and in ledger order,
+    paired with where each came from ("plan", or the question that named it).
+
+    An open item's ID comes from its name (`_open_item_id`), never from its position: numbering them in
+    ledger order let a deep dive's results under an earlier question renumber later items, so a claim
+    tagged before the dive pointed at another item afterwards (found by `research fuzz`). The plan's IDs
+    are never reused, since a live planner named its own items d1 to d4.
+    """
     items: list[tuple[CoverageItem, str]] = [(item, "plan") for item in plan.coverage]
     seen = {_normal(item.requirement) for item in plan.coverage}
     taken = {item.id for item in plan.coverage}
-    number = 0
     for result in ledger.all():
         for name in result.open_items:
             if (key := _normal(name)) and key not in seen:
                 seen.add(key)
-                number += 1
-                while f"o{number}" in taken:
-                    number += 1
-                items.append((CoverageItem(id=f"o{number}", requirement=name, kind="category"), result.question_id))
+                item_id = _open_item_id(key, taken)
+                taken.add(item_id)
+                items.append((CoverageItem(id=item_id, requirement=name, kind="category"), result.question_id))
     return items
 
 
