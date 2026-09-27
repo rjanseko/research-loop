@@ -262,3 +262,18 @@ The choice of judge therefore moves a DRB-II score by up to 8 points, as much as
 | Exa | `3aa8dde9` | complete, supported | 2 | $0.014 | $0.017 | 20 s | 4/4 |
 
 Exa charged the listed $0.007 a search, and the run recorded exactly that as `search_usd`. Its first search returned ten results, the first of them the official ILSVRC 2016 results page with a highlight from its results table. On this cheap run the searches cost more than the models; with the production models they would be a smaller share. One run per arm on the easiest case says nothing yet about quality. A paid comparison needs more cases, replicates, and a decision rule set before it runs.
+
+## Exa against DuckDuckGo: dry and cheap checks of the comparison specs (27 September 2026)
+
+The comparison is split into three specs (`studies/exa-vs-duckduckgo-{short,st07,task8}.toml`), so each can have a ceiling fitted to its runs, and their shared header fixes the decision rule. All three passed `--dry --seeds 2`. The cheap checks, with every role on `gpt-6-luna@low`, cost $0.39 in all, with no invariant violations. A cheap run's hard cap is now the $0.25 cheap ceiling (commit after 7dd3ad1), because paid searches are not cheap; the task8 Exa run reached it and had one question refused, as designed.
+
+| Case | Arm | Run | Status, answer | Search cost | Run cost | Time |
+|---|---|---|---|---|---|---|
+| st04 | DuckDuckGo | `e47e39a3` | complete, supported | | $0.002 | 17 s |
+| st04 | Exa | `ee0c71d8` | complete, supported | $0.007 | $0.010 | 16 s |
+| st07 | DuckDuckGo | `43a40c62` | complete, supported | | $0.014 | 56 s |
+| st07 | Exa | `6a16f441` | complete, supported | $0.077 | $0.115 | 277 s |
+| drb2-task8 (deep) | DuckDuckGo | `bbe0b73a` | complete, weak | | $0.045 | 303 s |
+| drb2-task8 (deep) | Exa | `6b504ddd` | partial, weak (cheap cap) | $0.154 | $0.198 | 335 s |
+
+Exa's own requests are quick: 8 to 15 seconds of tool time per scout, as with DuckDuckGo. Its highlights are not snippets, though. The median result carried 3,900 to 6,400 characters against DuckDuckGo's 210 to 230, and one search returned 49,000 to 61,000 characters against about 2,500. Every later request of a scout resends them, so the Exa scouts on st07 sent 119,000 to 336,000 input tokens each against 44,000 to 63,000. That made them wait under Luna's token rate limit and cost about 2.7 times as much in model calls. Exa's text also arrives labeled `snippet`, so evidence resting on it counts as shallow unless the scout fetches the page. A paid comparison with uncapped highlights would mostly measure this context growth.

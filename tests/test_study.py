@@ -172,3 +172,11 @@ def test_the_grade_line_is_read_as_research_grade_prints_it() -> None:
             "Recorded as 214fb3be-136f-4cd7-89d7-f902ee470660.\n")
     grade = _grade_with(lambda args, env: (0, line))
     assert grade("run", "drb2-task8", {}, 1.0) == {"met": 20, "points": 52, "score": 0.385, "cost_usd": 0.0403}
+
+
+def test_a_cheap_study_caps_each_run_at_the_cheap_ceiling(spec: StudySpec) -> None:
+    from research_loop.study import CHEAP_CEILING_USD, for_mode
+
+    cheap = for_mode(spec, "cheap")
+    # Paid searches are not cheap; the spec's $3 run cap would let one cheap Exa run spend dollars.
+    assert cheap.cap_usd == CHEAP_CEILING_USD == cheap.ceiling_usd

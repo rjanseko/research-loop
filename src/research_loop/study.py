@@ -175,7 +175,10 @@ def for_mode(spec: StudySpec, mode: Mode, seeds: int = 1) -> StudySpec:
         return spec.model_copy(update={"study": f"{spec.study}-dry", "replicates": seeds,
                                        "ceiling_usd": spec.ceiling_usd * max(1.0, seeds / spec.replicates)})
     if mode == "cheap":
+        # Each run's hard cap is the cheap ceiling too: cheap models cost cents, but paid web searches do not,
+        # and a cheap drb2-task8 run on Exa could make a hundred of them under the spec's own cap.
         return spec.model_copy(update={"study": f"{spec.study}-cheap", "replicates": 1, "cases": spec.cases[:1],
+                                       "cap_usd": min(spec.cap_usd, CHEAP_CEILING_USD),
                                        "sources": spec.sources[:1], "estimate_usd": 0.06, "grade_estimate_usd": 0.01,
                                        "audit_estimate_usd": 0.01,
                                        "ceiling_usd": min(spec.ceiling_usd, CHEAP_CEILING_USD)})

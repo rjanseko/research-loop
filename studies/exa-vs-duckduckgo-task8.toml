@@ -1,0 +1,29 @@
+# DuckDuckGo against Exa web search with the production models, on the development DRB-II case, where search breadth matters most.
+# Decision rule, fixed before any paid run (docs/quality-calibration.md, "Exa search"). Exa becomes the
+# default search engine only if, over the three exa-vs-duckduckgo specs:
+# - it loses no st04 or st05 rubric point;
+# - it reads at least as many sources in full, with fewer failed or empty searches, and its reports have
+#   at least as high a share of "supported" audit verdicts;
+# - it gains 5 or more drb2-task8 points under both judges in both replicates, or cuts run time by 20% or more;
+# - it adds no more than $0.30 a run on the short cases and $0.60 a run on drb2-task8.
+# Otherwise DuckDuckGo stays the default and the result is recorded as undecided or negative.
+study = "exa-vs-duckduckgo-task8"
+kind = "scout"
+cases = ["drb2-task8"]
+replicates = 2
+cap_usd = 3.00          # each run's hard cap, model calls and Exa searches together
+estimate_usd = 1.40     # the most a comparable run cost, plus every search of it on Exa at $0.007
+ceiling_usd = 6.00
+grade = true
+grade_estimate_usd = 0.06
+audit = true
+audit_model = "zai:glm-5.3@high"
+audit_estimate_usd = 0.04
+
+[[arms]]
+name = "duckduckgo"
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo" }
+
+[[arms]]
+name = "exa"
+env = { RESEARCH_SEARCH_ENGINE = "exa" }
