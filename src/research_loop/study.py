@@ -342,13 +342,17 @@ def _case_id(record: dict[str, Any] | None) -> str | None:
 def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
     """A Markdown table of every planned run, the ones not run included."""
     header = ("| Target | Arm | Rep | Run | Status | Answer | Cost | Time | Quotes verified / misattributed / not found "
-              "| Coverage found (named) | Grade |")
-    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "(short) | Statements quoted / summary only / thin | Coverage found (named) | Grade |")
+    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for outcome in outcomes:
         record, run = outcome.record or {}, outcome.run
         checks = record.get("checks") or {}
         quotes = checks.get("quotes") or 0
         verified, wrong = checks.get("quotes_verified") or 0, checks.get("quotes_misattributed") or 0
+        short = f" ({checks['quotes_short']})" if checks.get("quotes_short") else ""
+        support = [statement.get("support") for statement in checks.get("statements") or []]
+        statements = (f"{support.count('read')} / {support.count('paraphrase')} / "
+                      f"{len(support) - support.count('read') - support.count('paraphrase')}") if support else ""
         cover = ""
         if _case_id(record) in EXPECTED:
             found = coverage(record)
@@ -359,8 +363,8 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
                  str(checks.get("answer_support") or ""),
                  f"${outcome.cost_usd:.3f}" if record else "",
                  f"{float(record['seconds']):.0f} s" if record.get("seconds") is not None else "",
-                 f"{verified} / {wrong} / {quotes - verified - wrong}" if quotes else "",
-                 cover, f"{grade['met']}/{grade['points']}" if grade else ""]
+                 f"{verified} / {wrong} / {quotes - verified - wrong}{short}" if quotes else "",
+                 statements, cover, f"{grade['met']}/{grade['points']}" if grade else ""]
         lines.append("| " + " | ".join(cells) + " |")
     spent = sum(outcome.cost_usd for outcome in outcomes)
     lines += ["", f"Total ${spent:.2f} of a ${spec.ceiling_usd:.2f} ceiling."]

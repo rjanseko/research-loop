@@ -42,7 +42,9 @@ def spec(tmp_path: Path) -> StudySpec:
 def _record(run_id: str, cost: float) -> dict:
     return {"run_id": run_id, "status": "complete", "cost_usd": cost, "seconds": 300.0, "report": {"answer": "a"},
             "config": {"case": {"id": "drb2-task8"}},
-            "checks": {"answer_support": "weak", "quotes": 10, "quotes_verified": 8, "quotes_misattributed": 1},
+            "checks": {"answer_support": "weak", "quotes": 10, "quotes_verified": 8, "quotes_misattributed": 1,
+                       "quotes_short": 2, "statements": [{"support": "read"}, {"support": "read"},
+                                                         {"support": "paraphrase"}, {"support": "shallow"}]},
             "ledger": {"q4": [{"conclusion": "Materials Project and OQMD", "claims": [],
                                "unresolved": ["ICSD was named but not checked"]}]}}
 
@@ -101,7 +103,7 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     assert "PYTHONPATH" not in first_env
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
-    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s | 8 / 1 / 1 | 2/7 (1) | 20/52 |" in table
+    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s | 8 / 1 / 1 (2) | 2 / 1 / 1 | 2/7 (1) | 20/52 |" in table
 
 
 def test_the_ceiling_stops_runs_once_actual_spend_nears_it(spec: StudySpec, tmp_path: Path) -> None:

@@ -201,8 +201,10 @@ def check_result(result: ResearchResult, texts: Iterable[ToolText]) -> ResearchR
     return result.model_copy(update={"claims": claims})
 
 
-# How well a report statement's evidence was read.
-Support = Literal["read", "shallow", "unsupported"]
+# How well a report statement's evidence was read (evidence v7 split `paraphrase` from `read`).
+Support = Literal["read", "paraphrase", "shallow", "unsupported"]
+# A verified quote with fewer words than this share of its claim's is counted as short (RunChecks.quotes_short).
+_SHORT_QUOTE_SHARE = 0.25
 
 
 def evidence_is_read(item: Evidence) -> bool:
@@ -211,13 +213,32 @@ def evidence_is_read(item: Evidence) -> bool:
             and item.quote_check not in ("not_found", "misattributed"))
 
 
+def evidence_is_quoted(item: Evidence) -> bool:
+    """Read evidence whose quote was verified in its cited source, so code has checked some of its words."""
+    return evidence_is_read(item) and item.quote_check == "verified"
+
+
 def support_level(claims: Iterable[Claim]) -> Support:
-    """`read` when some supporting evidence was read (evidence_is_read); `shallow` when the only support is
-    a snippet, metadata, an unverified quote, or a source no tool returned; `unsupported` when nothing supports it."""
+    """`read` when some supporting evidence was read and carries a verified quote (evidence_is_quoted);
+    `paraphrase` when read evidence supports it only through the research's own summary, which code cannot
+    check: in one deep run 11 of 30 statements rested only on such summaries; `shallow` when the only support
+    is a snippet, metadata, an unverified quote, or a source no tool returned; `unsupported` when nothing
+    supports it."""
     supporting = [item for claim in claims for item in claim.evidence if item.supports]
     if not supporting:
         return "unsupported"
-    return "read" if any(evidence_is_read(item) for item in supporting) else "shallow"
+    if any(evidence_is_quoted(item) for item in supporting):
+        return "read"
+    return "paraphrase" if any(evidence_is_read(item) for item in supporting) else "shallow"
+
+
+def quote_is_short(item: Evidence, claim: Claim) -> bool:
+    """Whether a verified quote has fewer than a quarter of its claim's words, so that it checks little of
+    what the claim says: a four-word quote once verified a claim of three clauses. Exact figures and names
+    are often short and correct, so this is a count to watch, not a support level."""
+    if item.quote_check != "verified" or not item.quote:
+        return False
+    return len(item.quote.split()) < _SHORT_QUOTE_SHARE * len(claim.statement.split())
 
 
 # ---------------------------------------------------------------------------------------------

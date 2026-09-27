@@ -722,7 +722,8 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
             problems.append(f"answer support {checks.get('answer_support')} recomputes as {_answer_support(report, fresh)}")
         if [s.model_dump(mode="json") for s in fresh.coverage] != checks.get("coverage", []):
             problems.append("coverage states do not recompute")
-        for key in ("quotes", "quotes_verified", "quotes_misattributed", "sentences", "uncited_sentences"):
+        for key in ("quotes", "quotes_verified", "quotes_misattributed", "quotes_short", "sentences",
+                    "uncited_sentences"):
             if getattr(fresh, key) != checks.get(key, getattr(fresh, key)):
                 problems.append(f"{key} {checks.get(key)} recomputes as {getattr(fresh, key)}")
         mode_research = "research" in record.get("workflow_version", "")

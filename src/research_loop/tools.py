@@ -213,7 +213,9 @@ def tool_outcomes(messages: Iterable[ModelMessage]) -> ToolOutcomes:
                 if url not in outcomes.pages_read:
                     outcomes.pages_read.append(url)
             elif data.get("error"):
-                reason = data["error"] + (f" {data['status']}" if data.get("status") else "")
+                # `detail` separates a bare ValueError: over the size cap, an empty extraction, or an unread type.
+                reason = (data["error"] + (f" {data['status']}" if data.get("status") else "")
+                          + (f": {data['detail']}" if data.get("detail") else ""))
                 outcomes.unreached.append(UnreachedSource(target=url, reason=reason))
         elif data.get("error"):
             outcomes.unreached.append(UnreachedSource(target=f"{part.tool_name}: {call.get('query', '')}",

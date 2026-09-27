@@ -83,6 +83,7 @@ from .evidence import (
     citation_problems,
     coverage_items,
     coverage_states,
+    quote_is_short,
     support_level,
     uncited_sentences,
 )
@@ -204,6 +205,8 @@ class RunChecks(BaseModel):
     quotes_verified: int = 0
     # Found only in another source's text than the one cited (evidence v6).
     quotes_misattributed: int = 0
+    # Verified quotes with under a quarter of their claim's words (evidence.quote_is_short): a diagnostic.
+    quotes_short: int = 0
     # Whether the report's statements are backed, apart from whether the run finished (`_answer_support`).
     answer_support: AnswerSupport | None = None
     # Sentences of the answer, and those with no inline [sN] citation: a diagnostic, since some are framing.
@@ -817,6 +820,7 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
         quotes=sum(item.quote_check is not None for item in evidence),
         quotes_verified=sum(item.quote_check == "verified" for item in evidence),
         quotes_misattributed=sum(item.quote_check == "misattributed" for item in evidence),
+        quotes_short=sum(quote_is_short(item, claim) for claim in claims.values() for item in claim.evidence),
     )
     if report is not None:
         checks.sentences, checks.uncited_sentences = uncited_sentences(report.answer)
@@ -829,6 +833,9 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
         reasons.append("no research question returned evidence")
     elif report is None and synthesized:
         reasons.append("the synthesis did not finish, so this lists the research's claims without a written answer")
+    if paraphrase := [s for s in checks.statements if s.support == "paraphrase"]:
+        reasons.append(f"{len(paraphrase)} of {len(checks.statements)} statements rest only on the research's own "
+                       "summaries of sources it read, with no quote checked against the source")
     if shallow := [s for s in checks.statements if s.support == "shallow"]:
         reasons.append(f"{len(shallow)} of {len(checks.statements)} statements rest only on search snippets, metadata, "
                        "or quotes and sources the tools did not return")
@@ -867,15 +874,15 @@ def _status(ledger: EvidenceLedger, report: FinalReport | None, *, synthesized: 
 
 def _answer_support(report: FinalReport | None, checks: RunChecks) -> AnswerSupport | None:
     """How well the report's statements are backed: `unsupported` when a statement rests on no evidence or
-    cites a claim that does not exist, `weak` when a statement rests only on thin evidence, a question or
-    follow-up gap was left open, or a coverage item is not addressed with cited claims, else `supported`.
-    None without a report."""
+    cites a claim that does not exist, `weak` when a statement rests only on thin evidence or on summaries
+    with no checked quote (evidence v7), a question or follow-up gap was left open, or a coverage item is
+    not addressed with cited claims, else `supported`. None without a report."""
     if report is None:
         return None
     support = [statement.support for statement in checks.statements]
     if not support or "unsupported" in support or checks.citation_problems:
         return "unsupported"
-    if ("shallow" in support or checks.not_established or checks.follow_up_unresolved
+    if ("shallow" in support or "paraphrase" in support or checks.not_established or checks.follow_up_unresolved
             or any(state.in_report != "cited" for state in checks.coverage)):
         return "weak"
     return "supported"

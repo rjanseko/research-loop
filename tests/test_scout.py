@@ -79,8 +79,9 @@ def planner(questions=QUESTIONS):
     return FunctionModel(lambda messages, info: _output(info, {"questions": questions}))
 
 
-def researcher(urls: dict[str, str] | None = None):
-    """A scout that fetches its question's page, then returns a claim quoting it."""
+def researcher(urls: dict[str, str] | None = None, *, quoted: frozenset[str] = frozenset({"q1", "q2"})):
+    """A scout that fetches its question's page, then returns a claim quoting it; questions not in `quoted`
+    get the scout's summary alone."""
     urls = urls or {"q1": "https://example.org/verified", "q2": "https://example.org/leakage"}
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -88,7 +89,7 @@ def researcher(urls: dict[str, str] | None = None):
         url = urls[question["id"]]
         if len(messages) == 1:
             return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
-        quote = PAGES.get(url, "an invented sentence")[:40]
+        quote = PAGES.get(url, "an invented sentence")[:40] if question["id"] in quoted else None
         return _output(info, {
             "question_id": question["id"], "question": question["question"], "conclusion": "found", "confidence": 0.8,
             "claims": [{"id": "c1", "statement": f"Finding for {question['id']}", "confidence": 0.8, "evidence": [
@@ -724,6 +725,16 @@ async def test_run_status_and_answer_support_are_separate(settings, pages) -> No
     good = await _run(settings)
     assert good.status == "complete" and good.checks.answer_support == "supported"
 
+
+
+async def test_a_statement_resting_only_on_a_summary_weakens_the_answer(settings, pages) -> None:
+    # Evidence v7: a page that was read but not quoted leaves nothing code can check against the source.
+    run = await _run(settings, research=researcher(quoted=frozenset({"q1"})))
+    assert [s.support for s in run.checks.statements] == ["read", "paraphrase"]
+    assert run.status == "complete" and run.checks.answer_support == "weak"
+    assert ("1 of 2 statements rest only on the research's own summaries of sources it read, with no quote "
+            "checked against the source") in run.checks.review_reasons
+    assert "(summary only, no checked quote)" in render_markdown(run.to_record())
 
 async def test_coverage_items_run_from_the_plan_through_research_to_the_report(settings, pages) -> None:
     from research_loop.agents import gap_agent

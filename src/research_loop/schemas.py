@@ -21,7 +21,10 @@ from pydantic.json_schema import SkipJsonSchema
 # Recorded on every run. 5: evidence records the access level it rests on (snippet, metadata, abstract,
 # full text), and quotes and sources are checked against labeled tool output (evidence.py).
 # 6: a quote is verified only in its cited source's text; found elsewhere, it is misattributed.
-EVIDENCE_VERSION = 6
+# 7: a statement is `read` only when read evidence behind it carries a verified quote; one resting only on
+# the research's summary of a read source is `paraphrase`, which makes the answer weak. Quote checks are
+# unchanged, so stored v6 evidence marks still hold; only statement support is stricter.
+EVIDENCE_VERSION = 7
 
 # How much of a source a tool returned, from least to most. Search results give a snippet, a scholarly
 # record without an abstract gives metadata, arXiv and some OpenAlex records give an abstract, and a

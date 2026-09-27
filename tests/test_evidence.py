@@ -12,6 +12,7 @@ from research_loop.evidence import (
     check_result,
     citation_problems,
     identity_keys,
+    quote_is_short,
     support_level,
     uncited_sentences,
 )
@@ -188,13 +189,31 @@ def test_support_level_says_whether_a_statement_rests_on_something_read() -> Non
     def claim(*evidence: Evidence) -> Claim:
         return Claim(id="c", statement="s", confidence=0.8, evidence=list(evidence))
 
-    assert support_level([claim(_evidence("full_text"))]) == "read"
+    assert support_level([claim(_evidence("full_text", quote_check="verified"))]) == "read"
     assert support_level([claim(_evidence("abstract", quote_check="verified"))]) == "read"
+    # Read, but only through the scout's own summary: nothing code could check (evidence v7).
+    assert support_level([claim(_evidence("full_text"))]) == "paraphrase"
+    assert support_level([claim(_evidence("full_text")), claim(_evidence("snippet", quote_check="verified"))]) == "paraphrase"
+    assert support_level([claim(_evidence("full_text")), claim(_evidence("abstract", quote_check="verified"))]) == "read"
     assert support_level([claim(_evidence("snippet")), claim(_evidence("metadata"))]) == "shallow"
     assert support_level([claim(_evidence("full_text", quote_check="not_found"))]) == "shallow"
     assert support_level([claim(_evidence(None))]) == "shallow"
     assert support_level([claim(_evidence("full_text", supports=False))]) == "unsupported"
     assert support_level([]) == "unsupported"
+
+
+
+def test_a_quote_much_shorter_than_its_claim_is_counted_as_short() -> None:
+    # A four-word quote verified a claim of three clauses in a deep drb2-task8 run.
+    long_claim = Claim(id="c", statement=" ".join(["word"] * 40), confidence=0.8, evidence=[])
+    short_claim = Claim(id="c", statement="SWE-bench Verified was annotated by 93 professional developers.",
+                        confidence=0.8, evidence=[])
+    quote = _evidence("full_text", quote_check="verified").model_copy(
+        update={"quote": "algorithm effectiveness is problem-specific."})
+    assert quote_is_short(quote, long_claim)
+    assert not quote_is_short(quote, short_claim)  # a short, exact figure or name is not flagged
+    assert not quote_is_short(quote.model_copy(update={"quote_check": "not_found"}), long_claim)
+    assert not quote_is_short(_evidence("full_text"), long_claim)
 
 
 def test_ledger_makes_claim_ids_unique_and_remaps_contradictions() -> None:

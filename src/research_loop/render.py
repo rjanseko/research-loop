@@ -53,10 +53,10 @@ def render_markdown(record: dict[str, Any]) -> str:
         weak = [s for s in checks.get("statements", []) if s["support"] != "read"]
         if weak:
             lines += ["## Statements resting on thin evidence", "",
-                      ("These statements rest only on search snippets, records without an abstract, or quotes and "
-                       "sources the research tools did not return, or on no evidence at all."), ""]
-            lines += [f"- {s['statement']} ({'no supporting evidence' if s['support'] == 'unsupported' else 'not read'})"
-                      for s in weak]
+                      ("These statements rest only on the research's own summary of a source, with no quote "
+                       "checked against it; on search snippets, records without an abstract, or quotes and "
+                       "sources the research tools did not return; or on no evidence at all."), ""]
+            lines += [f"- {s['statement']} ({_WEAK_SUPPORT.get(s['support'], 'not read')})" for s in weak]
             lines.append("")
     else:
         lines += _claims_only(ledger)
@@ -81,7 +81,8 @@ def _title(record: dict[str, Any]) -> str:
     return title or " ".join(record["question"].split())[:110]
 
 
-_SUPPORT = {"supported": "answer supported", "weak": "answer weakly supported", "unsupported": "answer unsupported"}
+_WEAK_SUPPORT = {"unsupported": "no supporting evidence", "paraphrase": "summary only, no checked quote"}
+_SUPPORT = {"supported":"answer supported", "weak": "answer weakly supported", "unsupported": "answer unsupported"}
 
 
 def _status_line(record: dict[str, Any], sources: dict[str, dict[str, Any]]) -> str:
