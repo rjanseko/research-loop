@@ -23,6 +23,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Exa search checks](#2026-09-27-exa-search-dry-and-cheap-checks) | $0.02 | Exa search works end to end, and records its cost exactly |
 | 09-27 | [Exa against DuckDuckGo: comparison checks](#2026-09-27-exa-against-duckduckgo-dry-and-cheap-checks-of-the-comparison-specs) | $0.39 | Exa's uncapped highlights flood the scouts' context; the comparison is held |
 | 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | $0.10 and free-tier credits | A chain of our fetcher, open access, Exa, and Firecrawl reads 139 of 160 failed pages |
+| 09-27 | [Reading fallback: dry and cheap checks](#2026-09-27-reading-fallback-dry-and-cheap-checks) | $0.17 | A screen: with the fallback, failed page fetches fell from 12 to 0 on st07 and from 10 to 1 on drb2-task8 |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -391,3 +392,19 @@ Layered in order, the free steps first, the chain reads more than any single ser
 | ... then Exa, then Firecrawl | 139 | 68 |
 
 Adding Jina before the paid services reads one page more but recovers fewer quotes, since its conversion changes wording. The chain of our fetcher, open access, Exa `/contents`, and Firecrawl is the candidate for the reading fallback. A success here means text that is long enough, free of challenge markers, and carries the page's title; a paid comparison of whole runs has to show that it improves reports.
+
+## 2026-09-27 Reading fallback: dry and cheap checks
+
+The reading fallback (commit cde6465, `RESEARCH_READ_FALLBACK=oa,exa,firecrawl`) is compared with our fetcher alone in three specs, `studies/reading-fallback-{short,st07,task8}.toml`, whose shared header fixes the decision rule. All three passed `--dry --seeds 2`. The cheap checks, with every role on `gpt-6-luna@low` against the real web, Exa, and Firecrawl, cost $0.17 in all, with no invariant violations or tracebacks. They ran under the standing budget for small paid steps. One run per arm with cheap models is a screen: its grades come from the cheap judge and are not comparable with real ones, and it cannot change a default. The paid comparison is on hold at the user's request.
+
+| Case | Arm | Run | Status, answer | Pages failed | Read by the fallback | Paid reads | Run cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| st04 | own | `06c13142` | complete, supported | 0 | | | $0.006 | 29 s |
+| st04 | fallback | `c82353ad` | complete, weak | 0 | none needed | | $0.002 | 21 s |
+| st07 | own | `321ffb47` | complete, supported | 12 | | | $0.028 | 220 s |
+| st07 | fallback | `3bfedf80` | complete, supported | 0 | 3 (Exa) | $0.002 | $0.018 | 99 s |
+| drb2-task8 (deep) | own | `7cf6aaa5` | complete, weak | 10 | | | $0.036 | 259 s |
+| drb2-task8 (deep) | fallback | `ca416113` | complete, weak | 1 | 7 (Exa 4, Europe PMC 2, Firecrawl 1) | $0.014 | $0.072 | 339 s |
+
+The fallback did what it is for: on the two cases where our fetcher failed pages, it read them, with 12 and 10 failures falling to 0 and 1, for $0.002 and $0.014 of paid reads. On st04 our fetcher read everything, so the fallback never ran. Whether reading those pages makes reports better is the paid comparison's question.
+
