@@ -404,15 +404,21 @@ def _normal(text: str) -> str:
 
 def coverage_items(plan: ResearchPlan, ledger: EvidenceLedger) -> list[tuple[CoverageItem, str]]:
     """The plan's coverage items, then the open items research named, each once and in ledger order with
-    IDs d1, d2, ..., paired with where each came from ("plan", or the question that named it)."""
+    IDs o1, o2, ..., skipping any ID the plan already uses, paired with where each came from ("plan", or
+    the question that named it). A live planner named its dimensions d1 to d4, which open items named d1,
+    d2, ... then shared."""
     items: list[tuple[CoverageItem, str]] = [(item, "plan") for item in plan.coverage]
     seen = {_normal(item.requirement) for item in plan.coverage}
+    taken = {item.id for item in plan.coverage}
+    number = 0
     for result in ledger.all():
         for name in result.open_items:
             if (key := _normal(name)) and key not in seen:
                 seen.add(key)
-                found = sum(origin != "plan" for _, origin in items) + 1
-                items.append((CoverageItem(id=f"d{found}", requirement=name, kind="category"), result.question_id))
+                number += 1
+                while f"o{number}" in taken:
+                    number += 1
+                items.append((CoverageItem(id=f"o{number}", requirement=name, kind="category"), result.question_id))
     return items
 
 

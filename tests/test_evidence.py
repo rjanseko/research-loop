@@ -324,3 +324,17 @@ def test_uncited_sentences_count_findings_without_a_citation() -> None:
               "- Annotators screened each sample for underspecified problems [s3].")
     # The table row states a finding with no citation; headings, rules, and short lines are left out.
     assert uncited_sentences(answer) == (4, 1)
+
+
+def test_open_items_never_share_an_id_with_the_plans_items() -> None:
+    from research_loop.evidence import coverage_items
+    from research_loop.schemas import CoverageItem, ResearchPlan, ResearchQuestion
+
+    plan = ResearchPlan(questions=[ResearchQuestion(id="q1", question="Q?")],
+                        coverage=[CoverageItem(id="o1", requirement="Computed databases"),
+                                  CoverageItem(id="d1", requirement="URLs", kind="dimension")])
+    ledger = EvidenceLedger()
+    ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.5,
+                              open_items=["ICSD", "computed  databases", "CSD"]))
+    ids = [(item.id, item.requirement) for item, _ in coverage_items(plan, ledger)]
+    assert ids == [("o1", "Computed databases"), ("d1", "URLs"), ("o2", "ICSD"), ("o3", "CSD")]
