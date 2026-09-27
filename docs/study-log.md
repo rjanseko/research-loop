@@ -22,7 +22,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [A second rubric judge](#2026-09-27-a-second-rubric-judge) | $0.27 | 92.6% agreement; the judge moves DRB-II scores by up to 8 points |
 | 09-27 | [Exa search checks](#2026-09-27-exa-search-dry-and-cheap-checks) | $0.02 | Exa search works end to end, and records its cost exactly |
 | 09-27 | [Exa against DuckDuckGo: comparison checks](#2026-09-27-exa-against-duckduckgo-dry-and-cheap-checks-of-the-comparison-specs) | $0.39 | Exa's uncapped highlights flood the scouts' context; the comparison is held |
-| 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | under $1 | Free candidates read 83 of 160 failed pages; paid candidates below |
+| 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | $0.10 and free-tier credits | A chain of our fetcher, open access, Exa, and Firecrawl reads 139 of 160 failed pages |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -368,4 +368,26 @@ Exa's own requests are quick: 8 to 15 seconds of tool time per scout, as with Du
 
 ## 2026-09-27 Fetch bake-off on the pages our fetcher failed on
 
-`scripts/fetch_bakeoff.py` retried the 160 distinct URLs our fetcher failed on in production runs, with no model calls. The free candidates together read 83 of the 160. Jina Reader, used without a key, read 52, including MDPI 20 of 26 and OpenAI 5 of 5, but hit a challenge page on all 26 RSC pages. The open-access route, through OpenAlex and Europe PMC, read 38 and recovered the most cited quotes (39 of 79). Our own fetcher now reads 19, all 11 arXiv PDFs among them, since the 25 MB cap. RSC, ScienceDirect, OQMD, De Gruyter, and Materials Project stay mostly unread. The paid candidates are still to run: Exa `/contents` (about $0.16), and Tavily and Firecrawl, which need keys.
+`scripts/fetch_bakeoff.py` retried the 160 distinct URLs our fetcher failed on in production runs, with no model calls. The free candidates together read 83 of the 160. Jina Reader, used without a key, read 52, including MDPI 20 of 26 and OpenAI 5 of 5, but hit a challenge page on all 26 RSC pages. The open-access route, through OpenAlex and Europe PMC, read 38 and recovered the most cited quotes (39 of 79). Our own fetcher now reads 19, all 11 arXiv PDFs among them, since the 25 MB cap. RSC, ScienceDirect, OQMD, De Gruyter, and Materials Project stay mostly unread. The paid candidates ran the same day. Exa `/contents` cost $0.097; Tavily used 38 of its free credits, and Firecrawl 134, with basic proxies only (no stealth or residential proxies).
+
+| Candidate | Pages read | Cited quotes recovered | Median seconds | Cost |
+|---|---|---|---|---|
+| Firecrawl scrape | 117 of 160 (73%) | 65 of 79 | 3.5 | 134 credits (1 a page) |
+| Exa `/contents` | 86 (54%) | 57 | 0.7 | $0.097 |
+| Jina Reader | 52 (32%) | 25 | 6.3 | free |
+| Open access | 38 (24%) | 39 | 0.5 | free |
+| Tavily Extract | 35 (22%) | 42 | 0.5 | 38 credits |
+| Our fetcher, again | 19 (12%) | 31 | 0.3 | free |
+
+By host, Firecrawl read MDPI 23 of 26, RSC 14 of 26, ScienceDirect 13 of 13, ACS 5 of 5, and ACM 4 of 5. Exa read DOI redirects 9 of 12, De Gruyter 3 of 3, and all of OpenAI and arXiv. Nothing read Materials Project, and little read OQMD. Three of Firecrawl's thirteen ScienceDirect reads were 1,600 to 4,500 characters long and are probably abstract pages; the rest ran 17,000 to 31,000.
+
+Layered in order, the free steps first, the chain reads more than any single service:
+
+| Chain | Pages read | Cited quotes recovered |
+|---|---|---|
+| Our fetcher, then open access | 46 | 41 |
+| ... then Exa `/contents` | 97 | 63 |
+| ... then Firecrawl | 125 | 67 |
+| ... then Exa, then Firecrawl | 139 | 68 |
+
+Adding Jina before the paid services reads one page more but recovers fewer quotes, since its conversion changes wording. The chain of our fetcher, open access, Exa `/contents`, and Firecrawl is the candidate for the reading fallback. A success here means text that is long enough, free of challenge markers, and carries the page's title; a paid comparison of whole runs has to show that it improves reports.
