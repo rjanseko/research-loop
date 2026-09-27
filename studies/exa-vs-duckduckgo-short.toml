@@ -1,7 +1,7 @@
 # Not run yet: waits for the page-reading fallback (plan of 27 September 2026), since better search pays off
 # only once the pages it finds can be read. Exa snippets are to be capped before it runs.
 # DuckDuckGo against Exa web search with the production models, on the short cases, where Exa must not regress.
-# Decision rule, fixed before any paid run (docs/quality-calibration.md, "Exa search"). Exa becomes the
+# Decision rule, fixed before any paid run (docs/study-log.md, the Exa entries). Exa becomes the
 # default search engine only if, over the three exa-vs-duckduckgo specs:
 # - it loses no st04 or st05 rubric point;
 # - it reads at least as many sources in full, with fewer failed or empty searches, and its reports have

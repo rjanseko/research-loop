@@ -80,3 +80,23 @@ Rubric points should state one fact each and carry no incidental details. The ju
 - **Code:** git tag `archive/pre-scout-2026-09`. It holds the graph, the legacy loop, long-horizon studies, benchmark adapters, the settings study and its trial scripts, attachments, and LaTeX reports.
 - **Data:** `~/research-loop-archive/`, with a `pg_dump` of the `research_loop` database, one JSONL file per table, `benchmark_outputs/` with the study records, and the recorded search cache. Its `README.md` explains how to restore it.
 - **The settings study's full decision log** is in `docs/settings-study.md` at that tag.
+
+## Lessons from Scout, 25 to 27 September 2026
+
+These come from Scout's first three days of studies; the runs behind them are in [study-log.md](study-log.md).
+
+**Measure before adopting, and on enough runs to decide.** Scout went from version 1 to version 8 in about two and a half days, and most versions were adopted after one or two runs per arm, or none, while the studies themselves reported "a direction, not a result". Only 23 reports existed by the end, 14 of them with the production models. A change now needs a decision rule written before it is paid for, and a sample that can meet it.
+
+**A metric can pull the work off course.** From scout-v2 on, every workflow change aimed at one problem measured on one case: rubric recall on drb2-task8's list of databases. The short and false-premise cases went unrun for six versions, and nothing measured whether a report's statements say what their sources say. Keep a small, mixed set of cases in every study, and measure the thing the project is for.
+
+**Traceable is not the same as supported.** Code verified that each quote appeared in its cited source, and a report could still be labeled supported while a third of its statements rested on a scout's own summary, and while about one in five quoted statements said more than its quotes. Checking quotes is necessary; the support audit checks what quotes cannot.
+
+**Context size is a cost and a clock.** Every request of a scout resends its history. Exa's uncapped highlights put about 20 times the text of a DuckDuckGo search into that history, so scouts waited under Luna's 200,000-token-a-minute limit and ran five times longer. Read time and cost from the token timeline before blaming the budget: the slow short runs were waiting on the rate limit, not using more requests.
+
+**Reading pages is the weakest step.** 38% of distinct page fetches failed, mostly 403s and challenge pages from the publishers research needs (MDPI, RSC, ScienceDirect, OpenAI). A better search engine only surfaces more pages that cannot be read. Legitimate open-access copies and a reading fallback recover many of them.
+
+**One transient error can decide a report.** A single TLS fault ended the scout for st07's decisive question after it had read eight pages. A scout now sends a request once more after a connection fault that is not a timeout.
+
+**The judge is part of the measurement.** Two judges agreed on 92.6% of rubric points, but on the DeepResearch Bench II cases the choice of judge moved a score by up to 8 points. Grade close decisions with both and check their disagreements by hand.
+
+**Fuzzing guards plumbing, not quality.** The bug-finding harness found five bugs as it was built, one of them by fuzzing, and catches every earlier bug when it is put back. It cannot see a claim that overreaches its quote or a page that cannot be read. A bug a paid run finds now gets the narrowest test that would have caught it, and fuzzing only when it comes from parts of a run interacting.
