@@ -211,3 +211,43 @@ No report statement in the five runs rests on a summary alone: all 34 carry a ve
 The short cases now cost 50 to 70 percent more and take longer than under scout-v1: st05 took 191 to 254 seconds against 80. That follows from the scout-v3 budgets rather than from quoting, but it is a real cost to quick questions.
 
 st07 lost the question that decides it. The q2 scout, which researched contamination and flawed tests, read 8 pages in 6 requests, then its next model request failed with `SSLError: SSLV3_ALERT_BAD_RECORD_MAC`, a transient TLS fault. A network error ends a call without a retry, so the question returned nothing, and the report again omits the contamination evidence and the maintainer review, as scout-v1 Luna's did after a 429. Seven DuckDuckGo searches also timed out. The grade therefore measures that loss, not scout-v9.
+
+## Support audit of every stored report (audit version 1, 27 September 2026)
+
+`research audit` (commit a7fdda7) asked `zai:glm-5.3` at high effort, a vendor no run uses, whether the verified quotes behind each report statement say what the statement says. All 23 stored reports were audited in one batch under a $2.00 cap, and the batch cost $0.26. The verdicts are in the `support_audits` table.
+
+| Runs | Statements | Supported | Partial | Unsupported | No verified quote |
+|---|---|---|---|---|---|
+| scout-v1, production models (12 reports) | 132 | 66 | 53 | 4 | 9 |
+| scout-v6, production models (2) | 60 | 29 | 18 | 0 | 13 |
+| scout-v9, production models (5) | 34 | 29 | 5 | 0 | 0 |
+| cheap checks, Luna low (4) | 24 | 10 | 12 | 1 | 1 |
+
+A hand check of all 5 `unsupported` verdicts and a random 12 of the 76 `partial` verdicts in production runs found the following:
+
+- **Unsupported verdicts.** All 5 are right. Four are statements that go beyond their quotes; the fifth is a report describing its own scope.
+- **Partial verdicts, real overreach (6 of 12).** The statement adds something the quotes do not state: that the Chinchilla paper gives no context length, that OpenHands with Claude 3.7 Sonnet was the system behind a figure, "since 2022", two challenges missing from the quote, that the dataset is static, and that saturation is not established.
+- **Partial verdicts, audit artefacts (4 of 12).** They come from sending only each source's title: author names, dates, and URLs that came from a source's record look unsupported.
+- **Partial verdicts, other (2 of 12).** One statement had already said its figure rested on an unverified quote, and one is minor framing.
+
+Overreach enters at both steps. Usually the scout's claim already says more than its quote, drawing on the rest of a page it read or on its own inference; claims that something is absent from a source, such as Chinchilla's context length, are a recurring case that a quote can never establish. Once, the synthesizer added a specific system and model name that neither the claim nor the quote contains.
+
+Taking the sample's rate, roughly one in five quoted statements in production runs says more than its quotes. The scout-v9 reports did best (29 of 34 supported), but they are the three easiest cases, so this is not yet a comparison of versions. Audit version 2 should send each source's URL, date, and authors, so that record details stop counting against a statement.
+
+## A second rubric judge (27 September 2026)
+
+Every report with a `gpt-6-sol` high-effort grade (18 reports) was graded again by `zai:glm-5.3` at high effort, with the same version-2 judge prompt (`RESEARCH_MODELS__JUDGE=zai:glm-5.3@high research grade`, $0.30 cap per grade). The 18 grades cost $0.27, and all of them are in `grades` under their judge model.
+
+| Case | Reports | Sol points | GLM points | Points where the judges disagree |
+|---|---|---|---|---|
+| st04 | 5 | 19/20 | 19/20 | 0 |
+| st05 | 4 | 43/44 | 43/44 | 0 |
+| st07 | 3 | 10/27 | 13/27 | 3 |
+| drb2-task8 | 5 | 118/260 | 131/260 | 15 |
+| drb2-task68-plus | 1 | 14/54 | 22/54 | 10 |
+
+The judges agree on 375 of 405 points (92.6%). Of the 30 disagreements, GLM credits 27 points that Sol does not, and Sol credits 3 that GLM does not. On the short cases they agree exactly. On the DRB-II cases GLM scores each report 1 to 8 points higher. Both judges rank the drb2-task8 reports almost identically: the deep run `56c4b4dd` is first under both, and only two reports two points apart swap places.
+
+A hand check of the three st07 disagreements on `7a7fc5b5` favours GLM on two. The rubric point "human annotators screened instances for underspecified issues and unfair or overly specific tests" is stated in the report in other words ("a clear problem statement, a correct test patch, and solvability"). The point "documents contamination or memorization concerns" is met by a quoted SWE-rebench finding that scores "might be inflated due to contamination issues". This matches the earlier NOMAD verdict: Sol does not always credit equivalent wording.
+
+The choice of judge therefore moves a DRB-II score by up to 8 points, as much as the run-to-run variation the studies try to see past, while leaving short cases and the order of reports mostly unchanged. A decision that rests on a few rubric points should use both judges and have their disagreements checked by hand.
