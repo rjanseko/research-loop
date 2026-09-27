@@ -178,6 +178,28 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
                             f"cache {settings.cache_dir} ({settings.cache_mode})"))
 
 
+async def _fuzz(args: argparse.Namespace) -> int:
+    import logging
+    import os
+
+    from .dryrun import fuzz, fuzz_one, fuzz_report
+
+    # Fake runs make no network calls and should print nothing but findings.
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+    os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
+    logging.getLogger("logfire").setLevel(logging.ERROR)
+    if args.one is not None:
+        findings = await fuzz_one(args.one, args.fault_rate)
+        for finding in findings:
+            print(f"{finding.kind}:")
+            print("\n".join(f"  {problem}" for problem in finding.problems))
+        print(f"Seed {args.one}: {'no problems' if not findings else f'{len(findings)} findings'}.", file=sys.stderr)
+        return 1 if findings else 0
+    findings = await fuzz(args.runs, args.seed, args.fault_rate)
+    print(fuzz_report(findings, args.runs, args.fault_rate))
+    return 1 if findings else 0
+
+
 def _study(args: argparse.Namespace) -> int:
     from pydantic import ValidationError
 
@@ -245,7 +267,6 @@ async def _breakdown(args: argparse.Namespace, settings: Settings) -> int:
 async def _grade(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evals import (
-        JUDGE_MODEL,
         JUDGE_VERSION,
         StoredReport,
         find_case,
@@ -278,7 +299,7 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
             return 2
         text = reader_text(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}))
         budget = StudyBudget(args.max_usd)
-        print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {JUDGE_MODEL}, "
+        print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {settings.models.judge}, "
               f"judge v{JUDGE_VERSION}, ${budget.cap_usd:.2f} pre-dispatch cap; this is a paid call.", file=sys.stderr)
         _, grades = await grade_reports([StoredReport(case, args.run_id, text)], settings, budget=budget)
         for grade in grades:
@@ -298,7 +319,6 @@ async def _assess(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evidence import EvidenceLedger
     from .quality import (
-        QUALITY_MODEL,
         QUALITY_VERSION,
         StoredQualityReport,
         assess_reports,
@@ -326,7 +346,7 @@ async def _assess(args: argparse.Namespace, settings: Settings) -> int:
         item = StoredQualityReport(args.run_id, FinalReport.model_validate(row["report"]),
                                    EvidenceLedger.from_json(row["ledger"] or {}), packet, row["checks"] or {})
         budget = StudyBudget(args.max_usd)
-        print(f"Assessing {args.run_id} with {QUALITY_MODEL}, evaluator v{QUALITY_VERSION}, "
+        print(f"Assessing {args.run_id} with {settings.models.judge}, evaluator v{QUALITY_VERSION}, "
               f"packet {packet.case_id} v{packet.version}, ${budget.cap_usd:.2f} pre-dispatch cap; "
               f"this is a paid call.", file=sys.stderr)
         _, records = await assess_reports([item], settings, budget=budget)
@@ -431,6 +451,12 @@ def main(argv: list[str] | None = None) -> None:
     study.add_argument("spec", type=Path)
     study.add_argument("--out", type=Path, help="Where each run's report and the summary go; default runs/STUDY")
 
+    fuzz = commands.add_parser("fuzz", help="Hunt bugs with seeded fake models and an offline world (free)")
+    fuzz.add_argument("--runs", type=int, default=100, help="How many seeded runs")
+    fuzz.add_argument("--seed", type=int, default=0, help="Where the seeds start")
+    fuzz.add_argument("--one", type=int, metavar="SEED", help="Reproduce one seed exactly, with its full traceback")
+    fuzz.add_argument("--fault-rate", type=float, default=0.2, help="How often models and the world misbehave")
+
     doctor = commands.add_parser("doctor", help="Check keys, prices, the database, and the network")
     doctor.add_argument("--smoke", action="store_true", help="Also make one small paid call per configured model")
 
@@ -474,6 +500,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_grade(args, settings))
         elif args.command == "assess":
             code = asyncio.run(_assess(args, settings))
+        elif args.command == "fuzz":
+            code = asyncio.run(_fuzz(args))
         elif args.command == "study":
             code = _study(args)
         elif args.command == "doctor":

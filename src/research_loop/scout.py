@@ -737,6 +737,20 @@ class _Run:
         """The run's research tools, sharing one fetch memo and one pair of HTTP clients across its scouts."""
         cache, settings = self.settings.cache_dir, self.settings
         memo = FetchMemo()
+        if settings.offline_world is not None:
+            # The bug-finding harness: tools answer from a generated world, and nothing is cached.
+            from .dryrun import World
+
+            world = World(settings.offline_world, settings.offline_fault_rate)
+            world.install(stack, self.policy)
+            search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0))
+            pages_client = await stack.enter_async_context(world.client())
+            pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
+                                   policy=self.policy)
+            scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", "off"),
+                                    client=await stack.enter_async_context(world.client()))
+            self.caches = []
+            return TimedToolset(research_toolset(search, pages, scholar))
         pages_client = await stack.enter_async_context(trace_http(public_fetch_client(timeout=15), settings))
         metadata_client = await stack.enter_async_context(
             trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))

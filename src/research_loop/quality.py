@@ -22,7 +22,7 @@ from pydantic_ai.usage import RunUsage
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
-from .config import Settings
+from .config import Settings, split_model
 from .evidence import EvidenceLedger
 from .models import build_model
 from .schemas import FinalReport
@@ -149,6 +149,8 @@ class QualityRecord:
     id: UUID = field(default_factory=uuid4)
     budget_cap_usd: Decimal | None = None
     reserved_usd: Decimal | None = None
+    judge_model: str = QUALITY_MODEL
+    judge_thinking: str = QUALITY_THINKING
 
     @property
     def cost_usd(self) -> Decimal | None:
@@ -201,29 +203,32 @@ async def judge_quality(report: FinalReport, ledger: EvidenceLedger, packet: Qua
 
     usage = RunUsage()
     messages: list[ModelMessage] = []
-    chosen = model or build_model(f"{QUALITY_MODEL}@{QUALITY_THINKING}", "scout", settings, sdk_retries=0)
+    judge_model, judge_thinking = split_model(settings.models.judge)
+    chosen = model or build_model(settings.models.judge, "scout", settings, sdk_retries=0)
     if budget is not None:
-        chosen = StudyBudgetModel(chosen, QUALITY_MODEL, budget)
+        chosen = StudyBudgetModel(chosen, judge_model, budget)
     try:
         with capture_run_messages() as messages:
             result = await agent.run(assessment_input(report, ledger, packet, checks),
                                      model=chosen, usage=usage,
-                                     model_settings={"thinking": QUALITY_THINKING, "timeout": 180,
+                                     model_settings={"thinking": judge_thinking, "timeout": 180,
                                                      "max_tokens": 5000})
     except Exception as exc:  # noqa: BLE001 - retain the judge's partial usage and failure
         return QualityRecord(run_id, packet, "failed", usage=usage, messages=list(messages), error=exc,
                              budget_cap_usd=budget.cap_usd if budget else None,
-                             reserved_usd=budget.reserved_usd if budget else None)
+                             reserved_usd=budget.reserved_usd if budget else None,
+                             judge_model=judge_model, judge_thinking=judge_thinking)
     return QualityRecord(run_id, packet, "succeeded", result.output, usage, result.all_messages(),
                          budget_cap_usd=budget.cap_usd if budget else None,
-                         reserved_usd=budget.reserved_usd if budget else None)
+                         reserved_usd=budget.reserved_usd if budget else None,
+                         judge_model=judge_model, judge_thinking=judge_thinking)
 
 
 def quality_row(record: QualityRecord) -> dict[str, Any]:
     return {"id": record.id, "run_id": record.run_id, "case_id": record.packet.case_id,
             "packet_version": record.packet.version, "packet_sha256": record.packet.digest,
-            "evaluator_version": QUALITY_VERSION, "judge_model": QUALITY_MODEL,
-            "judge_thinking": QUALITY_THINKING, "status": record.status,
+            "evaluator_version": QUALITY_VERSION, "judge_model": record.judge_model,
+            "judge_thinking": record.judge_thinking, "status": record.status,
             "judgment": record.judgment.model_dump(mode="json") if record.judgment else None,
             "usage": usage_record(record.usage) if record.usage else None, "cost_usd": record.cost_usd,
             "messages": transcript(record.messages) if record.messages else None,

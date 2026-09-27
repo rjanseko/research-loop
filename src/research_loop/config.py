@@ -57,10 +57,16 @@ def model_spec_problem(spec: str) -> str | None:
     return None
 
 
+# The bug-finding harness's scripted models (dryrun.py): no key, priced as Luna, and usable only with
+# the offline world, so neither can reach a real run.
+FAKE_PROVIDER = "fake"
+
+
 def model_provider(model_id: str) -> str | None:
     """The provider of a `provider:model` ID, or None when it names no known provider or no model."""
     provider, separator, model = model_id.partition(":")
-    return provider if separator and model.strip() and provider in PROVIDER_KEYS else None
+    known = provider in PROVIDER_KEYS or provider == FAKE_PROVIDER
+    return provider if separator and model.strip() and known else None
 
 
 def _model_spec(value: str) -> str:
@@ -86,6 +92,8 @@ class ScoutModels(BaseModel):
     scout: str = "openai:gpt-6-luna@high"
     synthesizer: str = "anthropic:claude-opus-5-5@medium"
     fallback: str | None = "openai:gpt-6-sol@high"
+    # Grades rubric points and assesses quality (evals.py, quality.py); each grade records it.
+    judge: str = "openai:gpt-6-sol@high"
 
     @model_validator(mode="before")
     @classmethod
@@ -95,7 +103,7 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "synthesizer", "fallback")
+    @field_validator("planner", "scout", "synthesizer", "fallback", "judge")
     @classmethod
     def _provider_model(cls, value: str | None) -> str | None:
         return None if value is None or not value.strip() else _model_spec(value)
@@ -232,6 +240,10 @@ class Settings(BaseSettings):
     # Where a study's runs keep their lookups (`for_study`).
     study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
+    # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
+    # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
+    offline_world: int | None = None
+    offline_fault_rate: float = Field(0.2, ge=0, le=1)
     crossref_mailto: str | None = Field(None, validation_alias="CROSSREF_MAILTO")
 
     @field_validator("enabled_providers", mode="before")
@@ -270,15 +282,23 @@ class Settings(BaseSettings):
     def route_problems(self) -> list[str]:
         """Why the configured models cannot run, before any call is made; empty when they can."""
         problems = []
-        roles = {"planner": self.models.planner, "scout": self.models.scout, "synthesizer": self.models.synthesizer}
+        roles = {"planner": self.models.planner, "scout": self.models.scout, "synthesizer": self.models.synthesizer,
+                 "judge": self.models.judge}
         if self.models.fallback:
             roles["fallback"] = self.models.fallback
+        fake = {role for role, spec in roles.items() if spec.startswith(f"{FAKE_PROVIDER}:")}
+        if fake and self.offline_world is None:
+            problems.append(f"{', '.join(sorted(fake))}: fake models run only in the offline world (RESEARCH_OFFLINE_WORLD)")
+        if self.offline_world is not None and (real := sorted(set(roles) - fake)):
+            problems.append(f"{', '.join(real)}: the offline world runs only fake models")
         for role, spec in roles.items():
             if problem := model_spec_problem(spec):
                 problems.append(f"{role}: {problem}")
                 continue
             model_id = split_model(spec)[0]
             provider = str(model_provider(model_id))
+            if provider == FAKE_PROVIDER:
+                continue
             if self.api_key(provider) is None:
                 problems.append(f"{role}: {model_id} needs {PROVIDER_KEYS[provider]}")
             elif not self.provider_enabled(provider):

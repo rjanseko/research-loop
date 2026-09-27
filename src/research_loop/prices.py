@@ -123,6 +123,9 @@ def price_per_million(model_id: str) -> tuple[Decimal, Decimal] | None:
 
     install_price_overrides()
     provider, _, name = model_id.partition(":")
+    if provider == "fake":
+        # The harness's scripted models report their usage as Luna's (dryrun.py), so they cost what Luna would.
+        return price_per_million("openai:gpt-6-luna")
     try:
         return tuple(calc_price(usage, name, provider_id=provider).total_price * 10  # type: ignore[return-value]
                      for usage in (RequestUsage(input_tokens=100_000), RequestUsage(output_tokens=100_000)))

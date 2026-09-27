@@ -16,7 +16,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
-from .config import PROVIDER_KEYS, Settings, model_provider, split_model
+from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
 from .rate_limit import ScoutRateLimitModel, TokenPacer
 
 Role = Literal["planner", "scout", "synthesizer"]
@@ -62,6 +62,10 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
     """
     model_id = split_model(spec)[0]
     provider, _, name = model_id.partition(":")
+    if provider == FAKE_PROVIDER:
+        from .dryrun import FuzzModel
+
+        return FuzzModel(seed=settings.offline_world or 0, fault_rate=settings.offline_fault_rate, name=name)
     if provider not in PROVIDER_KEYS:
         raise ValueError(f"unknown provider in {model_id!r}")
     key = settings.api_key(provider)
