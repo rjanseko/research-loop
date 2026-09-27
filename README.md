@@ -222,6 +222,7 @@ Research Loop includes the tools used to choose its own configuration: labeled r
 research scout --case drb2-task8 --max-usd 3.00 --study drb2-pilot --arm baseline --replicate 1
 research grade <run id> --case drb2-task8 --max-usd 1.00
 research assess <run id> --case st07 --max-usd 1.00
+research audit <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.00
 research synthesize <run id> --model openai:gpt-6-sol@high --max-usd 1.00 --study synthesis --arm sol --replicate 1
 research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study scouts --arm flash --replicate 1
 ```
@@ -233,6 +234,8 @@ The study cases are in `src/research_loop/study_cases.jsonl`. `drb2-task8` (52 r
 Three more cases from the same snapshot are held out: `drb2-task82` (how oil-dependent countries manage their wealth, 62 points), `drb2-task59` (how birds sense magnetic direction, 44 points), and `drb2-task78` (the history of Parkinson's diagnostic criteria, 62 points). They come from fields the first two cases don't cover, and most of their rubric points ask for concepts rather than specific named papers. Tune changes on `drb2-task8` and `drb2-task68-plus`, and run the held-out cases only to confirm a change before adopting it; `research scout` prints a reminder when one is run. `drb2-task78`'s presentation rubric asks for a comparison table its task never requests, so expect to lose those points. `scripts/import_drb2.py TASK... --role held-out` freezes further tasks: it checks the downloaded file against the pinned snapshot's hash and never replaces a case that is already frozen.
 
 `research grade` scores a stored report against a case's rubric with a judge (`gpt-6-sol` at high effort, judge version 2) that gives one verdict per rubric point. It checks that the stored run was made for that frozen case before sending anything. `research assess` judges a report's overall quality and specific facts against independently reviewed source summaries in `src/research_loop/quality_packets.jsonl`, which currently cover the st04 and st07 cases. Grades and assessments are stored in their own tables with the judge's version, cost, and messages. Rubric scores measure coverage of what an expert report included, not overall quality, and a model choice that turns on a score should get a human review.
+
+`research audit` checks what the quote checks cannot: whether the quotes behind a report's statements say what the statements say. For each statement it collects the verified quotes of the supporting evidence behind its claims and asks a model, given with `--model`, whether they support it: `supported`, `partial` when the statement adds something the quotes do not state, such as a number, a scope, or more certainty, or `unsupported`. A statement with no verified quote is marked `no_quote` without a model call. The model judges only from the quotes, so a model from a vendor the run did not use makes an independent check. One `--max-usd` cap covers every run audited. Each audit is stored in the `support_audits` table with its verdicts, counts, audit version, the run's evidence version, and the call's usage, cost, and messages; the stored run is not changed. A model's verdicts are not ground truth, so check a sample by hand before relying on them.
 
 `research synthesize` writes a new report from a stored run's ledger with the model given by `--model`, using the production synthesis prompt, checks, and time window, without planning or research. `research rescout` researches a stored run's plan again with the scout model given by `--model` and stops before synthesis, using the production scout prompt, tools, checks, and research window. Each records a new run that points at its source, with a digest of the fixed ledger or plan, and each carries a frozen case's identity forward so that the result can be graded. A rescout gets the whole research window, while its source's scouts shared it with planning, so compare rescouts with each other rather than with their source.
 
@@ -319,6 +322,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `store.py`, `db.py`, `migrations/` | Run records in Postgres or memory, and the schema |
 | `render.py`, `cli.py`, `doctor.py`, `telemetry.py`, `breakdown.py` | Reports, the `research` command, setup checks, Logfire, and cost and time breakdowns |
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
+| `audit.py` | The support audit: whether the verified quotes behind each report statement say what it says |
 | `study.py`, `coverage.py` | The study runner, and the count of a development case's expected set a run found |
 | `dryrun.py` | The bug-finding harness: the fuzz model, the offline world, the invariants, and `research fuzz` |
 

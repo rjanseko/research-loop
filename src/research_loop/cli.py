@@ -332,6 +332,58 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+async def _audit(args: argparse.Namespace, settings: Settings) -> int:
+    from pydantic import ValidationError
+
+    from .audit import AUDIT_VERSION, audit, audit_row
+    from .config import ScoutModels, split_model
+    from .db import open_migrated_pool
+    from .evidence import EvidenceLedger
+    from .prices import price_per_million
+    from .schemas import FinalReport
+    from .store import load_run, save_support_audit
+    from .study_budget import StudyBudget
+
+    try:
+        settings = settings.model_copy(update={"models": ScoutModels.model_validate(
+            settings.models.model_dump() | {"judge": args.model})})
+    except ValidationError as exc:
+        print(f"Cannot run: {exc.errors()[0]['msg']}", file=sys.stderr)
+        return 2
+    problems = [problem for problem in settings.route_problems() if problem.startswith("judge:")]
+    if price_per_million(split_model(args.model)[0]) is None:
+        problems.append(f"{args.model} has no price, so its cost cannot be capped")
+    if problems:
+        print(f"Cannot run: {'; '.join(problems)}", file=sys.stderr)
+        return 2
+    # One cap across every run audited, so a batch cannot pass it.
+    budget = StudyBudget(args.max_usd)
+    print(f"Auditing {len(args.run_ids)} run(s) with {args.model}, audit v{AUDIT_VERSION}, "
+          f"${budget.cap_usd:.2f} pre-dispatch cap across them; this makes paid calls.", file=sys.stderr)
+    code = 0
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        for run_id in args.run_ids:
+            row = await load_run(pool, run_id)
+            if row is None or not row.get("report"):
+                print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
+                code = 1
+                continue
+            record = await audit(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}),
+                                 row["question"], run_id, settings, budget=budget,
+                                 evidence_version=(row.get("config") or {}).get("evidence_version"))
+            await save_support_audit(pool, audit_row(record))
+            cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "$0"
+            if record.status != "succeeded":
+                print(f"{run_id}: audit failed ({type(record.error).__name__}), {cost}; recorded as {record.id}.",
+                      file=sys.stderr)
+                code = 1
+                continue
+            counts = ", ".join(f"{n} {verdict}" for verdict, n in sorted(record.counts.items()))
+            print(f"{run_id}: {counts}; {cost}. Recorded as {record.id}.")
+    return code
+
+
 async def _assess(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evidence import EvidenceLedger
@@ -464,6 +516,12 @@ def main(argv: list[str] | None = None) -> None:
     assess.add_argument("--case", required=True, help="The source packet, such as st04 or st07")
     assess.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
+    check = commands.add_parser("audit", help="Judge whether the verified quotes behind stored reports' statements "
+                                "say what the statements say (paid)")
+    check.add_argument("run_ids", type=UUID, nargs="+", metavar="run_id")
+    check.add_argument("--model", required=True, help="The auditor, provider:model@effort, such as zai:glm-5.3@high")
+    check.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap across all the runs")
+
     study = commands.add_parser("study", help="Run a whole study from a TOML spec and summarize it (paid)")
     study.add_argument("study_command", choices=("run", "plan"),
                        help="run: execute the spec; plan: list its runs and worst case without running any")
@@ -504,9 +562,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
         if args.max_usd is not None and args.max_usd <= 0:
             parser.error("--max-usd must be positive")
-    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "rescout", "db", "study") and not settings.database_dsn:
+    if args.command in ("show", "breakdown", "grade", "assess", "audit", "synthesize", "rescout", "db", "study") \
+            and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
-    if args.command in ("grade", "assess", "synthesize", "rescout") and args.max_usd <= 0:
+    if args.command in ("grade", "assess", "audit", "synthesize", "rescout") and args.max_usd <= 0:
         parser.error("--max-usd must be positive")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
@@ -525,6 +584,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_grade(args, settings))
         elif args.command == "assess":
             code = asyncio.run(_assess(args, settings))
+        elif args.command == "audit":
+            code = asyncio.run(_audit(args, settings))
         elif args.command == "fuzz":
             code = asyncio.run(_fuzz(args))
         elif args.command == "study":

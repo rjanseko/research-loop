@@ -85,7 +85,7 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         pending_migrations,
         reconcile,
     )
-    from research_loop.store import load_calls, load_run, save_grade
+    from research_loop.store import load_calls, load_run, save_grade, save_support_audit
 
     names = [migration.name for migration in migration_files()]
     assert names[0] == "001_scout.sql" and pending_migrations(dsn) == names
@@ -118,6 +118,12 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
                                 "usage": {"requests": 1}, "cost_usd": Decimal("0.02"), "messages": None, "error": None,
                                 "budget_cap_usd": Decimal("0.10"), "reserved_usd": Decimal("0.08"),
                                 "budget_policy": "byte-reserve-v1"})
+        await save_support_audit(pool, {"id": uuid4(), "run_id": run_id, "audit_version": 1, "evidence_version": 7,
+                                        "judge_model": "zai:glm-5.3", "judge_thinking": "high", "status": "succeeded",
+                                        "verdicts": [{"id": "a1", "verdict": "partial", "reason": "r"}],
+                                        "counts": {"partial": 1}, "usage": {"requests": 1}, "cost_usd": Decimal("0.01"),
+                                        "messages": None, "error": None, "budget_cap_usd": Decimal("0.50"),
+                                        "reserved_usd": Decimal("0.02"), "budget_policy": "usage-anchor-v4"})
         row = await load_run(pool, run_id)
         (call,) = await load_calls(pool, run_id)
     assert (row["status"], row["question"], row["parent_run_id"], row["report"], row["cost_usd"]) == (
@@ -134,3 +140,5 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         assert reconcile(conn, 0, apply=True) == (1, 0)
         assert conn.execute("select status from runs where id = %s", (parent,)).fetchone() == ("failed",)
         assert conn.execute("select case_id, score from grades").fetchone() == ("st05-scaling-table", Decimal("0.5"))
+        assert conn.execute("select judge_model, counts, verdicts->0->>'verdict' from support_audits").fetchone() == (
+            "zai:glm-5.3", {"partial": 1}, "partial")
