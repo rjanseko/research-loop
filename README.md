@@ -38,6 +38,7 @@ Settings come from `.env` or the environment, and exported variables override th
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
+| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free) or `exa` (paid per search, needs the key). See [Web search](#web-search). |
 
 Nested settings use a double underscore, so the scout model is `RESEARCH_MODELS__SCOUT` and the cost limit is `RESEARCH_LIMITS__COST_USD`. Never commit `.env`; it is ignored by git.
 
@@ -194,6 +195,10 @@ Retrying is not enough when parallel scouts regularly send more than the limit a
 Pacing is per run, so two runs at once against the same account can still reach the limit. Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them.
 
 A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. One such fault once cost a run the question that decided its answer. A second fault ends the call, and a timeout is never sent again. The retry policy is recorded with the run as `scout-429-v3`.
+
+### Web search
+
+The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE=exa`. Exa is sent the request its documentation recommends, the query with `auto` search and highlights, and returns up to ten results whose highlights become the snippets, labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Exa charges per search ($7 per 1,000 as listed on 27 September 2026). Each search's reported cost is added to the run's cost and shown as `search_usd` in its checks and as "web search" in `research breakdown`; under `--max-usd` each search first reserves $0.01 and then settles to its reported cost. Each engine keeps its own cache entries and rate slot. For either engine, search results from blocked sources are left out, so a blocked page's text never reaches a scout as a snippet. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 ### The research cache
 

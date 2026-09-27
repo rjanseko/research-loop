@@ -240,6 +240,10 @@ class Settings(BaseSettings):
     # Where a study's runs keep their lookups (`for_study`).
     study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
+    # The web search engine behind the scouts' `web_search` tool. DuckDuckGo stays the default until a
+    # paired study shows Exa is better; Exa is paid per search and needs EXA_API_KEY (web.exa_engine).
+    search_engine: Literal["duckduckgo", "exa"] = "duckduckgo"
+    exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
     offline_world: int | None = None
@@ -286,6 +290,8 @@ class Settings(BaseSettings):
                  "judge": self.models.judge}
         if self.models.fallback:
             roles["fallback"] = self.models.fallback
+        if self.search_engine == "exa" and self.exa_api_key is None and self.offline_world is None:
+            problems.append("web search: exa needs EXA_API_KEY")
         fake = {role for role, spec in roles.items() if spec.startswith(f"{FAKE_PROVIDER}:")}
         if fake and self.offline_world is None:
             problems.append(f"{', '.join(sorted(fake))}: fake models run only in the offline world (RESEARCH_OFFLINE_WORLD)")

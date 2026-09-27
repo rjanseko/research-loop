@@ -106,6 +106,11 @@ async def run_doctor(settings: Settings, *, smoke: bool = False) -> int:
         report("OK", "cache", f"{settings.cache_dir} ({settings.cache_mode})")
     except OSError as exc:
         report("FAIL", "cache", f"{settings.cache_dir} is not writable ({type(exc).__name__})")
+    if settings.search_engine == "exa":
+        report("OK" if settings.exa_api_key else "FAIL", "web search",
+               "exa, paid per search" if settings.exa_api_key else "exa needs EXA_API_KEY")
+    else:
+        report("OK", "web search", "duckduckgo")
 
     hosts = [*SOURCE_HOSTS, *sorted({_provider_host(m) for m in roles.values() if _provider_host(m)})]
     unresolved = [host for host in hosts if not await _resolves(host)]

@@ -462,3 +462,86 @@ async def test_document_parsing_leaves_the_event_loop_free(public_urls, monkeypa
     ticker.cancel()
     assert result["text"] == "Parsed paper text."
     assert ticks >= 10  # other tasks kept running while the paper was parsed
+
+
+def _exa(responses: list[httpx.Response], sent: list[dict]) -> httpx.AsyncClient:
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"url": str(request.url), "key": request.headers.get("x-api-key"),
+                     "body": json.loads(request.content)})
+        return responses.pop(0)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+EXA_REPLY = {"requestId": "r", "costDollars": {"total": 0.007}, "results": [
+    {"title": "SWE-bench Verified", "url": "https://openai.com/index/introducing-swe-bench-verified/",
+     "highlights": ["500 samples", "verified by annotators"]},
+    {"title": "Expert report", "url": "https://blocked.example/report", "highlights": ["the rubric's answer"]}]}
+
+
+@pytest.mark.asyncio
+async def test_exa_sends_the_recommended_request_and_counts_what_it_cost() -> None:
+    from decimal import Decimal
+
+    from research_loop.acquisition import SourcePolicy
+    from research_loop.study_budget import StudyBudget
+    from research_loop.web import SearchSpend, exa_engine
+
+    sent: list[dict] = []
+    spend, budget = SearchSpend(), StudyBudget(Decimal("1.00"))
+    async with _exa([httpx.Response(200, json=EXA_REPLY)], sent) as client:
+        search = WebSearch(engine=exa_engine(client, "k", spend, budget), name="exa",
+                           policy=SourcePolicy(("https://blocked.example/report",)))
+        result = await search.search("Is SWE-bench Verified trustworthy?")
+    (request,) = sent
+    assert request["url"] == "https://api.exa.ai/search" and request["key"] == "k"
+    assert request["body"] == {"query": "Is SWE-bench Verified trustworthy?", "type": "auto",
+                               "contents": {"highlights": True}}
+    # The blocked expert report's highlight never reaches the scout.
+    assert result == {"results": [{"title": "SWE-bench Verified",
+                                   "url": "https://openai.com/index/introducing-swe-bench-verified/",
+                                   "snippet": "500 samples … verified by annotators"}]}
+    assert (spend.usd, spend.searches) == (Decimal("0.007"), 1)
+    assert budget.reserved_usd == Decimal("0.007")  # the reservation settled to the reported cost
+
+
+@pytest.mark.asyncio
+async def test_a_paid_search_the_cap_cannot_cover_is_refused_once_and_a_429_is_released() -> None:
+    from decimal import Decimal
+
+    from research_loop.study_budget import StudyBudget
+    from research_loop.web import SearchSpend, exa_engine
+
+    sent: list[dict] = []
+    tight = StudyBudget(Decimal("0.005"))  # below one search's reservation
+    async with _exa([], sent) as client:
+        result = await WebSearch(engine=exa_engine(client, "k", SearchSpend(), tight), name="exa",
+                                 retry_delays=(0, 0)).search("q")
+    assert result["error"] == "SearchUnavailable (StudyBudgetRefusal)" and sent == []
+
+    budget = StudyBudget(Decimal("1.00"))
+    async with _exa([httpx.Response(429), httpx.Response(429), httpx.Response(429)], sent) as client:
+        result = await WebSearch(engine=exa_engine(client, "k", SearchSpend(), budget), name="exa",
+                                 retry_delays=(0, 0)).search("q")
+    assert result["error"] == "SearchUnavailable (HTTPStatusError)" and budget.reserved_usd == 0
+
+
+@pytest.mark.asyncio
+async def test_each_engine_keeps_its_own_cache(tmp_path) -> None:
+    calls: list[str] = []
+    cache = AcquisitionCache(tmp_path, "reuse")
+    await WebSearch(engine=_engine(calls), cache=cache).search("SWE-bench")
+    await WebSearch(engine=_engine(calls), cache=cache, name="exa").search("SWE-bench")
+    assert len(calls) == 2  # DuckDuckGo's cached answer is not Exa's
+    await WebSearch(engine=_engine(calls), cache=cache, name="exa").search("SWE-bench")
+    assert len(calls) == 2
+
+
+def test_exa_search_needs_its_key(monkeypatch) -> None:
+    from research_loop.config import Settings
+
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    problems = Settings(search_engine="exa", _env_file=None).route_problems()
+    assert "web search: exa needs EXA_API_KEY" in problems

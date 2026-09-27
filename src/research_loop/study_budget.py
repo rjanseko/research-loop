@@ -35,7 +35,8 @@ from .prices import install_price_overrides
 # added part is bounded by its bytes. Scout requests run about 5.3 bytes per billed token, so v3's
 # two tokens per byte reserved about eleven times their input and falsely refused four Luna scouts
 # at a $0.50 cap (docs/high-level-study-evaluation.md).
-BUDGET_POLICY_VERSION = "usage-anchor-v4"
+# v5 also reserves a fixed charge before each paid web search and settles it to the reported cost.
+BUDGET_POLICY_VERSION = "usage-anchor-v5"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 # Framing for the messages, tool definitions, and settings added since the anchoring reply.
@@ -104,6 +105,19 @@ class StudyBudget:
                     f"with ${self.reserved_usd:.4f} already reserved")
             self.reserved_usd += charge
         return charge
+
+    async def reserve_fixed(self, charge: Decimal, what: str) -> Decimal:
+        """Reserve a fixed-price charge, such as a paid web search, or refuse it like a model request."""
+        async with self._lock:
+            if self.reserved_usd + charge > self.cap_usd:
+                raise StudyBudgetRefusal(f"{what} reserve ${charge:.4f} would exceed ${self.cap_usd:.4f} cap "
+                                         f"with ${self.reserved_usd:.4f} already reserved")
+            self.reserved_usd += charge
+        return charge
+
+    def settle_fixed(self, charge: Decimal, actual: Decimal) -> None:
+        """Replace a fixed-price reservation with what the provider reported charging."""
+        self.reserved_usd += actual - charge
 
     def release(self, charge: Decimal) -> None:
         """Return a reservation the provider rejected with a 429, which it does not charge for."""
