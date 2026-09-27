@@ -1,0 +1,19 @@
+# Checks that Exa search works end to end against DuckDuckGo on a short case. Only its --dry and --cheap
+# checks have been run; a paid comparison needs more cases, replicates, and a decision rule set first.
+study = "exa-search-check"
+kind = "scout"
+cases = ["st04-ilsvrc-captioning"]
+replicates = 1
+cap_usd = 3.00
+estimate_usd = 0.40
+ceiling_usd = 1.00
+grade = true
+grade_estimate_usd = 0.06
+
+[[arms]]
+name = "duckduckgo"
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo" }
+
+[[arms]]
+name = "exa"
+env = { RESEARCH_SEARCH_ENGINE = "exa" }

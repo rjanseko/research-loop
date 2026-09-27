@@ -251,3 +251,14 @@ The judges agree on 375 of 405 points (92.6%). Of the 30 disagreements, GLM cred
 A hand check of the three st07 disagreements on `7a7fc5b5` favours GLM on two. The rubric point "human annotators screened instances for underspecified issues and unfair or overly specific tests" is stated in the report in other words ("a clear problem statement, a correct test patch, and solvability"). The point "documents contamination or memorization concerns" is met by a quoted SWE-rebench finding that scores "might be inflated due to contamination issues". This matches the earlier NOMAD verdict: Sol does not always credit equivalent wording.
 
 The choice of judge therefore moves a DRB-II score by up to 8 points, as much as the run-to-run variation the studies try to see past, while leaving short cases and the order of reports mostly unchanged. A decision that rests on a few rubric points should use both judges and have their disagreements checked by hand.
+
+## Exa search: dry and cheap checks (27 September 2026)
+
+`RESEARCH_SEARCH_ENGINE=exa` (commit 05d5c69) was checked with `studies/exa-search-check.toml`, which has a DuckDuckGo arm and an Exa arm on st04. The dry check passed, as did a three-seed dry study of both short cases with the Exa arm. The cheap check (every role on `gpt-6-luna@low`) cost $0.02, with no invariant violations:
+
+| Arm | Run | Status, answer | Searches | Search cost | Run cost | Time | Cheap judge |
+|---|---|---|---|---|---|---|---|
+| DuckDuckGo | `37a0a63d` | complete, weak | 6 (3 cached as results) | free | $0.006 | 45 s | 3/4 |
+| Exa | `3aa8dde9` | complete, supported | 2 | $0.014 | $0.017 | 20 s | 4/4 |
+
+Exa charged the listed $0.007 a search, and the run recorded exactly that as `search_usd`. Its first search returned ten results, the first of them the official ILSVRC 2016 results page with a highlight from its results table. On this cheap run the searches cost more than the models; with the production models they would be a smaller share. One run per arm on the easiest case says nothing yet about quality. A paid comparison needs more cases, replicates, and a decision rule set before it runs.
