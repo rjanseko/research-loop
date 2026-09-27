@@ -850,8 +850,8 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
     cap = Decimal(str(((record.get("config") or {}).get("study_budget") or {}).get("cap_usd") or 0))
     if calls and len(refused) == len(calls) and cap >= Decimal(1):
         problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
-    # No search result a scout saw comes from a blocked source: an Exa highlight can carry a blocked page's
-    # text, such as a frozen case's expert report.
+    # No search result or scholarly record a scout saw comes from a blocked source: an Exa highlight can carry a
+    # blocked page's text, and an OpenAlex record a blocked paper's abstract, such as a frozen case's expert report.
     policy = SourcePolicy(tuple((record.get("config") or {}).get("blocked_urls") or []))
     for call in calls:
         for message in call.get("messages") or []:
@@ -862,6 +862,13 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
                 if blocked := [url for url in shown if url and policy.blocks(url)]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"search result: {blocked[0]}")
+                scholarly = part.get("content") if part.get("tool_name") in ("scholar_search", "scholar_get") else None
+                works = (scholarly.get("works") or []) if isinstance(scholarly, dict) else []
+                if blocked := [work.get("title") for work in works
+                               if policy.blocks_work((work.get("url"), work.get("full_text_url")), work.get("doi"),
+                                                     work.get("arxiv_id"))]:
+                    problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
+                                    f"scholarly record: {blocked[0]}")
     # A blocked page is never read, by our fetcher or any fallback reader.
     for call in calls:
         for message in call.get("messages") or []:

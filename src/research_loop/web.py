@@ -197,10 +197,12 @@ class WebAcquisition:
             return {"url": url, "error": "BlockedSource", "blocked": entry}
         # Cache next so replay works offline; entries exist only for URLs that passed the check.
         cache_key = fetch_cache_key(url, max_chars, start)
-        cached = self.cache.get("web", cache_key)
-        if cached is None and self.fallbacks:
-            cached = self.cache.get("read", cache_key)
+        cached = self._cached(cache_key)
         if cached is not None:
+            # The cache may predate a block by content; a later window is judged by the document's first one.
+            opening = cached if not start else self._cached(fetch_cache_key(url, max_chars, 0)) or {}
+            if entry := self.policy.blocks_document(str(opening.get("text") or "")):
+                return {"url": url, "error": "BlockedSource", "blocked": entry}
             return cached
         if self.cache.mode == "replay":
             return {"url": url, "error": "CacheMiss"}
@@ -237,8 +239,17 @@ class WebAcquisition:
             self.memo.put("web", url, document)
         return self._window(url, document, max_chars, start, cache_key)
 
+    def _cached(self, cache_key: str) -> dict[str, Any] | None:
+        cached = self.cache.get("web", cache_key)
+        if cached is None and self.fallbacks:
+            cached = self.cache.get("read", cache_key)
+        return cached
+
     def _window(self, url: str, document: dict[str, Any], max_chars: int, start: int, cache_key: str) -> dict[str, Any]:
-        """The requested window of a document, cached under our own namespace or the fallback's."""
+        """The requested window of a document, cached under our own namespace or the fallback's; nothing of a
+        document whose first page prints a blocked DOI."""
+        if entry := self.policy.blocks_document(document["text"]):
+            return {"url": url, "error": "BlockedSource", "blocked": entry}
         self.memo.put("web", url, document)
         window = fetch_window(document["text"], start, max_chars)
         if window is None:

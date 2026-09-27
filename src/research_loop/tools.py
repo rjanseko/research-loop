@@ -59,6 +59,13 @@ def valid_unicode(value: Any) -> Any:
 
 
 def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
+    """The four research tools. The task's blocked sources (the fetcher's policy) apply to all of them: search
+    results and scholarly records from a blocked source are left out, and a fetch or lookup of one is refused."""
+    policy = pages.policy
+
+    def allowed(works: list[ScholarWork]) -> list[dict[str, Any]]:
+        return [_work(w) for w in works if not policy.blocks_work((w.url, w.full_text_url), w.doi, w.arxiv_id)]
+
     async def web_search(query: str) -> dict[str, Any]:
         """Search the web. Returns titles, URLs, and short snippets (access: snippet); fetch a result to read it."""
         result = valid_unicode(await search.search(query))
@@ -77,13 +84,15 @@ def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarC
         """Search scholarly records (OpenAlex and arXiv). Each work says its access: `abstract` when it
         includes one, else `metadata`. Preprint and published records are separate works."""
         response = await scholar.search(query, year_from, year_to, limit)
-        return valid_unicode({"works": [_work(w) for w in response.works],
+        return valid_unicode({"works": allowed(response.works),
                               "provider_errors": response.provider_errors, "truncated": response.truncated})
 
     async def scholar_get(identifier: str) -> dict[str, Any]:
         """Look up one work by DOI (10.xxx), OpenAlex ID (W123), or arXiv ID (2310.06770)."""
+        if entry := policy.blocks_work(doi=identifier, arxiv_id=identifier):
+            return {"identifier": identifier, "error": "BlockedSource", "blocked": entry}
         response = await scholar.get(identifier)
-        return valid_unicode({"works": [_work(w) for w in response.works], "provider_errors": response.provider_errors})
+        return valid_unicode({"works": allowed(response.works), "provider_errors": response.provider_errors})
 
     return FunctionToolset(tools=[web_search, fetch, scholar_search, scholar_get])
 
@@ -257,7 +266,7 @@ def tool_outcomes(messages: Iterable[ModelMessage]) -> ToolOutcomes:
                           + (f": {data['detail']}" if data.get("detail") else ""))
                 outcomes.unreached.append(UnreachedSource(target=url, reason=reason))
         elif data.get("error"):
-            outcomes.unreached.append(UnreachedSource(target=f"{part.tool_name}: {call.get('query', '')}",
+            outcomes.unreached.append(UnreachedSource(target=f"{part.tool_name}: {call.get('query') or call.get('identifier', '')}",
                                                       reason=str(data["error"])))
         elif part.tool_name == SCHOLAR_GET and not data.get("works"):
             outcomes.unreached.append(UnreachedSource(target=str(call.get("identifier", "")),
