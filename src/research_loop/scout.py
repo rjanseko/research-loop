@@ -123,13 +123,15 @@ from .web import WebAcquisition, WebSearch
 # v4: the planner chooses a depth (quick, standard, deep) that sets the run's limits, and a deep run adds
 # the gap follow-up, which now follows up to `max_gaps` gaps with parallel deep dives. Earlier runs stay
 # valid sources for `synthesize_stored` and `rescout_stored`.
-WORKFLOW_VERSION = "scout-v4"
-FOLLOWUP_VERSION = "scout-followup-v4"
-RESCOUT_VERSION = "scout-research-v4"
-# The synthesis prompt no longer shows result confidence.
-SYNTHESIS_VERSION = "scout-synthesis-v2"
+# v5: evidence v6. A quote counts as verified only in its cited source's text, and one found only in
+# another source's text is misattributed; the synthesizer is told so.
+WORKFLOW_VERSION = "scout-v5"
+FOLLOWUP_VERSION = "scout-followup-v5"
+RESCOUT_VERSION = "scout-research-v5"
+# v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
+SYNTHESIS_VERSION = "scout-synthesis-v3"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3)))
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4)))
 Status = Literal["complete", "partial", "failed", "cancelled"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
@@ -183,6 +185,8 @@ class RunChecks(BaseModel):
     evidence_by_access: dict[str, int] = Field(default_factory=dict)
     quotes: int = 0
     quotes_verified: int = 0
+    # Found only in another source's text than the one cited (evidence v6).
+    quotes_misattributed: int = 0
     review_reasons: list[str] = Field(default_factory=list)
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
@@ -733,6 +737,7 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
         unreached=[item for result in ledger.all() for item in result.unreached],
         quotes=sum(item.quote_check is not None for item in evidence),
         quotes_verified=sum(item.quote_check == "verified" for item in evidence),
+        quotes_misattributed=sum(item.quote_check == "misattributed" for item in evidence),
     )
     for item in evidence:
         key = item.source_access or "not_returned"
@@ -750,6 +755,9 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
     if checks.not_established:
         reasons.append(f"{len(checks.not_established)} of {len(plan.questions)} research questions returned no evidence")
     reasons += [f"citation problem: {problem}" for problem in checks.citation_problems]
+    if checks.quotes_misattributed:
+        reasons.append(f"{checks.quotes_misattributed} of {checks.quotes} quotes appear only in another source "
+                       "than the one cited")
     pages = sum(len(result.pages_read) for result in ledger.all())
     failed = sum(item.target.startswith("http") for item in checks.unreached)
     if failed >= 3 and failed > pages:

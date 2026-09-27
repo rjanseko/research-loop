@@ -139,11 +139,42 @@ def test_check_result_sets_every_check_and_overrules_the_model() -> None:
         ("observed", "full_text"), ("observed", "full_text"), ("not_found", None), ("observed", "full_text")]
 
 
+def test_a_quote_counts_only_in_the_source_it_cites() -> None:
+    other = "https://blog.example/swe-bench-summary"
+    texts = [_full(PAGE), ToolText("full_text", identity_keys(url=other), "Verified has 500 human-screened tasks.")]
+    checked = check_result(_result(
+        # Quoted from the blog, cited to the paper.
+        Evidence(source=SourceRef(url=PAPER, title="SWE-bench"), excerpt="e", quote="500 human-screened tasks",
+                 confidence=0.9),
+        Evidence(source=SourceRef(url=other, title="Blog"), excerpt="e", quote="500 human-screened tasks",
+                 confidence=0.9),
+    ), texts)
+    wrong, right = checked.claims[0].evidence
+    assert (wrong.quote_check, wrong.quote_access, wrong.quote_found_in, wrong.source_check) == (
+        "misattributed", "full_text", "blog.example/swe-bench-summary", "observed")
+    assert (right.quote_check, right.quote_found_in) == ("verified", None)
+    assert support_level(checked.claims[:1]) == "read"  # the right item still supports the claim
+    assert support_level([checked.claims[0].model_copy(update={"evidence": [wrong]})]) == "shallow"
+
+
+def test_a_quote_matches_any_window_or_identity_of_its_source() -> None:
+    first, second = _full("SWE-bench contains 2,294 task instances."), _full("Each instance pairs a GitHub issue.")
+    record = ToolText("abstract", identity_keys(doi="10.1234/swe", arxiv_id="2310.06770"), "An abstract sentence here.")
+    checked = check_result(_result(
+        Evidence(source=SourceRef(url=PAPER, title="t"), excerpt="e", quote="pairs a GitHub issue", confidence=0.9),
+        Evidence(source=SourceRef(doi="10.1234/swe", title="t"), excerpt="e", quote="An abstract sentence",
+                 confidence=0.9),
+        Evidence(source=SourceRef(url="https://arxiv.org/pdf/2310.06770v2", title="t"), excerpt="e",
+                 quote="An abstract sentence", confidence=0.9),
+    ), [first, second, record])
+    assert [item.quote_check for item in checked.claims[0].evidence] == ["verified", "verified", "verified"]
+
+
 def test_checks_are_hidden_from_the_model_schema() -> None:
     schema = ResearchResult.model_json_schema()
     evidence = schema["$defs"]["Evidence"]["properties"]
     assert "quote" in evidence
-    assert not {"quote_check", "quote_access", "source_check", "source_access"} & set(evidence)
+    assert not {"quote_check", "quote_access", "quote_found_in", "source_check", "source_access"} & set(evidence)
     assert not {"searches", "pages_read", "unreached", "cut_off"} & set(schema["properties"])
 
 
@@ -260,3 +291,27 @@ def test_an_unlisted_label_becomes_unknown_and_a_source_needs_an_identity() -> N
     assert SourceRef(title="t", doi="10.1/x").url is None
     with pytest.raises(ValidationError, match="url, doi, or arxiv_id"):
         SourceRef(title="no identity")
+
+
+@pytest.mark.parametrize(("url", "key"), [
+    ("https://web.archive.org/web/2024/https://openai.com/index/introducing-swe-bench-verified/",
+     "url:openai.com/index/introducing-swe-bench-verified"),
+    ("https://ar5iv.labs.arxiv.org/html/2307.09288", "arxiv:2307.09288"),
+    ("https://link.springer.com/article/10.1007/s11042-023-16587-0", "doi:10.1007/s11042-023-16587-0"),
+    ("https://www.nature.com/articles/s41524-023-01128-y", "doi:10.1038/s41524-023-01128-y"),
+])
+def test_copies_and_publisher_pages_are_the_work_they_show(url: str, key: str) -> None:
+    assert key in identity_keys(url=url)
+
+
+def test_a_fetched_document_is_the_doi_printed_on_its_first_page() -> None:
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from research_loop.tools import labeled_texts
+
+    first = {"url": "https://cdn.example/paper.pdf", "start": 0, "text": "A Title\nDOI: 10.1234/abc.2025.1.\nBody"}
+    later = {"url": "https://cdn.example/paper.pdf", "start": 12000, "text": "References\n[1] 10.9999/other"}
+    texts = labeled_texts([ModelRequest(parts=[ToolReturnPart("fetch", json.dumps(first), tool_call_id="a"),
+                                               ToolReturnPart("fetch", json.dumps(later), tool_call_id="b")])])
+    assert "doi:10.1234/abc.2025.1" in texts[0].keys
+    assert not any(key.startswith("doi:") for key in texts[1].keys)  # a later window's DOIs are other works'

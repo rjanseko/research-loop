@@ -682,3 +682,26 @@ async def test_span_metadata_never_reaches_the_models(settings, pages) -> None:
     run = await _run(settings, plan=recording(planner()), research=recording(researcher()), write=recording(writer()))
     assert run.status == "complete" and sent
     assert not any(str(run.run_id) in text or "question_id': 'q" in text or '"depth"' in text for text in sent)
+
+
+def test_misattributed_quotes_are_listed_for_review() -> None:
+    from research_loop.evidence import EvidenceLedger
+    from research_loop.schemas import (
+        Claim,
+        Evidence,
+        ResearchPlan,
+        ResearchQuestion,
+        ResearchResult,
+        SourceRef,
+    )
+    from research_loop.scout import _checks
+
+    ledger = EvidenceLedger()
+    ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.5, claims=[
+        Claim(id="c1", statement="s", confidence=0.5, evidence=[
+            Evidence(source=SourceRef(url="https://a.example", title="A"), excerpt="e", quote="words", confidence=0.5,
+                     quote_check="misattributed", quote_found_in="b.example", source_access="full_text")])]))
+    checks = _checks(ResearchPlan(questions=[ResearchQuestion(id="q1", question="Q?")]), ledger, None, False,
+                     synthesized=False)
+    assert checks.quotes_misattributed == 1
+    assert "1 of 1 quotes appear only in another source than the one cited" in checks.review_reasons

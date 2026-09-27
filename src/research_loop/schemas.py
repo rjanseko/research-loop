@@ -20,7 +20,8 @@ from pydantic.json_schema import SkipJsonSchema
 
 # Recorded on every run. 5: evidence records the access level it rests on (snippet, metadata, abstract,
 # full text), and quotes and sources are checked against labeled tool output (evidence.py).
-EVIDENCE_VERSION = 5
+# 6: a quote is verified only in its cited source's text; found elsewhere, it is misattributed.
+EVIDENCE_VERSION = 6
 
 # How much of a source a tool returned, from least to most. Search results give a snippet, a scholarly
 # record without an abstract gives metadata, arXiv and some OpenAlex records give an abstract, and a
@@ -73,7 +74,9 @@ class Evidence(BaseModel):
     supports: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code (evidence.check_result), never by the model.
-    quote_check: SkipJsonSchema[Literal["verified", "not_found"] | None] = None
+    quote_check: SkipJsonSchema[Literal["verified", "misattributed", "not_found"] | None] = None
+    # For a misattributed quote, the source whose text it was found in.
+    quote_found_in: SkipJsonSchema[str | None] = None
     # The most complete tool output the quote was found in.
     quote_access: SkipJsonSchema[Access | None] = None
     source_check: SkipJsonSchema[Literal["observed", "not_found"] | None] = None

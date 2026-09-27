@@ -24,7 +24,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
-from .evidence import ToolText, identity_keys
+from .evidence import ToolText, identity_keys, printed_dois
 from .schemas import UnreachedSource
 from .scholar import ScholarClient, ScholarWork
 from .web import WebAcquisition, WebSearch
@@ -146,7 +146,10 @@ def labeled_texts(messages: Iterable[ModelMessage]) -> list[ToolText]:
                 texts.append(ToolText("snippet", identity_keys(url=item.get("url")),
                                       f"{item.get('title', '')}\n{item.get('snippet', '')}"))
         elif part.tool_name == FETCH and data.get("text"):
-            texts.append(ToolText("full_text", identity_keys(url=data.get("url")), data["text"]))
+            keys = identity_keys(url=data.get("url"))
+            if not data.get("start"):
+                keys |= printed_dois(data["text"])
+            texts.append(ToolText("full_text", keys, data["text"]))
         else:
             for work in data.get("works") or []:
                 keys = identity_keys(url=work.get("url"), doi=work.get("doi"), arxiv_id=work.get("arxiv_id"))

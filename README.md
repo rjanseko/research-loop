@@ -1,6 +1,6 @@
 # Research Loop
 
-Research Loop answers a research question with a short report in which every statement cites the evidence behind it. It splits the question into a few research questions, researches them in parallel with web search, page and PDF reading, and scholarly search, and then writes a report from the evidence it found. Code checks that evidence before the report is written: a quote counts as verified only if the research tools actually returned those words, and each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report tells you which statements rest on thin evidence and which questions it could not answer.
+Research Loop answers a research question with a short report in which every statement cites the evidence behind it. It splits the question into a few research questions, researches them in parallel with web search, page and PDF reading, and scholarly search, and then writes a report from the evidence it found. Code checks that evidence before the report is written: a quote counts as verified only if the research tools actually returned those words from the source it cites, and each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report tells you which statements rest on thin evidence and which questions it could not answer.
 
 The workflow is called Scout. A normal run costs about $0.25 and stops within twelve minutes. Every run has a fixed dollar budget and deadline, and each model call is stored with its messages, usage, and cost so that a run can be examined, re-checked, or compared with others afterwards.
 
@@ -132,13 +132,13 @@ Tool output is treated as untrusted data. The prompts say so, the fetcher only r
 
 Each piece of evidence gets marks that only code can set.
 
-A quote is `verified` when the tools returned those words in that call, ignoring differences in case, spacing, and punctuation. Otherwise it is `not_found`.
+A quote is `verified` when the tools returned those words, in that call, as part of the source the evidence cites, ignoring differences in case, spacing, and punctuation. It is `misattributed` when the words appear only in another source's text, and the evidence then names that source; it is `not_found` when they appear nowhere. A source counts as the same work under its other addresses: an arXiv paper's abstract page, PDF, and ar5iv rendering; a DOI and a publisher page whose address contains it, or a Nature article page; a Wayback Machine copy and the page it archived; and a fetched document and the DOI printed on its first page. A preprint and its published version count as different works.
 
 A source is `observed` when a tool returned it in that call. A source that no tool returned, such as one the model cited from memory, is `not_found`.
 
 The access level says how much of the source the research saw. It is `full_text` for a page or PDF that was read, `abstract` for a paper's abstract from a scholarly index, `metadata` for a scholarly record without an abstract, and `snippet` for a search result.
 
-From these marks, each statement in the report gets a support level. It is `read` when at least one supporting item comes from a source read in full or as an abstract, and its quote, if it has one, was not `not_found`. It is `shallow` when the only support is a snippet, metadata, an unverified quote, or a source no tool returned. It is `unsupported` when no evidence supports it. Shallow and unsupported statements are listed under "Needs review" and "Statements resting on thin evidence".
+From these marks, each statement in the report gets a support level. It is `read` when at least one supporting item comes from a source read in full or as an abstract, and its quote, if it has one, is not `not_found` or `misattributed`. It is `shallow` when the only support is a snippet, metadata, an unverified quote, or a source no tool returned. It is `unsupported` when no evidence supports it. Shallow and unsupported statements are listed under "Needs review" and "Statements resting on thin evidence".
 
 ## Limits and budgets
 
