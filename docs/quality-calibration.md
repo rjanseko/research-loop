@@ -183,3 +183,14 @@ A review of the scout-v6 smoke runs on 27 September 2026 found that answer suppo
 The 16 stored reports were re-scored from their ledgers with no model call. Of 208 report statements, 178 rest on a verified quote, 18 only on a summary, 11 on thin evidence, and 1 on none. The deep smoke run `56c4b4dd` holds 11 of the 18 summary-only statements: 11 of its 30 statements, and it has 8 short quotes. Its two method-survey scouts quoted almost nothing (1 of 18 and 0 of 16 evidence items quoted), while its other scouts and deep dives quoted nearly everything. The scout prompt asks for a quote only "when a claim rests on specific wording", so conceptual summaries of reviews go unquoted. No stored run that was `supported` becomes `weak` under version 7, because every scout-v6 run was already weak on coverage. Among the older runs, `f1558521` (st07, Flash high) has 3 summary-only statements of 12.
 
 The fetch failures recorded as `ValueError` in stored scout messages were mostly MDPI pages (118 empty extractions) and PDFs over the 5 MB cap (21 on arXiv and 8 on Nature). MDPI's CDN now refuses the fetcher and a browser user agent alike with a 403, so those pages need another copy of the paper. The size cap could be raised for PDFs.
+
+## Cheap checks of scout-v9 (27 September 2026)
+
+Two study specs check scout-v9: `studies/v9-short-check.toml` (st04 and st05, two runs each) and `studies/v9-st07-check.toml` (one diagnostic run of st07). Both ran `--dry` with no invariant violations, over three seeds for the first, and then `--cheap`, with every role on `openai:gpt-6-luna@low`. The cheap judge's grades are not comparable with real ones.
+
+| Study | Run | Status, answer | Quotes verified / misattributed / not found | Statements quoted / summary only / thin | Cost with grade |
+|---|---|---|---|---|---|
+| v9-short-check-cheap (st04) | `3f5ed912` | complete, weak | 1 / 0 / 1 | 1 / 0 / 1 | $0.0062 |
+| v9-st07-check-cheap (st07) | `f7c7e94e` | complete, supported | 14 / 0 / 0 | 6 / 0 / 0 | $0.0115 |
+
+Together they cost $0.018 and showed no invariant violations. OpenAI's two SWE-bench Verified pages refused the fetcher with 403. The paid runs of both specs have not been made yet.
