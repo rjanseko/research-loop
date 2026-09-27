@@ -829,3 +829,15 @@ async def test_a_deep_dive_counts_toward_the_item_its_gap_targets(settings, page
     states = {state.requirement: state for state in run.checks.coverage}
     assert states["CSD"].status == "covered"  # credited through the gap's coverage_id
     assert run.checks.gap_analysis.gaps[1].coverage_id is None  # an unknown ID is dropped, not retried
+
+
+def test_open_items_are_short_names_not_caveats() -> None:
+    from research_loop.agents import open_item_names
+
+    # From the first cheap check (runs 77f51d9e and 0d6feefb).
+    items = ["No uncovered categories required by the stated early-2024 scope; the post-cutoff taxonomy is outside",
+             "Adjoint methods are named in the 2022 review but not treated as a separate strategy here.",
+             "Inorganic Crystal Structure Database (ICSD)", "inorganic crystal structure database (icsd)", "Khazana",
+             "NREL-MatDB", "Citrine", "OpenKIM", "Phase-Field hub (PFhub)", ""]
+    assert open_item_names(items) == ["Inorganic Crystal Structure Database (ICSD)", "Khazana", "NREL-MatDB",
+                                      "Citrine", "OpenKIM"]

@@ -136,14 +136,15 @@ from .web import WebAcquisition, WebSearch
 # targets open items; and the synthesizer addresses each item or says it was not established.
 # v7: scouts cite the copy they read (a preprint rather than its published version), and a gap names the
 # coverage item its deep dive targets, which the dive's untagged claims then count toward.
-WORKFLOW_VERSION = "scout-v7"
-FOLLOWUP_VERSION = "scout-followup-v7"
-RESCOUT_VERSION = "scout-research-v7"
+# v8: open items are short names only, at most five per result; caveats go in `unresolved`.
+WORKFLOW_VERSION = "scout-v8"
+FOLLOWUP_VERSION = "scout-followup-v8"
+RESCOUT_VERSION = "scout-research-v8"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5, 6)))
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5, 6, 7)))
 # Whether the run did its work: `complete` when the report was written and every step ran to its end,
 # `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
 # Whether the answer is backed is `RunChecks.answer_support`.

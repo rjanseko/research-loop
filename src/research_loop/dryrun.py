@@ -650,12 +650,19 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
             problems.append(f"open-item IDs changed meaning after follow-up research: {moved}")
         # A deep dive's claims that name no coverage item count toward the item its gap targeted, so none
         # is left untagged. (Claims that name other items legitimately leave the target open.)
+        # A question's first result is its scout; later ones are its deep dives, added in gap order. (Matching
+        # by question text misfired when a planned question and a follow-up had the same text.)
+        dives = {question_id: list(results[1:]) for question_id, results in ledger.results.items()}
         for gap in (checks.get("gap_analysis") or {}).get("gaps") or []:
-            if not gap.get("coverage_id"):
-                continue
-            for result in ledger.all():
-                if result.question == gap.get("follow_up_question") and any(not c.covers for c in result.claims):
-                    problems.append(f"a deep dive for {gap['coverage_id']} left claims with no coverage item")
+            queue = dives.get(gap.get("question_id"), [])
+            result = queue.pop(0) if queue else None
+            if gap.get("coverage_id") and result is not None and any(not c.covers for c in result.claims):
+                problems.append(f"a deep dive for {gap['coverage_id']} left claims with no coverage item")
+        # Every result's open items passed through the scout's filter: short names, each once, at most five.
+        from .agents import open_item_names
+        for result in ledger.all():
+            if result.open_items != open_item_names(result.open_items):
+                problems.append(f"open items of {result.question_id} are not all short names: {result.open_items[:3]}")
         known = set(item_ids)
         for claim in ledger.claims():
             if unknown := sorted(set(claim.covers) - known):

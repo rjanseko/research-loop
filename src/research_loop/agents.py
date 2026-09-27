@@ -5,6 +5,7 @@ An output that fails a check gets one retry that names the problem; a second fai
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
@@ -120,7 +121,28 @@ def _result_fits_assignment(ctx: RunContext[Assignment], output: ResearchResult)
     known = ctx.deps.coverage_ids
     claims = [claim.model_copy(update={"covers": [item for item in claim.covers if item in known]})
               for claim in output.claims]
-    return output.model_copy(update={"question_id": question.id, "question": question.question, "claims": claims})
+    return output.model_copy(update={"question_id": question.id, "question": question.question, "claims": claims,
+                                      "open_items": open_item_names(output.open_items)})
+
+
+# An open item names one member or category of a requested set, which later research can pursue. A cheap
+# check's scouts also put caveats and whole sentences there ("No uncovered categories required by the
+# stated early-2024 scope; ..."); each became a coverage item the report then left unaddressed.
+OPEN_ITEM_MAX_CHARS = 60
+OPEN_ITEMS_PER_RESULT = 5
+_SENTENCE_LIKE = re.compile(r"[.;:!?]\s*$|;\s|\.\s+[A-Z]")
+
+
+def open_item_names(items: Iterable[str]) -> list[str]:
+    """The items that are short names, each once, at most `OPEN_ITEMS_PER_RESULT`. Anything longer or
+    shaped like a sentence is dropped rather than retried, since a retry would redo the research call."""
+    names: list[str] = []
+    for item in items:
+        name = " ".join(item.split())
+        if (name and len(name) <= OPEN_ITEM_MAX_CHARS and not _SENTENCE_LIKE.search(name)
+                and name.casefold() not in {n.casefold() for n in names}):
+            names.append(name)
+    return names[:OPEN_ITEMS_PER_RESULT]
 
 
 # Added to a report whose inline citations named sources that none of its listed claims rest on.
