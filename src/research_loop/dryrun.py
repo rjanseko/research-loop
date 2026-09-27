@@ -108,6 +108,11 @@ class World:
             url = f"https://{host}/p{number}" + (".pdf" if kind == "pdf" else "")
             self.pages[url] = Page(url, f"Page {number}: {rng.choice(_WORDS)} {rng.choice(_WORDS)}", text, kind,
                                    fault, doi)
+        # Every world holds one PDF whose text extracts with surrogates, as a real one did.
+        tricky = list(self.pages.values())[1]
+        tricky.kind, tricky.fault = "pdf", "surrogate_pdf"
+        tricky.url = tricky.url if tricky.url.endswith(".pdf") else tricky.url + ".pdf"
+        self.pages = {page.url: page for page in self.pages.values()}
         base = [page for page in list(self.pages.values()) if page.fault is None]
         for page in base[:3]:
             copy = f"https://web.archive.org/web/2024/{page.url}"
@@ -319,6 +324,11 @@ class _Seen:
         return seen
 
 
+class FuzzInjectedError(Exception):
+    """An error the fuzz model raises on purpose, which no handler expects; the invariants tell it apart
+    from a real one."""
+
+
 class FuzzModel(FunctionModel):
     """A seeded model that plays every role with edge-case outputs and injected provider faults."""
 
@@ -351,6 +361,8 @@ class FuzzModel(FunctionModel):
         return ModelResponse(parts=parts, usage=usage, model_name=PRICED_AS[1], provider_name=PRICED_AS[0])
 
     async def _respond(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        # Encode the request as a provider client would, so text it cannot send fails here as it did live.
+        ModelMessagesTypeAdapter.dump_json(messages)
         rng = self._rng(messages, info)
         role = self._role(info)
         if rng.random() < self.fault_rate:
@@ -358,7 +370,7 @@ class FuzzModel(FunctionModel):
             if fault == "unexpected" and role == "scout":
                 # An error no handler expects, as the UnicodeEncodeError from a PDF was: one scout's bug
                 # must cut off only its question.
-                raise KeyError("fuzz: an unexpected error inside a scout")
+                raise FuzzInjectedError("an unexpected error inside a scout")
             if fault == "429":
                 raise ModelHTTPError(429, PRICED_AS[1])
             if fault == "429_retry":
@@ -641,6 +653,10 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         if stray and not any("inline citations" in p for p in checks.get("citation_problems") or []):
             problems.append(f"stray inline citations {sorted(stray)} survived without a citation problem")
 
+    # A run note that calls something a bug is one, unless the fuzz model injected it on purpose.
+    for note in record.get("notes") or []:
+        if "this is a bug" in note and "FuzzInjectedError" not in note:
+            problems.append(f"the run reported a bug: {note}")
     # Every message a call exchanged must be sendable as UTF-8; a PDF's lone surrogate once failed a request.
     for call in calls:
         try:
