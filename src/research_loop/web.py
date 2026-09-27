@@ -6,6 +6,8 @@ import hashlib
 import io
 import unicodedata
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -28,6 +30,7 @@ from .acquisition import (
     public_url,
     wait_rate_slot,
 )
+from .study_budget import StudyBudget, StudyBudgetRefusal
 
 # Decoded bytes read per page; some leaderboard pages embed a few MB of data.
 _MAX_PAGE_BYTES = 5_000_000
@@ -64,8 +67,48 @@ def _duckduckgo() -> Callable[[str], Awaitable[list[dict[str, str]]]]:
     return duckduckgo_search_tool().function
 
 
+EXA_SEARCH_URL = "https://api.exa.ai/search"
+# Exa lists $7 per 1,000 searches of up to 10 results (https://exa.ai/pricing, 27 September 2026). A
+# search reserves this much under a hard cap and settles to the `costDollars` Exa reports.
+EXA_SEARCH_RESERVE_USD = Decimal("0.010")
+
+
+@dataclass
+class SearchSpend:
+    """What a run's paid searches cost, as the engine reported it; a run adds it to its model calls' cost."""
+
+    usd: Decimal = Decimal(0)
+    searches: int = 0
+
+
+def exa_engine(client: httpx.AsyncClient, api_key: str, spend: SearchSpend,
+               budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
+    """Exa search in the shape WebSearch reads (title, href, body). The request is the one Exa recommends:
+    the query, `auto` search, and highlights, which become the snippet. Its results are search results,
+    labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full."""
+    async def search(query: str) -> list[dict[str, str]]:
+        charge = await budget.reserve_fixed(EXA_SEARCH_RESERVE_USD, "Exa search") if budget else None
+        response = await client.post(EXA_SEARCH_URL, headers={"x-api-key": api_key}, timeout=30,
+                                     json={"query": query, "type": "auto", "contents": {"highlights": True}})
+        if response.status_code == 429 and budget and charge is not None:
+            budget.release(charge)  # rejected, not processed
+        response.raise_for_status()
+        data = response.json()
+        # A request that returned is charged what Exa reports, or the list price when it reports nothing.
+        cost = Decimal(str((data.get("costDollars") or {}).get("total", EXA_SEARCH_RESERVE_USD)))
+        spend.usd += cost
+        spend.searches += 1
+        if budget and charge is not None:
+            budget.settle_fixed(charge, cost)
+        return [{"title": item.get("title") or "", "href": item.get("url") or "",
+                 "body": " … ".join(item.get("highlights") or [])} for item in data.get("results") or []]
+
+    return search
+
+
 class WebSearch:
-    """DuckDuckGo search with a shared rate slot, retries, and an optional cache.
+    """Web search with a shared rate slot, retries, and an optional cache: DuckDuckGo, or the engine given
+    under its `name`, whose cache entries and rate slot are its own.
 
     A query that finds nothing returns no results and a hint to broaden it, without a retry: the search
     client raises that as an error, and reporting it as a failure sent scouts looking for other search
@@ -75,28 +118,40 @@ class WebSearch:
 
     def __init__(self, *, cache: AcquisitionCache | None = None,
                  retry_delays: tuple[float, ...] = SEARCH_RETRY_DELAYS,
-                 engine: Callable[[str], Awaitable[list[dict[str, str]]]] | None = None) -> None:
+                 engine: Callable[[str], Awaitable[list[dict[str, str]]]] | None = None,
+                 name: str = "duckduckgo", policy: SourcePolicy | None = None) -> None:
         self.cache = cache
         self.retry_delays = retry_delays
         self._engine = engine
+        self.name = name
+        self.policy = policy or SourcePolicy()
+
+    def _allowed(self, results: list[dict[str, str]]) -> dict[str, Any]:
+        """The results with blocked sources left out, so a blocked page's text never reaches a scout as a
+        snippet: an Exa highlight can carry a passage of a frozen case's blocked expert report."""
+        kept = [item for item in results if not self.policy.blocks(item["url"])]
+        return {"results": kept} if kept else {"results": [], "hint": NO_RESULTS_HINT}
 
     async def search(self, query: str) -> dict[str, Any]:
         key = search_cache_key(query)
         if self.cache is not None:
-            cached = self.cache.get("duckduckgo", key)
+            cached = self.cache.get(self.name, key)
             if cached is not None:
-                return {"results": cached["results"]}
+                return self._allowed(cached["results"])
             if self.cache.mode == "replay":
                 return {"error": "CacheMiss"}
         engine = self._engine or _duckduckgo()
         error = "unknown"
         for delay in (*self.retry_delays, None):
-            await wait_rate_slot("duckduckgo")
+            await wait_rate_slot(self.name)
             try:
                 raw = await engine(query)
             except Exception as exc:  # noqa: BLE001 - the search client raises its own types on rate limits and drops
                 if _no_results(exc):
                     return {"results": [], "hint": NO_RESULTS_HINT}
+                if isinstance(exc, StudyBudgetRefusal):
+                    error = "StudyBudgetRefusal"
+                    break  # a paid search the cap cannot cover is refused again on every retry
                 error = type(exc).__name__
                 if delay is not None:
                     await asyncio.sleep(delay)
@@ -104,8 +159,8 @@ class WebSearch:
             results = [{"title": item.get("title", ""), "url": item.get("href", ""), "snippet": item.get("body", "")}
                        for item in raw if item.get("href")]
             if self.cache is not None:
-                self.cache.put("duckduckgo", key, {"query": query, "results": results})
-            return {"results": results} if results else {"results": [], "hint": NO_RESULTS_HINT}
+                self.cache.put(self.name, key, {"query": query, "results": results})
+            return self._allowed(results)
         return {"error": f"SearchUnavailable ({error})",
                 "hint": f"Web search failed {len(self.retry_delays) + 1} times; continue with scholar_search "
                         "or try again later with a different query."}

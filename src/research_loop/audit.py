@@ -3,8 +3,10 @@
 Code checks that a quote appears in the source it cites (evidence.py), not that it supports the claim,
 and the synthesizer restates claims in its own words. This audit gives a model outside the workflow,
 by default from a third vendor, each report statement with the verified quotes behind it, and asks
-whether they state it. A statement with no verified quote is marked `no_quote` by code and not sent:
-there is no source text to judge it against. The audit reads stored runs and never changes them; every
+whether they state it. Each quoted source comes with the record the research tools returned for it
+(tools.source_records), so details that identify a source, such as its authors, date, or address,
+can be checked too; nothing a model wrote about a source is sent. A statement with no verified quote
+is marked `no_quote` by code and not sent: there is no source text to judge it against. The audit reads stored runs and never changes them; every
 audit, a failed one too, is recorded in the `support_audits` table with its usage, cost, and messages.
 It calls a paid model, from `research audit`, never from the tests.
 """
@@ -24,18 +26,24 @@ from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
 from .config import Settings, split_model
-from .evidence import EvidenceLedger
+from .evidence import EvidenceLedger, source_identity
 from .models import build_model
 from .schemas import FinalReport
 from .store import error_record, transcript, usage_record
 from .study_budget import BUDGET_POLICY_VERSION, StudyBudget, StudyBudgetModel
 
 # Recorded with every audit; bump when the instructions, the verdict schema, or what is sent changes.
-AUDIT_VERSION = 1
+# 2: each quoted source's record as the tools returned it; v1 sent only a model-written title, so author
+# names, dates, and addresses a report took from a source's record counted as unsupported.
+AUDIT_VERSION = 2
 AUDIT_INSTRUCTIONS = """\
 You check a research report against its evidence. For each statement you get the verified quotes
 behind it: words copied exactly from the sources, which code has confirmed appear in the cited source.
-Judge each statement only from its quotes, never from what you know.
+Each quote names its source, and `sources` gives the record the research tools returned for each one,
+such as its title, address, authors, date, and venue. Judge each statement only from its quotes and
+the records of the sources they come from, never from what you know. A record supports only details
+that identify its source, such as who wrote it, when, where it appeared, or its address; claims about
+the world need a quote.
 
 - supported: the quotes, read together, state what the statement says. Rewording is fine; numbers,
   dates, names, scope, and how certain the claim is must match.
@@ -64,20 +72,38 @@ class AuditOutput(BaseModel):
 
 
 def audit_items(report: FinalReport, ledger: EvidenceLedger) -> list[dict[str, Any]]:
-    """Each report statement with the verified quotes of the supporting evidence behind its claims, IDs a1, a2, ..."""
+    """Each report statement with the verified quotes of the supporting evidence behind its claims, IDs a1,
+    a2, ...; each quote names its source by ledger ID, and `source_ref` keeps the source for `source_view`."""
     claims = ledger.claims_by_id()
     items = []
     for number, statement in enumerate(report.claims, 1):
-        quotes: list[dict[str, str]] = []
+        quotes: list[dict[str, Any]] = []
         for claim_id in statement.claim_ids:
             claim = claims.get(claim_id)
             for item in claim.evidence if claim else []:
-                entry = {"claim": claim_id, "source": item.source.title or "", "quote": item.quote or ""}
-                if item.supports and item.quote_check == "verified" and item.quote and entry not in quotes:
+                entry = {"claim": claim_id, "source": ledger.source_id(item.source), "quote": item.quote or "",
+                         "source_ref": item.source}
+                if (item.supports and item.quote_check == "verified" and item.quote
+                        and not any((q["source"], q["quote"]) == (entry["source"], entry["quote"]) for q in quotes)):
                     quotes.append(entry)
         items.append({"id": f"a{number}", "statement": statement.statement, "claim_ids": list(statement.claim_ids),
                       "quotes": quotes})
     return items
+
+
+def source_view(items: list[dict[str, Any]], records: list[tuple[frozenset[str], dict[str, Any]]]) -> dict[str, Any]:
+    """Every quoted source's record as the tools returned it, merged across the tools that returned it,
+    by ledger source ID; a source no tool record matches gets an empty record."""
+    view: dict[str, dict[str, Any]] = {}
+    for item in items:
+        for quote in item["quotes"]:
+            keys = source_identity(quote["source_ref"])
+            merged: dict[str, Any] = {}
+            for record_keys, record in records:
+                if keys & record_keys:
+                    merged |= {name: value for name, value in record.items() if name not in merged}
+            view[quote["source"]] = merged
+    return view
 
 
 @dataclass
@@ -107,9 +133,10 @@ class AuditRecord:
 
 
 async def audit(report: FinalReport, ledger: EvidenceLedger, question: str, run_id: UUID, settings: Settings, *,
-                evidence_version: int | None = None, model: Model | None = None,
-                budget: StudyBudget | None = None) -> AuditRecord:
-    """Audit one report with `settings.models.judge`; a failure is returned, not raised. `model` is for tests."""
+                records: list[tuple[frozenset[str], dict[str, Any]]] = (), evidence_version: int | None = None,
+                model: Model | None = None, budget: StudyBudget | None = None) -> AuditRecord:
+    """Audit one report with `settings.models.judge`; a failure is returned, not raised. `records` are what the
+    run's research tools returned about its sources (tools.source_records); `model` is for tests."""
     judge_model, judge_thinking = split_model(settings.models.judge)
     items = audit_items(report, ledger)
     sent = [item for item in items if item["quotes"]]
@@ -128,7 +155,7 @@ async def audit(report: FinalReport, ledger: EvidenceLedger, question: str, run_
                 raise ModelRetry(f"Give exactly one verdict per statement ID. Missing: {missing}; unknown: {extra}.")
             return output
 
-        prompt = json.dumps({"question": question, "statements": [
+        prompt = json.dumps({"question": question, "sources": source_view(sent, list(records)), "statements": [
             {"id": item["id"], "statement": item["statement"],
              "quotes": [{"source": quote["source"], "quote": quote["quote"]} for quote in item["quotes"]]}
             for item in sent]}, ensure_ascii=False)

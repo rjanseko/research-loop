@@ -155,6 +155,8 @@ class World:
         host = request.url.host
         if host in _SCHOLAR_HOSTS:
             return self._scholarly(request)
+        if host == "api.exa.ai":
+            return self._exa(request)
         url = str(request.url)
         if host == "doi.org":
             doi = request.url.path.lstrip("/")
@@ -199,6 +201,40 @@ class World:
             return httpx.Response(200, headers={"content-type": "application/pdf"}, content=body)
         html = f"<html><head><title>{page.title}</title></head><body><article><p>{page.text}</p></article></body></html>"
         return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, content=html.encode())
+
+    def _exa(self, request: httpx.Request) -> httpx.Response:
+        """Exa's search endpoint (web.exa_engine): results with highlights and a reported cost, or a fault.
+        Its results include the blocked page with a passage of its text, which must never reach a scout."""
+        query = json.loads(request.content or b"{}").get("query", "")
+        rng = random.Random(_stable(self.seed, "exa", query))
+        roll = rng.random()
+        if roll < self.fault_rate * 0.2:
+            return httpx.Response(429, json={"error": "rate limit"})
+        if roll < self.fault_rate * 0.3:
+            return httpx.Response(500)
+        if roll < self.fault_rate * 0.35:
+            return httpx.Response(401, json={"error": "invalid API key"})
+        if roll < self.fault_rate * 0.4:
+            return httpx.Response(200, content=b"{not json")
+        urls = list(self.pages)
+        chosen = rng.sample(urls, min(len(urls), rng.randint(0, 10)))
+        if rng.random() < 0.3 and self.blocked not in chosen:
+            chosen.append(self.blocked)
+        results = []
+        for url in chosen:
+            page = self.pages[url]
+            source = page if rng.random() > 0.2 else self.pages[rng.choice(urls)]
+            sentences = [part for part in source.text.split(". ") if part]
+            results.append({"title": page.title, "url": url, "publishedDate": "2024-01-01",
+                            "highlights": rng.sample(sentences, min(len(sentences), rng.randint(0, 3)))})
+        if rng.random() < 0.1:
+            results.append({"title": "No link", "highlights": ["dropped"]})
+        body: dict[str, Any] = {"requestId": f"dry-{rng.getrandbits(32)}", "results": results}
+        cost = rng.random()
+        if cost > self.fault_rate * 0.25:  # sometimes no reported cost, so the list price is charged
+            # Sometimes far above the reservation, so settling can take a hard cap past its reserve.
+            body["costDollars"] = {"total": 0.5 if cost < self.fault_rate * 0.4 else 0.007}
+        return httpx.Response(200, json=body)
 
     def _scholarly(self, request: httpx.Request) -> httpx.Response:
         rng = random.Random(_stable(self.seed, "scholar", str(request.url)))
@@ -538,6 +574,16 @@ class FuzzModel(FunctionModel):
                 "not_established": rng.sample(coverage + ["zz"], rng.randint(0, min(2, len(coverage) + 1)))}
 
     def _verdicts(self, prompt: dict[str, Any], messages: list[ModelMessage], rng: random.Random) -> dict[str, Any]:
+        if "statements" in prompt:  # the support audit (audit.py), not the rubric judge
+            verdicts = [{"id": item["id"], "verdict": rng.choice(["supported", "partial", "unsupported"]),
+                         "reason": self._text(rng) or "r"} for item in prompt["statements"]]
+            if verdicts and rng.random() < 0.2:
+                # One missing or one invented verdict, which the audit's validator must send back.
+                if rng.random() < 0.5:
+                    verdicts.pop(rng.randrange(len(verdicts)))
+                else:
+                    verdicts.append({"id": "a999", "verdict": "supported", "reason": "invented"})
+            return {"verdicts": verdicts}
         rubric = prompt.get("rubric") or {}
         verdicts = [{"category": category, "point": point["point"], "met": rng.random() < 0.5}
                     for category, points in rubric.items() for point in points]
@@ -598,6 +644,7 @@ def _from_schema(schema: dict[str, Any], rng: random.Random, root: dict[str, Any
 
 def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[str]:
     """Every invariant a finished run's stored record and calls break; empty when it keeps them all."""
+    from .acquisition import SourcePolicy
     from .evidence import (
         EvidenceLedger,
         _key,
@@ -760,11 +807,24 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
     cap = Decimal(str(((record.get("config") or {}).get("study_budget") or {}).get("cap_usd") or 0))
     if calls and len(refused) == len(calls) and cap >= Decimal(1):
         problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
-    # Money: the run's cost is its calls' costs.
+    # No search result a scout saw comes from a blocked source: an Exa highlight can carry a blocked page's
+    # text, such as a frozen case's expert report.
+    policy = SourcePolicy(tuple((record.get("config") or {}).get("blocked_urls") or []))
+    for call in calls:
+        for message in call.get("messages") or []:
+            for part in message.get("parts") or []:
+                content = part.get("content") if part.get("tool_name") == "web_search" else None
+                shown = [item.get("url", "") for item in (content or {}).get("results") or []] \
+                    if isinstance(content, dict) else []
+                if blocked := [url for url in shown if url and policy.blocks(url)]:
+                    problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
+                                    f"search result: {blocked[0]}")
+    # Money: the run's cost is its calls' costs, plus what its paid web searches cost.
     costs = [Decimal(str(c["cost_usd"])) for c in calls if c.get("cost_usd") is not None]
+    searches = Decimal(str((record.get("checks") or {}).get("search_usd") or 0))
     if (record.get("cost_usd") is not None and costs
-            and abs(Decimal(str(record["cost_usd"])) - sum(costs)) > Decimal("0.000001")):
-        problems.append(f"run cost {record['cost_usd']} is not its calls' {sum(costs)}")
+            and abs(Decimal(str(record["cost_usd"])) - sum(costs) - searches) > Decimal("0.000001")):
+        problems.append(f"run cost {record['cost_usd']} is not its calls' {sum(costs)} and searches' {searches}")
     try:
         markdown = render_markdown(record)
         status_line = next((line for line in markdown.splitlines() if line.startswith("Scout run `")), "")
@@ -802,6 +862,8 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
     return base.model_copy(update={
         "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
+        # Both engines, so the paid search path, its budget reservations, and its costs are fuzzed too.
+        "search_engine": rng.choice(["duckduckgo", "exa"]),
         "tokens_per_minute": {}, "logfire": False,
     })
 

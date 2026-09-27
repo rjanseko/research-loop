@@ -120,7 +120,7 @@ from .study_budget import (
 )
 from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
-from .web import WebAcquisition, WebSearch
+from .web import SearchSpend, WebAcquisition, WebSearch, exa_engine
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
 # partial set as a gap.
@@ -209,6 +209,8 @@ class RunChecks(BaseModel):
     quotes_misattributed: int = 0
     # Verified quotes with under a quarter of their claim's words (evidence.quote_is_short): a diagnostic.
     quotes_short: int = 0
+    # What paid web searches cost, which `cost_usd` includes; None when only free engines were searched.
+    search_usd: Decimal | None = None
     # Whether the report's statements are backed, apart from whether the run finished (`_answer_support`).
     answer_support: AnswerSupport | None = None
     # Sentences of the answer, and those with no inline [sN] citation: a diagnostic, since some are framing.
@@ -293,7 +295,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "limits": settings.limits.model_dump(),
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
-        "rate_limit_policy": RATE_LIMIT_POLICY_VERSION,
+        "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -375,6 +377,11 @@ class _Run:
         self.plan: ResearchPlan | None = None
         self.ledger = EvidenceLedger()
         self.report: FinalReport | None = None
+        # Paid web searches, which the run's cost includes beside its model calls.
+        self.search_spend = SearchSpend()
+
+    def _total_cost(self) -> Decimal:
+        return self.cost + self.search_spend.usd
 
     def _model(self, role: Role) -> Model:
         if role not in self.models:
@@ -674,17 +681,20 @@ class _Run:
             failed = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
             await _record(self.store.finish_run(
                 self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
-                checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd) if self.budget else None,
-                cost_usd=self.cost, error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
+                checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd,
+                                 search_usd=self._search_usd()) if self.budget else None,
+                cost_usd=self._total_cost(), error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
                 config=self.config, workflow_version=self.workflow_version))
             raise
         checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
+        checks.search_usd = self._search_usd()
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
         await self.store.finish_run(self.run_id, status=status, plan=self.plan, report=self.report,
-                                    ledger=self.ledger.to_json(), checks=checks, cost_usd=self.cost,
+                                    ledger=self.ledger.to_json(), checks=checks, cost_usd=self._total_cost(),
                                     trace_id=span_trace, cache=self._cache_counts(), config=self.config,
                                     workflow_version=self.workflow_version)
-        return ScoutRun(self.run_id, self.question, status, self.plan, self.report, self.ledger, checks, self.cost,
+        return ScoutRun(self.run_id, self.question, status, self.plan, self.report, self.ledger, checks,
+                        self._total_cost(),
                         time.monotonic() - started, span_trace, self.notes, self.config, self.workflow_version)
 
     async def execute(self) -> ScoutRun:
@@ -738,6 +748,10 @@ class _Run:
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
 
+    def _search_usd(self) -> Decimal | None:
+        """What paid searches cost, or None when the run searched only free engines."""
+        return self.search_spend.usd if self.search_spend.searches else None
+
     def _cache_counts(self) -> dict[str, Any]:
         """The run's cache mode and, by provider, the lookups its tools served, missed, and wrote."""
         counts: dict[str, dict[str, int]] = {}
@@ -758,7 +772,13 @@ class _Run:
 
             world = World(settings.offline_world, settings.offline_fault_rate)
             world.install(stack, self.policy)
-            search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0))
+            if settings.search_engine == "exa":
+                # The world answers Exa's API too, so the paid search path runs with its faults and costs.
+                exa_client = await stack.enter_async_context(world.client())
+                search = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.search_spend, self.budget),
+                                   name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
+            else:
+                search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy)
             pages_client = await stack.enter_async_context(world.client())
             pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
                                    policy=self.policy)
@@ -769,7 +789,15 @@ class _Run:
         pages_client = await stack.enter_async_context(trace_http(public_fetch_client(timeout=15), settings))
         metadata_client = await stack.enter_async_context(
             trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))
-        search = WebSearch(cache=AcquisitionCache(cache / "search", settings.cache_mode))
+        search_cache = AcquisitionCache(cache / "search", settings.cache_mode)
+        if settings.search_engine == "exa" and settings.exa_api_key is not None:
+            exa_client = await stack.enter_async_context(
+                trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
+            search = WebSearch(cache=search_cache, name="exa", policy=self.policy,
+                               engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
+                                                 self.search_spend, self.budget))
+        else:
+            search = WebSearch(cache=search_cache, policy=self.policy)
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
         scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", settings.cache_mode), client=metadata_client,

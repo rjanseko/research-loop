@@ -40,7 +40,9 @@ CACHE_VERSION = 1
 #    abstract, full text); scholarly records carry OpenAlex abstracts.
 # 8: every tool result is valid Unicode: split surrogate pairs from PDF text are joined, lone ones replaced.
 # 9: a PDF may be 25 MB rather than the 5 MB of a page: 21 papers the scouts wanted, 5.8 to 19.9 MB, were refused.
-FETCH_VERSION = 9
+# 10: web search can run on Exa (RESEARCH_SEARCH_ENGINE), each engine with its own cache and rate slot, and
+#     search results from blocked sources are left out.
+FETCH_VERSION = 10
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -144,7 +146,7 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0}
+_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2}
 
 
 async def wait_rate_slot(provider: str) -> None:

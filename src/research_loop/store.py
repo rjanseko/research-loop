@@ -227,6 +227,15 @@ async def load_calls(pool: Any, run_id: UUID) -> list[dict[str, Any]]:
         return await cursor.fetchall()
 
 
+async def load_research_messages(pool: Any, run_id: UUID) -> list[list[dict[str, Any]]]:
+    """The stored messages of a run's scout and deep-dive calls, a failed call's too, in the order they started."""
+    async with pool.connection() as conn:
+        cursor = await conn.execute(
+            "select messages from run_calls where run_id = %s and role in ('scout', 'deep_dive') "
+            "and messages is not null order by started_at", (run_id,))
+        return [row[0] for row in await cursor.fetchall()]
+
+
 _GRADE_COLUMNS = ("id", "run_id", "case_id", "judge_model", "judge_thinking", "judge_version", "rubric_version",
                   "status", "score", "points", "usage", "cost_usd", "messages", "error", "budget_cap_usd",
                   "reserved_usd", "budget_policy")

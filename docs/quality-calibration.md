@@ -251,3 +251,29 @@ The judges agree on 375 of 405 points (92.6%). Of the 30 disagreements, GLM cred
 A hand check of the three st07 disagreements on `7a7fc5b5` favours GLM on two. The rubric point "human annotators screened instances for underspecified issues and unfair or overly specific tests" is stated in the report in other words ("a clear problem statement, a correct test patch, and solvability"). The point "documents contamination or memorization concerns" is met by a quoted SWE-rebench finding that scores "might be inflated due to contamination issues". This matches the earlier NOMAD verdict: Sol does not always credit equivalent wording.
 
 The choice of judge therefore moves a DRB-II score by up to 8 points, as much as the run-to-run variation the studies try to see past, while leaving short cases and the order of reports mostly unchanged. A decision that rests on a few rubric points should use both judges and have their disagreements checked by hand.
+
+## Exa search: dry and cheap checks (27 September 2026)
+
+`RESEARCH_SEARCH_ENGINE=exa` (commit 05d5c69) was checked with `studies/exa-search-check.toml`, which has a DuckDuckGo arm and an Exa arm on st04. The dry check passed, as did a three-seed dry study of both short cases with the Exa arm. The cheap check (every role on `gpt-6-luna@low`) cost $0.02, with no invariant violations:
+
+| Arm | Run | Status, answer | Searches | Search cost | Run cost | Time | Cheap judge |
+|---|---|---|---|---|---|---|---|
+| DuckDuckGo | `37a0a63d` | complete, weak | 6 (3 cached as results) | free | $0.006 | 45 s | 3/4 |
+| Exa | `3aa8dde9` | complete, supported | 2 | $0.014 | $0.017 | 20 s | 4/4 |
+
+Exa charged the listed $0.007 a search, and the run recorded exactly that as `search_usd`. Its first search returned ten results, the first of them the official ILSVRC 2016 results page with a highlight from its results table. On this cheap run the searches cost more than the models; with the production models they would be a smaller share. One run per arm on the easiest case says nothing yet about quality. A paid comparison needs more cases, replicates, and a decision rule set before it runs.
+
+## Exa against DuckDuckGo: dry and cheap checks of the comparison specs (27 September 2026)
+
+The comparison is split into three specs (`studies/exa-vs-duckduckgo-{short,st07,task8}.toml`), so each can have a ceiling fitted to its runs, and their shared header fixes the decision rule. All three passed `--dry --seeds 2`. The cheap checks, with every role on `gpt-6-luna@low`, cost $0.39 in all, with no invariant violations. A cheap run's hard cap is now the $0.25 cheap ceiling (commit after 7dd3ad1), because paid searches are not cheap; the task8 Exa run reached it and had one question refused, as designed.
+
+| Case | Arm | Run | Status, answer | Search cost | Run cost | Time |
+|---|---|---|---|---|---|---|
+| st04 | DuckDuckGo | `e47e39a3` | complete, supported | | $0.002 | 17 s |
+| st04 | Exa | `ee0c71d8` | complete, supported | $0.007 | $0.010 | 16 s |
+| st07 | DuckDuckGo | `43a40c62` | complete, supported | | $0.014 | 56 s |
+| st07 | Exa | `6a16f441` | complete, supported | $0.077 | $0.115 | 277 s |
+| drb2-task8 (deep) | DuckDuckGo | `bbe0b73a` | complete, weak | | $0.045 | 303 s |
+| drb2-task8 (deep) | Exa | `6b504ddd` | partial, weak (cheap cap) | $0.154 | $0.198 | 335 s |
+
+Exa's own requests are quick: 8 to 15 seconds of tool time per scout, as with DuckDuckGo. Its highlights are not snippets, though. The median result carried 3,900 to 6,400 characters against DuckDuckGo's 210 to 230, and one search returned 49,000 to 61,000 characters against about 2,500. Every later request of a scout resends them, so the Exa scouts on st07 sent 119,000 to 336,000 input tokens each against 44,000 to 63,000. That made them wait under Luna's token rate limit and cost about 2.7 times as much in model calls. Exa's text also arrives labeled `snippet`, so evidence resting on it counts as shallow unless the scout fetches the page. A paid comparison with uncapped highlights would mostly measure this context growth.

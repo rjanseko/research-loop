@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -852,3 +853,45 @@ def test_open_items_are_short_names_not_caveats() -> None:
              "NREL-MatDB", "Citrine", "OpenKIM", "Phase-Field hub (PFhub)", ""]
     assert open_item_names(items) == ["Inorganic Crystal Structure Database (ICSD)", "Khazana", "NREL-MatDB",
                                       "Citrine", "OpenKIM"]
+
+
+async def test_a_run_on_exa_records_its_engine_and_adds_its_searches_to_its_cost(settings, pages, monkeypatch) -> None:
+    from decimal import Decimal
+
+    from research_loop.web import SearchSpend
+
+    engines: list[str] = []
+
+    def fake_exa(client, api_key: str, spend: SearchSpend, budget=None):
+        engines.append(api_key)
+
+        async def search(query: str) -> list[dict[str, str]]:
+            spend.usd += Decimal("0.007")
+            spend.searches += 1
+            return [{"title": "SWE-bench Verified", "href": "https://example.org/verified", "body": "500 tasks"}]
+
+        return search
+
+    monkeypatch.setattr("research_loop.scout.exa_engine", fake_exa)
+    urls = {"q1": "https://example.org/verified", "q2": "https://example.org/leakage"}
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        question = _prompt(messages)["question"]
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("web_search", {"query": question["question"]})])
+        if len(messages) == 3:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": urls[question["id"]]})])
+        url = urls[question["id"]]
+        return _output(info, {
+            "question_id": question["id"], "question": question["question"], "conclusion": "found", "confidence": 0.8,
+            "claims": [{"id": "c1", "statement": f"Finding for {question['id']}", "confidence": 0.8, "evidence": [
+                {"source": {"url": url, "title": "Page"}, "excerpt": "summary", "quote": PAGES[url][:40],
+                 "confidence": 0.8}]}]})
+
+    exa = settings.model_copy(update={"search_engine": "exa", "exa_api_key": SecretStr("exa-key")})
+    store = MemoryStore()
+    run = await _run(exa, store, research=FunctionModel(respond))
+    assert engines == ["exa-key"] and run.status == "complete"
+    assert run.config["search_engine"] == "exa" and run.checks.search_usd == Decimal("0.014")
+    model_cost = sum(Decimal(str(call["cost_usd"])) for call in store.calls.values() if call.get("cost_usd") is not None)
+    assert run.cost_usd == model_cost + Decimal("0.014")

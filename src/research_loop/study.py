@@ -9,7 +9,8 @@ always goes first against the study's shared cache (ABBA). It labels every run w
 replicate, and passes each run's hard cap. An arm at another git ref runs from a temporary worktree of
 that ref, so it uses that commit's code. Before starting, it refuses a spec whose worst case exceeds the
 study's ceiling, and it stops before any run that could take actual spend past the ceiling. At the end
-it prints and saves a table of status, answer support, cost, time, quote checks, coverage, and grades.
+it prints and saves a table of status, answer support, cost, time, quote checks, support audits, coverage,
+and grades.
 
 A spec is TOML:
 
@@ -23,6 +24,10 @@ A spec is TOML:
     grade = true                    # grade each report against its case's rubric
     grade_estimate_usd = 0.06
     grade_cap_usd = 1.00            # each grade's hard cap
+    audit = true                    # audit each report's statements against their quotes (audit.py)
+    audit_model = "zai:glm-5.3@high"
+    audit_estimate_usd = 0.04
+    audit_cap_usd = 0.30            # each audit's hard cap
 
     [[arms]]
     name = "standard"
@@ -85,6 +90,11 @@ class StudySpec(BaseModel):
     grade: bool = False
     grade_estimate_usd: float = Field(0.06, ge=0)
     grade_cap_usd: float = Field(1.00, gt=0)
+    audit: bool = False
+    audit_model: str = "zai:glm-5.3@high"
+    # The costliest audit of a stored report was $0.036 (audit v1, GLM-5.3 at high effort).
+    audit_estimate_usd: float = Field(0.04, ge=0)
+    audit_cap_usd: float = Field(0.30, gt=0)
 
     @model_validator(mode="after")
     def _targets(self) -> StudySpec:
@@ -104,8 +114,12 @@ class StudySpec(BaseModel):
 
     def worst_case_usd(self) -> float:
         """What the planned runs could cost by their estimates, grades included."""
-        per_run = self.estimate_usd + (self.grade_estimate_usd if self.grade else 0)
-        return round(len(schedule(self)) * per_run, 4)
+        return round(len(schedule(self)) * self.per_run_usd(), 4)
+
+    def per_run_usd(self) -> float:
+        """What one planned run could cost by the estimates, its grade and audit included."""
+        return (self.estimate_usd + (self.grade_estimate_usd if self.grade else 0)
+                + (self.audit_estimate_usd if self.audit else 0))
 
 
 def load_spec(path: Path) -> StudySpec:
@@ -161,8 +175,12 @@ def for_mode(spec: StudySpec, mode: Mode, seeds: int = 1) -> StudySpec:
         return spec.model_copy(update={"study": f"{spec.study}-dry", "replicates": seeds,
                                        "ceiling_usd": spec.ceiling_usd * max(1.0, seeds / spec.replicates)})
     if mode == "cheap":
+        # Each run's hard cap is the cheap ceiling too: cheap models cost cents, but paid web searches do not,
+        # and a cheap drb2-task8 run on Exa could make a hundred of them under the spec's own cap.
         return spec.model_copy(update={"study": f"{spec.study}-cheap", "replicates": 1, "cases": spec.cases[:1],
+                                       "cap_usd": min(spec.cap_usd, CHEAP_CEILING_USD),
                                        "sources": spec.sources[:1], "estimate_usd": 0.06, "grade_estimate_usd": 0.01,
+                                       "audit_estimate_usd": 0.01,
                                        "ceiling_usd": min(spec.ceiling_usd, CHEAP_CEILING_USD)})
     return spec
 
@@ -210,6 +228,8 @@ class Outcome:
     exit_code: int
     record: dict[str, Any] | None = None
     grade: dict[str, Any] | None = None
+    # The support audit's verdict counts and cost (audit.py).
+    audit: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
     # Invariants the run broke (dryrun.check_record), and tracebacks in its output; dry and cheap runs only.
     violations: list[str] = field(default_factory=list)
@@ -217,7 +237,8 @@ class Outcome:
     @property
     def cost_usd(self) -> float:
         run_cost = float((self.record or {}).get("cost_usd") or 0)
-        return run_cost + float((self.grade or {}).get("cost_usd") or 0)
+        return (run_cost + float((self.grade or {}).get("cost_usd") or 0)
+                + float((self.audit or {}).get("cost_usd") or 0))
 
 
 # Runs `research` with these arguments and extra environment; returns the exit code and what it wrote to
@@ -245,6 +266,24 @@ def _grade_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, 
         return {"met": int(match.group(1)), "points": int(match.group(2)), "score": float(match.group(3)),
                 "cost_usd": float(match.group(4))}
     return grade
+
+
+# `research audit` prints "<run id>: 2 partial, 5 supported; $0.0111. Recorded as ...".
+_AUDIT_LINE = re.compile(r": ([^;]*); \$(\d+(?:\.\d+)?)\. Recorded as")
+_AUDIT_COUNT = re.compile(r"(\d+) (\w+)")
+
+
+def _audit_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, str]]) -> Callable[..., dict | None]:
+    def audit(run_id: str, model: str, env: dict[str, str], cap: float) -> dict[str, Any] | None:
+        """The audit's verdict counts and cost, None when it failed and said so, or {"unreadable": ...}."""
+        code, output = invoke_output(["audit", run_id, "--model", model, "--max-usd", f"{cap:.2f}"], env)
+        if code != 0:
+            return None
+        if not (match := _AUDIT_LINE.search(output)):
+            return {"unreadable": output.strip()[:200]}
+        counts = {verdict: int(n) for n, verdict in _AUDIT_COUNT.findall(match.group(1))}
+        return {"counts": counts, "cost_usd": float(match.group(2))}
+    return audit
 
 
 def _invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
@@ -284,7 +323,7 @@ def _calls(dsn: str, run_id: str) -> list[dict[str, Any]]:
 
 
 def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
-              grade: Callable[..., dict | None] | None = None,
+              grade: Callable[..., dict | None] | None = None, audit: Callable[..., dict | None] | None = None,
               worktrees: Callable[[StudySpec], Any] = _worktrees, mode: Mode = "real",
               dsn: str | None = None, calls: Callable[[str, str], list[dict[str, Any]]] = _calls) -> list[Outcome]:
     """Run every planned run of `spec` in order, stopping before one that could pass the ceiling. Dry and
@@ -292,12 +331,14 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     from .dryrun import check_record
 
     grade = grade or _grade_with(_invoke_output)
+    audit = audit or _audit_with(_invoke_output)
+    audit_model = spec.audit_model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
     outcomes: list[Outcome] = []
     spent = 0.0
-    per_run = spec.estimate_usd + (spec.grade_estimate_usd if spec.grade else 0)
+    per_run = spec.per_run_usd()
     with worktrees(spec) as trees:
         for run in schedule(spec):
             if spent + per_run > spec.ceiling_usd:
@@ -330,9 +371,24 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                     outcome.notes.append(f"the grade line could not be read: {outcome.grade['unreadable']}")
                     outcome.violations.append("research grade succeeded but its line could not be read")
                     outcome.grade = None
+            if spec.audit and outcome.record and outcome.record.get("report"):
+                outcome.audit = audit(outcome.record["run_id"], audit_model, env, spec.audit_cap_usd)
+                if outcome.audit is None:
+                    outcome.notes.append("the support audit failed; see the output above")
+                elif "unreadable" in outcome.audit:
+                    outcome.notes.append(f"the audit line could not be read: {outcome.audit['unreadable']}")
+                    outcome.violations.append("research audit succeeded but its line could not be read")
+                    outcome.audit = None
             spent += outcome.cost_usd
             outcomes.append(outcome)
     return outcomes
+
+
+def _audit_cell(audit: dict[str, Any] | None) -> str:
+    if not audit:
+        return ""
+    counts = audit["counts"]
+    return " / ".join(str(counts.get(verdict, 0)) for verdict in ("supported", "partial", "unsupported", "no_quote"))
 
 
 def _case_id(record: dict[str, Any] | None) -> str | None:
@@ -342,8 +398,9 @@ def _case_id(record: dict[str, Any] | None) -> str | None:
 def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
     """A Markdown table of every planned run, the ones not run included."""
     header = ("| Target | Arm | Rep | Run | Status | Answer | Cost | Time | Quotes verified / misattributed / not found "
-              "(short) | Statements quoted / summary only / thin | Coverage found (named) | Grade |")
-    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "(short) | Statements quoted / summary only / thin | Audit supported / partial / unsupported / no quote "
+              "| Coverage found (named) | Grade |")
+    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for outcome in outcomes:
         record, run = outcome.record or {}, outcome.run
         checks = record.get("checks") or {}
@@ -364,7 +421,7 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
                  f"${outcome.cost_usd:.3f}" if record else "",
                  f"{float(record['seconds']):.0f} s" if record.get("seconds") is not None else "",
                  f"{verified} / {wrong} / {quotes - verified - wrong}{short}" if quotes else "",
-                 statements, cover, f"{grade['met']}/{grade['points']}" if grade else ""]
+                 statements, _audit_cell(outcome.audit), cover, f"{grade['met']}/{grade['points']}" if grade else ""]
         lines.append("| " + " | ".join(cells) + " |")
     spent = sum(outcome.cost_usd for outcome in outcomes)
     lines += ["", f"Total ${spent:.2f} of a ${spec.ceiling_usd:.2f} ceiling."]
