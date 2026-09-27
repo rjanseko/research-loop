@@ -483,6 +483,9 @@ class FuzzModel(FunctionModel):
                            "covers": rng.sample(coverage_ids + ["zz", "o1", "d1"], rng.randint(0, 2))})
         open_items = [rng.choice(requirements + [self._text(rng), "ICSD", "ICSD ", "icsd", ""]) if requirements
                       else rng.choice(["ICSD", "CSD", "", self._text(rng)]) for _ in range(rng.randint(0, 4))]
+        if "material_gap" in prompt:
+            # A deep dive usually names something new, which is what shifted open-item IDs once.
+            open_items.append(f"Newly named {rng.choice(_WORDS)} {rng.randint(1, 99)}")
         return {"question_id": "q?", "question": self._text(rng) or "q", "conclusion": self._text(rng),
                 "claims": claims, "confidence": rng.random(), "open_items": open_items,
                 "unresolved": [self._text(rng) for _ in range(rng.randint(0, 2))],
@@ -493,6 +496,9 @@ class FuzzModel(FunctionModel):
         limit = prompt.get("max_gaps") or 3
         valid = rng.random() < 0.75 and question_ids
         count = rng.randint(0, limit) if valid else rng.randint(0, limit + 2)
+        # The first question is favored: follow-up research under an earlier question is the harder case.
+        if question_ids and rng.random() < 0.5:
+            question_ids = question_ids[:1]
         return {"gaps": [{"question_id": rng.choice(question_ids if valid else question_ids + ["q99"]) if question_ids else "q1",
                           "follow_up_question": self._text(rng) or "f", "reason": self._text(rng) or "r"}
                          for _ in range(count)]}
