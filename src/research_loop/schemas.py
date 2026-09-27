@@ -69,9 +69,9 @@ class Evidence(BaseModel):
     quote: str | None = Field(
         default=None,
         description=(
-            "Exact words copied from text one of your tools returned, when the claim rests on specific wording. "
-            "Mark omissions with '...'. Quotes are checked against the tool output; leave this empty rather "
-            "than reconstruct wording from memory."
+            "Exact words copied from text one of your tools returned: the sentence or passage that states what "
+            "the claim says. Mark omissions with '...'. Quotes are checked against the tool output; leave this "
+            "empty only when no returned text states the claim, never reconstruct wording from memory."
         ),
     )
     supports: bool = True

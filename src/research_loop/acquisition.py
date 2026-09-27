@@ -39,7 +39,8 @@ CACHE_VERSION = 1
 # 7: one fetch tool for pages and PDFs; every result says its access level (snippet, metadata,
 #    abstract, full text); scholarly records carry OpenAlex abstracts.
 # 8: every tool result is valid Unicode: split surrogate pairs from PDF text are joined, lone ones replaced.
-FETCH_VERSION = 8
+# 9: a PDF may be 25 MB rather than the 5 MB of a page: 21 papers the scouts wanted, 5.8 to 19.9 MB, were refused.
+FETCH_VERSION = 9
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -245,10 +246,13 @@ async def read_capped(response: httpx.Response, max_bytes: int) -> httpx.Respons
 
 
 async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int,
-                             policy: SourcePolicy | None = None, *, as_browser: bool = False) -> httpx.Response:
+                             policy: SourcePolicy | None = None, *, as_browser: bool = False,
+                             pdf_max_bytes: int | None = None) -> httpx.Response:
     """Download a public HTTPS URL, following at most three redirects, each checked like the first.
 
     `as_browser` sends BROWSER_USER_AGENT and browser Accept headers in place of the fetcher's own.
+    `pdf_max_bytes`, when given, replaces `max_bytes` for a response whose content type is a PDF or
+    unlabeled binary, which `is_pdf` then recognizes by its signature.
     """
     headers = {"User-Agent": BROWSER_USER_AGENT, **BROWSER_HEADERS} if as_browser else {"User-Agent": FETCH_USER_AGENT}
     for _ in range(4):
@@ -264,7 +268,9 @@ async def bounded_public_get(client: httpx.AsyncClient, url: str, max_bytes: int
                     raise ValueError("redirect missing location")
                 url = urljoin(url, location)
                 continue
-            return await read_capped(response, max_bytes)
+            media = response.headers.get("content-type", "").split(";")[0].strip().lower()
+            binary = "pdf" in media or media == "application/octet-stream"
+            return await read_capped(response, pdf_max_bytes if pdf_max_bytes and binary else max_bytes)
     raise ValueError("too many redirects")
 
 

@@ -103,6 +103,26 @@ async def test_compressed_pages_are_decoded_once(public_urls) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_pdf_may_be_larger_than_a_page(public_urls) -> None:
+    from research_loop.acquisition import bounded_public_get
+
+    body = b"%PDF-1.7 " + b"x" * 2_000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        media = "application/pdf" if request.url.path.endswith(".pdf") else "text/html"
+        return httpx.Response(200, headers={"content-type": media}, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        # arXiv's Llama 2 paper is 13.7 MB; pages keep the smaller cap.
+        response = await bounded_public_get(http, "https://example.org/paper.pdf", 1_000, pdf_max_bytes=10_000)
+        assert response.content == body
+        with pytest.raises(ValueError, match="size limit"):
+            await bounded_public_get(http, "https://example.org/page", 1_000, pdf_max_bytes=10_000)
+        with pytest.raises(ValueError, match="size limit"):
+            await bounded_public_get(http, "https://example.org/paper.pdf", 1_000)
+
+
+@pytest.mark.asyncio
 async def test_fetch_errors_tell_the_model_the_status(public_urls) -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
         result = await WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http).fetch("https://example.org/blocked")

@@ -31,6 +31,9 @@ from .acquisition import (
 
 # Decoded bytes read per page; some leaderboard pages embed a few MB of data.
 _MAX_PAGE_BYTES = 5_000_000
+# Decoded bytes read per PDF. Every PDF the scouts were refused at 5 MB in stored runs was at most 19.9 MB,
+# among them the Llama 2 and Chinchilla papers; only the first `_PDF_PAGE_LIMIT` pages are extracted.
+_MAX_PDF_BYTES = 25_000_000
 # PDF pages extracted; a longer document is marked `pypdf-first-pages`.
 _PDF_PAGE_LIMIT = 30
 
@@ -172,9 +175,10 @@ class WebAcquisition:
         5 of 12 sites that refused the fetcher in the pilots served a browser.
         """
         async def get(client: httpx.AsyncClient) -> httpx.Response:
-            response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy)
+            response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy, pdf_max_bytes=_MAX_PDF_BYTES)
             if response.status_code == 403:
-                response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy, as_browser=True)
+                response = await bounded_public_get(client, url, _MAX_PAGE_BYTES, self.policy, as_browser=True,
+                                                    pdf_max_bytes=_MAX_PDF_BYTES)
             return response
 
         if self.client:
