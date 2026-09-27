@@ -64,11 +64,11 @@ Scout prints its models and limits before it starts, then prints the report as M
 
 `--note` adds a requirement that every role follows, and can be repeated. `--block URL` names a source that no tool may fetch and no evidence may cite, and can also be repeated. `--max-usd` sets a hard ceiling that is checked before every model request (see [Hard caps](#hard-caps)). `--follow-up` adds a gap analysis and up to three targeted deep dives, run in parallel, before the report is written. `--depth quick|standard|deep` sets how much research the run does; by default the planner chooses (see [Depth](#depth)). `--no-persist` keeps the run in memory even when a database is configured.
 
-A run ends in one of four states. It is `complete` when every research question returned evidence and the report cites only claims that exist. It is `partial` when the report was written but something is missing: a research question returned no evidence, a citation was wrong, or a follow-up left a gap open. If the synthesis itself did not finish, the report lists the claims found without a written answer, and the run is also `partial`. A run that found no evidence at all is `failed`. Pressing Ctrl-C records the run as `cancelled`.
+A run reports two things separately: whether it did its work, and how well its answer is backed. Its status says the first. It is `complete` when every step ran to its end and the report was written, and `partial` when a research question was cut off by a limit, deadline, or error, the gap analysis failed, or the synthesis did not finish, in which case the report lists the claims found without a written answer. A run that found no evidence at all is `failed`, and pressing Ctrl-C records it as `cancelled`. The answer's support says the second. It is `supported` when every statement in the report rests on evidence the research read, `weak` when some statement rests only on thin evidence or a research question or follow-up gap was left without an answer, and `unsupported` when a statement rests on no evidence or cites a claim that does not exist. A complete run can therefore have a weak or unsupported answer; the report's first lines and its "Needs review" list say which.
 
 ### Reading the report
 
-A report has these sections, in this order. Sections with nothing to say are left out.
+A report opens with a line giving the run's status, its answer's support, how many answer sentences carry no inline citation, its cost and time, and how many sources were read. Uncited sentences are a diagnostic: some are framing rather than findings. The sections follow, in this order; sections with nothing to say are left out.
 
 | Section | What it holds |
 |---|---|
@@ -76,7 +76,7 @@ A report has these sections, in this order. Sections with nothing to say are lef
 | Gap follow-up | In follow-up mode, which gaps were chosen and why, and whether the deep dives settled them. |
 | Summary and Answer | The written report. Each statement carries inline citations such as [s3], which name sources. |
 | Caveats | Limits the synthesizer found in the evidence. |
-| Statements resting on thin evidence | Statements whose only support is a search snippet, a record's metadata, an unverified quote, or a source no tool returned. |
+| Statements resting on thin evidence | Statements whose only support is a search snippet, a record's metadata, a quote not found in its cited source, or a source no tool returned. |
 | Could not establish | Research questions that returned no evidence, with the reason each one stopped. |
 | Sources | Every cited source with its ID, title, publisher, date, and how much of it was read. |
 | Sources that could not be read | Pages and records the tools tried and failed to fetch, with the reason. |

@@ -393,6 +393,25 @@ def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> st
     return re.sub(r"([ \t]*)" + _INLINE_CITATION.pattern, rewrite, text)
 
 
+# A sentence ends at . ! or ? before a capital, digit, or quote; not before "[", so a citation placed
+# after the full stop stays with its sentence.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+
+
+def uncited_sentences(answer: str) -> tuple[int, int]:
+    """The answer's sentences, and those with no inline [sN] citation. Headings, table rules, and lines
+    of fewer than six words are left out, since they state no finding; a citation that closes a sentence
+    after its full stop counts for it."""
+    sentences: list[str] = []
+    for line in answer.splitlines():
+        line = line.strip().lstrip("-*+> ").strip()
+        if not line or line.startswith("#") or set(line) <= set("|-: "):
+            continue
+        sentences += _SENTENCE_END.split(line)
+    counted = [s for s in sentences if len(strip_inline_citations(s).split()) >= 6]
+    return len(counted), sum(not inline_source_ids(s) for s in counted)
+
+
 def citation_problems(report: FinalReport, ledger: EvidenceLedger) -> list[str]:
     """What in `report` does not resolve against `ledger`: unknown claim IDs, and inline [sN] citations
     that name no source behind the claims the report lists. Empty means every citation traces to evidence."""

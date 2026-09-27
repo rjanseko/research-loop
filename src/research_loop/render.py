@@ -71,8 +71,16 @@ def _title(record: dict[str, Any]) -> str:
     return title or " ".join(record["question"].split())[:110]
 
 
+_SUPPORT = {"supported": "answer supported", "weak": "answer weakly supported", "unsupported": "answer unsupported"}
+
+
 def _status_line(record: dict[str, Any], sources: dict[str, dict[str, Any]]) -> str:
     parts = [f"Scout run `{record['run_id']}`", str(record["status"])]
+    checks = record.get("checks") or {}
+    if support := checks.get("answer_support"):
+        parts.append(_SUPPORT[support])
+    if checks.get("uncited_sentences"):
+        parts.append(f"{checks['uncited_sentences']} of {checks['sentences']} answer sentences uncited")
     if (cost := record.get("cost_usd")) is not None:
         parts.append(f"${float(cost):.2f}")
     if (seconds := record.get("seconds")) is not None:

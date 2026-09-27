@@ -13,6 +13,7 @@ from research_loop.evidence import (
     citation_problems,
     identity_keys,
     support_level,
+    uncited_sentences,
 )
 from research_loop.schemas import (
     Claim,
@@ -315,3 +316,11 @@ def test_a_fetched_document_is_the_doi_printed_on_its_first_page() -> None:
                                                ToolReturnPart("fetch", json.dumps(later), tool_call_id="b")])])
     assert "doi:10.1234/abc.2025.1" in texts[0].keys
     assert not any(key.startswith("doi:") for key in texts[1].keys)  # a later window's DOIs are other works'
+
+
+def test_uncited_sentences_count_findings_without_a_citation() -> None:
+    answer = ("## Answer\nThe benchmark has 500 tasks drawn from GitHub [s1]. It was released by OpenAI in August"
+              " 2024. [s2]\n\n| a | b |\n|---|---|\n| Model | Score across all of the tasks |\nShort line.\n"
+              "- Annotators screened each sample for underspecified problems [s3].")
+    # The table row states a finding with no citation; headings, rules, and short lines are left out.
+    assert uncited_sentences(answer) == (4, 1)

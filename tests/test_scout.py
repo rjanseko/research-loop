@@ -395,7 +395,7 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert stored["input_hash"] == hashlib.sha256((again.question + "\n" + ledger_sha).encode()).hexdigest()
 
 
-async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings, pages) -> None:
+async def test_fixed_plan_research_lists_an_unanswered_question(settings, pages) -> None:
     store = MemoryStore()
     original = await _run(settings, store)
 
@@ -408,7 +408,8 @@ async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings
 
     with scout_agent.override(model=FunctionModel(half)):
         again = await rescout_stored(store.runs[original.run_id], settings=settings, store=store)
-    assert again.status == "partial"
+    # The research ran to its end, so the run is complete; the unanswered question is listed for review.
+    assert again.status == "complete" and again.checks.answer_support is None
     assert reasons(again) == ["1 of 2 research questions returned no evidence"]
 
 
@@ -468,7 +469,7 @@ async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -
     assert "deep_dive" not in [c["role"] for c in store.calls.values()]
 
 
-async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> None:
+async def test_an_unresolved_material_gap_weakens_the_answer(settings, pages) -> None:
     from research_loop.agents import gap_agent
 
     def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -492,7 +493,7 @@ async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> Non
     with gap_agent.override(model=gap):
         run = await _run(settings, plan=planner(QUESTIONS[:1]), research=FunctionModel(research), follow_up=True)
     assert not run.checks.not_established
-    assert run.report is not None and run.status == "partial"
+    assert run.report is not None and run.status == "complete" and run.checks.answer_support == "weak"
     assert run.checks.follow_up_unresolved
     assert "The follow-up did not fully resolve this gap." in render_markdown(run.to_record())
 
@@ -705,3 +706,19 @@ def test_misattributed_quotes_are_listed_for_review() -> None:
                      synthesized=False)
     assert checks.quotes_misattributed == 1
     assert "1 of 1 quotes appear only in another source than the one cited" in checks.review_reasons
+
+
+async def test_run_status_and_answer_support_are_separate(settings, pages) -> None:
+    # Every question ran and the report was written, but one statement cites no evidence.
+    def bare(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        research = _prompt(messages)["research"]
+        claims = [claim for result in research["research"] for claim in result.get("claims", [])]
+        statements = [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims]
+        return _output(info, {"title": "T", "executive_summary": "S", "answer": "Mostly trustworthy.",
+                              "claims": [*statements, {"statement": "An uncited finding", "claim_ids": []}],
+                              "caveats": []})
+
+    run = await _run(settings, write=streamed(bare))
+    assert run.status == "complete" and run.checks.answer_support == "unsupported"
+    good = await _run(settings)
+    assert good.status == "complete" and good.checks.answer_support == "supported"

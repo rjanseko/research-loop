@@ -124,7 +124,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
                           study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity,
                           depth=depth)
     stored = "stored" if isinstance(store, PostgresStore) else "not stored (no DATABASE_URL, or --no-persist)"
-    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.2f}, "
+    support = f", answer {run.checks.answer_support}" if run.checks.answer_support else ""
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}{support}, ${run.cost_usd:.2f}, "
                                   f"{run.seconds / 60:.1f} minutes, {stored}.")
 
 
@@ -155,7 +156,8 @@ async def _rerun(args: argparse.Namespace, settings: Settings, *, role: str, ver
         except SourceRunError as exc:
             print(f"Cannot {verb}: {exc}", file=sys.stderr)
             return 2
-    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}, "
+    support = f", answer {run.checks.answer_support}" if run.checks.answer_support else ""
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}{support}, ${run.cost_usd:.4f}, "
                                   f"{run.seconds / 60:.1f} minutes; source {args.source_run_id}.")
 
 

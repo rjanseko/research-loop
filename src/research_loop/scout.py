@@ -82,6 +82,7 @@ from .evidence import (
     check_result,
     citation_problems,
     support_level,
+    uncited_sentences,
 )
 from .models import (
     Role,
@@ -124,7 +125,8 @@ from .web import WebAcquisition, WebSearch
 # the gap follow-up, which now follows up to `max_gaps` gaps with parallel deep dives. Earlier runs stay
 # valid sources for `synthesize_stored` and `rescout_stored`.
 # v5: evidence v6. A quote counts as verified only in its cited source's text, and one found only in
-# another source's text is misattributed; the synthesizer is told so.
+# another source's text is misattributed; the synthesizer is told so. Status now says only whether the
+# run did its work, and `answer_support` how well its answer is backed.
 WORKFLOW_VERSION = "scout-v5"
 FOLLOWUP_VERSION = "scout-followup-v5"
 RESCOUT_VERSION = "scout-research-v5"
@@ -132,7 +134,11 @@ RESCOUT_VERSION = "scout-research-v5"
 SYNTHESIS_VERSION = "scout-synthesis-v3"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
                     *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4)))
+# Whether the run did its work: `complete` when the report was written and every step ran to its end,
+# `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
+# Whether the answer is backed is `RunChecks.answer_support`.
 Status = Literal["complete", "partial", "failed", "cancelled"]
+AnswerSupport = Literal["supported", "weak", "unsupported"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
 # not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
 # The OpenAI client raised a TLS `SSLError` (an OSError) from one scout's request unwrapped, which failed a
@@ -187,6 +193,11 @@ class RunChecks(BaseModel):
     quotes_verified: int = 0
     # Found only in another source's text than the one cited (evidence v6).
     quotes_misattributed: int = 0
+    # Whether the report's statements are backed, apart from whether the run finished (`_answer_support`).
+    answer_support: AnswerSupport | None = None
+    # Sentences of the answer, and those with no inline [sN] citation: a diagnostic, since some are framing.
+    sentences: int = 0
+    uncited_sentences: int = 0
     review_reasons: list[str] = Field(default_factory=list)
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
@@ -682,7 +693,9 @@ class _Run:
             if follow_up_unresolved:
                 checks.review_reasons.append("the material gap follow-up did not establish a complete answer"
                                              if analysis else "gap analysis did not finish")
-            return _status(plan, ledger, self.report, checks), checks
+            checks.answer_support = _answer_support(self.report, checks)
+            status = _status(ledger, self.report, gap_analysis_failed=self.follow_up and analysis is None)
+            return status, checks
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
 
@@ -739,6 +752,8 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
         quotes_verified=sum(item.quote_check == "verified" for item in evidence),
         quotes_misattributed=sum(item.quote_check == "misattributed" for item in evidence),
     )
+    if report is not None:
+        checks.sentences, checks.uncited_sentences = uncited_sentences(report.answer)
     for item in evidence:
         key = item.source_access or "not_returned"
         checks.evidence_by_access[key] = checks.evidence_by_access.get(key, 0) + 1
@@ -767,12 +782,27 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
     return checks
 
 
-def _status(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | None, checks: RunChecks) -> Status:
+def _status(ledger: EvidenceLedger, report: FinalReport | None, *, synthesized: bool = True,
+            gap_analysis_failed: bool = False) -> Status:
+    """Whether the run did its work, apart from how well its answer is backed."""
     if report is None and not ledger.claims():
         return "failed"
-    if report is not None and not checks.citation_problems and not checks.not_established and not checks.follow_up_unresolved:
-        return "complete"
-    return "partial"
+    cut_off = any(result.cut_off for result in ledger.all())
+    return "partial" if cut_off or gap_analysis_failed or (synthesized and report is None) else "complete"
+
+
+def _answer_support(report: FinalReport | None, checks: RunChecks) -> AnswerSupport | None:
+    """How well the report's statements are backed: `unsupported` when a statement rests on no evidence or
+    cites a claim that does not exist, `weak` when a statement rests only on thin evidence or a question or
+    follow-up gap was left open, else `supported`. None without a report."""
+    if report is None:
+        return None
+    support = [statement.support for statement in checks.statements]
+    if not support or "unsupported" in support or checks.citation_problems:
+        return "unsupported"
+    if "shallow" in support or checks.not_established or checks.follow_up_unresolved:
+        return "weak"
+    return "supported"
 
 
 async def scout(question: str, *, settings: Settings | None = None, store: RunStore | None = None,
@@ -844,7 +874,8 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
         window = runner.limits.deadline_seconds - runner.limits.research_seconds
         runner.report = await runner._synthesize(plan, ledger, asyncio.get_running_loop().time() + window)
         checks = _checks(plan, ledger, runner.report, runner.unpriced)
-        return _status(plan, ledger, runner.report, checks), checks
+        checks.answer_support = _answer_support(runner.report, checks)
+        return _status(ledger, runner.report), checks
 
     return await runner._recorded("fixed-ledger", _digest_input(runner.question, ledger_sha), body)
 
@@ -876,9 +907,7 @@ async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: R
         for result in await runner._research(plan, deadline, toolset):
             runner.ledger.add(result)
         checks = _checks(plan, runner.ledger, None, runner.unpriced, synthesized=False)
-        status: Status = ("failed" if not runner.ledger.claims() else "partial" if checks.not_established
-                          else "complete")
-        return status, checks
+        return _status(runner.ledger, None, synthesized=False), checks
 
     return await runner._recorded("fixed-plan", _digest_input(runner.question, plan_sha), body)
 
