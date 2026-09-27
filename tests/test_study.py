@@ -103,7 +103,40 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     assert "PYTHONPATH" not in first_env
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
-    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s | 8 / 1 / 1 (2) | 2 / 1 / 1 | 2/7 (1) | 20/52 |" in table
+    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table
+
+
+def test_an_audited_study_runs_the_audit_with_the_modes_model_and_counts_its_cost(spec: StudySpec, tmp_path: Path) -> None:
+    from research_loop.study import _audit_with, mode_env
+
+    audited = spec.model_copy(update={"audit": True, "replicates": 1, "ceiling_usd": 3.00})
+    assert audited.worst_case_usd() == pytest.approx(2 * (0.40 + 0.05 + 0.04))
+    asked: list[tuple[str, str, float]] = []
+
+    def invoke(args: list[str], env: dict[str, str]) -> int:
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record(f"{len(asked):08d}-run", 0.30)))
+        return 0, ""
+
+    def audit(run_id: str, model: str, env: dict[str, str], cap: float) -> dict:
+        asked.append((run_id, model, cap))
+        return {"counts": {"supported": 5, "partial": 2, "no_quote": 1}, "cost_usd": 0.02}
+
+    outcomes = run_study(audited, tmp_path, invoke=invoke, grade=lambda *a: None, audit=audit,
+                         worktrees=_no_worktrees)
+    assert [model for _, model, _ in asked] == ["zai:glm-5.3@high"] * 2 and asked[0][2] == 0.30
+    assert sum(o.cost_usd for o in outcomes) == pytest.approx(2 * 0.32)
+    assert "| 5 / 2 / 0 / 1 |" in summary(audited, outcomes)
+    # Dry and cheap studies never send the audit to the real auditor.
+    assert "RESEARCH_MODELS__JUDGE" in mode_env("dry", schedule(audited)[0])
+
+    # The line `research audit` prints, parsed back.
+    line = "7a7fc5b5: 4 partial, 8 supported; $0.0191. Recorded as 09b98c5d.\n"
+    parsed = _audit_with(lambda args, env: (0, line))("r", "m", {}, 0.3)
+    assert parsed == {"counts": {"partial": 4, "supported": 8}, "cost_usd": 0.0191}
+    assert _audit_with(lambda args, env: (0, "odd"))("r", "m", {}, 0.3) == {"unreadable": "odd"}
+    assert _audit_with(lambda args, env: (1, ""))("r", "m", {}, 0.3) is None
 
 
 def test_the_ceiling_stops_runs_once_actual_spend_nears_it(spec: StudySpec, tmp_path: Path) -> None:

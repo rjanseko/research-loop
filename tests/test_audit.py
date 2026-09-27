@@ -137,3 +137,19 @@ async def test_a_failed_audit_is_recorded_with_its_cap() -> None:
     row = audit_row(record)
     assert (row["status"], row["error"]["type"], row["verdicts"]) == ("failed", "RuntimeError", [])
     assert (row["budget_cap_usd"], row["budget_policy"]) == (Decimal("0.50"), BUDGET_POLICY_VERSION)
+
+
+@pytest.mark.parametrize("seed", range(12))
+async def test_the_fuzz_auditor_plays_the_audit_that_dry_studies_run(seed: int) -> None:
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    from research_loop.dryrun import FuzzModel
+
+    # Its replies sometimes drop or invent a statement; the validator sends one back, and a second bad
+    # reply fails the audit, which is then recorded with its error rather than raised.
+    record = await audit(REPORT, _ledger(), "Q?", uuid4(), Settings(), model=FuzzModel(seed=seed, fault_rate=0.0))
+    if record.status == "failed":
+        assert isinstance(record.error, UnexpectedModelBehavior) and record.verdicts == []
+        return
+    assert record.verdicts[0]["verdict"] in ("supported", "partial", "unsupported")
+    assert record.verdicts[1]["verdict"] == NO_QUOTE

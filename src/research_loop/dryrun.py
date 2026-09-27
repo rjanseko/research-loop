@@ -538,6 +538,16 @@ class FuzzModel(FunctionModel):
                 "not_established": rng.sample(coverage + ["zz"], rng.randint(0, min(2, len(coverage) + 1)))}
 
     def _verdicts(self, prompt: dict[str, Any], messages: list[ModelMessage], rng: random.Random) -> dict[str, Any]:
+        if "statements" in prompt:  # the support audit (audit.py), not the rubric judge
+            verdicts = [{"id": item["id"], "verdict": rng.choice(["supported", "partial", "unsupported"]),
+                         "reason": self._text(rng) or "r"} for item in prompt["statements"]]
+            if verdicts and rng.random() < 0.2:
+                # One missing or one invented verdict, which the audit's validator must send back.
+                if rng.random() < 0.5:
+                    verdicts.pop(rng.randrange(len(verdicts)))
+                else:
+                    verdicts.append({"id": "a999", "verdict": "supported", "reason": "invented"})
+            return {"verdicts": verdicts}
         rubric = prompt.get("rubric") or {}
         verdicts = [{"category": category, "point": point["point"], "met": rng.random() < 0.5}
                     for category, points in rubric.items() for point in points]
