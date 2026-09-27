@@ -9,6 +9,7 @@ from research_loop.evidence import (
     ToolOutputIndex,
     ToolText,
     _key,
+    _normal,
     _segments,
     check_evidence,
     coverage_items,
@@ -79,9 +80,10 @@ def test_open_item_ids_keep_their_meaning_as_research_is_added(plan_ids: list[st
     ledger = EvidenceLedger()
     ledger.add(_result("q1", "Q1?", first))
     ledger.add(_result("q2", "Q2?", second))
-    before = {item.id: item.requirement for item, _ in coverage_items(plan, ledger)}
+    # Names compare normalized: "0" and "0:" are one item, labeled by whichever spelling comes first.
+    before = {item.id: _normal(item.requirement) for item, _ in coverage_items(plan, ledger)}
     ledger.add(_result("q1", "A deep dive on Q1?", later))  # follow-up research under an earlier question
-    after = {item.id: item.requirement for item, _ in coverage_items(plan, ledger)}
+    after = {item.id: _normal(item.requirement) for item, _ in coverage_items(plan, ledger)}
     assert all(after.get(item_id) == requirement for item_id, requirement in before.items())
 
 

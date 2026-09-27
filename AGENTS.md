@@ -30,9 +30,11 @@ Do not add DBOS, Temporal, Redis, a vector database, event sourcing, a learned r
 
 Every command that calls a model costs money: `scout`, `synthesize`, `rescout`, `grade`, `assess`, and `doctor --smoke`. Get the user's approval before each paid run or batch, with an estimate based on the most expensive comparable call and a hard `--max-usd` cap. A paid comparison must be able to reach a decision: run-to-run variation on the frozen cases is several rubric points, so one run per arm cannot separate small differences. The OpenAI account's gpt-6-luna limit is 200,000 tokens a minute and pacing is per run, so do not run two Luna-scout runs at once.
 
+Before a paid study, run its spec with `research study run SPEC --dry` and then `--cheap`; both must report no invariant violations (see README, "Finding bugs before paying"). When a paid run finds a bug the harness missed, add the oracle or fuzz behavior that would have caught it before fixing the bug.
+
 ## Validation
 
-For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. `make lint` runs ruff 0.16 with its default rules; a deliberate blind `except Exception` carries `# noqa: BLE001` and the reason. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
+For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. `make lint` runs ruff 0.16 with its default rules; a deliberate blind `except Exception` carries `# noqa: BLE001` and the reason. `research fuzz` and the fixed sweep in `tests/test_fuzz.py` must stay clean; a fuzz finding gets a regression test with its fix. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
 
 Change a prompt in `prompts.py` or an agent in `agents.py`, not in `scout.py`. Treat any change to text a model sees as a behavior change, including the scouts' budget notes in `budget_notes.py`; the prompt fingerprint covers them through `prompts.BUDGET_NOTES`, so add any new note there.
 

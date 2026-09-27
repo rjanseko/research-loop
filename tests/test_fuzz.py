@@ -29,7 +29,8 @@ async def test_the_world_answers_offline_and_fails_on_purpose() -> None:
                     for page in world.pages.values() if page.fault in ("403", "404", "500", "redirect_loop")}
     assert statuses.get("404", 404) == 404 and statuses.get("500", 500) == 500
     healthy = World(seed=7, fault_rate=0.0)
-    assert all(page.fault is None for page in healthy.pages.values())
+    # Only the one PDF whose text extracts with surrogates is faulty in a fault-free world.
+    assert [page.fault for page in healthy.pages.values() if page.fault] == ["surrogate_pdf"]
     results = await healthy.search("materials database")
     assert all(result["href"] in healthy.pages or not result["href"] for result in results)
 

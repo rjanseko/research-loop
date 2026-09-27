@@ -53,7 +53,8 @@ _GAP = re.compile(r"\.\.\.|\[[^\]]*\]")
 _ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
 # Hosts whose paths name an arXiv paper: the abs and PDF pages, the export mirror, and ar5iv's HTML.
 _ARXIV_HOSTS = ("arxiv.org/", "export.arxiv.org/", "ar5iv.labs.arxiv.org/", "ar5iv.org/")
-_WAYBACK = re.compile(r"^web\.archive\.org/web/[^/]+/(.+)$")
+# The archived address inside a Wayback Machine URL, taken from the raw URL so it is normalized once.
+_WAYBACK = re.compile(r"^(?:https?://)?(?:www\.)?web\.archive\.org/web/[^/]+/(.+)$", re.IGNORECASE)
 _DOI = re.compile(r"\b10\.\d{4,9}/[^\s\"<>]+")
 # A paper's own DOI is printed on its first page; later text cites other works' DOIs.
 _OWN_DOI_CHARS = 3000
@@ -85,7 +86,9 @@ def identity_keys(*, url: str | None = None, doi: str | None = None, arxiv_id: s
     if url:
         location = _url_key(url)
         keys.add(f"url:{location.lower()}")
-        if archived := _WAYBACK.match(location):
+        if archived := _WAYBACK.match(url.strip()):
+            # From the raw URL, not `location`, so trailing punctuation is trimmed once, as for the original
+            # (a property test found "https://docs.example/./." keyed differently in its Wayback copy).
             keys |= identity_keys(url=archived.group(1) if "://" in archived.group(1)
                                   else "https://" + archived.group(1))
         if location.startswith("doi.org/"):

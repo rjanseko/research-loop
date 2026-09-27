@@ -234,6 +234,17 @@ Three more cases from the same snapshot are held out: `drb2-task82` (how oil-dep
 
 Paid experiments should be designed to reach a decision. Run-to-run variation on the frozen cases is several rubric points, so a comparison of one run per arm cannot separate small differences from noise. The study records in `docs/` show the numbers so far.
 
+### Finding bugs before paying
+
+The harness in `src/research_loop/dryrun.py` exists to find bugs in the workflow's plumbing, IDs, and error handling for free, so a paid study measures research instead of paying for a crash. It never produces useful research.
+
+- `research fuzz --runs N` runs seeded Scout runs in process, each followed by a rescout and a fixed-ledger synthesis of it, with a fuzz model standing in for every role and an offline world standing in for the web. The fuzz model returns mostly valid outputs with colliding and unknown IDs, quotes from the wrong source, and odd text, and injects rate limits, server errors, refusals, and usage large enough to trip cost limits. The world serves pages whose texts share passages, Wayback, ar5iv, and publisher copies, and 403s, redirects to blocked addresses, timeouts, broken bodies, and a PDF whose text holds lone surrogates. After each run, `check_record` checks the invariants: every run ends in an end state with no call left running, IDs are unique and open-item IDs keep their meaning, references resolve, a verified quote is in its cited source's text, derived values and costs recompute, every message is valid UTF-8, and the report renders. Each problem is printed with a command that reproduces it (`research fuzz --one SEED`). `make fuzz` runs 200.
+- `research study run SPEC --dry [--seeds N]` runs a study's real commands in subprocesses with the fake models, the offline world, and a separate `research_dry` database (`make dry-db`), grading included, and checks every run the same way and its output for tracebacks. It costs nothing.
+- `research study run SPEC --cheap` runs one replicate of the first target with every role on `openai:gpt-6-luna@low` under a $0.25 ceiling, against the real web and database, with the same checks. It costs a few cents.
+- Hypothesis property tests in `tests/test_properties.py` check the pure functions under generated inputs, and a fixed fuzz sweep runs with the test suite.
+
+Before a paid study, run its spec `--dry`, then `--cheap`; both must report no invariant violations. `fake:` models and the offline world (`RESEARCH_OFFLINE_WORLD`) only run together, so neither can reach a real run. The rubric and quality judges are `RESEARCH_MODELS__JUDGE`, `openai:gpt-6-sol@high` by default, and every grade records which judge gave it.
+
 ## Using it from Python
 
 ```python
@@ -305,6 +316,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `render.py`, `cli.py`, `doctor.py`, `telemetry.py`, `breakdown.py` | Reports, the `research` command, setup checks, Logfire, and cost and time breakdowns |
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
 | `study.py`, `coverage.py` | The study runner, and the count of a development case's expected set a run found |
+| `dryrun.py` | The bug-finding harness: the fuzz model, the offline world, the invariants, and `research fuzz` |
 
 In `scripts/`, `bootstrap.sh` sets up the environment, `import_drb2.py` freezes DeepResearch Bench II tasks as study cases, and `ledger_coverage.py` counts how much of a development case's expected set a run's research found, without a model call. `rescore_quotes.py` re-checks every stored scout call's quotes under the current evidence rules.
 
