@@ -74,6 +74,7 @@ A report opens with a line giving the run's status, its answer's support, how ma
 |---|---|
 | Needs review | Every reason code flagged the run, such as statements that rest only on search snippets, or questions that returned no evidence. |
 | Gap follow-up | In follow-up mode, which gaps were chosen and why, and whether the deep dives settled them. |
+| Coverage | Each thing a sufficient answer must address, and whether the answer addresses it, says it was not established, or leaves it out. |
 | Summary and Answer | The written report. Each statement carries inline citations such as [s3], which name sources. |
 | Caveats | Limits the synthesizer found in the evidence. |
 | Statements resting on thin evidence | Statements whose only support is a search snippet, a record's metadata, a quote not found in its cited source, or a source no tool returned. |
@@ -96,7 +97,7 @@ research db reconcile --older-than 30 --apply   # close out runs that a killed p
 
 ```mermaid
 flowchart LR
-    question(["Question"]) --> plan["Plan<br/>a depth and up to eight research questions"]
+    question(["Question"]) --> plan["Plan<br/>a depth, coverage items, and research questions"]
     plan --> scouts[["Scout each question in parallel<br/>search, fetch, read"]]
     prior_plan[("Plan from a prior run")] -. "research rescout" .-> scouts
     scouts --> check["Check the evidence<br/>quotes, sources, access level"]
@@ -121,6 +122,10 @@ Code then checks every piece of evidence against what the tools actually returne
 Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish, and a deep dive researches each one in parallel with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run, and the run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
+
+### Coverage
+
+The planner also lists what a sufficient answer must address, as coverage items: each category or group of a requested set, each dimension to compare items across, limits such as a date range, and how it read any ambiguity in the question, which it records as an assumption instead of asking. Each research question names the items it serves. Scouts say which items each claim addresses, and name as open items the members or categories their sources mention but they did not establish; code adds those to the list with IDs `d1`, `d2`, and so on, since the categories that matter are often learned during research rather than stated in the question. The gap analysis chooses its deep dives from open items first, and a deep dive may address any item still open. The synthesizer must address every item, citing claims that cover it or saying it could not be established. An item the answer does not address with cited claims makes its support `weak`, and the report's Coverage section lists every item and where it stands.
 
 ### Depth
 

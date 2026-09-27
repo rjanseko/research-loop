@@ -376,8 +376,9 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
     assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case
     # A standard plan hashes as plans did before depths existed, so rescouts pair across versions.
-    questions = json.dumps({"questions": [q.model_dump(mode="json") for q in original.plan.questions]},
-                           ensure_ascii=False, sort_keys=True)
+    questions = json.dumps({"questions": [{"id": q.id, "question": q.question,
+                                           "requires_primary_sources": q.requires_primary_sources}
+                                          for q in original.plan.questions]}, ensure_ascii=False, sort_keys=True)
     assert saved["config"]["fixed_plan"]["plan_sha256"] == hashlib.sha256(questions.encode()).hexdigest()
     assert saved["config"]["depth"] == "standard"
     calls = [store.calls[i] for i in set(store.calls) - before]
@@ -722,3 +723,76 @@ async def test_run_status_and_answer_support_are_separate(settings, pages) -> No
     assert run.status == "complete" and run.checks.answer_support == "unsupported"
     good = await _run(settings)
     assert good.status == "complete" and good.checks.answer_support == "supported"
+
+
+async def test_coverage_items_run_from_the_plan_through_research_to_the_report(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    coverage = [{"id": "k1", "requirement": "Computed-data databases", "kind": "category"},
+                {"id": "k2", "requirement": "Alloy property databases", "kind": "category"},
+                {"id": "k3", "requirement": "Read 'commonly used' as widely cited in reviews", "kind": "assumption"}]
+    questions = [{**QUESTIONS[0], "covers": ["k1"]}, {**QUESTIONS[1], "covers": ["k2"]}]
+    plan = FunctionModel(lambda messages, info: _output(info, {"questions": questions, "coverage": coverage}))
+    seen: dict[str, list[str]] = {}
+
+    def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question = prompt["question"]
+        deep = "material_gap" in prompt
+        seen["deep" if deep else question["id"]] = [item["id"] for item in prompt.get("coverage", [])]
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        covers = ["d1"] if deep else ["k1", "zz"] if question["id"] == "q1" else []
+        return _output(info, {"question_id": question["id"], "question": question["question"], "conclusion": "c",
+                              "confidence": 0.8, "open_items": [] if deep or question["id"] == "q1" else ["ICSD"],
+                              "claims": [{"id": "c1", "statement": f"Finding {'deep' if deep else question['id']}",
+                                          "confidence": 0.8, "covers": covers,
+                                          "evidence": [{"source": {"url": url, "title": "Page"},
+                                                        "excerpt": "summary", "confidence": 0.8}]}]})
+
+    gap_prompts: list[dict] = []
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        gap_prompts.append(_prompt(messages))
+        return _output(info, {"gaps": [{"question_id": "q2", "follow_up_question": "Is ICSD (d1) commonly used?",
+                                        "reason": "An open member of the set."}]})
+
+    def write(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        research_view = _prompt(messages)["research"]
+        claims = [c for result in research_view["research"] for c in result.get("claims", [])]
+        return _output(info, {"title": "T", "executive_summary": "S", "answer": "A",
+                              "claims": [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims],
+                              "caveats": [], "not_established": ["k2"]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, plan=plan, research=FunctionModel(research), write=streamed(write), follow_up=True)
+    # Each scout works toward its question's items; the deep dive toward every item still open.
+    assert seen["q1"] == ["k1"] and seen["q2"] == ["k2"] and seen["deep"] == ["k2", "d1"]
+    assert [(i["id"], i["status"]) for i in gap_prompts[0]["coverage"]] == [("k1", "covered"), ("k2", "open"),
+                                                                             ("d1", "open")]
+    states = {state.id: state for state in run.checks.coverage}
+    assert set(states) == {"k1", "k2", "d1"}  # the assumption is shown to the synthesizer, not tracked
+    assert (states["k1"].status, states["k1"].in_report) == ("covered", "cited")
+    assert (states["k2"].status, states["k2"].in_report) == ("open", "not_established")
+    assert (states["d1"].origin, states["d1"].requirement, states["d1"].in_report) == ("q2", "ICSD", "cited")
+    q1_claim = next(claim for claim in run.ledger.claims() if claim.statement == "Finding q1")
+    assert q1_claim.covers == ["k1"]  # the unknown ID zz was dropped
+    assert run.status == "complete" and run.checks.answer_support == "weak"
+    assert any(reason.startswith("1 of 3 coverage items were not established") for reason in run.checks.review_reasons)
+    assert "## Coverage" in render_markdown(run.to_record())
+
+
+def test_the_planner_must_name_existing_coverage_items() -> None:
+    from pydantic_ai import ModelRetry
+
+    from research_loop.agents import PlanLimits, _plan_is_workable
+    from research_loop.schemas import ResearchPlan
+
+    class Ctx:
+        deps = PlanLimits({"quick": 2, "standard": 4, "deep": 8})
+
+    plan = ResearchPlan.model_validate({"questions": [{"id": "a", "question": "Q?", "covers": ["k9"]}],
+                                        "coverage": [{"id": "k1", "requirement": "R"}]})
+    with pytest.raises(ModelRetry, match="do not exist: k9"):
+        _plan_is_workable(Ctx(), plan)

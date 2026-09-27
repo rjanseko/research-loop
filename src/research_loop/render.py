@@ -34,6 +34,16 @@ def render_markdown(record: dict[str, Any]) -> str:
         elif checks.get("follow_up_unresolved"):
             lines.append("- The follow-up did not fully resolve " + ("this gap." if len(gaps) == 1 else "these gaps."))
         lines.append("")
+    if coverage := checks.get("coverage"):
+        lines += ["## Coverage", "", "What a sufficient answer must address, and where each item stands.", ""]
+        for state in coverage:
+            origin = "" if state.get("origin", "plan") == "plan" else f", named by research on {state['origin']}"
+            where = {"cited": "addressed in the answer", "not_established": "the answer says it was not established",
+                     "missing": "not addressed in the answer"}.get(state.get("in_report") or "",
+                                                                     "covered" if state["status"] == "covered"
+                                                                     else "not established by the research")
+            lines.append(f"- {state['id']} ({state['kind']}{origin}): {state['requirement']}: {where}")
+        lines.append("")
     if report:
         if report.get("executive_summary"):
             lines += ["## Summary", "", report["executive_summary"], ""]

@@ -81,6 +81,8 @@ from .evidence import (
     Support,
     check_result,
     citation_problems,
+    coverage_items,
+    coverage_states,
     support_level,
     uncited_sentences,
 )
@@ -96,6 +98,8 @@ from .prompts import prompt_fingerprint
 from .rate_limit import RATE_LIMIT_POLICY_VERSION, ScoutRateLimitModel
 from .schemas import (
     EVIDENCE_VERSION,
+    CoverageItem,
+    CoverageState,
     Depth,
     FinalReport,
     GapAnalysis,
@@ -127,13 +131,17 @@ from .web import WebAcquisition, WebSearch
 # v5: evidence v6. A quote counts as verified only in its cited source's text, and one found only in
 # another source's text is misattributed; the synthesizer is told so. Status now says only whether the
 # run did its work, and `answer_support` how well its answer is backed.
-WORKFLOW_VERSION = "scout-v5"
-FOLLOWUP_VERSION = "scout-followup-v5"
-RESCOUT_VERSION = "scout-research-v5"
+# v6: coverage items. The planner lists what a sufficient answer must address; scouts say which items
+# their claims cover and name the members they could not establish as open items; the gap analysis
+# targets open items; and the synthesizer addresses each item or says it was not established.
+WORKFLOW_VERSION = "scout-v6"
+FOLLOWUP_VERSION = "scout-followup-v6"
+RESCOUT_VERSION = "scout-research-v6"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
-SYNTHESIS_VERSION = "scout-synthesis-v3"
+# v4: it addresses coverage items.
+SYNTHESIS_VERSION = "scout-synthesis-v4"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4)))
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5)))
 # Whether the run did its work: `complete` when the report was written and every step ran to its end,
 # `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
 # Whether the answer is backed is `RunChecks.answer_support`.
@@ -198,6 +206,8 @@ class RunChecks(BaseModel):
     # Sentences of the answer, and those with no inline [sN] citation: a diagnostic, since some are framing.
     sentences: int = 0
     uncited_sentences: int = 0
+    # Each coverage item the plan set or research named, and where it stands (evidence.coverage_states).
+    coverage: list[CoverageState] = Field(default_factory=list)
     review_reasons: list[str] = Field(default_factory=list)
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
@@ -487,7 +497,8 @@ class _Run:
 
     async def _scout(self, attempt: _Attempt, semaphore: asyncio.Semaphore, share: Decimal,
                      toolset: TimedToolset, deadline: float, *, gap: str | None = None,
-                     ledger: EvidenceLedger | None = None) -> ResearchResult:
+                     ledger: EvidenceLedger | None = None,
+                     coverage: Sequence[CoverageItem] = ()) -> ResearchResult:
         limits, question = self.limits, attempt.question
         # The budget note runs off the event loop, so the clock is taken here and only read later.
         clock = asyncio.get_running_loop()
@@ -503,6 +514,8 @@ class _Run:
                             return_within=limits.request_timeout_seconds)
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
                                        "blocked_urls": self.blocked_urls}
+        if coverage:
+            prompt_data["coverage"] = [item.model_dump(mode="json") for item in coverage]
         if deep:
             prompt_data.update({"material_gap": gap, "known_research": ledger.prompt_view() if ledger else {},
                                 "instruction": "Investigate this gap. Cite only sources returned by your own tools."})
@@ -520,7 +533,8 @@ class _Run:
                 return await self._call(
                     role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
                     prompt=prompt, question_id=question.id,
-                    deps=Assignment(question, self.policy), toolsets=[toolset], capabilities=budget.capabilities(),
+                    deps=Assignment(question, self.policy, frozenset(item.id for item in coverage)),
+                    toolsets=[toolset], capabilities=budget.capabilities(),
                     limits=UsageLimits(
                         request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,
                         tool_calls_limit=budget.tool_call_limit),
@@ -545,7 +559,8 @@ class _Run:
         share = Decimal(str(self.limits.followup_scout_usd(len(attempts)) if self.follow_up
                             else self.limits.scout_usd(len(attempts))))
         semaphore = asyncio.Semaphore(self.limits.parallel_scouts)
-        tasks = [asyncio.create_task(self._scout(attempt, semaphore, share, toolset, deadline))
+        tasks = [asyncio.create_task(self._scout(attempt, semaphore, share, toolset, deadline,
+                                                 coverage=_question_coverage(plan, attempt.question)))
                  for attempt in attempts]
         try:
             _, running = await asyncio.wait(tasks, timeout=max(deadline - asyncio.get_running_loop().time(), 0))
@@ -569,6 +584,7 @@ class _Run:
         prompt = json.dumps({"question": self.question, "notes": self.notes_in, "blocked_urls": self.blocked_urls,
                              "plan": plan.model_dump(mode="json"), "research": ledger.prompt_view(),
                              "not_established": _not_established(plan, ledger),
+                             "coverage": _coverage_view(plan, ledger),
                              "max_gaps": self.limits.max_gaps}, ensure_ascii=False)
         try:
             async with asyncio.timeout_at(deadline):
@@ -591,8 +607,11 @@ class _Run:
         attempt = _Attempt(question)
         try:
             async with asyncio.timeout_at(deadline):
+                # A deep dive may address any item still open, the ones research named included.
+                open_items = [item for item, _ in coverage_items(plan, ledger)
+                              if item.kind != "assumption" and item.id in _open_ids(plan, ledger)]
                 result = await self._scout(attempt, asyncio.Semaphore(1), Decimal(str(self.limits.deep_dive_usd)),
-                                           toolset, deadline, gap=gap.reason, ledger=ledger)
+                                           toolset, deadline, gap=gap.reason, ledger=ledger, coverage=open_items)
         except TimeoutError:
             result = _cut_off(question, attempt.messages, "the deep-dive deadline passed")
         if result.cut_off:
@@ -601,7 +620,12 @@ class _Run:
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:
         prompt = json.dumps({"question": self.question, "notes": self.notes_in, "research": ledger.prompt_view(),
-                             "not_established": _not_established(plan, ledger)}, ensure_ascii=False)
+                             "not_established": _not_established(plan, ledger),
+                             **({"coverage": view} if (view := _coverage_view(plan, ledger)) else {}),
+                             **({"assumptions": [item.requirement for item in plan.coverage
+                                                 if item.kind == "assumption"]}
+                                if any(item.kind == "assumption" for item in plan.coverage) else {})},
+                            ensure_ascii=False)
         limits = self.limits
         try:
             async with asyncio.timeout_at(deadline):
@@ -730,6 +754,24 @@ def _error(exc: BaseException) -> dict[str, str]:
     return {"type": type(exc).__name__, "message": str(exc)[:1000]}
 
 
+def _question_coverage(plan: ResearchPlan, question: ResearchQuestion) -> list[CoverageItem]:
+    """The coverage items a scout works toward: those its question names, or every item when it names none."""
+    items = [item for item in plan.coverage if item.kind != "assumption"]
+    named = [item for item in items if item.id in question.covers]
+    return named or items
+
+
+def _open_ids(plan: ResearchPlan, ledger: EvidenceLedger) -> set[str]:
+    return {state.id for state in coverage_states(plan, ledger) if state.status == "open"}
+
+
+def _coverage_view(plan: ResearchPlan, ledger: EvidenceLedger) -> list[dict[str, Any]]:
+    """Coverage items as a prompt shows them: what each requires, whether research covered it, and which
+    claims do."""
+    return [state.model_dump(mode="json", include={"id", "requirement", "status", "claim_ids"})
+            for state in coverage_states(plan, ledger)]
+
+
 def _not_established(plan: ResearchPlan, ledger: EvidenceLedger) -> list[str]:
     answered = ledger.question_ids_with_claims()
     reasons = {result.question_id: result.cut_off for result in ledger.all() if result.cut_off}
@@ -754,6 +796,7 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
     )
     if report is not None:
         checks.sentences, checks.uncited_sentences = uncited_sentences(report.answer)
+    checks.coverage = coverage_states(plan, ledger, report)
     for item in evidence:
         key = item.source_access or "not_returned"
         checks.evidence_by_access[key] = checks.evidence_by_access.get(key, 0) + 1
@@ -770,6 +813,13 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
     if checks.not_established:
         reasons.append(f"{len(checks.not_established)} of {len(plan.questions)} research questions returned no evidence")
     reasons += [f"citation problem: {problem}" for problem in checks.citation_problems]
+    if open_items := [state for state in checks.coverage if state.status == "open"]:
+        reasons.append(f"{len(open_items)} of {len(checks.coverage)} coverage items were not established by the "
+                       "research: " + "; ".join(state.requirement for state in open_items[:8])
+                       + ("; ..." if len(open_items) > 8 else ""))
+    if missing := [state for state in checks.coverage if state.in_report == "missing"]:
+        reasons.append(f"the report neither addresses nor lists as not established {len(missing)} coverage items: "
+                       + ", ".join(state.id for state in missing))
     if checks.quotes_misattributed:
         reasons.append(f"{checks.quotes_misattributed} of {checks.quotes} quotes appear only in another source "
                        "than the one cited")
@@ -793,14 +843,16 @@ def _status(ledger: EvidenceLedger, report: FinalReport | None, *, synthesized: 
 
 def _answer_support(report: FinalReport | None, checks: RunChecks) -> AnswerSupport | None:
     """How well the report's statements are backed: `unsupported` when a statement rests on no evidence or
-    cites a claim that does not exist, `weak` when a statement rests only on thin evidence or a question or
-    follow-up gap was left open, else `supported`. None without a report."""
+    cites a claim that does not exist, `weak` when a statement rests only on thin evidence, a question or
+    follow-up gap was left open, or a coverage item is not addressed with cited claims, else `supported`.
+    None without a report."""
     if report is None:
         return None
     support = [statement.support for statement in checks.statements]
     if not support or "unsupported" in support or checks.citation_problems:
         return "unsupported"
-    if "shallow" in support or checks.not_established or checks.follow_up_unresolved:
+    if ("shallow" in support or checks.not_established or checks.follow_up_unresolved
+            or any(state.in_report != "cited" for state in checks.coverage)):
         return "weak"
     return "supported"
 
@@ -842,6 +894,21 @@ def _rerun(source: dict[str, Any], settings: Settings, store: RunStore, study: S
     runner.workflow_version = workflow_version
     runner.config = runner._config()
     return runner
+
+
+def _plan_identity(plan: ResearchPlan) -> dict[str, Any]:
+    """The plan as rescouts hash it. Fields added since v1 are left out while they hold their defaults
+    (a standard depth, no coverage items), so a plan hashes as it did before they existed and rescouts
+    of one stored plan pair across versions."""
+    data = plan.model_dump(mode="json")
+    if plan.depth == "standard":
+        del data["depth"]
+    if not plan.coverage:
+        del data["coverage"]
+    for question in data["questions"]:
+        if not question["covers"]:
+            del question["covers"]
+    return data
 
 
 def _digest(value: Any) -> str:
@@ -895,9 +962,7 @@ async def rescout_stored(source: dict[str, Any], *, settings: Settings, store: R
     runner = _rerun(source, settings, store, study, budget, RESCOUT_VERSION)
     plan = runner.plan
     assert plan is not None
-    # A standard plan hashes without its depth, as plans did before depths existed, so rescouts of one
-    # stored plan pair across versions.
-    plan_sha = _digest(plan.model_dump(mode="json", exclude={"depth"} if plan.depth == "standard" else None))
+    plan_sha = _digest(_plan_identity(plan))
     runner.config["fixed_plan"] = {"source_run_id": str(source["id"]), "plan_sha256": plan_sha,
                                    "source_prompt_fingerprint": (source.get("config") or {}).get("prompt_fingerprint")}
 

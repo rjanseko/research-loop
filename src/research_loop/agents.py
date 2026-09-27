@@ -37,6 +37,8 @@ class Assignment:
 
     question: ResearchQuestion
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
+    # The coverage items a claim may say it addresses.
+    coverage_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,11 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
         problems.append("The plan has no research questions; return at least one.")
     if repeated := sorted({question_id for question_id in ids if ids.count(question_id) > 1}):
         problems.append(f"Question IDs must be unique; repeated: {', '.join(repeated)}.")
+    item_ids = [item.id for item in output.coverage]
+    if repeated := sorted({item_id for item_id in item_ids if item_ids.count(item_id) > 1}):
+        problems.append(f"Coverage item IDs must be unique; repeated: {', '.join(repeated)}.")
+    if unknown := sorted({item for q in output.questions for item in q.covers} - set(item_ids)):
+        problems.append(f"Questions name coverage items that do not exist: {', '.join(unknown)}.")
     depth = ctx.deps.depth or output.depth
     if len(ids) > (cap := ctx.deps.max_questions[depth]):
         problems.append(f"The plan has {len(ids)} questions; a {depth} plan has at most {cap}, "
@@ -104,7 +111,11 @@ def _result_fits_assignment(ctx: RunContext[Assignment], output: ResearchResult)
         _retry_on([(f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
                     "them, or support the claim from other sources.")])
     question = ctx.deps.question
-    return output.model_copy(update={"question_id": question.id, "question": question.question})
+    # A claim's unknown coverage IDs are dropped, not retried: a retry would redo the whole research call.
+    known = ctx.deps.coverage_ids
+    claims = [claim.model_copy(update={"covers": [item for item in claim.covers if item in known]})
+              for claim in output.claims]
+    return output.model_copy(update={"question_id": question.id, "question": question.question, "claims": claims})
 
 
 # Added to a report whose inline citations named sources that none of its listed claims rest on.

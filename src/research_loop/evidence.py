@@ -34,8 +34,11 @@ from .schemas import (
     ACCESS_ORDER,
     Access,
     Claim,
+    CoverageItem,
+    CoverageState,
     Evidence,
     FinalReport,
+    ResearchPlan,
     ResearchResult,
     SourceRef,
 )
@@ -395,6 +398,48 @@ def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> st
 
 # A sentence ends at . ! or ? before a capital, digit, or quote; not before "[", so a citation placed
 # after the full stop stays with its sentence.
+def _normal(text: str) -> str:
+    return " ".join(_NON_WORD.sub(" ", unicodedata.normalize("NFKC", text).casefold()).split())
+
+
+def coverage_items(plan: ResearchPlan, ledger: EvidenceLedger) -> list[tuple[CoverageItem, str]]:
+    """The plan's coverage items, then the open items research named, each once and in ledger order with
+    IDs d1, d2, ..., paired with where each came from ("plan", or the question that named it)."""
+    items: list[tuple[CoverageItem, str]] = [(item, "plan") for item in plan.coverage]
+    seen = {_normal(item.requirement) for item in plan.coverage}
+    for result in ledger.all():
+        for name in result.open_items:
+            if (key := _normal(name)) and key not in seen:
+                seen.add(key)
+                found = sum(origin != "plan" for _, origin in items) + 1
+                items.append((CoverageItem(id=f"d{found}", requirement=name, kind="category"), result.question_id))
+    return items
+
+
+def coverage_states(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | None = None) -> list[CoverageState]:
+    """Every coverage item that research can address, covered when some claim says it addresses it; with a
+    report, also whether the report cites a covering claim or says the item was not established.
+    Assumptions are how the planner read the question, not something to establish, so they are left out."""
+    by_item: dict[str, list[str]] = {}
+    for claim_id, claim in ledger.claims_by_id().items():
+        for item_id in claim.covers:
+            by_item.setdefault(item_id, []).append(claim_id)
+    cited = set(report.claim_ids_used) if report else set()
+    listed = set(report.not_established) if report else set()
+    states = []
+    for item, origin in coverage_items(plan, ledger):
+        if item.kind == "assumption":
+            continue
+        claim_ids = by_item.get(item.id, [])
+        in_report = None
+        if report is not None:
+            in_report = ("cited" if cited & set(claim_ids) else "not_established" if item.id in listed else "missing")
+        states.append(CoverageState(id=item.id, requirement=item.requirement, kind=item.kind, origin=origin,
+                                    status="covered" if claim_ids else "open", claim_ids=claim_ids,
+                                    in_report=in_report))
+    return states
+
+
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
 
 
