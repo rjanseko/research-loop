@@ -354,7 +354,11 @@ class FuzzModel(FunctionModel):
         rng = self._rng(messages, info)
         role = self._role(info)
         if rng.random() < self.fault_rate:
-            fault = rng.choice(["429", "429_retry", "500", "refusal", "text", "huge", "slow"])
+            fault = rng.choice(["429", "429_retry", "500", "refusal", "text", "huge", "slow", "unexpected"])
+            if fault == "unexpected" and role == "scout":
+                # An error no handler expects, as the UnicodeEncodeError from a PDF was: one scout's bug
+                # must cut off only its question.
+                raise KeyError("fuzz: an unexpected error inside a scout")
             if fault == "429":
                 raise ModelHTTPError(429, PRICED_AS[1])
             if fault == "429_retry":
@@ -501,9 +505,13 @@ class FuzzModel(FunctionModel):
     def _verdicts(self, prompt: dict[str, Any], messages: list[ModelMessage], rng: random.Random) -> dict[str, Any]:
         rubric = prompt.get("rubric") or {}
         verdicts = [{"category": category, "point": point["point"], "met": rng.random() < 0.5}
-                    for category, points in rubric.items() for point in points if rng.random() > 0.05]
-        if rng.random() < 0.1:
-            verdicts.append({"category": "invented", "point": 99, "met": True})
+                    for category, points in rubric.items() for point in points]
+        if verdicts and rng.random() < 0.2:
+            # One missing or one invented verdict, which the judge's validator must send back.
+            if rng.random() < 0.5:
+                verdicts.pop(rng.randrange(len(verdicts)))
+            else:
+                verdicts.append({"category": "invented", "point": 99, "met": True})
         return {"verdicts": verdicts}
 
 
@@ -557,9 +565,13 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
     """Every invariant a finished run's stored record and calls break; empty when it keeps them all."""
     from .evidence import (
         EvidenceLedger,
+        _key,
+        _normal,
+        _segments,
         check_result,
         coverage_items,
         inline_source_ids,
+        source_identity,
     )
     from .render import render_markdown
     from .schemas import FinalReport, ResearchPlan, ResearchResult
@@ -610,8 +622,9 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         for result in ledger.all():
             if planned.get(result.question_id) == result.question:
                 first_round.add(result)
-        before = {item.id: item.requirement for item, _ in coverage_items(plan, first_round)}
-        after = {item.id: item.requirement for item in (i for i, _ in items)}
+        # Compared as normalized names: "ICSD" and "icsd " are one item, whichever spelling came first.
+        before = {item.id: _normal(item.requirement) for item, _ in coverage_items(plan, first_round)}
+        after = {item.id: _normal(item.requirement) for item in (i for i, _ in items)}
         if moved := sorted(i for i, requirement in before.items() if after.get(i) != requirement):
             problems.append(f"open-item IDs changed meaning after follow-up research: {moved}")
         known = set(item_ids)
@@ -628,7 +641,14 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         if stray and not any("inline citations" in p for p in checks.get("citation_problems") or []):
             problems.append(f"stray inline citations {sorted(stray)} survived without a citation problem")
 
-    # Evidence checks recompute from the calls' messages.
+    # Every message a call exchanged must be sendable as UTF-8; a PDF's lone surrogate once failed a request.
+    for call in calls:
+        try:
+            json.dumps(call.get("messages") or [], ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            problems.append(f"call {call.get('role')} {call.get('question_id')} exchanged text that is not valid UTF-8")
+    # Evidence checks recompute from the calls' messages, and a verified quote is in its cited source's
+    # text: an independent check, since recomputing with the same code cannot catch a wrong rule.
     for call in calls:
         if call.get("role") not in ("scout", "deep_dive") or call.get("status") != "succeeded" or not call.get("output"):
             continue
@@ -638,6 +658,14 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         except Exception as exc:  # noqa: BLE001
             problems.append(f"call messages do not load: {type(exc).__name__}")
             continue
+        for claim in stored.claims:
+            for item in claim.evidence:
+                if item.quote_check != "verified":
+                    continue
+                keys = source_identity(item.source)
+                segments = _segments(item.quote or "")
+                if not any(all(s in _key(t.text) for s in segments) for t in texts if t.keys & keys):
+                    problems.append(f"a verified quote in {call.get('question_id')} is not in its cited source's text")
         again_checked = check_result(stored, texts)
         for before_claim, after_claim in zip(stored.claims, again_checked.claims, strict=True):
             for a, b in zip(before_claim.evidence, after_claim.evidence, strict=True):
@@ -665,6 +693,12 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         if status in ("complete", "partial", "failed") and expected != status:
             problems.append(f"status {status} recomputes as {expected}")
 
+    # A run whose hard cap is far above its cost should not see every call refused by the budget guard;
+    # that meant the guard could not price the model (found by a dry study).
+    refused = [c for c in calls if "study budget refused" in str(c.get("stop_reason") or "")]
+    cap = Decimal(str(((record.get("config") or {}).get("study_budget") or {}).get("cap_usd") or 0))
+    if calls and len(refused) == len(calls) and cap >= Decimal(1):
+        problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
     # Money: the run's cost is its calls' costs.
     costs = [Decimal(str(c["cost_usd"])) for c in calls if c.get("cost_usd") is not None]
     if (record.get("cost_usd") is not None and costs
@@ -672,7 +706,8 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         problems.append(f"run cost {record['cost_usd']} is not its calls' {sum(costs)}")
     try:
         markdown = render_markdown(record)
-        if str(status) not in markdown.split("\n", 6)[4]:
+        status_line = next((line for line in markdown.splitlines() if line.startswith("Scout run `")), "")
+        if str(status) not in status_line:
             problems.append("the rendered status line does not show the status")
     except Exception as exc:  # noqa: BLE001
         problems.append(f"rendering failed: {type(exc).__name__}: {exc}")

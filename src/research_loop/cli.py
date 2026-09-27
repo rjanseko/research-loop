@@ -200,20 +200,34 @@ async def _fuzz(args: argparse.Namespace) -> int:
     return 1 if findings else 0
 
 
-def _study(args: argparse.Namespace) -> int:
+def _study(args: argparse.Namespace, settings: Settings) -> int:
     from pydantic import ValidationError
 
-    from .study import REPO, StudyCeilingError, load_spec, run_study, schedule, summary
+    from .study import (
+        REPO,
+        StudyCeilingError,
+        dry_database_url,
+        for_mode,
+        load_spec,
+        run_study,
+        schedule,
+        summary,
+    )
 
     try:
         spec = load_spec(args.spec)
     except (OSError, ValueError, ValidationError) as exc:
         print(f"Cannot read {args.spec}: {exc}", file=sys.stderr)
         return 2
+    mode = "dry" if args.dry else "cheap" if args.cheap else "real"
+    spec = for_mode(spec, mode, args.seeds)
+    if mode == "dry":
+        print(f"Dry study: fake models, the offline world, database {dry_database_url(settings.database_dsn or '')}; "
+              "nothing is paid and nothing reaches the network.", file=sys.stderr)
     planned = schedule(spec)
     print(f"Study {spec.study}: {len(planned)} {spec.kind} runs over {len(spec.arms)} arms, "
           f"worst case ${spec.worst_case_usd():.2f} by the estimates, ceiling ${spec.ceiling_usd:.2f}"
-          + ("; this is a paid study." if args.study_command == "run" else "."), file=sys.stderr)
+          + ("; this is a paid study." if args.study_command == "run" and mode != "dry" else "."), file=sys.stderr)
     if args.study_command == "plan":
         for run in planned:
             print(f"{run.label}: {run.target} {run.arm.name} replicate {run.replicate}"
@@ -221,7 +235,7 @@ def _study(args: argparse.Namespace) -> int:
         return 0 if spec.worst_case_usd() <= spec.ceiling_usd else 2
     out = args.out or REPO / "runs" / spec.study
     try:
-        outcomes = run_study(spec, out)
+        outcomes = run_study(spec, out, mode=mode, dsn=settings.database_dsn)
     except StudyCeilingError as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
@@ -230,6 +244,9 @@ def _study(args: argparse.Namespace) -> int:
     (out / "summary.md").write_text(table, encoding="utf-8")
     print(table)
     print(f"Wrote {out / 'summary.md'}", file=sys.stderr)
+    if mode != "real":
+        # Fuzzed runs fail on purpose; only broken invariants mark a dry or cheap study as failed.
+        return 1 if any(o.violations for o in outcomes) else 0
     return 1 if any(o.exit_code not in (0, -1) for o in outcomes) else 0
 
 
@@ -389,6 +406,8 @@ def _db(args: argparse.Namespace, settings: Settings, parser: argparse.ArgumentP
 
 
 def main(argv: list[str] | None = None) -> None:
+    from .db import MigrationsPending
+
     parser = argparse.ArgumentParser(prog="research", description="Cited answers to research questions")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -450,6 +469,12 @@ def main(argv: list[str] | None = None) -> None:
                        help="run: execute the spec; plan: list its runs and worst case without running any")
     study.add_argument("spec", type=Path)
     study.add_argument("--out", type=Path, help="Where each run's report and the summary go; default runs/STUDY")
+    how = study.add_mutually_exclusive_group()
+    how.add_argument("--dry", action="store_true",
+                     help="Free: fake models, the offline world, and the dry database, checked against the invariants")
+    how.add_argument("--cheap", action="store_true",
+                     help="Cents: every role on a cheap real model, one replicate, checked against the invariants")
+    study.add_argument("--seeds", type=int, default=1, help="--dry: replicates of every arm, each a new seed")
 
     fuzz = commands.add_parser("fuzz", help="Hunt bugs with seeded fake models and an offline world (free)")
     fuzz.add_argument("--runs", type=int, default=100, help="How many seeded runs")
@@ -503,7 +528,7 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "fuzz":
             code = asyncio.run(_fuzz(args))
         elif args.command == "study":
-            code = _study(args)
+            code = _study(args, settings)
         elif args.command == "doctor":
             from .doctor import run_doctor
             code = asyncio.run(run_doctor(settings, smoke=args.smoke))
@@ -512,6 +537,10 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print("Interrupted; the run is recorded as cancelled.", file=sys.stderr)
         code = 130
+    except MigrationsPending as exc:
+        # Found by a dry study: a database behind on migrations ended every command in a traceback.
+        print(f"Cannot run: {exc}.", file=sys.stderr)
+        code = 2
     sys.exit(code)
 
 

@@ -407,7 +407,8 @@ def _open_item_id(key: str, taken: set[str]) -> str:
     """An open item's ID from its normalized name: `o` and the name's hash, lengthened past any ID in use,
     so the same item keeps its ID however much research arrives later and in whatever order."""
     digest = hashlib.sha256(key.encode()).hexdigest()
-    for length in range(4, len(digest) + 1):
+    # Six hex digits make two items sharing a prefix, whose IDs would then depend on order, about 1 in 16 million.
+    for length in range(6, len(digest) + 1):
         if (candidate := f"o{digest[:length]}") not in taken:
             return candidate
     raise AssertionError("unreachable: a full SHA-256 digest collided")

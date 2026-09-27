@@ -71,7 +71,7 @@ def test_a_study_over_its_ceiling_is_refused_before_any_run(spec: StudySpec, tmp
     calls: list[list[str]] = []
     over = spec.model_copy(update={"ceiling_usd": 1.00})  # 4 runs x ($0.40 + $0.05) = $1.80
     with pytest.raises(ValueError, match="over the \\$1.00 ceiling"):
-        run_study(over, tmp_path, invoke=lambda args, env: calls.append(args) or 0, worktrees=_no_worktrees)
+        run_study(over, tmp_path, invoke=lambda args, env: (calls.append(args) or 0, ""), worktrees=_no_worktrees)
     assert not calls
 
 
@@ -83,7 +83,7 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
         out = Path(args[args.index("--out") + 1])
         out.mkdir(parents=True)
         (out / "run.json").write_text(json.dumps(_record(f"{len(calls):08d}-run", 0.30)))
-        return 0
+        return 0, ""
 
     graded: list[str] = []
 
@@ -109,7 +109,7 @@ def test_the_ceiling_stops_runs_once_actual_spend_nears_it(spec: StudySpec, tmp_
         out = Path(args[args.index("--out") + 1])
         out.mkdir(parents=True)
         (out / "run.json").write_text(json.dumps(_record("run", 0.90)))  # far above the $0.40 estimate
-        return 0
+        return 0, ""
 
     outcomes = run_study(spec, tmp_path, invoke=expensive, grade=lambda *a: None, worktrees=_no_worktrees)
     assert [o.exit_code for o in outcomes] == [0, 0, -1, -1]

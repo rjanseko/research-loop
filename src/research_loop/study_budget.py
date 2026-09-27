@@ -60,6 +60,13 @@ def upper_input_tokens(messages: list[ModelMessage], parameters: ModelRequestPar
     return (len(ModelMessagesTypeAdapter.dump_json(messages)) + extra) * _BYTE_FACTOR + _FIXED_INPUT_TOKENS
 
 
+def _priced(model_id: str) -> tuple[str, str]:
+    """The provider and model a call is priced as. The harness's `fake:` models are priced as Luna
+    (dryrun.PRICED_AS), as `prices.price_per_million` prices them, so a dry run's guard really reserves."""
+    provider, _, name = model_id.partition(":")
+    return ("openai", "gpt-6-luna") if provider == "fake" else (provider, name)
+
+
 class StudyBudgetRefusal(RuntimeError):
     """A study request was not sent because its conservative reservation exceeds the cap."""
 
@@ -78,7 +85,7 @@ class StudyBudget:
         if not isinstance(max_output, int) or max_output <= 0:
             raise StudyBudgetRefusal("study requests need an explicit positive max_tokens")
         install_price_overrides()
-        provider, _, name = model_id.partition(":")
+        provider, name = _priced(model_id)
         try:
             input_rates = [calc_price(RequestUsage(input_tokens=n), name, provider_id=provider).total_price
                            * Decimal(1_000_000) / n for n in (100_000, 1_000_000)]
@@ -104,7 +111,7 @@ class StudyBudget:
 
     def settle(self, model_id: str, charge: Decimal, usage: RequestUsage) -> None:
         """Replace a returned request's reservation with its actual charge, if it can be priced."""
-        provider, _, name = model_id.partition(":")
+        provider, name = _priced(model_id)
         try:
             actual = calc_price(usage, name, provider_id=provider).total_price
         except LookupError:
