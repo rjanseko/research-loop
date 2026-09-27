@@ -160,6 +160,42 @@ def labeled_texts(messages: Iterable[ModelMessage]) -> list[ToolText]:
     return texts
 
 
+# Author lists are cut here: a record's first authors identify it, and some papers list hundreds.
+_RECORD_AUTHORS = 8
+
+
+def source_records(messages: Iterable[ModelMessage]) -> list[tuple[frozenset[str], dict[str, Any]]]:
+    """What the research tools themselves returned about each source, keyed like `labeled_texts`: a search
+    result's title and address, a fetched page's address, and a scholarly record's title, authors, date,
+    venue, and identifiers. None of it is written by a model, so an audit may treat it as the source's record."""
+    records: list[tuple[frozenset[str], dict[str, Any]]] = []
+    for part in _returns(messages):
+        data = _data(part.content)
+        if not isinstance(data, dict):
+            continue
+        if part.tool_name == WEB_SEARCH:
+            for item in data.get("results") or []:
+                records.append((identity_keys(url=item.get("url")), {"title": item.get("title"), "url": item.get("url")}))
+        elif part.tool_name == FETCH and data.get("text"):
+            keys = identity_keys(url=data.get("url"))
+            if not data.get("start"):
+                keys |= printed_dois(data["text"])
+            records.append((keys, {"url": data.get("url")}))
+        else:
+            for work in data.get("works") or []:
+                keys = identity_keys(url=work.get("url"), doi=work.get("doi"), arxiv_id=work.get("arxiv_id"))
+                if work.get("openalex_id"):
+                    keys |= identity_keys(url=work["openalex_id"])
+                authors = list(work.get("authors") or [])
+                record = {"title": work.get("title"), "url": work.get("url"), "doi": work.get("doi"),
+                          "arxiv_id": work.get("arxiv_id"), "published_at": work.get("published_at"),
+                          "venue": work.get("venue"), "publication_status": work.get("publication_status"),
+                          "authors": authors[:_RECORD_AUTHORS] + (["et al."] if len(authors) > _RECORD_AUTHORS else [])}
+                records.append((keys, record))
+    return [(keys, {name: value for name, value in record.items() if value not in (None, "", [], "unknown")})
+            for keys, record in records]
+
+
 def productive(tool_name: str, content: Any) -> bool | None:
     """Whether a research tool's return found something: a search with results, a fetch with text, a
     scholarly call with works. None for other tools, such as the output tool."""

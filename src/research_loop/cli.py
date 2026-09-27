@@ -334,6 +334,7 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
 
 async def _audit(args: argparse.Namespace, settings: Settings) -> int:
     from pydantic import ValidationError
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
 
     from .audit import AUDIT_VERSION, audit, audit_row
     from .config import ScoutModels, split_model
@@ -341,8 +342,9 @@ async def _audit(args: argparse.Namespace, settings: Settings) -> int:
     from .evidence import EvidenceLedger
     from .prices import price_per_million
     from .schemas import FinalReport
-    from .store import load_run, save_support_audit
+    from .store import load_research_messages, load_run, save_support_audit
     from .study_budget import StudyBudget
+    from .tools import source_records
 
     try:
         settings = settings.model_copy(update={"models": ScoutModels.model_validate(
@@ -369,8 +371,11 @@ async def _audit(args: argparse.Namespace, settings: Settings) -> int:
                 print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
                 code = 1
                 continue
+            # What the run's tools returned about its sources, so the auditor can check details that identify them.
+            records = [record for messages in await load_research_messages(pool, run_id)
+                       for record in source_records(ModelMessagesTypeAdapter.validate_python(messages))]
             record = await audit(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}),
-                                 row["question"], run_id, settings, budget=budget,
+                                 row["question"], run_id, settings, budget=budget, records=records,
                                  evidence_version=(row.get("config") or {}).get("evidence_version"))
             await save_support_audit(pool, audit_row(record))
             cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "$0"
