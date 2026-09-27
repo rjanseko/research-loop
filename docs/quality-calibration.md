@@ -193,4 +193,21 @@ Two study specs check scout-v9: `studies/v9-short-check.toml` (st04 and st05, tw
 | v9-short-check-cheap (st04) | `3f5ed912` | complete, weak | 1 / 0 / 1 | 1 / 0 / 1 | $0.0062 |
 | v9-st07-check-cheap (st07) | `f7c7e94e` | complete, supported | 14 / 0 / 0 | 6 / 0 / 0 | $0.0115 |
 
-Together they cost $0.018 and showed no invariant violations. OpenAI's two SWE-bench Verified pages refused the fetcher with 403. The paid runs of both specs have not been made yet.
+Together they cost $0.018 and showed no invariant violations. OpenAI's two SWE-bench Verified pages refused the fetcher with 403. 
+The paid runs followed on the same day, with the default models and grading by the version-2 judge. They cost $0.55 in total, grades included, with no tracebacks or invariant violations.
+
+| Case | Run | Status, answer | Rubric | Quotes verified / misattributed / not found (short) | Statements quoted / summary only / thin | Cost | Time | scout-v1 Luna for comparison |
+|---|---|---|---|---|---|---|---|---|
+| st04 r1 | `f94412fc` | complete, supported | 4/4 | 2 / 0 / 0 | 2 / 0 / 0 | $0.045 | 65 s | 4/4, $0.029, 56 s |
+| st04 r2 | `804ab265` | complete, weak | 4/4 | 3 / 0 / 0 | 2 / 0 / 0 | $0.050 | 70 s | |
+| st05 r1 | `72131d69` | complete, supported | 11/11 | 11 / 0 / 0 | 9 / 0 / 0 | $0.109 | 254 s | 11/11, $0.078, 80 s |
+| st05 r2 | `61cc0645` | complete, supported | 10/11 | 14 / 0 / 1 | 9 / 0 / 0 | $0.121 | 191 s | |
+| st07 r1 | `7a7fc5b5` | partial, weak | 2/9 | 31 / 0 / 3 (1) | 12 / 0 / 0 | $0.218 | 349 s | 2/9 partial, $0.154, 130 s |
+
+The short cases did not regress on their rubrics. The one lost point is st05's Chinchilla item. The rubric wants the report to say that the paper gives no context length; the report said this could not be established, because the scout's quote for the absence was not found in the source. That is a cautious answer, not a wrong one. st04 replicate 2 is `weak` only because the planner listed three video subtasks as coverage items that research did not establish.
+
+No report statement in the five runs rests on a summary alone: all 34 carry a verified quote, against 11 of 30 summary-only statements in the v6 deep run. That is what the scout-v9 prompt asked for. Whether each quote supports its claim is still unchecked.
+
+The short cases now cost 50 to 70 percent more and take longer than under scout-v1: st05 took 191 to 254 seconds against 80. That follows from the scout-v3 budgets rather than from quoting, but it is a real cost to quick questions.
+
+st07 lost the question that decides it. The q2 scout, which researched contamination and flawed tests, read 8 pages in 6 requests, then its next model request failed with `SSLError: SSLV3_ALERT_BAD_RECORD_MAC`, a transient TLS fault. A network error ends a call without a retry, so the question returned nothing, and the report again omits the contamination evidence and the maintainer review, as scout-v1 Luna's did after a 429. Seven DuckDuckGo searches also timed out. The grade therefore measures that loss, not scout-v9.
