@@ -178,6 +178,39 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
                             f"cache {settings.cache_dir} ({settings.cache_mode})"))
 
 
+def _study(args: argparse.Namespace) -> int:
+    from pydantic import ValidationError
+
+    from .study import REPO, load_spec, run_study, schedule, summary
+
+    try:
+        spec = load_spec(args.spec)
+    except (OSError, ValueError, ValidationError) as exc:
+        print(f"Cannot read {args.spec}: {exc}", file=sys.stderr)
+        return 2
+    planned = schedule(spec)
+    print(f"Study {spec.study}: {len(planned)} {spec.kind} runs over {len(spec.arms)} arms, "
+          f"worst case ${spec.worst_case_usd():.2f} by the estimates, ceiling ${spec.ceiling_usd:.2f}"
+          + ("; this is a paid study." if args.study_command == "run" else "."), file=sys.stderr)
+    if args.study_command == "plan":
+        for run in planned:
+            print(f"{run.label}: {run.target} {run.arm.name} replicate {run.replicate}"
+                  + (f" at {run.arm.ref}" if run.arm.ref else ""))
+        return 0 if spec.worst_case_usd() <= spec.ceiling_usd else 2
+    out = args.out or REPO / "runs" / spec.study
+    try:
+        outcomes = run_study(spec, out)
+    except ValueError as exc:
+        print(f"Cannot run: {exc}", file=sys.stderr)
+        return 2
+    table = summary(spec, outcomes)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "summary.md").write_text(table, encoding="utf-8")
+    print(table)
+    print(f"Wrote {out / 'summary.md'}", file=sys.stderr)
+    return 1 if any(o.exit_code not in (0, -1) for o in outcomes) else 0
+
+
 async def _show(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .render import render_markdown
@@ -392,6 +425,12 @@ def main(argv: list[str] | None = None) -> None:
     assess.add_argument("--case", required=True, help="The source packet, such as st04 or st07")
     assess.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
+    study = commands.add_parser("study", help="Run a whole study from a TOML spec and summarize it (paid)")
+    study.add_argument("study_command", choices=("run", "plan"),
+                       help="run: execute the spec; plan: list its runs and worst case without running any")
+    study.add_argument("spec", type=Path)
+    study.add_argument("--out", type=Path, help="Where each run's report and the summary go; default runs/STUDY")
+
     doctor = commands.add_parser("doctor", help="Check keys, prices, the database, and the network")
     doctor.add_argument("--smoke", action="store_true", help="Also make one small paid call per configured model")
 
@@ -414,7 +453,7 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
         if args.max_usd is not None and args.max_usd <= 0:
             parser.error("--max-usd must be positive")
-    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "rescout", "db") and not settings.database_dsn:
+    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "rescout", "db", "study") and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
     if args.command in ("grade", "assess", "synthesize", "rescout") and args.max_usd <= 0:
         parser.error("--max-usd must be positive")
@@ -435,6 +474,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_grade(args, settings))
         elif args.command == "assess":
             code = asyncio.run(_assess(args, settings))
+        elif args.command == "study":
+            code = _study(args)
         elif args.command == "doctor":
             from .doctor import run_doctor
             code = asyncio.run(run_doctor(settings, smoke=args.smoke))
