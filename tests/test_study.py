@@ -128,3 +128,12 @@ def test_the_plan_command_lists_runs_without_running_them(tmp_path: Path, monkey
     captured = capsys.readouterr()
     assert "4 scout runs over 2 arms, worst case $1.80" in captured.err
     assert "drb2-task8-deep-1: drb2-task8 deep replicate 1 at main" in captured.out
+
+
+def test_the_grade_line_is_read_as_research_grade_prints_it() -> None:
+    from research_loop.study import _grade_with
+
+    line = ("drb2-task8: 20 of 52 points (0.385), $0.0403. Unmet: info_recall 3, analysis 2. "
+            "Recorded as 214fb3be-136f-4cd7-89d7-f902ee470660.\n")
+    grade = _grade_with(lambda args, env: (0, line))
+    assert grade("run", "drb2-task8", {}, 1.0) == {"met": 20, "points": 52, "score": 0.385, "cost_usd": 0.0403}

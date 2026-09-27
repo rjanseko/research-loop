@@ -56,7 +56,12 @@ from pydantic import BaseModel, Field, model_validator
 from .coverage import EXPECTED, coverage
 
 REPO = Path(__file__).resolve().parents[2]
-_GRADE_LINE = re.compile(r": (\d+) of (\d+) points \(([\d.]+)\), \$([\d.]+)")
+# `research grade` ends its line with "... (0.385), $0.0403. Unmet: ...", so the cost stops at the digits.
+_GRADE_LINE = re.compile(r": (\d+) of (\d+) points \((\d+\.\d+)\), \$(\d+\.\d+)")
+
+
+class StudyCeilingError(ValueError):
+    """The planned runs could cost more than the study's ceiling."""
 
 
 class Arm(BaseModel):
@@ -206,7 +211,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     """Run every planned run of `spec` in order, stopping before one that could pass the ceiling."""
     grade = grade or _grade_with(_invoke_output)
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
-        raise ValueError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
+        raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
     outcomes: list[Outcome] = []
     spent = 0.0

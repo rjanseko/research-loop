@@ -181,7 +181,7 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
 def _study(args: argparse.Namespace) -> int:
     from pydantic import ValidationError
 
-    from .study import REPO, load_spec, run_study, schedule, summary
+    from .study import REPO, StudyCeilingError, load_spec, run_study, schedule, summary
 
     try:
         spec = load_spec(args.spec)
@@ -200,7 +200,7 @@ def _study(args: argparse.Namespace) -> int:
     out = args.out or REPO / "runs" / spec.study
     try:
         outcomes = run_study(spec, out)
-    except ValueError as exc:
+    except StudyCeilingError as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
     table = summary(spec, outcomes)
