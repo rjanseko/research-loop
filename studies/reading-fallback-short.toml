@@ -1,0 +1,29 @@
+# Our fetcher alone against our fetcher with the reading fallback, on the short cases, where the fallback must not regress.
+# Decision rule, fixed before any paid run (docs/study-log.md, the fetch bake-off and reading-fallback entries).
+# The reading fallback (oa, exa, firecrawl) becomes the default only if, over the three reading-fallback specs:
+# - its runs fail fewer page fetches and read at least as many pages in full;
+# - they lose no st04 or st05 rubric point;
+# - their reports have at least as high a share of "supported" audit verdicts;
+# - they gain 3 or more st07 points, or 5 or more drb2-task8 points, under both judges in both replicates;
+# - the fallback adds no more than $0.10 a run in paid reads.
+# Otherwise the fallback stays off and the result is recorded as undecided or negative.
+study = "reading-fallback-short"
+kind = "scout"
+cases = ["st04-ilsvrc-captioning", "st05-scaling-table"]
+replicates = 2
+cap_usd = 3.00          # each run's hard cap, model calls and paid reads together
+estimate_usd = 0.25     # the most a comparable scout-v9 run cost, plus its failed pages read at Firecrawl's price
+ceiling_usd = 2.80
+grade = true
+grade_estimate_usd = 0.06
+audit = true
+audit_model = "zai:glm-5.3@high"
+audit_estimate_usd = 0.04
+
+[[arms]]
+name = "own"
+env = { RESEARCH_READ_FALLBACK = "" }
+
+[[arms]]
+name = "fallback"
+env = { RESEARCH_READ_FALLBACK = "oa,exa,firecrawl" }

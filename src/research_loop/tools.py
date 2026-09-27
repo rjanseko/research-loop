@@ -216,6 +216,7 @@ class ToolOutcomes:
     searches: list[str] = field(default_factory=list)
     pages_read: list[str] = field(default_factory=list)
     unreached: list[UnreachedSource] = field(default_factory=list)
+    read_via: dict[str, str] = field(default_factory=dict)
     calls: int = 0
     misses: int = 0
 
@@ -248,6 +249,8 @@ def tool_outcomes(messages: Iterable[ModelMessage]) -> ToolOutcomes:
             if data.get("text"):
                 if url not in outcomes.pages_read:
                     outcomes.pages_read.append(url)
+                if data.get("via"):
+                    outcomes.read_via[url] = str(data["via"])
             elif data.get("error"):
                 # `detail` separates a bare ValueError: over the size cap, an empty extraction, or an unread type.
                 reason = (data["error"] + (f" {data['status']}" if data.get("status") else "")

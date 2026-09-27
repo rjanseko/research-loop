@@ -42,7 +42,9 @@ CACHE_VERSION = 1
 # 9: a PDF may be 25 MB rather than the 5 MB of a page: 21 papers the scouts wanted, 5.8 to 19.9 MB, were refused.
 # 10: web search can run on Exa (RESEARCH_SEARCH_ENGINE), each engine with its own cache and rate slot, and
 #     search results from blocked sources are left out.
-FETCH_VERSION = 10
+# 11: a page our fetch cannot read may be read by the reading fallback (RESEARCH_READ_FALLBACK), whose
+#     results say `via` which reader read them and are cached apart from our own.
+FETCH_VERSION = 11
 
 
 def is_pdf(media: str, content: bytes) -> bool:

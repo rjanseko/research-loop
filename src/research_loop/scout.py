@@ -97,6 +97,7 @@ from .models import (
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
 from .rate_limit import RATE_LIMIT_POLICY_VERSION, ScoutRateLimitModel
+from .reading import ExaContentsReader, ExternalSpend, FirecrawlReader, OpenAccessReader
 from .schemas import (
     EVIDENCE_VERSION,
     CoverageItem,
@@ -120,7 +121,7 @@ from .study_budget import (
 )
 from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
-from .web import SearchSpend, WebAcquisition, WebSearch, exa_engine
+from .web import WebAcquisition, WebSearch, exa_engine
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
 # partial set as a gap.
@@ -210,7 +211,9 @@ class RunChecks(BaseModel):
     # Verified quotes with under a quarter of their claim's words (evidence.quote_is_short): a diagnostic.
     quotes_short: int = 0
     # What paid web searches cost, which `cost_usd` includes; None when only free engines were searched.
-    search_usd: Decimal | None = None
+    external_usd: Decimal | None = None
+    # Pages read by the reading fallback after our fetch failed, by the reader that read them.
+    pages_read_via: dict[str, int] = Field(default_factory=dict)
     # Whether the report's statements are backed, apart from whether the run finished (`_answer_support`).
     answer_support: AnswerSupport | None = None
     # Sentences of the answer, and those with no inline [sN] citation: a diagnostic, since some are framing.
@@ -296,6 +299,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
+        "read_fallback": list(settings.read_fallback),
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -378,10 +382,10 @@ class _Run:
         self.ledger = EvidenceLedger()
         self.report: FinalReport | None = None
         # Paid web searches, which the run's cost includes beside its model calls.
-        self.search_spend = SearchSpend()
+        self.external_spend = ExternalSpend()
 
     def _total_cost(self) -> Decimal:
-        return self.cost + self.search_spend.usd
+        return self.cost + self.external_spend.usd
 
     def _model(self, role: Role) -> Model:
         if role not in self.models:
@@ -541,7 +545,8 @@ class _Run:
             messages = result.all_messages()
             outcomes = tool_outcomes(messages)
             return check_result(result.output, labeled_texts(messages)).model_copy(update={
-                "searches": outcomes.searches, "pages_read": outcomes.pages_read, "unreached": outcomes.unreached})
+                "searches": outcomes.searches, "pages_read": outcomes.pages_read, "unreached": outcomes.unreached,
+                "read_via": outcomes.read_via})
 
         async with semaphore:
             try:
@@ -682,12 +687,12 @@ class _Run:
             await _record(self.store.finish_run(
                 self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
                 checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd,
-                                 search_usd=self._search_usd()) if self.budget else None,
+                                 external_usd=self._external_usd()) if self.budget else None,
                 cost_usd=self._total_cost(), error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
                 config=self.config, workflow_version=self.workflow_version))
             raise
         checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
-        checks.search_usd = self._search_usd()
+        checks.external_usd = self._external_usd()
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
         await self.store.finish_run(self.run_id, status=status, plan=self.plan, report=self.report,
                                     ledger=self.ledger.to_json(), checks=checks, cost_usd=self._total_cost(),
@@ -748,9 +753,23 @@ class _Run:
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
 
-    def _search_usd(self) -> Decimal | None:
-        """What paid searches cost, or None when the run searched only free engines."""
-        return self.search_spend.usd if self.search_spend.searches else None
+    def _external_usd(self) -> Decimal | None:
+        """What paid searches and page reads cost, or None when the run used only free services."""
+        spend = self.external_spend
+        return spend.usd if spend.searches or spend.pages else None
+
+    def _readers(self, client: httpx.AsyncClient, extract: Any, exa_key: str | None,
+                 firecrawl_key: str | None) -> list[Any]:
+        """The reading fallback the settings name, in order (reading.py)."""
+        readers: list[Any] = []
+        for name in self.settings.read_fallback:
+            if name == "oa":
+                readers.append(OpenAccessReader(client, extract))
+            elif name == "exa" and exa_key:
+                readers.append(ExaContentsReader(client, exa_key, self.external_spend, self.budget))
+            elif name == "firecrawl" and firecrawl_key:
+                readers.append(FirecrawlReader(client, firecrawl_key, self.external_spend, self.budget))
+        return readers
 
     def _cache_counts(self) -> dict[str, Any]:
         """The run's cache mode and, by provider, the lookups its tools served, missed, and wrote."""
@@ -775,13 +794,16 @@ class _Run:
             if settings.search_engine == "exa":
                 # The world answers Exa's API too, so the paid search path runs with its faults and costs.
                 exa_client = await stack.enter_async_context(world.client())
-                search = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.search_spend, self.budget),
+                search = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.external_spend, self.budget),
                                    name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
             else:
                 search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy)
             pages_client = await stack.enter_async_context(world.client())
             pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
                                    policy=self.policy)
+            # The world answers the open-access, Exa, and Firecrawl APIs too, with their faults.
+            pages.fallbacks = self._readers(await stack.enter_async_context(world.client()), pages._extract,
+                                            "dry-exa-key", "dry-firecrawl-key")
             scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", "off"),
                                     client=await stack.enter_async_context(world.client()))
             self.caches = []
@@ -795,11 +817,18 @@ class _Run:
                 trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
             search = WebSearch(cache=search_cache, name="exa", policy=self.policy,
                                engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
-                                                 self.search_spend, self.budget))
+                                                 self.external_spend, self.budget))
         else:
             search = WebSearch(cache=search_cache, policy=self.policy)
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
+        if settings.read_fallback:
+            reader_client = await stack.enter_async_context(
+                trace_http(httpx.AsyncClient(follow_redirects=True, timeout=60), settings))
+            pages.fallbacks = self._readers(
+                reader_client, pages._extract,
+                settings.exa_api_key.get_secret_value() if settings.exa_api_key else None,
+                settings.firecrawl_api_key.get_secret_value() if settings.firecrawl_api_key else None)
         scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", settings.cache_mode), client=metadata_client,
                                 api_key=settings.openalex_api_key.get_secret_value() if settings.openalex_api_key else None,
                                 contact_email=settings.crossref_mailto)
@@ -858,6 +887,9 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
     for item in evidence:
         key = item.source_access or "not_returned"
         checks.evidence_by_access[key] = checks.evidence_by_access.get(key, 0) + 1
+    for result in ledger.all():
+        for via in result.read_via.values():
+            checks.pages_read_via[via] = checks.pages_read_via.get(via, 0) + 1
     reasons = checks.review_reasons
     if report is None and not claims:
         reasons.append("no research question returned evidence")

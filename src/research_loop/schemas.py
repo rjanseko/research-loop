@@ -182,6 +182,8 @@ class ResearchResult(BaseModel):
     searches: SkipJsonSchema[list[str]] = Field(default_factory=list)
     pages_read: SkipJsonSchema[list[str]] = Field(default_factory=list)
     unreached: SkipJsonSchema[list[UnreachedSource]] = Field(default_factory=list)
+    # Pages another reader read after our fetch failed, and which one (reading.py): {url: via}.
+    read_via: SkipJsonSchema[dict[str, str]] = Field(default_factory=dict)
     # Why the research stopped before returning a result, when it did: a limit, the deadline, or an error.
     cut_off: SkipJsonSchema[str | None] = None
 

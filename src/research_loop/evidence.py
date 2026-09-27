@@ -245,7 +245,7 @@ def quote_is_short(item: Evidence, claim: Claim) -> bool:
 # The ledger
 
 # Research bookkeeping that prompts for synthesis leave out.
-_BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached")
+_BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached", "read_via")
 # Left out of prompts though stored: scouts rated a result 0.93 to 0.97 while writing that it was partial,
 # so the number misleads the gap analysis and synthesis; cut-offs and `unresolved` say more.
 _UNINFORMATIVE_FIELDS = ("confidence",)

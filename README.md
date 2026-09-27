@@ -71,6 +71,7 @@ Settings come from `.env` or the environment, and exported variables override th
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
 | `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free) or `exa` (paid per search, needs the key). See [Web search](#web-search). |
+| `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Off by default. See [Reading fallback](#reading-fallback). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
 
@@ -311,19 +312,17 @@ These are all the outside services the code calls, what it sends them, and what 
 | arXiv | Preprint search and records | Default | None | Free | Search terms and IDs |
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
 | The public web | Reading pages and PDFs | Default | None | Free | Requests to public HTTPS addresses only |
+| Europe PMC | Open-access full text of a paper our fetch could not read | `RESEARCH_READ_FALLBACK` includes `oa` | None | Free | DOIs |
+| Exa | Reading a page from Exa's crawl (`/contents`) | `RESEARCH_READ_FALLBACK` includes `exa` | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
+| Firecrawl | Scraping a page our fetch could not read, with basic proxies only | `RESEARCH_READ_FALLBACK` includes `firecrawl` | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
 | Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` | Your Logfire plan | Prompts, tool results, and timings |
 | Postgres | Run records, grades, assessments, and audits | Local | `DATABASE_URL` | Free | Everything a run records |
 
-Five more services are used only by `scripts/fetch_bakeoff.py`, which measures which of them best reads the pages our fetcher cannot. None is part of a run until a reading fallback is chosen:
-- **Jina Reader**, used without a key;
-- **Exa `/contents`**, at $1 per 1,000 pages, with `EXA_API_KEY`;
-- **Tavily Extract**, with `TAVILY_API_KEY`;
-- **Firecrawl scrape**, with `FIRECRAWL_API_KEY`, using basic proxies only;
-- **Europe PMC**, used to find open-access full text.
+Two more services, Jina Reader and Tavily Extract (`TAVILY_API_KEY`), are used only by `scripts/fetch_bakeoff.py`, which measured which readers best read the pages our fetcher cannot; the bake-off chose the fallback above (see [docs/study-log.md](docs/study-log.md)).
 
 What leaves your machine:
 - **To model providers:** everything a role's prompt contains, which includes text the tools returned.
-- **To search services:** queries.
+- **To search and reading services:** queries, and the addresses of pages our fetch could not read.
 - **To the pages themselves:** a fetch goes straight to the page's address, and the scholarly indexes see the identifiers looked up.
 - **Nothing for blocked sources:** a blocked URL is refused before any request, and blocked sources are dropped from search results.
 - **Not your keys:** traces never capture request headers, and secret query parameters such as OpenAlex's `api_key` are redacted.
@@ -396,10 +395,21 @@ A scout's request that fails on a connection fault that is not a timeout, such a
 
 The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE=exa`. Exa is sent the request its documentation recommends: the query, with `auto` search and highlights. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full.
 
-Each Exa search's reported cost is added to the run's cost, and shown as `search_usd` in its checks and as "web search" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
+Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 > [!NOTE]
 > Exa's uncapped highlights carry about 20 times the text of a DuckDuckGo search, which slows scouts under the rate limit. DuckDuckGo stays the default until a comparison with capped highlights decides otherwise; see [docs/study-log.md](docs/study-log.md).
+
+### Reading fallback
+
+About 38% of the pages scouts tried to read in production runs failed, mostly with 403s, challenge pages, and JavaScript-only pages from the publishers research needs. With `RESEARCH_READ_FALLBACK=oa,exa,firecrawl`, a page our fetch cannot read is tried with each reader in turn:
+- `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID), through Europe PMC's full text or OpenAlex's best open-access location, and reads it with our own fetcher;
+- `exa` reads the page from Exa's crawl;
+- `firecrawl` scrapes it with Firecrawl, using basic proxies only, never stealth or residential proxies.
+
+The fallback runs after a 401, 403, 429, 451, or server error, a timeout or dropped connection, an empty extraction, or a page over the size limit, but not after a 404, which is usually a guessed address. A blocked URL is refused before any reader sees it. Text that is short or looks like a challenge page counts as not found, and the next reader is tried. When one succeeds, the result says `via` which one read it, quotes are checked against its text as usual, and the run counts pages by reader in `pages_read_via`. When every reader fails, the scout is told what was tried. Paid reads are recorded in `external_usd` and reserved under `--max-usd` like paid searches. Pages the fallback read are cached apart from our own, so a study arm without the fallback never gets a page only the fallback could read.
+
+On the 160 pages our fetcher failed on, this chain read 139 and recovered 68 of the 79 quotes scouts had cited from them. It stays off by default until a comparison of whole runs shows it improves reports.
 
 ### The research cache
 
@@ -598,6 +608,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `scout.py` | The workflow: plan and choose a depth, take its budget, scout, check, optionally analyze gaps and dive, synthesize; also fixed-ledger synthesis and fixed-plan rescouts |
 | `agents.py`, `prompts.py` | The planner, scout, gap analyzer, and synthesizer agents, their instructions, and their output checks |
 | `tools.py`, `web.py`, `scholar.py`, `acquisition.py` | The research tools, web search (DuckDuckGo and Exa), page and PDF extraction, the public-HTTPS fetch guard, and the cache |
+| `reading.py` | The reading fallback: open-access copies, Exa's crawl, and Firecrawl, tried in order when our fetch fails |
 | `evidence.py`, `schemas.py` | The evidence ledger, the quote and source checks, the support levels, and the data types |
 | `budget_notes.py` | The scouts' per-request budget notes, tool withdrawal, and tool-batch trimming |
 | `rate_limit.py`, `study_budget.py` | Rate-limit and network retries, pacing, and the hard-cap reservation guard |
