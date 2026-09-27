@@ -5,6 +5,7 @@ An output that fails a check gets one retry that names the problem; a second fai
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
@@ -37,6 +38,8 @@ class Assignment:
 
     question: ResearchQuestion
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
+    # The coverage items a claim may say it addresses.
+    coverage_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,8 @@ class GapRefs:
 
     question_ids: frozenset[str]
     max_gaps: int = 1
+    # The coverage items a gap may target.
+    coverage_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,11 @@ def _plan_is_workable(ctx: RunContext[PlanLimits], output: ResearchPlan) -> Rese
         problems.append("The plan has no research questions; return at least one.")
     if repeated := sorted({question_id for question_id in ids if ids.count(question_id) > 1}):
         problems.append(f"Question IDs must be unique; repeated: {', '.join(repeated)}.")
+    item_ids = [item.id for item in output.coverage]
+    if repeated := sorted({item_id for item_id in item_ids if item_ids.count(item_id) > 1}):
+        problems.append(f"Coverage item IDs must be unique; repeated: {', '.join(repeated)}.")
+    if unknown := sorted({item for q in output.questions for item in q.covers} - set(item_ids)):
+        problems.append(f"Questions name coverage items that do not exist: {', '.join(unknown)}.")
     depth = ctx.deps.depth or output.depth
     if len(ids) > (cap := ctx.deps.max_questions[depth]):
         problems.append(f"The plan has {len(ids)} questions; a {depth} plan has at most {cap}, "
@@ -92,7 +102,10 @@ def _gaps_name_plan_questions(ctx: RunContext[GapRefs], output: GapAnalysis) -> 
         problems.append(f"{len(output.gaps)} gaps were selected; select at most {ctx.deps.max_gaps}, "
                         "keeping those most likely to change the answer.")
     _retry_on(problems)
-    return output
+    # A gap's unknown coverage ID is dropped, not retried; the gap stands without it.
+    return output.model_copy(update={"gaps": [
+        gap if gap.coverage_id in ctx.deps.coverage_ids else gap.model_copy(update={"coverage_id": None})
+        for gap in output.gaps]})
 
 
 @scout_agent.output_validator
@@ -104,7 +117,32 @@ def _result_fits_assignment(ctx: RunContext[Assignment], output: ResearchResult)
         _retry_on([(f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
                     "them, or support the claim from other sources.")])
     question = ctx.deps.question
-    return output.model_copy(update={"question_id": question.id, "question": question.question})
+    # A claim's unknown coverage IDs are dropped, not retried: a retry would redo the whole research call.
+    known = ctx.deps.coverage_ids
+    claims = [claim.model_copy(update={"covers": [item for item in claim.covers if item in known]})
+              for claim in output.claims]
+    return output.model_copy(update={"question_id": question.id, "question": question.question, "claims": claims,
+                                      "open_items": open_item_names(output.open_items)})
+
+
+# An open item names one member or category of a requested set, which later research can pursue. A cheap
+# check's scouts also put caveats and whole sentences there ("No uncovered categories required by the
+# stated early-2024 scope; ..."); each became a coverage item the report then left unaddressed.
+OPEN_ITEM_MAX_CHARS = 60
+OPEN_ITEMS_PER_RESULT = 5
+_SENTENCE_LIKE = re.compile(r"[.;:!?]\s*$|;\s|\.\s+[A-Z]")
+
+
+def open_item_names(items: Iterable[str]) -> list[str]:
+    """The items that are short names, each once, at most `OPEN_ITEMS_PER_RESULT`. Anything longer or
+    shaped like a sentence is dropped rather than retried, since a retry would redo the research call."""
+    names: list[str] = []
+    for item in items:
+        name = " ".join(item.split())
+        if (name and len(name) <= OPEN_ITEM_MAX_CHARS and not _SENTENCE_LIKE.search(name)
+                and name.casefold() not in {n.casefold() for n in names}):
+            names.append(name)
+    return names[:OPEN_ITEMS_PER_RESULT]
 
 
 # Added to a report whose inline citations named sources that none of its listed claims rest on.

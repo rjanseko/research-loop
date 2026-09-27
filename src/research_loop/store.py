@@ -253,3 +253,17 @@ async def save_quality_assessment(pool: Any, row: dict[str, Any]) -> None:
     async with pool.connection() as conn:
         await conn.execute(f"insert into quality_assessments ({', '.join(_QUALITY_COLUMNS)}) "
                            f"values ({', '.join(['%s'] * len(_QUALITY_COLUMNS))})", values)
+
+
+_AUDIT_COLUMNS = ("id", "run_id", "audit_version", "evidence_version", "judge_model", "judge_thinking", "status",
+                  "verdicts", "counts", "usage", "cost_usd", "messages", "error", "budget_cap_usd", "reserved_usd",
+                  "budget_policy")
+_AUDIT_JSON = frozenset({"verdicts", "counts", "usage", "messages", "error"})
+
+
+async def save_support_audit(pool: Any, row: dict[str, Any]) -> None:
+    """Insert one `support_audits` row, as audit.audit_row builds it, a failed audit too."""
+    values = [_json(row[name]) if name in _AUDIT_JSON else row[name] for name in _AUDIT_COLUMNS]
+    async with pool.connection() as conn:
+        await conn.execute(f"insert into support_audits ({', '.join(_AUDIT_COLUMNS)}) "
+                           f"values ({', '.join(['%s'] * len(_AUDIT_COLUMNS))})", values)

@@ -124,7 +124,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
                           study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity,
                           depth=depth)
     stored = "stored" if isinstance(store, PostgresStore) else "not stored (no DATABASE_URL, or --no-persist)"
-    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.2f}, "
+    support = f", answer {run.checks.answer_support}" if run.checks.answer_support else ""
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}{support}, ${run.cost_usd:.2f}, "
                                   f"{run.seconds / 60:.1f} minutes, {stored}.")
 
 
@@ -155,7 +156,8 @@ async def _rerun(args: argparse.Namespace, settings: Settings, *, role: str, ver
         except SourceRunError as exc:
             print(f"Cannot {verb}: {exc}", file=sys.stderr)
             return 2
-    return _report(run, args.out, f"Run {run.run_id}: {run.status}, ${run.cost_usd:.4f}, "
+    support = f", answer {run.checks.answer_support}" if run.checks.answer_support else ""
+    return _report(run, args.out, f"Run {run.run_id}: {run.status}{support}, ${run.cost_usd:.4f}, "
                                   f"{run.seconds / 60:.1f} minutes; source {args.source_run_id}.")
 
 
@@ -174,6 +176,78 @@ async def _rescout(args: argparse.Namespace, settings: Settings) -> int:
                         describe=lambda settings, budget: (
                             f"Fixed-plan research: scouts {args.model}, ${budget.cap_usd:.2f} pre-dispatch cap, "
                             f"cache {settings.cache_dir} ({settings.cache_mode})"))
+
+
+async def _fuzz(args: argparse.Namespace) -> int:
+    import logging
+    import os
+
+    from .dryrun import fuzz, fuzz_one, fuzz_report
+
+    # Fake runs make no network calls and should print nothing but findings.
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+    os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
+    logging.getLogger("logfire").setLevel(logging.ERROR)
+    if args.one is not None:
+        findings = await fuzz_one(args.one, args.fault_rate)
+        for finding in findings:
+            print(f"{finding.kind}:")
+            print("\n".join(f"  {problem}" for problem in finding.problems))
+        print(f"Seed {args.one}: {'no problems' if not findings else f'{len(findings)} findings'}.", file=sys.stderr)
+        return 1 if findings else 0
+    findings = await fuzz(args.runs, args.seed, args.fault_rate)
+    print(fuzz_report(findings, args.runs, args.fault_rate))
+    return 1 if findings else 0
+
+
+def _study(args: argparse.Namespace, settings: Settings) -> int:
+    from pydantic import ValidationError
+
+    from .study import (
+        REPO,
+        StudyCeilingError,
+        dry_database_url,
+        for_mode,
+        load_spec,
+        run_study,
+        schedule,
+        summary,
+    )
+
+    try:
+        spec = load_spec(args.spec)
+    except (OSError, ValueError, ValidationError) as exc:
+        print(f"Cannot read {args.spec}: {exc}", file=sys.stderr)
+        return 2
+    mode = "dry" if args.dry else "cheap" if args.cheap else "real"
+    spec = for_mode(spec, mode, args.seeds)
+    if mode == "dry":
+        print(f"Dry study: fake models, the offline world, database {dry_database_url(settings.database_dsn or '')}; "
+              "nothing is paid and nothing reaches the network.", file=sys.stderr)
+    planned = schedule(spec)
+    print(f"Study {spec.study}: {len(planned)} {spec.kind} runs over {len(spec.arms)} arms, "
+          f"worst case ${spec.worst_case_usd():.2f} by the estimates, ceiling ${spec.ceiling_usd:.2f}"
+          + ("; this is a paid study." if args.study_command == "run" and mode != "dry" else "."), file=sys.stderr)
+    if args.study_command == "plan":
+        for run in planned:
+            print(f"{run.label}: {run.target} {run.arm.name} replicate {run.replicate}"
+                  + (f" at {run.arm.ref}" if run.arm.ref else ""))
+        return 0 if spec.worst_case_usd() <= spec.ceiling_usd else 2
+    out = args.out or REPO / "runs" / spec.study
+    try:
+        outcomes = run_study(spec, out, mode=mode, dsn=settings.database_dsn)
+    except StudyCeilingError as exc:
+        print(f"Cannot run: {exc}", file=sys.stderr)
+        return 2
+    table = summary(spec, outcomes)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "summary.md").write_text(table, encoding="utf-8")
+    print(table)
+    print(f"Wrote {out / 'summary.md'}", file=sys.stderr)
+    if mode != "real":
+        # Fuzzed runs fail on purpose; only broken invariants mark a dry or cheap study as failed.
+        return 1 if any(o.violations for o in outcomes) else 0
+    return 1 if any(o.exit_code not in (0, -1) for o in outcomes) else 0
 
 
 async def _show(args: argparse.Namespace, settings: Settings) -> int:
@@ -210,7 +284,6 @@ async def _breakdown(args: argparse.Namespace, settings: Settings) -> int:
 async def _grade(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evals import (
-        JUDGE_MODEL,
         JUDGE_VERSION,
         StoredReport,
         find_case,
@@ -243,7 +316,7 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
             return 2
         text = reader_text(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}))
         budget = StudyBudget(args.max_usd)
-        print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {JUDGE_MODEL}, "
+        print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {settings.models.judge}, "
               f"judge v{JUDGE_VERSION}, ${budget.cap_usd:.2f} pre-dispatch cap; this is a paid call.", file=sys.stderr)
         _, grades = await grade_reports([StoredReport(case, args.run_id, text)], settings, budget=budget)
         for grade in grades:
@@ -259,11 +332,62 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+async def _audit(args: argparse.Namespace, settings: Settings) -> int:
+    from pydantic import ValidationError
+
+    from .audit import AUDIT_VERSION, audit, audit_row
+    from .config import ScoutModels, split_model
+    from .db import open_migrated_pool
+    from .evidence import EvidenceLedger
+    from .prices import price_per_million
+    from .schemas import FinalReport
+    from .store import load_run, save_support_audit
+    from .study_budget import StudyBudget
+
+    try:
+        settings = settings.model_copy(update={"models": ScoutModels.model_validate(
+            settings.models.model_dump() | {"judge": args.model})})
+    except ValidationError as exc:
+        print(f"Cannot run: {exc.errors()[0]['msg']}", file=sys.stderr)
+        return 2
+    problems = [problem for problem in settings.route_problems() if problem.startswith("judge:")]
+    if price_per_million(split_model(args.model)[0]) is None:
+        problems.append(f"{args.model} has no price, so its cost cannot be capped")
+    if problems:
+        print(f"Cannot run: {'; '.join(problems)}", file=sys.stderr)
+        return 2
+    # One cap across every run audited, so a batch cannot pass it.
+    budget = StudyBudget(args.max_usd)
+    print(f"Auditing {len(args.run_ids)} run(s) with {args.model}, audit v{AUDIT_VERSION}, "
+          f"${budget.cap_usd:.2f} pre-dispatch cap across them; this makes paid calls.", file=sys.stderr)
+    code = 0
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        for run_id in args.run_ids:
+            row = await load_run(pool, run_id)
+            if row is None or not row.get("report"):
+                print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
+                code = 1
+                continue
+            record = await audit(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}),
+                                 row["question"], run_id, settings, budget=budget,
+                                 evidence_version=(row.get("config") or {}).get("evidence_version"))
+            await save_support_audit(pool, audit_row(record))
+            cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "$0"
+            if record.status != "succeeded":
+                print(f"{run_id}: audit failed ({type(record.error).__name__}), {cost}; recorded as {record.id}.",
+                      file=sys.stderr)
+                code = 1
+                continue
+            counts = ", ".join(f"{n} {verdict}" for verdict, n in sorted(record.counts.items()))
+            print(f"{run_id}: {counts}; {cost}. Recorded as {record.id}.")
+    return code
+
+
 async def _assess(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
     from .evidence import EvidenceLedger
     from .quality import (
-        QUALITY_MODEL,
         QUALITY_VERSION,
         StoredQualityReport,
         assess_reports,
@@ -291,7 +415,7 @@ async def _assess(args: argparse.Namespace, settings: Settings) -> int:
         item = StoredQualityReport(args.run_id, FinalReport.model_validate(row["report"]),
                                    EvidenceLedger.from_json(row["ledger"] or {}), packet, row["checks"] or {})
         budget = StudyBudget(args.max_usd)
-        print(f"Assessing {args.run_id} with {QUALITY_MODEL}, evaluator v{QUALITY_VERSION}, "
+        print(f"Assessing {args.run_id} with {settings.models.judge}, evaluator v{QUALITY_VERSION}, "
               f"packet {packet.case_id} v{packet.version}, ${budget.cap_usd:.2f} pre-dispatch cap; "
               f"this is a paid call.", file=sys.stderr)
         _, records = await assess_reports([item], settings, budget=budget)
@@ -334,6 +458,8 @@ def _db(args: argparse.Namespace, settings: Settings, parser: argparse.ArgumentP
 
 
 def main(argv: list[str] | None = None) -> None:
+    from .db import MigrationsPending
+
     parser = argparse.ArgumentParser(prog="research", description="Cited answers to research questions")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -390,6 +516,30 @@ def main(argv: list[str] | None = None) -> None:
     assess.add_argument("--case", required=True, help="The source packet, such as st04 or st07")
     assess.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
+    check = commands.add_parser("audit", help="Judge whether the verified quotes behind stored reports' statements "
+                                "say what the statements say (paid)")
+    check.add_argument("run_ids", type=UUID, nargs="+", metavar="run_id")
+    check.add_argument("--model", required=True, help="The auditor, provider:model@effort, such as zai:glm-5.3@high")
+    check.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap across all the runs")
+
+    study = commands.add_parser("study", help="Run a whole study from a TOML spec and summarize it (paid)")
+    study.add_argument("study_command", choices=("run", "plan"),
+                       help="run: execute the spec; plan: list its runs and worst case without running any")
+    study.add_argument("spec", type=Path)
+    study.add_argument("--out", type=Path, help="Where each run's report and the summary go; default runs/STUDY")
+    how = study.add_mutually_exclusive_group()
+    how.add_argument("--dry", action="store_true",
+                     help="Free: fake models, the offline world, and the dry database, checked against the invariants")
+    how.add_argument("--cheap", action="store_true",
+                     help="Cents: every role on a cheap real model, one replicate, checked against the invariants")
+    study.add_argument("--seeds", type=int, default=1, help="--dry: replicates of every arm, each a new seed")
+
+    fuzz = commands.add_parser("fuzz", help="Hunt bugs with seeded fake models and an offline world (free)")
+    fuzz.add_argument("--runs", type=int, default=100, help="How many seeded runs")
+    fuzz.add_argument("--seed", type=int, default=0, help="Where the seeds start")
+    fuzz.add_argument("--one", type=int, metavar="SEED", help="Reproduce one seed exactly, with its full traceback")
+    fuzz.add_argument("--fault-rate", type=float, default=0.2, help="How often models and the world misbehave")
+
     doctor = commands.add_parser("doctor", help="Check keys, prices, the database, and the network")
     doctor.add_argument("--smoke", action="store_true", help="Also make one small paid call per configured model")
 
@@ -412,9 +562,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
         if args.max_usd is not None and args.max_usd <= 0:
             parser.error("--max-usd must be positive")
-    if args.command in ("show", "breakdown", "grade", "assess", "synthesize", "rescout", "db") and not settings.database_dsn:
+    if args.command in ("show", "breakdown", "grade", "assess", "audit", "synthesize", "rescout", "db", "study") \
+            and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
-    if args.command in ("grade", "assess", "synthesize", "rescout") and args.max_usd <= 0:
+    if args.command in ("grade", "assess", "audit", "synthesize", "rescout") and args.max_usd <= 0:
         parser.error("--max-usd must be positive")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
@@ -433,6 +584,12 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_grade(args, settings))
         elif args.command == "assess":
             code = asyncio.run(_assess(args, settings))
+        elif args.command == "audit":
+            code = asyncio.run(_audit(args, settings))
+        elif args.command == "fuzz":
+            code = asyncio.run(_fuzz(args))
+        elif args.command == "study":
+            code = _study(args, settings)
         elif args.command == "doctor":
             from .doctor import run_doctor
             code = asyncio.run(run_doctor(settings, smoke=args.smoke))
@@ -441,6 +598,10 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print("Interrupted; the run is recorded as cancelled.", file=sys.stderr)
         code = 130
+    except MigrationsPending as exc:
+        # Found by a dry study: a database behind on migrations ended every command in a traceback.
+        print(f"Cannot run: {exc}.", file=sys.stderr)
+        code = 2
     sys.exit(code)
 
 

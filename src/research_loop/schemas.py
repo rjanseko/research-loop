@@ -20,7 +20,11 @@ from pydantic.json_schema import SkipJsonSchema
 
 # Recorded on every run. 5: evidence records the access level it rests on (snippet, metadata, abstract,
 # full text), and quotes and sources are checked against labeled tool output (evidence.py).
-EVIDENCE_VERSION = 5
+# 6: a quote is verified only in its cited source's text; found elsewhere, it is misattributed.
+# 7: a statement is `read` only when read evidence behind it carries a verified quote; one resting only on
+# the research's summary of a read source is `paraphrase`, which makes the answer weak. Quote checks are
+# unchanged, so stored v6 evidence marks still hold; only statement support is stricter.
+EVIDENCE_VERSION = 7
 
 # How much of a source a tool returned, from least to most. Search results give a snippet, a scholarly
 # record without an abstract gives metadata, arXiv and some OpenAlex records give an abstract, and a
@@ -65,15 +69,17 @@ class Evidence(BaseModel):
     quote: str | None = Field(
         default=None,
         description=(
-            "Exact words copied from text one of your tools returned, when the claim rests on specific wording. "
-            "Mark omissions with '...'. Quotes are checked against the tool output; leave this empty rather "
-            "than reconstruct wording from memory."
+            "Exact words copied from text one of your tools returned: the sentence or passage that states what "
+            "the claim says. Mark omissions with '...'. Quotes are checked against the tool output; leave this "
+            "empty only when no returned text states the claim, never reconstruct wording from memory."
         ),
     )
     supports: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code (evidence.check_result), never by the model.
-    quote_check: SkipJsonSchema[Literal["verified", "not_found"] | None] = None
+    quote_check: SkipJsonSchema[Literal["verified", "misattributed", "not_found"] | None] = None
+    # For a misattributed quote, the source whose text it was found in.
+    quote_found_in: SkipJsonSchema[str | None] = None
     # The most complete tool output the quote was found in.
     quote_access: SkipJsonSchema[Access | None] = None
     source_check: SkipJsonSchema[Literal["observed", "not_found"] | None] = None
@@ -86,6 +92,7 @@ class Claim(BaseModel):
     statement: str
     evidence: list[Evidence] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    covers: list[str] = Field(default_factory=list, description="IDs of the coverage items this claim addresses")
 
 
 class Contradiction(BaseModel):
@@ -97,14 +104,42 @@ class ResearchQuestion(BaseModel):
     id: str
     question: str
     requires_primary_sources: bool = False
+    covers: list[str] = Field(default_factory=list, description="IDs of the coverage items this question serves")
+
+
+class CoverageItem(BaseModel):
+    """One thing a sufficient answer must address. The planner writes them from the question; code adds
+    the members and categories that research found named but did not establish (`ResearchResult.open_items`)."""
+
+    id: str
+    requirement: str = Field(description="What the answer must address, such as one category of a requested set")
+    kind: Literal["category", "dimension", "constraint", "assumption"] = Field(
+        "category", description="category: a member or group of a requested set; dimension: something to compare "
+        "across items; constraint: a limit such as a date range; assumption: how an ambiguity was read")
 
 
 # How much research a question warrants; each depth has its own limits (config.ScoutLimits.for_depth).
 Depth = Literal["quick", "standard", "deep"]
 
 
+class CoverageState(BaseModel):
+    """Where one coverage item stands, as code finds it in the ledger and the report."""
+
+    id: str
+    requirement: str
+    kind: str
+    # "plan", or the question whose research named it as an open item.
+    origin: str = "plan"
+    status: Literal["covered", "open"]
+    claim_ids: list[str] = Field(default_factory=list)
+    # With a report: whether it cites a covering claim, lists the item as not established, or does neither.
+    in_report: Literal["cited", "not_established", "missing"] | None = None
+
+
 class ResearchPlan(BaseModel):
     questions: list[ResearchQuestion]
+    # Plans made before coverage items existed have none, and run as they did.
+    coverage: list[CoverageItem] = Field(default_factory=list)
     # Plans made before depths existed read as standard, which is what they ran with.
     depth: Depth = Field("standard", description="quick, standard, or deep: how much research the question warrants")
 
@@ -115,6 +150,7 @@ class MaterialGap(BaseModel):
     question_id: str = Field(description="ID of an existing planned research question")
     follow_up_question: str = Field(description="One precise question for a researcher to investigate")
     reason: str = Field(description="How resolving this gap could change the answer")
+    coverage_id: str | None = Field(None, description="ID of the coverage item this follow-up targets, if any")
 
 
 class GapAnalysis(BaseModel):
@@ -138,6 +174,9 @@ class ResearchResult(BaseModel):
     claims: list[Claim] = Field(default_factory=list)
     contradictions: list[Contradiction] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list, description="What this research could not establish")
+    open_items: list[str] = Field(default_factory=list, description=(
+        "Members or categories of the requested set that sources name but this research did not establish, "
+        "each as a short name such as 'Inorganic Crystal Structure Database (ICSD)'"))
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code: queries and pages the research tried, which stay useful when it was cut off without claims.
     searches: SkipJsonSchema[list[str]] = Field(default_factory=list)
@@ -158,6 +197,8 @@ class FinalReport(BaseModel):
     answer: str
     claims: list[ReportClaim] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
+    not_established: list[str] = Field(default_factory=list, description=(
+        "IDs of coverage items the report could not establish from the research, which it says so about"))
 
     @property
     def claim_ids_used(self) -> list[str]:

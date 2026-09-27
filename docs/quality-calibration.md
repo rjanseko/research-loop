@@ -155,3 +155,99 @@ which suggests the expert report follows one survey closely. Open-web research i
 those exact papers, so this case caps Scout's score lower than drb2-task8 does. The shared pattern is
 the one drb2-task8 showed: the research finds some members of the expected set and stops short of the
 full set, and the gap analysis cannot see what is missing without a checklist.
+
+## Quote attribution (evidence version 6)
+
+An outside review of the data export found that the quote check did not establish attribution. Evidence versions 5 and earlier marked a quote `verified` when its words appeared anywhere in what a scout's tools returned, and checked separately whether the cited source had been returned, so a quote from one page could vouch for another. `scripts/rescore_quotes.py` re-checks every stored scout and deep-dive call from its recorded messages, with no model call. Over the 117 successful calls stored on 26 September 2026 (1,234 quotes, 1,153 stored as verified), matching each quote only within its cited source's text turned 71 verified quotes (6.2%) into mismatches, the same count the review reported.
+
+Most of those were the same work under another address. Evidence version 6 counts a Wayback Machine copy as the page it archived, an ar5iv rendering as its arXiv paper, a publisher page whose address contains a DOI (Springer, APS, ACM, Wiley) or a Nature article page as that DOI, and a fetched document's first window as the DOI printed in its opening 3,000 characters. With those identities, 35 of the 1,153 (3.0%) remain `misattributed`. Fourteen are PDFs on a publisher's file server that never print their DOI where the check can see it, and are probably the cited paper. The rest are different documents: a preprint quoted as its published article, a paper quoted as a different paper from the same journal, documentation quoted as the paper it describes, and ScienceDirect pages cited by DOI, whose addresses carry an internal ID. A misattributed quote no longer makes a statement `read`, and the run lists it for review. Stored runs keep their version-5 marks; only new runs use the new check.
+
+## Harness
+
+The paid runs of 26 and 27 September 2026 kept finding bugs instead of measuring research, so a harness now looks for that class of bug for free before a study pays (README, "Finding bugs before paying"). While it was being built it found:
+
+- Open-item IDs changed meaning when a deep dive added results under an earlier question, found by `research fuzz` on three seeds and shrunk by a property test to one open item. IDs now come from the item's name (72996e7).
+- A database behind on migrations ended every command in a traceback (a dry study).
+- The study budget guard priced models itself and refused every call of the harness's models (a dry study).
+- The study runner treated an unread grade line as a failed grade, so a parser bug could hide.
+- A Wayback copy of a URL ending in `/.` keyed differently from the original, since trailing punctuation was trimmed twice (a property test).
+
+To check that the harness finds real bugs, each earlier bug was reintroduced on a scratch copy and the harness run against it. It caught the grade-line parser (property test and dry study), colliding open-item IDs (fuzz), unstable open-item IDs (fuzz and property test), lone-surrogate PDF text (fuzz), an unexpected scout error failing the run (fuzz), a quote verified against another source's text (fuzz and property test), and the blanket `ValueError` catch together with the parser bug (dry study). Two gaps closed on the way: the surrogate bug was missed until the fuzz model encoded each request as a provider client does and every world held a surrogate PDF, and the unstable-ID bug was missed by one seed batch until fuzzed deep dives named new items under earlier questions. On the final code, 500 fuzz runs and a three-seed dry study of `studies/deep-vs-standard-task8.toml` keep every invariant.
+
+The first cheap check (`research study run studies/deep-vs-standard-task8.toml --cheap`, study `deep-vs-standard-task8-cheap`, 27 September 2026) ran one standard and one deep run on drb2-task8 with every role on `openai:gpt-6-luna@low`: runs `77f51d9e` ($0.03, 2.0 minutes) and `0d6feefb` ($0.05, 5.2 minutes), $0.08 in all with no invariant violations and no tracebacks. Their grades come from the cheap judge and are not comparable with real ones. They did show a design problem: scouts put caveats and whole sentences in `open_items` ("No uncovered categories required by the stated early-2024 scope; ..."), each became a coverage item, and the reports neither addressed nor listed 10 to 13 of them, so every answer read as weak.
+
+## Statements that rest on a summary (evidence version 7)
+
+A review of the scout-v6 smoke runs on 27 September 2026 found that answer support measured whether a statement's source was read, not whether code had checked any of its words. A statement counted as `read` when a scout had fetched its source, even if the evidence was only the scout's own summary, with no quote. Nothing checks that such a summary matches its source. Evidence version 7 calls such statements `paraphrase`. That makes the answer `weak`, lists the statements for review, and adds a count of short quotes, meaning verified quotes under a quarter of their claim's words. The study summary gains a statement column: quoted, summary only, and thin. Quote checks themselves are unchanged. The fetch record of an unreached page now keeps the detail of a bare `ValueError`, so the size cap, an empty extraction, and an unread type are told apart.
+
+The 16 stored reports were re-scored from their ledgers with no model call. Of 208 report statements, 178 rest on a verified quote, 18 only on a summary, 11 on thin evidence, and 1 on none. The deep smoke run `56c4b4dd` holds 11 of the 18 summary-only statements: 11 of its 30 statements, and it has 8 short quotes. Its two method-survey scouts quoted almost nothing (1 of 18 and 0 of 16 evidence items quoted), while its other scouts and deep dives quoted nearly everything. The scout prompt asks for a quote only "when a claim rests on specific wording", so conceptual summaries of reviews go unquoted. No stored run that was `supported` becomes `weak` under version 7, because every scout-v6 run was already weak on coverage. Among the older runs, `f1558521` (st07, Flash high) has 3 summary-only statements of 12.
+
+The fetch failures recorded as `ValueError` in stored scout messages were mostly MDPI pages (118 empty extractions) and PDFs over the 5 MB cap (21 on arXiv and 8 on Nature). MDPI's CDN now refuses the fetcher and a browser user agent alike with a 403, so those pages need another copy of the paper. The size cap could be raised for PDFs.
+
+## Cheap checks of scout-v9 (27 September 2026)
+
+Two study specs check scout-v9: `studies/v9-short-check.toml` (st04 and st05, two runs each) and `studies/v9-st07-check.toml` (one diagnostic run of st07). Both ran `--dry` with no invariant violations, over three seeds for the first, and then `--cheap`, with every role on `openai:gpt-6-luna@low`. The cheap judge's grades are not comparable with real ones.
+
+| Study | Run | Status, answer | Quotes verified / misattributed / not found | Statements quoted / summary only / thin | Cost with grade |
+|---|---|---|---|---|---|
+| v9-short-check-cheap (st04) | `3f5ed912` | complete, weak | 1 / 0 / 1 | 1 / 0 / 1 | $0.0062 |
+| v9-st07-check-cheap (st07) | `f7c7e94e` | complete, supported | 14 / 0 / 0 | 6 / 0 / 0 | $0.0115 |
+
+Together they cost $0.018 and showed no invariant violations. OpenAI's two SWE-bench Verified pages refused the fetcher with 403. 
+The paid runs followed on the same day, with the default models and grading by the version-2 judge. They cost $0.55 in total, grades included, with no tracebacks or invariant violations.
+
+| Case | Run | Status, answer | Rubric | Quotes verified / misattributed / not found (short) | Statements quoted / summary only / thin | Cost | Time | scout-v1 Luna for comparison |
+|---|---|---|---|---|---|---|---|---|
+| st04 r1 | `f94412fc` | complete, supported | 4/4 | 2 / 0 / 0 | 2 / 0 / 0 | $0.045 | 65 s | 4/4, $0.029, 56 s |
+| st04 r2 | `804ab265` | complete, weak | 4/4 | 3 / 0 / 0 | 2 / 0 / 0 | $0.050 | 70 s | |
+| st05 r1 | `72131d69` | complete, supported | 11/11 | 11 / 0 / 0 | 9 / 0 / 0 | $0.109 | 254 s | 11/11, $0.078, 80 s |
+| st05 r2 | `61cc0645` | complete, supported | 10/11 | 14 / 0 / 1 | 9 / 0 / 0 | $0.121 | 191 s | |
+| st07 r1 | `7a7fc5b5` | partial, weak | 2/9 | 31 / 0 / 3 (1) | 12 / 0 / 0 | $0.218 | 349 s | 2/9 partial, $0.154, 130 s |
+
+The short cases did not regress on their rubrics. The one lost point is st05's Chinchilla item. The rubric wants the report to say that the paper gives no context length; the report said this could not be established, because the scout's quote for the absence was not found in the source. That is a cautious answer, not a wrong one. st04 replicate 2 is `weak` only because the planner listed three video subtasks as coverage items that research did not establish.
+
+No report statement in the five runs rests on a summary alone: all 34 carry a verified quote, against 11 of 30 summary-only statements in the v6 deep run. That is what the scout-v9 prompt asked for. Whether each quote supports its claim is still unchecked.
+
+The short cases now cost 50 to 70 percent more and take longer than under scout-v1: st05 took 191 to 254 seconds against 80. That follows from the scout-v3 budgets rather than from quoting, but it is a real cost to quick questions.
+
+st07 lost the question that decides it. The q2 scout, which researched contamination and flawed tests, read 8 pages in 6 requests, then its next model request failed with `SSLError: SSLV3_ALERT_BAD_RECORD_MAC`, a transient TLS fault. A network error ends a call without a retry, so the question returned nothing, and the report again omits the contamination evidence and the maintainer review, as scout-v1 Luna's did after a 429. Seven DuckDuckGo searches also timed out. The grade therefore measures that loss, not scout-v9.
+
+## Support audit of every stored report (audit version 1, 27 September 2026)
+
+`research audit` (commit a7fdda7) asked `zai:glm-5.3` at high effort, a vendor no run uses, whether the verified quotes behind each report statement say what the statement says. All 23 stored reports were audited in one batch under a $2.00 cap, and the batch cost $0.26. The verdicts are in the `support_audits` table.
+
+| Runs | Statements | Supported | Partial | Unsupported | No verified quote |
+|---|---|---|---|---|---|
+| scout-v1, production models (12 reports) | 132 | 66 | 53 | 4 | 9 |
+| scout-v6, production models (2) | 60 | 29 | 18 | 0 | 13 |
+| scout-v9, production models (5) | 34 | 29 | 5 | 0 | 0 |
+| cheap checks, Luna low (4) | 24 | 10 | 12 | 1 | 1 |
+
+A hand check of all 5 `unsupported` verdicts and a random 12 of the 76 `partial` verdicts in production runs found the following:
+
+- **Unsupported verdicts.** All 5 are right. Four are statements that go beyond their quotes; the fifth is a report describing its own scope.
+- **Partial verdicts, real overreach (6 of 12).** The statement adds something the quotes do not state: that the Chinchilla paper gives no context length, that OpenHands with Claude 3.7 Sonnet was the system behind a figure, "since 2022", two challenges missing from the quote, that the dataset is static, and that saturation is not established.
+- **Partial verdicts, audit artefacts (4 of 12).** They come from sending only each source's title: author names, dates, and URLs that came from a source's record look unsupported.
+- **Partial verdicts, other (2 of 12).** One statement had already said its figure rested on an unverified quote, and one is minor framing.
+
+Overreach enters at both steps. Usually the scout's claim already says more than its quote, drawing on the rest of a page it read or on its own inference; claims that something is absent from a source, such as Chinchilla's context length, are a recurring case that a quote can never establish. Once, the synthesizer added a specific system and model name that neither the claim nor the quote contains.
+
+Taking the sample's rate, roughly one in five quoted statements in production runs says more than its quotes. The scout-v9 reports did best (29 of 34 supported), but they are the three easiest cases, so this is not yet a comparison of versions. Audit version 2 should send each source's URL, date, and authors, so that record details stop counting against a statement.
+
+## A second rubric judge (27 September 2026)
+
+Every report with a `gpt-6-sol` high-effort grade (18 reports) was graded again by `zai:glm-5.3` at high effort, with the same version-2 judge prompt (`RESEARCH_MODELS__JUDGE=zai:glm-5.3@high research grade`, $0.30 cap per grade). The 18 grades cost $0.27, and all of them are in `grades` under their judge model.
+
+| Case | Reports | Sol points | GLM points | Points where the judges disagree |
+|---|---|---|---|---|
+| st04 | 5 | 19/20 | 19/20 | 0 |
+| st05 | 4 | 43/44 | 43/44 | 0 |
+| st07 | 3 | 10/27 | 13/27 | 3 |
+| drb2-task8 | 5 | 118/260 | 131/260 | 15 |
+| drb2-task68-plus | 1 | 14/54 | 22/54 | 10 |
+
+The judges agree on 375 of 405 points (92.6%). Of the 30 disagreements, GLM credits 27 points that Sol does not, and Sol credits 3 that GLM does not. On the short cases they agree exactly. On the DRB-II cases GLM scores each report 1 to 8 points higher. Both judges rank the drb2-task8 reports almost identically: the deep run `56c4b4dd` is first under both, and only two reports two points apart swap places.
+
+A hand check of the three st07 disagreements on `7a7fc5b5` favours GLM on two. The rubric point "human annotators screened instances for underspecified issues and unfair or overly specific tests" is stated in the report in other words ("a clear problem statement, a correct test patch, and solvability"). The point "documents contamination or memorization concerns" is met by a quoted SWE-rebench finding that scores "might be inflated due to contamination issues". This matches the earlier NOMAD verdict: Sol does not always credit equivalent wording.
+
+The choice of judge therefore moves a DRB-II score by up to 8 points, as much as the run-to-run variation the studies try to see past, while leaving short cases and the order of reports mostly unchanged. A decision that rests on a few rubric points should use both judges and have their disagreements checked by hand.

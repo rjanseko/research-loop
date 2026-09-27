@@ -1,0 +1,19 @@
+# A live check of scout-v6 before any replicated study: do coverage items, open items, the gap
+# analysis's targeting, and the deep dives behave with real models? One run per arm, graded.
+study = "smoke-v6-task8"
+kind = "scout"
+cases = ["drb2-task8"]
+replicates = 1
+cap_usd = 3.00
+estimate_usd = 0.60
+ceiling_usd = 2.00
+grade = true
+grade_estimate_usd = 0.06
+
+[[arms]]
+name = "standard"
+args = ["--depth", "standard"]
+
+[[arms]]
+name = "deep"
+args = ["--depth", "deep"]

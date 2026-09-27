@@ -34,6 +34,16 @@ def render_markdown(record: dict[str, Any]) -> str:
         elif checks.get("follow_up_unresolved"):
             lines.append("- The follow-up did not fully resolve " + ("this gap." if len(gaps) == 1 else "these gaps."))
         lines.append("")
+    if coverage := checks.get("coverage"):
+        lines += ["## Coverage", "", "What a sufficient answer must address, and where each item stands.", ""]
+        for state in coverage:
+            origin = "" if state.get("origin", "plan") == "plan" else f", named by research on {state['origin']}"
+            where = {"cited": "addressed in the answer", "not_established": "the answer says it was not established",
+                     "missing": "not addressed in the answer"}.get(state.get("in_report") or "",
+                                                                     "covered" if state["status"] == "covered"
+                                                                     else "not established by the research")
+            lines.append(f"- {state['id']} ({state['kind']}{origin}): {state['requirement']}: {where}")
+        lines.append("")
     if report:
         if report.get("executive_summary"):
             lines += ["## Summary", "", report["executive_summary"], ""]
@@ -43,10 +53,10 @@ def render_markdown(record: dict[str, Any]) -> str:
         weak = [s for s in checks.get("statements", []) if s["support"] != "read"]
         if weak:
             lines += ["## Statements resting on thin evidence", "",
-                      ("These statements rest only on search snippets, records without an abstract, or quotes and "
-                       "sources the research tools did not return, or on no evidence at all."), ""]
-            lines += [f"- {s['statement']} ({'no supporting evidence' if s['support'] == 'unsupported' else 'not read'})"
-                      for s in weak]
+                      ("These statements rest only on the research's own summary of a source, with no quote "
+                       "checked against it; on search snippets, records without an abstract, or quotes and "
+                       "sources the research tools did not return; or on no evidence at all."), ""]
+            lines += [f"- {s['statement']} ({_WEAK_SUPPORT.get(s['support'], 'not read')})" for s in weak]
             lines.append("")
     else:
         lines += _claims_only(ledger)
@@ -71,8 +81,17 @@ def _title(record: dict[str, Any]) -> str:
     return title or " ".join(record["question"].split())[:110]
 
 
+_WEAK_SUPPORT = {"unsupported": "no supporting evidence", "paraphrase": "summary only, no checked quote"}
+_SUPPORT = {"supported":"answer supported", "weak": "answer weakly supported", "unsupported": "answer unsupported"}
+
+
 def _status_line(record: dict[str, Any], sources: dict[str, dict[str, Any]]) -> str:
     parts = [f"Scout run `{record['run_id']}`", str(record["status"])]
+    checks = record.get("checks") or {}
+    if support := checks.get("answer_support"):
+        parts.append(_SUPPORT[support])
+    if checks.get("uncited_sentences"):
+        parts.append(f"{checks['uncited_sentences']} of {checks['sentences']} answer sentences uncited")
     if (cost := record.get("cost_usd")) is not None:
         parts.append(f"${float(cost):.2f}")
     if (seconds := record.get("seconds")) is not None:

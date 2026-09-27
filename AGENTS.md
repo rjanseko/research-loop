@@ -21,18 +21,20 @@ Do not add DBOS, Temporal, Redis, a vector database, event sourcing, a learned r
 ## Compatibility
 
 - Keep the `research` command and `scout(...)` in `scout.py` working as the README documents them.
-- Treat workflow `scout-v4` and its prompt fingerprint as frozen during study work unless the task is specifically about the workflow. Follow-up (`scout-followup-v4`), fixed-plan rescouts (`scout-research-v4`), and fixed-ledger synthesis (`scout-synthesis-v2`) carry their own versions. Change a version when its behavior changes.
+- Treat workflow `scout-v8` and its prompt fingerprint as frozen during study work unless the task is specifically about the workflow. Follow-up (`scout-followup-v8`), fixed-plan rescouts (`scout-research-v8`), and fixed-ledger synthesis (`scout-synthesis-v4`) carry their own versions. Change a version when its behavior changes.
 - Do not edit a frozen case in `study_cases.jsonl`, a packet in `quality_packets.jsonl`, or the grading judge's prompt and verdict rules without bumping its version. Stored grades are compared by those versions.
 - When a change alters the budget guard or rate-limit behavior, bump `BUDGET_POLICY_VERSION` or `RATE_LIMIT_POLICY_VERSION`, since runs record them.
 - Model IDs in the defaults may be stale. Verify them with `research doctor --smoke` before paid runs, and prefer configuration over hard-coding new IDs.
 
 ## Paid runs
 
-Every command that calls a model costs money: `scout`, `synthesize`, `rescout`, `grade`, `assess`, and `doctor --smoke`. Get the user's approval before each paid run or batch, with an estimate based on the most expensive comparable call and a hard `--max-usd` cap. A paid comparison must be able to reach a decision: run-to-run variation on the frozen cases is several rubric points, so one run per arm cannot separate small differences. The OpenAI account's gpt-6-luna limit is 200,000 tokens a minute and pacing is per run, so do not run two Luna-scout runs at once.
+Every command that calls a model costs money: `scout`, `synthesize`, `rescout`, `grade`, `assess`, `audit`, and `doctor --smoke`. Get the user's approval before each paid run or batch, with an estimate based on the most expensive comparable call and a hard `--max-usd` cap. A paid comparison must be able to reach a decision: run-to-run variation on the frozen cases is several rubric points, so one run per arm cannot separate small differences. The OpenAI account's gpt-6-luna limit is 200,000 tokens a minute and pacing is per run, so do not run two Luna-scout runs at once.
+
+Before a paid study, run its spec with `research study run SPEC --dry` and then `--cheap`; both must report no invariant violations (see README, "Finding bugs before paying"). When a paid run finds a bug the harness missed, add the oracle or fuzz behavior that would have caught it before fixing the bug.
 
 ## Validation
 
-For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. `make lint` runs ruff 0.16 with its default rules; a deliberate blind `except Exception` carries `# noqa: BLE001` and the reason. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
+For code changes, run the narrowest relevant tests first, then `pytest -q` when practical. `make lint` runs ruff 0.16 with its default rules; a deliberate blind `except Exception` carries `# noqa: BLE001` and the reason. `research fuzz` and the fixed sweep in `tests/test_fuzz.py` must stay clean; a fuzz finding gets a regression test with its fix. Tests must stay offline: `tests/conftest.py` refuses model-provider requests and fails any test that reaches a non-loopback host, so script models with `FunctionModel` and serve fetches with the `serve` and `public_urls` fixtures. Keep benchmark inputs and secrets out of logs. Never commit `.env` or API keys.
 
 Change a prompt in `prompts.py` or an agent in `agents.py`, not in `scout.py`. Treat any change to text a model sees as a behavior change, including the scouts' budget notes in `budget_notes.py`; the prompt fingerprint covers them through `prompts.BUDGET_NOTES`, so add any new note there.
 

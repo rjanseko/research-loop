@@ -1,4 +1,4 @@
-.PHONY: setup skills lock test lint doctor postgres-up postgres-down db-status migrate
+.PHONY: setup skills lock test lint doctor postgres-up postgres-down db-status migrate dry-db fuzz
 
 VENV := .venv/bin
 
@@ -30,6 +30,16 @@ db-status:
 # --wait blocks until the healthcheck passes, so `make postgres-up migrate` works.
 postgres-up:
 	docker compose up -d --wait postgres
+
+# The dry database that `research study run --dry` stores runs in, beside the real one.
+DRY_DATABASE_URL ?= postgresql://research:research@127.0.0.1:5432/research_dry
+dry-db: postgres-up
+	docker compose exec -T postgres sh -c "psql -U research -d postgres -tAc \"select 1 from pg_database where datname = 'research_dry'\" | grep -q 1 || createdb -U research research_dry"
+	DATABASE_URL=$(DRY_DATABASE_URL) $(VENV)/research db migrate
+
+# Hunt bugs with seeded fake models and an offline world; free, and no network.
+fuzz:
+	$(VENV)/research fuzz --runs 200
 
 postgres-down:
 	docker compose down

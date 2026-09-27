@@ -5,9 +5,12 @@ snippet, scholarly metadata, an abstract, or full text. After each research call
 result against those labeled texts, and the model cannot set the outcome:
 
 - A quote is `verified` when each of its segments, split at '...' and bracketed insertions, appears
-  in one labeled text, comparing only letters and digits after NFKC normalization and case folding.
-  PDF extraction spacing, list bullets, and comment signs therefore never decide the check.
-  `quote_access` is the most complete kind of text it was found in.
+  in one labeled text of the source it cites, comparing only letters and digits after NFKC
+  normalization and case folding. PDF extraction spacing, list bullets, and comment signs therefore
+  never decide the check. It is `misattributed` when it appears only in another source's text, and
+  `quote_found_in` then names that source; `not_found` when it appears nowhere. `quote_access` is the
+  most complete kind of text it was found in. A quote matched anywhere used to count as verified,
+  which let a quote from one page vouch for another.
 - A cited source is `observed` when a tool returned it as an item (a search result, a scholarly
   record, or a fetched page), matched by URL (ignoring scheme, `www.`, query, fragment, and a trailing
   slash), DOI, or arXiv ID. `source_access` is the most any tool returned of it. A source that only
@@ -19,6 +22,7 @@ citations name the same source in every prompt and rendering built from one ledg
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -31,8 +35,11 @@ from .schemas import (
     ACCESS_ORDER,
     Access,
     Claim,
+    CoverageItem,
+    CoverageState,
     Evidence,
     FinalReport,
+    ResearchPlan,
     ResearchResult,
     SourceRef,
 )
@@ -44,6 +51,15 @@ from .schemas import (
 _NON_WORD = re.compile(r"[\W_]+")
 _GAP = re.compile(r"\.\.\.|\[[^\]]*\]")
 _ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
+# Hosts whose paths name an arXiv paper: the abs and PDF pages, the export mirror, and ar5iv's HTML.
+_ARXIV_HOSTS = ("arxiv.org/", "export.arxiv.org/", "ar5iv.labs.arxiv.org/", "ar5iv.org/")
+# The archived address inside a Wayback Machine URL, taken from the raw URL so it is normalized once.
+_WAYBACK = re.compile(r"^(?:https?://)?(?:www\.)?web\.archive\.org/web/[^/]+/(.+)$", re.IGNORECASE)
+_DOI = re.compile(r"\b10\.\d{4,9}/[^\s\"<>]+")
+# A paper's own DOI is printed on its first page; later text cites other works' DOIs.
+_OWN_DOI_CHARS = 3000
+# Nature's article pages are named by their DOI suffix: nature.com/articles/s41524-023-01128-y is 10.1038/s41524-023-01128-y.
+_NATURE_ARTICLE = re.compile(r"^nature\.com/articles/([a-z0-9.-]+)$")
 
 
 def _key(text: str) -> str:
@@ -62,22 +78,40 @@ def _url_key(url: str) -> str:
 def identity_keys(*, url: str | None = None, doi: str | None = None, arxiv_id: str | None = None) -> frozenset[str]:
     """Keys that identify one work, so a citation matches the tool result it came from.
 
-    A doi.org URL also gives the DOI, and an arXiv URL its paper ID, so an abs page, its PDF, and a
-    record citing the arXiv ID all match. Versions (v2) are ignored.
+    A doi.org URL also gives the DOI, and an arXiv or ar5iv URL its paper ID, so an abs page, its PDF,
+    its HTML rendering, and a record citing the arXiv ID all match. A Wayback Machine copy is also the
+    page it archived. Versions (v2) are ignored.
     """
     keys: set[str] = set()
     if url:
         location = _url_key(url)
         keys.add(f"url:{location.lower()}")
+        if archived := _WAYBACK.match(url.strip()):
+            # From the raw URL, not `location`, so trailing punctuation is trimmed once, as for the original
+            # (a property test found "https://docs.example/./." keyed differently in its Wayback copy).
+            keys |= identity_keys(url=archived.group(1) if "://" in archived.group(1)
+                                  else "https://" + archived.group(1))
         if location.startswith("doi.org/"):
             doi = doi or location.removeprefix("doi.org/")
-        if location.startswith("arxiv.org/") and (match := _ARXIV_ID.search(location)):
+        elif in_path := _DOI.search(location):
+            # Publishers that put the DOI in the path, such as Springer, APS, ACM, and Wiley.
+            keys |= identity_keys(doi=in_path.group(0))
+        elif nature := _NATURE_ARTICLE.match(location.lower()):
+            keys |= identity_keys(doi=f"10.1038/{nature.group(1)}")
+        if location.startswith(_ARXIV_HOSTS) and (match := _ARXIV_ID.search(location)):
             keys.add(f"arxiv:{match.group(0)}")
     if doi:
         keys.add("doi:" + doi.strip().lower().removeprefix("https://doi.org/").removeprefix("doi:"))
     if arxiv_id and (match := _ARXIV_ID.search(arxiv_id)):
         keys.add(f"arxiv:{match.group(0)}")
     return frozenset(keys)
+
+
+def printed_dois(text: str) -> frozenset[str]:
+    """DOI keys printed in the opening of a document's first window: a paper's own DOI, which lets a
+    publisher's PDF or HTML page count as the work its DOI names."""
+    return frozenset(key for match in _DOI.findall(text[:_OWN_DOI_CHARS])
+                     for key in identity_keys(doi=match.rstrip(".,;:)]")))
 
 
 def source_identity(source: SourceRef) -> frozenset[str]:
@@ -104,16 +138,24 @@ class ToolOutputIndex:
         self.texts = list(texts)
         self._haystacks = [(item.access, _key(item.text)) for item in self.texts]
 
-    def quote_access(self, quote: str | None) -> Access | None:
-        """The most complete kind of text containing `quote`; None when none does or it has no words."""
+    def find_quote(self, quote: str | None, keys: frozenset[str] | None = None) -> tuple[Access | None, ToolText | None]:
+        """The most complete kind of text containing `quote`, and that text; searched only among texts of
+        the source identified by `keys` when given. (None, None) when none does or the quote has no words."""
         segments = _segments(quote) if quote else []
-        if not segments:
-            return None
         found: Access | None = None
-        for access, haystack in self._haystacks:
-            if all(segment in haystack for segment in segments):
-                found = _more(found, access)
-        return found
+        where: ToolText | None = None
+        if not segments:
+            return None, None
+        for item, (access, haystack) in zip(self.texts, self._haystacks, strict=True):
+            if keys is not None and not keys & item.keys:
+                continue
+            if all(segment in haystack for segment in segments) and _more(found, access) != found:
+                found, where = access, item
+        return found, where
+
+    def quote_access(self, quote: str | None) -> Access | None:
+        """The most complete kind of text containing `quote`, from any source."""
+        return self.find_quote(quote)[0]
 
     def source_access(self, source: SourceRef) -> Access | None:
         """The most any tool returned of `source`; None when no tool returned it."""
@@ -125,13 +167,27 @@ class ToolOutputIndex:
         return found
 
 
+def _location(text: ToolText) -> str:
+    """Where a tool text came from, for a reader: its URL, else its DOI or arXiv ID."""
+    for prefix in ("url:", "doi:", "arxiv:"):
+        if found := sorted(key for key in text.keys if key.startswith(prefix)):
+            return found[0].removeprefix(prefix)
+    return "an unidentified tool result"
+
+
 def check_evidence(item: Evidence, index: ToolOutputIndex) -> Evidence:
-    quote_access = index.quote_access(item.quote)
     has_quote = bool(item.quote and _segments(item.quote))
+    in_source, _ = index.find_quote(item.quote, source_identity(item.source))
+    anywhere, where = (None, None) if in_source else index.find_quote(item.quote)
+    if not has_quote:
+        quote_check = None
+    else:
+        quote_check = "verified" if in_source else "misattributed" if anywhere else "not_found"
     source_access = index.source_access(item.source)
     return item.model_copy(update={
-        "quote_check": ("verified" if quote_access else "not_found") if has_quote else None,
-        "quote_access": quote_access,
+        "quote_check": quote_check,
+        "quote_access": in_source or anywhere,
+        "quote_found_in": _location(where) if where is not None and not in_source else None,
         "source_check": "observed" if source_access else "not_found",
         "source_access": source_access,
     })
@@ -145,23 +201,44 @@ def check_result(result: ResearchResult, texts: Iterable[ToolText]) -> ResearchR
     return result.model_copy(update={"claims": claims})
 
 
-# How well a report statement's evidence was read.
-Support = Literal["read", "shallow", "unsupported"]
+# How well a report statement's evidence was read (evidence v7 split `paraphrase` from `read`).
+Support = Literal["read", "paraphrase", "shallow", "unsupported"]
+# A verified quote with fewer words than this share of its claim's is counted as short (RunChecks.quotes_short).
+_SHORT_QUOTE_SHARE = 0.25
 
 
 def evidence_is_read(item: Evidence) -> bool:
     """Supporting evidence from a source read as an abstract or in full, whose quote, if any, was found."""
     return (item.supports and item.source_access in ("abstract", "full_text")
-            and item.quote_check != "not_found")
+            and item.quote_check not in ("not_found", "misattributed"))
+
+
+def evidence_is_quoted(item: Evidence) -> bool:
+    """Read evidence whose quote was verified in its cited source, so code has checked some of its words."""
+    return evidence_is_read(item) and item.quote_check == "verified"
 
 
 def support_level(claims: Iterable[Claim]) -> Support:
-    """`read` when some supporting evidence was read (evidence_is_read); `shallow` when the only support is
-    a snippet, metadata, an unverified quote, or a source no tool returned; `unsupported` when nothing supports it."""
+    """`read` when some supporting evidence was read and carries a verified quote (evidence_is_quoted);
+    `paraphrase` when read evidence supports it only through the research's own summary, which code cannot
+    check: in one deep run 11 of 30 statements rested only on such summaries; `shallow` when the only support
+    is a snippet, metadata, an unverified quote, or a source no tool returned; `unsupported` when nothing
+    supports it."""
     supporting = [item for claim in claims for item in claim.evidence if item.supports]
     if not supporting:
         return "unsupported"
-    return "read" if any(evidence_is_read(item) for item in supporting) else "shallow"
+    if any(evidence_is_quoted(item) for item in supporting):
+        return "read"
+    return "paraphrase" if any(evidence_is_read(item) for item in supporting) else "shallow"
+
+
+def quote_is_short(item: Evidence, claim: Claim) -> bool:
+    """Whether a verified quote has fewer than a quarter of its claim's words, so that it checks little of
+    what the claim says: a four-word quote once verified a claim of three clauses. Exact figures and names
+    are often short and correct, so this is a count to watch, not a support level."""
+    if item.quote_check != "verified" or not item.quote:
+        return False
+    return len(item.quote.split()) < _SHORT_QUOTE_SHARE * len(claim.statement.split())
 
 
 # ---------------------------------------------------------------------------------------------
@@ -300,7 +377,7 @@ def _source_key(source: SourceRef) -> str:
 
 def _project_evidence(item: Evidence, numbering: dict[str, str]) -> dict[str, Any]:
     body = _omit_empty(item.model_dump(mode="json", exclude={"source"}))
-    if body.get("quote") and body.get("quote_check") != "not_found":
+    if body.get("quote") and body.get("quote_check") not in ("not_found", "misattributed"):
         body.pop("excerpt", None)
     elif excerpt := body.get("excerpt"):
         body["excerpt"] = excerpt if len(excerpt) <= _EXCERPT_CHARS else excerpt[: _EXCERPT_CHARS - 3].rstrip() + "..."
@@ -342,6 +419,86 @@ def strip_inline_citations(text: str, keep: Collection[str] | None = None) -> st
         return f"{match.group(1)}[{', '.join(kept)}]" if kept else ""
 
     return re.sub(r"([ \t]*)" + _INLINE_CITATION.pattern, rewrite, text)
+
+
+# A sentence ends at . ! or ? before a capital, digit, or quote; not before "[", so a citation placed
+# after the full stop stays with its sentence.
+def _normal(text: str) -> str:
+    return " ".join(_NON_WORD.sub(" ", unicodedata.normalize("NFKC", text).casefold()).split())
+
+
+def _open_item_id(key: str, taken: set[str]) -> str:
+    """An open item's ID from its normalized name: `o` and the name's hash, lengthened past any ID in use,
+    so the same item keeps its ID however much research arrives later and in whatever order."""
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    # Six hex digits make two items sharing a prefix, whose IDs would then depend on order, about 1 in 16 million.
+    for length in range(6, len(digest) + 1):
+        if (candidate := f"o{digest[:length]}") not in taken:
+            return candidate
+    raise AssertionError("unreachable: a full SHA-256 digest collided")
+
+
+def coverage_items(plan: ResearchPlan, ledger: EvidenceLedger) -> list[tuple[CoverageItem, str]]:
+    """The plan's coverage items, then the open items research named, each once and in ledger order,
+    paired with where each came from ("plan", or the question that named it).
+
+    An open item's ID comes from its name (`_open_item_id`), never from its position: numbering them in
+    ledger order let a deep dive's results under an earlier question renumber later items, so a claim
+    tagged before the dive pointed at another item afterwards (found by `research fuzz`). The plan's IDs
+    are never reused, since a live planner named its own items d1 to d4.
+    """
+    items: list[tuple[CoverageItem, str]] = [(item, "plan") for item in plan.coverage]
+    seen = {_normal(item.requirement) for item in plan.coverage}
+    taken = {item.id for item in plan.coverage}
+    for result in ledger.all():
+        for name in result.open_items:
+            if (key := _normal(name)) and key not in seen:
+                seen.add(key)
+                item_id = _open_item_id(key, taken)
+                taken.add(item_id)
+                items.append((CoverageItem(id=item_id, requirement=name, kind="category"), result.question_id))
+    return items
+
+
+def coverage_states(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | None = None) -> list[CoverageState]:
+    """Every coverage item that research can address, covered when some claim says it addresses it; with a
+    report, also whether the report cites a covering claim or says the item was not established.
+    Assumptions are how the planner read the question, not something to establish, so they are left out."""
+    by_item: dict[str, list[str]] = {}
+    for claim_id, claim in ledger.claims_by_id().items():
+        for item_id in claim.covers:
+            by_item.setdefault(item_id, []).append(claim_id)
+    cited = set(report.claim_ids_used) if report else set()
+    listed = set(report.not_established) if report else set()
+    states = []
+    for item, origin in coverage_items(plan, ledger):
+        if item.kind == "assumption":
+            continue
+        claim_ids = by_item.get(item.id, [])
+        in_report = None
+        if report is not None:
+            in_report = ("cited" if cited & set(claim_ids) else "not_established" if item.id in listed else "missing")
+        states.append(CoverageState(id=item.id, requirement=item.requirement, kind=item.kind, origin=origin,
+                                    status="covered" if claim_ids else "open", claim_ids=claim_ids,
+                                    in_report=in_report))
+    return states
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+
+
+def uncited_sentences(answer: str) -> tuple[int, int]:
+    """The answer's sentences, and those with no inline [sN] citation. Headings, table rules, and lines
+    of fewer than six words are left out, since they state no finding; a citation that closes a sentence
+    after its full stop counts for it."""
+    sentences: list[str] = []
+    for line in answer.splitlines():
+        line = line.strip().lstrip("-*+> ").strip()
+        if not line or line.startswith("#") or set(line) <= set("|-: "):
+            continue
+        sentences += _SENTENCE_END.split(line)
+    counted = [s for s in sentences if len(strip_inline_citations(s).split()) >= 6]
+    return len(counted), sum(not inline_source_ids(s) for s in counted)
 
 
 def citation_problems(report: FinalReport, ledger: EvidenceLedger) -> list[str]:

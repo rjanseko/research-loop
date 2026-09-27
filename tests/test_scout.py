@@ -79,8 +79,9 @@ def planner(questions=QUESTIONS):
     return FunctionModel(lambda messages, info: _output(info, {"questions": questions}))
 
 
-def researcher(urls: dict[str, str] | None = None):
-    """A scout that fetches its question's page, then returns a claim quoting it."""
+def researcher(urls: dict[str, str] | None = None, *, quoted: frozenset[str] = frozenset({"q1", "q2"})):
+    """A scout that fetches its question's page, then returns a claim quoting it; questions not in `quoted`
+    get the scout's summary alone."""
     urls = urls or {"q1": "https://example.org/verified", "q2": "https://example.org/leakage"}
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -88,7 +89,7 @@ def researcher(urls: dict[str, str] | None = None):
         url = urls[question["id"]]
         if len(messages) == 1:
             return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
-        quote = PAGES.get(url, "an invented sentence")[:40]
+        quote = PAGES.get(url, "an invented sentence")[:40] if question["id"] in quoted else None
         return _output(info, {
             "question_id": question["id"], "question": question["question"], "conclusion": "found", "confidence": 0.8,
             "claims": [{"id": "c1", "statement": f"Finding for {question['id']}", "confidence": 0.8, "evidence": [
@@ -376,8 +377,9 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert saved["config"]["fixed_plan"]["source_run_id"] == str(original.run_id)
     assert len(saved["config"]["fixed_plan"]["plan_sha256"]) == 64 and saved["config"]["case"] == case
     # A standard plan hashes as plans did before depths existed, so rescouts pair across versions.
-    questions = json.dumps({"questions": [q.model_dump(mode="json") for q in original.plan.questions]},
-                           ensure_ascii=False, sort_keys=True)
+    questions = json.dumps({"questions": [{"id": q.id, "question": q.question,
+                                           "requires_primary_sources": q.requires_primary_sources}
+                                          for q in original.plan.questions]}, ensure_ascii=False, sort_keys=True)
     assert saved["config"]["fixed_plan"]["plan_sha256"] == hashlib.sha256(questions.encode()).hexdigest()
     assert saved["config"]["depth"] == "standard"
     calls = [store.calls[i] for i in set(store.calls) - before]
@@ -395,7 +397,7 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     assert stored["input_hash"] == hashlib.sha256((again.question + "\n" + ledger_sha).encode()).hexdigest()
 
 
-async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings, pages) -> None:
+async def test_fixed_plan_research_lists_an_unanswered_question(settings, pages) -> None:
     store = MemoryStore()
     original = await _run(settings, store)
 
@@ -408,7 +410,8 @@ async def test_fixed_plan_research_marks_an_unanswered_question_partial(settings
 
     with scout_agent.override(model=FunctionModel(half)):
         again = await rescout_stored(store.runs[original.run_id], settings=settings, store=store)
-    assert again.status == "partial"
+    # The research ran to its end, so the run is complete; the unanswered question is listed for review.
+    assert again.status == "complete" and again.checks.answer_support is None
     assert reasons(again) == ["1 of 2 research questions returned no evidence"]
 
 
@@ -468,7 +471,7 @@ async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -
     assert "deep_dive" not in [c["role"] for c in store.calls.values()]
 
 
-async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> None:
+async def test_an_unresolved_material_gap_weakens_the_answer(settings, pages) -> None:
     from research_loop.agents import gap_agent
 
     def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -492,7 +495,7 @@ async def test_unresolved_material_gap_keeps_run_partial(settings, pages) -> Non
     with gap_agent.override(model=gap):
         run = await _run(settings, plan=planner(QUESTIONS[:1]), research=FunctionModel(research), follow_up=True)
     assert not run.checks.not_established
-    assert run.report is not None and run.status == "partial"
+    assert run.report is not None and run.status == "complete" and run.checks.answer_support == "weak"
     assert run.checks.follow_up_unresolved
     assert "The follow-up did not fully resolve this gap." in render_markdown(run.to_record())
 
@@ -682,3 +685,170 @@ async def test_span_metadata_never_reaches_the_models(settings, pages) -> None:
     run = await _run(settings, plan=recording(planner()), research=recording(researcher()), write=recording(writer()))
     assert run.status == "complete" and sent
     assert not any(str(run.run_id) in text or "question_id': 'q" in text or '"depth"' in text for text in sent)
+
+
+def test_misattributed_quotes_are_listed_for_review() -> None:
+    from research_loop.evidence import EvidenceLedger
+    from research_loop.schemas import (
+        Claim,
+        Evidence,
+        ResearchPlan,
+        ResearchQuestion,
+        ResearchResult,
+        SourceRef,
+    )
+    from research_loop.scout import _checks
+
+    ledger = EvidenceLedger()
+    ledger.add(ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.5, claims=[
+        Claim(id="c1", statement="s", confidence=0.5, evidence=[
+            Evidence(source=SourceRef(url="https://a.example", title="A"), excerpt="e", quote="words", confidence=0.5,
+                     quote_check="misattributed", quote_found_in="b.example", source_access="full_text")])]))
+    checks = _checks(ResearchPlan(questions=[ResearchQuestion(id="q1", question="Q?")]), ledger, None, False,
+                     synthesized=False)
+    assert checks.quotes_misattributed == 1
+    assert "1 of 1 quotes appear only in another source than the one cited" in checks.review_reasons
+
+
+async def test_run_status_and_answer_support_are_separate(settings, pages) -> None:
+    # Every question ran and the report was written, but one statement cites no evidence.
+    def bare(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        research = _prompt(messages)["research"]
+        claims = [claim for result in research["research"] for claim in result.get("claims", [])]
+        statements = [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims]
+        return _output(info, {"title": "T", "executive_summary": "S", "answer": "Mostly trustworthy.",
+                              "claims": [*statements, {"statement": "An uncited finding", "claim_ids": []}],
+                              "caveats": []})
+
+    run = await _run(settings, write=streamed(bare))
+    assert run.status == "complete" and run.checks.answer_support == "unsupported"
+    good = await _run(settings)
+    assert good.status == "complete" and good.checks.answer_support == "supported"
+
+
+
+async def test_a_statement_resting_only_on_a_summary_weakens_the_answer(settings, pages) -> None:
+    # Evidence v7: a page that was read but not quoted leaves nothing code can check against the source.
+    run = await _run(settings, research=researcher(quoted=frozenset({"q1"})))
+    assert [s.support for s in run.checks.statements] == ["read", "paraphrase"]
+    assert run.status == "complete" and run.checks.answer_support == "weak"
+    assert ("1 of 2 statements rest only on the research's own summaries of sources it read, with no quote "
+            "checked against the source") in run.checks.review_reasons
+    assert "(summary only, no checked quote)" in render_markdown(run.to_record())
+
+async def test_coverage_items_run_from_the_plan_through_research_to_the_report(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    coverage = [{"id": "k1", "requirement": "Computed-data databases", "kind": "category"},
+                {"id": "k2", "requirement": "Alloy property databases", "kind": "category"},
+                {"id": "k3", "requirement": "Read 'commonly used' as widely cited in reviews", "kind": "assumption"}]
+    questions = [{**QUESTIONS[0], "covers": ["k1"]}, {**QUESTIONS[1], "covers": ["k2"]}]
+    plan = FunctionModel(lambda messages, info: _output(info, {"questions": questions, "coverage": coverage}))
+    seen: dict[str, list[str]] = {}
+
+    def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question = prompt["question"]
+        deep = "material_gap" in prompt
+        seen["deep" if deep else question["id"]] = [item["id"] for item in prompt.get("coverage", [])]
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        icsd = [item["id"] for item in prompt.get("coverage", []) if item["requirement"] == "ICSD"]
+        covers = icsd if deep else ["k1", "zz"] if question["id"] == "q1" else []
+        return _output(info, {"question_id": question["id"], "question": question["question"], "conclusion": "c",
+                              "confidence": 0.8, "open_items": [] if deep or question["id"] == "q1" else ["ICSD"],
+                              "claims": [{"id": "c1", "statement": f"Finding {'deep' if deep else question['id']}",
+                                          "confidence": 0.8, "covers": covers,
+                                          "evidence": [{"source": {"url": url, "title": "Page"},
+                                                        "excerpt": "summary", "confidence": 0.8}]}]})
+
+    gap_prompts: list[dict] = []
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        gap_prompts.append(_prompt(messages))
+        return _output(info, {"gaps": [{"question_id": "q2", "follow_up_question": "Is ICSD commonly used?",
+                                        "reason": "An open member of the set."}]})
+
+    def write(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        research_view = _prompt(messages)["research"]
+        claims = [c for result in research_view["research"] for c in result.get("claims", [])]
+        return _output(info, {"title": "T", "executive_summary": "S", "answer": "A",
+                              "claims": [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims],
+                              "caveats": [], "not_established": ["k2"]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, plan=plan, research=FunctionModel(research), write=streamed(write), follow_up=True)
+    # Each scout works toward its question's items; the deep dive toward every item still open.
+    icsd = next(state.id for state in run.checks.coverage if state.requirement == "ICSD")
+    assert seen["q1"] == ["k1"] and seen["q2"] == ["k2"] and seen["deep"] == ["k2", icsd]
+    assert [(i["id"], i["status"]) for i in gap_prompts[0]["coverage"]] == [("k1", "covered"), ("k2", "open"),
+                                                                             (icsd, "open")]
+    states = {state.id: state for state in run.checks.coverage}
+    assert set(states) == {"k1", "k2", icsd}  # the assumption is shown to the synthesizer, not tracked
+    assert (states["k1"].status, states["k1"].in_report) == ("covered", "cited")
+    assert (states["k2"].status, states["k2"].in_report) == ("open", "not_established")
+    assert (states[icsd].origin, states[icsd].requirement, states[icsd].in_report) == ("q2", "ICSD", "cited")
+    q1_claim = next(claim for claim in run.ledger.claims() if claim.statement == "Finding q1")
+    assert q1_claim.covers == ["k1"]  # the unknown ID zz was dropped
+    assert run.status == "complete" and run.checks.answer_support == "weak"
+    assert any(reason.startswith("1 of 3 coverage items were not established") for reason in run.checks.review_reasons)
+    assert "## Coverage" in render_markdown(run.to_record())
+
+
+def test_the_planner_must_name_existing_coverage_items() -> None:
+    from pydantic_ai import ModelRetry
+
+    from research_loop.agents import PlanLimits, _plan_is_workable
+    from research_loop.schemas import ResearchPlan
+
+    class Ctx:
+        deps = PlanLimits({"quick": 2, "standard": 4, "deep": 8})
+
+    plan = ResearchPlan.model_validate({"questions": [{"id": "a", "question": "Q?", "covers": ["k9"]}],
+                                        "coverage": [{"id": "k1", "requirement": "R"}]})
+    with pytest.raises(ModelRetry, match="do not exist: k9"):
+        _plan_is_workable(Ctx(), plan)
+
+
+async def test_a_deep_dive_counts_toward_the_item_its_gap_targets(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    plan = FunctionModel(lambda messages, info: _output(info, {"questions": QUESTIONS[:1], "coverage": [
+        {"id": "k1", "requirement": "Experimental databases", "kind": "category"}]}))
+
+    def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question, deep = prompt["question"], "material_gap" in prompt
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        claims = [] if not deep else [{"id": "c1", "statement": "CSD is an experimental database", "confidence": 0.8,
+                                       "evidence": [{"source": {"url": url, "title": "Page"}, "excerpt": "e",
+                                                     "confidence": 0.8}]}]  # no `covers`: the model forgot to tag
+        return _output(info, {"question_id": question["id"], "question": question["question"], "conclusion": "c",
+                              "confidence": 0.5, "claims": claims, "open_items": [] if deep else ["CSD"]})
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        open_item = next(i["id"] for i in _prompt(messages)["coverage"] if i["requirement"] == "CSD")
+        return _output(info, {"gaps": [
+            {"question_id": "q1", "follow_up_question": "Is CSD used?", "reason": "Open.", "coverage_id": open_item},
+            {"question_id": "q1", "follow_up_question": "Anything else?", "reason": "r", "coverage_id": "zz"}]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, plan=plan, research=FunctionModel(research), follow_up=True)
+    states = {state.requirement: state for state in run.checks.coverage}
+    assert states["CSD"].status == "covered"  # credited through the gap's coverage_id
+    assert run.checks.gap_analysis.gaps[1].coverage_id is None  # an unknown ID is dropped, not retried
+
+
+def test_open_items_are_short_names_not_caveats() -> None:
+    from research_loop.agents import open_item_names
+
+    # From the first cheap check (runs 77f51d9e and 0d6feefb).
+    items = ["No uncovered categories required by the stated early-2024 scope; the post-cutoff taxonomy is outside",
+             "Adjoint methods are named in the 2022 review but not treated as a separate strategy here.",
+             "Inorganic Crystal Structure Database (ICSD)", "inorganic crystal structure database (icsd)", "Khazana",
+             "NREL-MatDB", "Citrine", "OpenKIM", "Phase-Field hub (PFhub)", ""]
+    assert open_item_names(items) == ["Inorganic Crystal Structure Database (ICSD)", "Khazana", "NREL-MatDB",
+                                      "Citrine", "OpenKIM"]

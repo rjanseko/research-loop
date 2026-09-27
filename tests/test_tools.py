@@ -125,6 +125,19 @@ def test_failed_lookups_are_listed_as_unreached(tool: str, content: dict) -> Non
     assert unreached.reason in ("SearchUnavailable (RuntimeError)", "get:HTTPStatusError")
 
 
+def test_an_unreached_page_keeps_the_detail_of_a_bare_value_error() -> None:
+    # 17 of 47 unreached pages in the scout-v6 smoke runs read only "ValueError": over the size cap,
+    # an empty extraction, or an unread content type.
+    from pydantic_ai.messages import ModelRequest
+
+    url = "https://arxiv.org/pdf/2011.12603"
+    content = {"url": url, "error": "ValueError", "detail": "response exceeded size limit"}
+    messages = [ModelResponse(parts=[ToolCallPart("fetch", {"url": url}, tool_call_id="x")]),
+                ModelRequest(parts=[ToolReturnPart("fetch", content, tool_call_id="x")])]
+    (unreached,) = tool_outcomes(messages).unreached
+    assert (unreached.target, unreached.reason) == (url, "ValueError: response exceeded size limit")
+
+
 def test_tool_text_is_always_sendable_as_utf8() -> None:
     # pypdf extracted "𝐹" as a surrogate pair, which failed the scout's next request.
     result = valid_unicode({"text": "size𝐹 set", "works": [{"title": "a\ud835b"}], "start": 12_000})

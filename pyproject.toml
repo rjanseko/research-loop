@@ -27,7 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 eval = ["pydantic-evals>=2.47,<3"]
 postgres = ["psycopg[binary,pool]>=3.2"]
-test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "reportlab>=4", "ruff>=0.16,<0.17", "hypothesis>=6.100"]
 all = ["research-loop[eval,postgres,test]"]
 
 [project.scripts]

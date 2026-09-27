@@ -1,0 +1,15 @@
+# Does scout-v9 (quote every claim, 25 MB PDFs) still answer the short cases that scout-v1 Luna answered in
+# full (st04 4/4, st05 11/11), and how many statements still rest on a summary alone? A drop from full marks
+# in either replicate is a regression to look into; two clean runs per case are no evidence of one.
+study = "v9-short-check"
+kind = "scout"
+cases = ["st04-ilsvrc-captioning", "st05-scaling-table"]
+replicates = 2
+cap_usd = 3.00          # each run's hard cap; Luna's reservations need headroom
+estimate_usd = 0.40     # above the most a comparable run cost: a v6 standard drb2-task8 run, $0.37
+ceiling_usd = 1.90
+grade = true
+grade_estimate_usd = 0.06
+
+[[arms]]
+name = "v9"

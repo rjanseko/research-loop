@@ -49,10 +49,14 @@ def pending_migrations(dsn: str, *, connect_timeout: int = 5) -> list[str]:
         return [migration.name for migration, state in migration_status(conn, migration_files()) if state != "applied"]
 
 
+class MigrationsPending(RuntimeError):
+    """The database needs `research db migrate` before a run can be stored in it."""
+
+
 async def open_migrated_pool(stack: AsyncExitStack, dsn: str) -> Any:
     """Open a connection pool on `stack`; fail before any paid model call if migrations are pending."""
     if await asyncio.to_thread(pending_migrations, dsn):
-        raise RuntimeError("database migrations are pending or changed; run `research db migrate`")
+        raise MigrationsPending("database migrations are pending or changed; run `research db migrate`")
     from psycopg_pool import AsyncConnectionPool
 
     return await stack.enter_async_context(AsyncConnectionPool(conninfo=dsn, open=False))

@@ -1,0 +1,15 @@
+# A diagnostic, not a comparison: one scout-v9 run of the contested st07 question, the broad case where
+# scouts summarize more than they quote. Its grade varies too much between runs to decide anything; its
+# count of statements resting on a summary alone informs whether a model check of statements is needed.
+study = "v9-st07-check"
+kind = "scout"
+cases = ["st07-swebench-trust"]
+replicates = 1
+cap_usd = 3.00
+estimate_usd = 0.40
+ceiling_usd = 0.60
+grade = true
+grade_estimate_usd = 0.06
+
+[[arms]]
+name = "v9"

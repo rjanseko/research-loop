@@ -25,7 +25,7 @@ from pydantic_ai.usage import RunUsage
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
-from .config import Settings
+from .config import Settings, split_model
 from .evidence import EvidenceLedger, inline_source_ids
 from .models import build_model
 from .schemas import FinalReport
@@ -176,6 +176,8 @@ class GradeRecord:
     budget_cap_usd: Decimal | None = None
     reserved_usd: Decimal | None = None
     id: UUID = field(default_factory=uuid4)
+    judge_model: str = JUDGE_MODEL
+    judge_thinking: str = JUDGE_THINKING
 
     @property
     def cost_usd(self) -> Decimal | None:
@@ -213,10 +215,12 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     }, ensure_ascii=False)
     usage = RunUsage()
     messages: list[ModelMessage] = []
-    chosen = model or build_model(f"{JUDGE_MODEL}@{JUDGE_THINKING}", "scout", settings, sdk_retries=0 if budget else None)
+    # The judge is `models.judge`; grades record which one, so a cheaper judge's grades stay apart.
+    judge_model, judge_thinking = split_model(settings.models.judge)
+    chosen = model or build_model(settings.models.judge, "scout", settings, sdk_retries=0 if budget else None)
     if budget is not None:
-        chosen = StudyBudgetModel(chosen, JUDGE_MODEL, budget)
-    model_settings = {"thinking": JUDGE_THINKING, "timeout": _JUDGE_TIMEOUT_SECONDS}
+        chosen = StudyBudgetModel(chosen, judge_model, budget)
+    model_settings = {"thinking": judge_thinking, "timeout": _JUDGE_TIMEOUT_SECONDS}
     if budget is not None:
         model_settings["max_tokens"] = _GUARDED_JUDGE_MAX_OUTPUT_TOKENS
     try:
@@ -225,21 +229,23 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     except Exception as exc:  # noqa: BLE001 - a failed grade is recorded with what it cost, then reported
         return GradeRecord(run_id, case, "failed", usage=usage, messages=list(messages), error=exc,
                            budget_cap_usd=budget.cap_usd if budget else None,
-                           reserved_usd=budget.reserved_usd if budget else None)
+                           reserved_usd=budget.reserved_usd if budget else None,
+                           judge_model=judge_model, judge_thinking=judge_thinking)
     met = {(v.category, v.point): v.met for v in result.output.verdicts}
     points = [{"category": category, "point": number, "met": met[(category, number)]}
               for category, number in sorted(expected)]
     return GradeRecord(run_id, case, "succeeded", points=points, score=sum(met.values()) / len(met),
                        usage=usage, messages=result.all_messages(),
                        budget_cap_usd=budget.cap_usd if budget else None,
-                       reserved_usd=budget.reserved_usd if budget else None)
+                       reserved_usd=budget.reserved_usd if budget else None,
+                       judge_model=judge_model, judge_thinking=judge_thinking)
 
 
 def grade_row(grade: GradeRecord) -> dict[str, Any]:
     """The `grades` row for `grade`, in the shape Postgres stores it."""
     return {
-        "id": grade.id, "run_id": grade.run_id, "case_id": grade.case.id, "judge_model": JUDGE_MODEL,
-        "judge_thinking": JUDGE_THINKING, "judge_version": JUDGE_VERSION, "rubric_version": grade.case.rubric_version,
+        "id": grade.id, "run_id": grade.run_id, "case_id": grade.case.id, "judge_model": grade.judge_model,
+        "judge_thinking": grade.judge_thinking, "judge_version": JUDGE_VERSION, "rubric_version": grade.case.rubric_version,
         "status": grade.status, "score": grade.score, "points": grade.points,
         "usage": usage_record(grade.usage) if grade.usage else None, "cost_usd": grade.cost_usd,
         "messages": transcript(grade.messages) if grade.messages else None,

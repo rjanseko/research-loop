@@ -94,7 +94,7 @@ def serve(monkeypatch: pytest.MonkeyPatch, public_urls: None) -> Callable[[Calla
         browser_aware = "as_browser" in inspect.signature(respond).parameters
 
         async def download(_client, url: str, _max_bytes: int, _policy: Any = None, *,
-                           as_browser: bool = False) -> httpx.Response:
+                           as_browser: bool = False, pdf_max_bytes: int | None = None) -> httpx.Response:
             response = respond(url, as_browser=as_browser) if browser_aware else respond(url)
             response.request = httpx.Request("GET", url)
             return response
