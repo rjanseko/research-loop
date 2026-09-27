@@ -30,7 +30,7 @@ Do not add DBOS, Temporal, Redis, a vector database, event sourcing, a learned r
 
 Every command that calls a model costs money: `scout`, `synthesize`, `rescout`, `grade`, `assess`, `audit`, and `doctor --smoke`. Get the user's approval before each paid run or batch, with an estimate based on the most expensive comparable call and a hard `--max-usd` cap. A paid comparison must be able to reach a decision: run-to-run variation on the frozen cases is several rubric points, so one run per arm cannot separate small differences. The OpenAI account's gpt-6-luna limit is 200,000 tokens a minute and pacing is per run, so do not run two Luna-scout runs at once.
 
-Before a paid study, run its spec with `research study run SPEC --dry` and then `--cheap`; both must report no invariant violations (see README, "Finding bugs before paying"). When a paid run finds a bug the harness missed, add the oracle or fuzz behavior that would have caught it before fixing the bug.
+Before a paid study, run its spec with `research study run SPEC --dry` and then `--cheap`; both must report no invariant violations (see README, "Finding bugs before paying"). When a paid run finds a bug, add the narrowest test that would have caught it before fixing the bug: a unit test when the bug is local to one function or module, such as a parser, a retry, or a price; fuzz or oracle behavior in `dryrun.py` only when it comes from how a run's parts interact, such as IDs across steps, faults partway through a run, concurrent scouts, or costs added up across calls. Extend the fuzz model and the offline world for a new feature only when it changes a run's lifecycle, its IDs, or its money.
 
 ## Validation
 
