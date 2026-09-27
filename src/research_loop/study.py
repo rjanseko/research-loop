@@ -6,10 +6,14 @@ A study compares arms, such as two depths, two scout models, or two commits, on 
 or stored runs. The runner does what the screens did by hand. It runs each planned run through the
 `research` command, one at a time, reversing the arm order on every other replicate so that neither arm
 always goes first against the study's shared cache (ABBA). It labels every run with the study, arm, and
-replicate, and passes each run's hard cap. An arm at another git ref runs from a temporary worktree of
-that ref, so it uses that commit's code. Before starting, it refuses a spec whose worst case exceeds the
-study's ceiling, and it stops before any run that could take actual spend past the ceiling. At the end
-it prints and saves a table of status, answer support, cost, time, quote checks, support audits, coverage,
+replicate. An arm at another git ref runs from a temporary worktree of that ref, so it uses that
+commit's code. Before starting, it refuses a spec whose worst case by the estimates exceeds the study's
+ceiling. The estimates only plan; the ceiling is enforced by hard caps. Each run, grade, and audit gets a
+`--max-usd` cap no larger than what remains of the ceiling, rounded down to the cent, and a run's cap
+leaves room for its grade and audit by their estimates. What a step cost comes from its record; a step
+whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole
+cap against the ceiling, since it may have spent it. It skips a run when what remains could not cover the
+run's estimates. At the end it prints and saves a table of status, answer support, cost, time, quote checks, support audits, coverage,
 and grades.
 
 A spec is TOML:
@@ -18,16 +22,16 @@ A spec is TOML:
     kind = "scout"                  # scout (frozen cases), rescout or synthesize (stored runs)
     cases = ["drb2-task8"]          # for scout; `sources = [run IDs]` for rescout and synthesize
     replicates = 2
-    cap_usd = 3.00                  # each run's hard pre-dispatch cap (--max-usd)
+    cap_usd = 3.00                  # each run's hard cap (--max-usd), lowered to what remains of the ceiling
     estimate_usd = 0.45             # the most a comparable run has cost, for the ceiling check
     ceiling_usd = 2.50              # the whole study, grades included
     grade = true                    # grade each report against its case's rubric
     grade_estimate_usd = 0.06
-    grade_cap_usd = 1.00            # each grade's hard cap
+    grade_cap_usd = 1.00            # each grade's hard cap, lowered the same way
     audit = true                    # audit each report's statements against their quotes (audit.py)
     audit_model = "zai:glm-5.3@high"
     audit_estimate_usd = 0.04
-    audit_cap_usd = 0.30            # each audit's hard cap
+    audit_cap_usd = 0.30            # each audit's hard cap, lowered the same way
 
     [[arms]]
     name = "standard"
@@ -54,6 +58,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -210,10 +215,11 @@ def _stable_seed(run: Planned) -> int:
     return int.from_bytes(hashlib.sha256(run.label.encode()).digest()[:4], "big")
 
 
-def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real") -> list[str]:
-    """The `research` arguments for one planned run; a dry or cheap run's `--model` is replaced too."""
+def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: Decimal | None = None) -> list[str]:
+    """The `research` arguments for one planned run under `cap` (the spec's run cap when not given); a dry or
+    cheap run's `--model` is replaced too."""
     labels = ["--study", spec.study, "--arm", run.arm.name, "--replicate", str(run.replicate),
-              "--max-usd", f"{spec.cap_usd:.2f}", "--out", str(out)]
+              "--max-usd", f"{_usd(spec.cap_usd) if cap is None else cap:.2f}", "--out", str(out)]
     args = list(run.arm.args)
     if mode != "real" and "--model" in args and args.index("--model") + 1 < len(args):
         args[args.index("--model") + 1] = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
@@ -233,12 +239,30 @@ class Outcome:
     notes: list[str] = field(default_factory=list)
     # Invariants the run broke (dryrun.check_record), and tracebacks in its output; dry and cheap runs only.
     violations: list[str] = field(default_factory=list)
+    # The caps of steps whose cost could not be read; the ceiling counts them as spent.
+    unaccounted_usd: Decimal = Decimal(0)
 
     @property
     def cost_usd(self) -> float:
+        """What the run, its grade, and its audit reported costing."""
         run_cost = float((self.record or {}).get("cost_usd") or 0)
         return (run_cost + float((self.grade or {}).get("cost_usd") or 0)
                 + float((self.audit or {}).get("cost_usd") or 0))
+
+    @property
+    def charged_usd(self) -> Decimal:
+        """What counts against the study's ceiling: the reported costs, and the caps of steps whose cost is unknown."""
+        return Decimal(str(self.cost_usd)) + self.unaccounted_usd
+
+
+def _usd(amount: float) -> Decimal:
+    return Decimal(str(amount))
+
+
+def _cap(limit: float, room: Decimal) -> Decimal:
+    """A step's hard cap: its own limit, or what room the ceiling leaves, rounded down to the cent so the cap
+    passed as `--max-usd` never exceeds the room."""
+    return max(min(_usd(limit), room), Decimal(0)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
 # Runs `research` with these arguments and extra environment; returns the exit code and what it wrote to
@@ -326,8 +350,9 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
               grade: Callable[..., dict | None] | None = None, audit: Callable[..., dict | None] | None = None,
               worktrees: Callable[[StudySpec], Any] = _worktrees, mode: Mode = "real",
               dsn: str | None = None, calls: Callable[[str, str], list[dict[str, Any]]] = _calls) -> list[Outcome]:
-    """Run every planned run of `spec` in order, stopping before one that could pass the ceiling. Dry and
-    cheap runs are also checked against the invariants (dryrun.check_record)."""
+    """Run every planned run of `spec` in order, each run, grade, and audit under a hard cap that fits in what
+    remains of the ceiling (see the module docstring). Dry and cheap runs are also checked against the
+    invariants (dryrun.check_record)."""
     from .dryrun import check_record
 
     grade = grade or _grade_with(_invoke_output)
@@ -337,22 +362,28 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
     outcomes: list[Outcome] = []
-    spent = 0.0
-    per_run = spec.per_run_usd()
+    ceiling = _usd(spec.ceiling_usd)
+    spent = Decimal(0)  # what finished runs charged against the ceiling (Outcome.charged_usd)
+    grade_reserve = _usd(spec.grade_estimate_usd) if spec.grade else Decimal(0)
+    audit_reserve = _usd(spec.audit_estimate_usd) if spec.audit else Decimal(0)
     with worktrees(spec) as trees:
         for run in schedule(spec):
-            if spent + per_run > spec.ceiling_usd:
-                note = f"not run: ${spent:.2f} spent, and another run could pass the ${spec.ceiling_usd:.2f} ceiling"
+            run_cap = _cap(spec.cap_usd, ceiling - spent - grade_reserve - audit_reserve)
+            if spent + _usd(spec.per_run_usd()) > ceiling or run_cap <= 0:
+                note = f"not run: ${spent:.2f} spent, and another run could pass the ${ceiling:.2f} ceiling"
                 outcomes.append(Outcome(run, -1, notes=[note]))
                 continue
             out = out_root / run.label
             env = dict(run.arm.env) | mode_env(mode, run, dsn)
             if run.arm.ref:
                 env["PYTHONPATH"] = str(trees[run.arm.ref] / "src")
-            code, stderr = invoke(command(spec, run, out, mode), env)
+            code, stderr = invoke(command(spec, run, out, mode, run_cap), env)
             outcome = Outcome(run, code)
             if (out / "run.json").exists():
                 outcome.record = json.loads((out / "run.json").read_text(encoding="utf-8"))
+            if (outcome.record or {}).get("cost_usd") is None:
+                outcome.unaccounted_usd += run_cap
+                outcome.notes.append(f"the run's cost is unknown, so its ${run_cap:.2f} cap counts against the ceiling")
             if mode != "real":
                 if "Traceback (most recent call last)" in stderr:
                     outcome.violations.append("a traceback in the command's output: "
@@ -364,22 +395,34 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                     outcome.violations += check_record(outcome.record, calls(run_dsn, outcome.record["run_id"]))
             case_id = _case_id(outcome.record)
             if spec.grade and outcome.record and outcome.record.get("report") and case_id:
-                outcome.grade = grade(outcome.record["run_id"], case_id, env, spec.grade_cap_usd)
-                if outcome.grade is None:
-                    outcome.notes.append("grading failed; see the output above")
-                elif "unreadable" in outcome.grade:
-                    outcome.notes.append(f"the grade line could not be read: {outcome.grade['unreadable']}")
-                    outcome.violations.append("research grade succeeded but its line could not be read")
-                    outcome.grade = None
+                grade_cap = _cap(spec.grade_cap_usd, ceiling - spent - outcome.charged_usd - audit_reserve)
+                if grade_cap <= 0:
+                    outcome.notes.append("not graded: the ceiling leaves no room")
+                else:
+                    outcome.grade = grade(outcome.record["run_id"], case_id, env, float(grade_cap))
+                    if outcome.grade is None:
+                        outcome.notes.append("grading failed; see the output above")
+                    elif "unreadable" in outcome.grade:
+                        outcome.notes.append(f"the grade line could not be read: {outcome.grade['unreadable']}")
+                        outcome.violations.append("research grade succeeded but its line could not be read")
+                        outcome.grade = None
+                    if outcome.grade is None:
+                        outcome.unaccounted_usd += grade_cap
             if spec.audit and outcome.record and outcome.record.get("report"):
-                outcome.audit = audit(outcome.record["run_id"], audit_model, env, spec.audit_cap_usd)
-                if outcome.audit is None:
-                    outcome.notes.append("the support audit failed; see the output above")
-                elif "unreadable" in outcome.audit:
-                    outcome.notes.append(f"the audit line could not be read: {outcome.audit['unreadable']}")
-                    outcome.violations.append("research audit succeeded but its line could not be read")
-                    outcome.audit = None
-            spent += outcome.cost_usd
+                audit_cap = _cap(spec.audit_cap_usd, ceiling - spent - outcome.charged_usd)
+                if audit_cap <= 0:
+                    outcome.notes.append("not audited: the ceiling leaves no room")
+                else:
+                    outcome.audit = audit(outcome.record["run_id"], audit_model, env, float(audit_cap))
+                    if outcome.audit is None:
+                        outcome.notes.append("the support audit failed; see the output above")
+                    elif "unreadable" in outcome.audit:
+                        outcome.notes.append(f"the audit line could not be read: {outcome.audit['unreadable']}")
+                        outcome.violations.append("research audit succeeded but its line could not be read")
+                        outcome.audit = None
+                    if outcome.audit is None:
+                        outcome.unaccounted_usd += audit_cap
+            spent += outcome.charged_usd
             outcomes.append(outcome)
     return outcomes
 
@@ -424,7 +467,10 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
                  statements, _audit_cell(outcome.audit), cover, f"{grade['met']}/{grade['points']}" if grade else ""]
         lines.append("| " + " | ".join(cells) + " |")
     spent = sum(outcome.cost_usd for outcome in outcomes)
-    lines += ["", f"Total ${spent:.2f} of a ${spec.ceiling_usd:.2f} ceiling."]
+    unaccounted = sum((outcome.unaccounted_usd for outcome in outcomes), Decimal(0))
+    lines += ["", f"Total ${spent:.2f} of a ${spec.ceiling_usd:.2f} ceiling"
+              + (f", plus up to ${unaccounted:.2f} from steps whose cost could not be read (research breakdown "
+                 "shows a stored run's cost)." if unaccounted else ".")]
     lines += [f"- {o.run.label}: {note}" for o in outcomes for note in o.notes]
     if violations := [(o.run.label, v) for o in outcomes for v in o.violations]:
         lines += ["", f"## {len(violations)} invariant violations", ""]
