@@ -21,7 +21,7 @@ Do not add DBOS, Temporal, Redis, a vector database, event sourcing, a learned r
 ## Compatibility
 
 - Keep the `research` command and `scout(...)` in `scout.py` working as the README documents them.
-- Treat workflow `scout-v6` and its prompt fingerprint as frozen during study work unless the task is specifically about the workflow. Follow-up (`scout-followup-v6`), fixed-plan rescouts (`scout-research-v6`), and fixed-ledger synthesis (`scout-synthesis-v4`) carry their own versions. Change a version when its behavior changes.
+- Treat workflow `scout-v7` and its prompt fingerprint as frozen during study work unless the task is specifically about the workflow. Follow-up (`scout-followup-v7`), fixed-plan rescouts (`scout-research-v7`), and fixed-ledger synthesis (`scout-synthesis-v4`) carry their own versions. Change a version when its behavior changes.
 - Do not edit a frozen case in `study_cases.jsonl`, a packet in `quality_packets.jsonl`, or the grading judge's prompt and verdict rules without bumping its version. Stored grades are compared by those versions.
 - When a change alters the budget guard or rate-limit behavior, bump `BUDGET_POLICY_VERSION` or `RATE_LIMIT_POLICY_VERSION`, since runs record them.
 - Model IDs in the defaults may be stale. Verify them with `research doctor --smoke` before paid runs, and prefer configuration over hard-coding new IDs.

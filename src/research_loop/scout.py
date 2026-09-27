@@ -134,14 +134,16 @@ from .web import WebAcquisition, WebSearch
 # v6: coverage items. The planner lists what a sufficient answer must address; scouts say which items
 # their claims cover and name the members they could not establish as open items; the gap analysis
 # targets open items; and the synthesizer addresses each item or says it was not established.
-WORKFLOW_VERSION = "scout-v6"
-FOLLOWUP_VERSION = "scout-followup-v6"
-RESCOUT_VERSION = "scout-research-v6"
+# v7: scouts cite the copy they read (a preprint rather than its published version), and a gap names the
+# coverage item its deep dive targets, which the dive's untagged claims then count toward.
+WORKFLOW_VERSION = "scout-v7"
+FOLLOWUP_VERSION = "scout-followup-v7"
+RESCOUT_VERSION = "scout-research-v7"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
 _SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5)))
+                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5, 6)))
 # Whether the run did its work: `complete` when the report was written and every step ran to its end,
 # `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
 # Whether the answer is backed is `RunChecks.answer_support`.
@@ -590,7 +592,8 @@ class _Run:
             async with asyncio.timeout_at(deadline):
                 return await self._call(
                     role="planner", call_role="gap_analyzer", agent=gap_agent, prompt=prompt,
-                    deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps),
+                    deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps,
+                                 frozenset(state.id for state in coverage_states(plan, ledger))),
                     limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
                                        cost_limit=Decimal(str(self.limits.gap_usd))),
                     cancelled=lambda: "the gap-analysis deadline passed")
@@ -616,6 +619,12 @@ class _Run:
             result = _cut_off(question, attempt.messages, "the deep-dive deadline passed")
         if result.cut_off:
             self.notes.append(f"deep dive for {gap.question_id} did not finish ({result.cut_off})")
+        if gap.coverage_id:
+            # A dive answers the item its gap targets, so its claims that name no item count toward it. The
+            # live deep run established CSD without tagging it, and CSD stayed open.
+            result = result.model_copy(update={"claims": [
+                claim if claim.covers else claim.model_copy(update={"covers": [gap.coverage_id]})
+                for claim in result.claims]})
         return result
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:

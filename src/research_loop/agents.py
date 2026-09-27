@@ -47,6 +47,8 @@ class GapRefs:
 
     question_ids: frozenset[str]
     max_gaps: int = 1
+    # The coverage items a gap may target.
+    coverage_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -99,7 +101,10 @@ def _gaps_name_plan_questions(ctx: RunContext[GapRefs], output: GapAnalysis) -> 
         problems.append(f"{len(output.gaps)} gaps were selected; select at most {ctx.deps.max_gaps}, "
                         "keeping those most likely to change the answer.")
     _retry_on(problems)
-    return output
+    # A gap's unknown coverage ID is dropped, not retried; the gap stands without it.
+    return output.model_copy(update={"gaps": [
+        gap if gap.coverage_id in ctx.deps.coverage_ids else gap.model_copy(update={"coverage_id": None})
+        for gap in output.gaps]})
 
 
 @scout_agent.output_validator

@@ -798,3 +798,34 @@ def test_the_planner_must_name_existing_coverage_items() -> None:
                                         "coverage": [{"id": "k1", "requirement": "R"}]})
     with pytest.raises(ModelRetry, match="do not exist: k9"):
         _plan_is_workable(Ctx(), plan)
+
+
+async def test_a_deep_dive_counts_toward_the_item_its_gap_targets(settings, pages) -> None:
+    from research_loop.agents import gap_agent
+
+    plan = FunctionModel(lambda messages, info: _output(info, {"questions": QUESTIONS[:1], "coverage": [
+        {"id": "k1", "requirement": "Experimental databases", "kind": "category"}]}))
+
+    def research(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = _prompt(messages)
+        question, deep = prompt["question"], "material_gap" in prompt
+        url = "https://example.org/verified"
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": url})])
+        claims = [] if not deep else [{"id": "c1", "statement": "CSD is an experimental database", "confidence": 0.8,
+                                       "evidence": [{"source": {"url": url, "title": "Page"}, "excerpt": "e",
+                                                     "confidence": 0.8}]}]  # no `covers`: the model forgot to tag
+        return _output(info, {"question_id": question["id"], "question": question["question"], "conclusion": "c",
+                              "confidence": 0.5, "claims": claims, "open_items": [] if deep else ["CSD"]})
+
+    def gap(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        open_item = next(i["id"] for i in _prompt(messages)["coverage"] if i["requirement"] == "CSD")
+        return _output(info, {"gaps": [
+            {"question_id": "q1", "follow_up_question": "Is CSD used?", "reason": "Open.", "coverage_id": open_item},
+            {"question_id": "q1", "follow_up_question": "Anything else?", "reason": "r", "coverage_id": "zz"}]})
+
+    with gap_agent.override(model=FunctionModel(gap)):
+        run = await _run(settings, plan=plan, research=FunctionModel(research), follow_up=True)
+    states = {state.requirement: state for state in run.checks.coverage}
+    assert states["CSD"].status == "covered"  # credited through the gap's coverage_id
+    assert run.checks.gap_analysis.gaps[1].coverage_id is None  # an unknown ID is dropped, not retried

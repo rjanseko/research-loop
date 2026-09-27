@@ -499,8 +499,11 @@ class FuzzModel(FunctionModel):
         # The first question is favored: follow-up research under an earlier question is the harder case.
         if question_ids and rng.random() < 0.5:
             question_ids = question_ids[:1]
+        open_ids = [item.get("id") for item in prompt.get("coverage") or []
+                    if isinstance(item, dict) and item.get("status") == "open"]
         return {"gaps": [{"question_id": rng.choice(question_ids if valid else question_ids + ["q99"]) if question_ids else "q1",
-                          "follow_up_question": self._text(rng) or "f", "reason": self._text(rng) or "r"}
+                          "follow_up_question": self._text(rng) or "f", "reason": self._text(rng) or "r",
+                          "coverage_id": rng.choice(open_ids + [None, "zz"]) if open_ids else rng.choice([None, "zz"])}
                          for _ in range(count)]}
 
     def _report(self, prompt: dict[str, Any], messages: list[ModelMessage], rng: random.Random) -> dict[str, Any]:
@@ -645,6 +648,14 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         after = {item.id: _normal(item.requirement) for item in (i for i, _ in items)}
         if moved := sorted(i for i, requirement in before.items() if after.get(i) != requirement):
             problems.append(f"open-item IDs changed meaning after follow-up research: {moved}")
+        # A deep dive's claims that name no coverage item count toward the item its gap targeted, so none
+        # is left untagged. (Claims that name other items legitimately leave the target open.)
+        for gap in (checks.get("gap_analysis") or {}).get("gaps") or []:
+            if not gap.get("coverage_id"):
+                continue
+            for result in ledger.all():
+                if result.question == gap.get("follow_up_question") and any(not c.covers for c in result.claims):
+                    problems.append(f"a deep dive for {gap['coverage_id']} left claims with no coverage item")
         known = set(item_ids)
         for claim in ledger.claims():
             if unknown := sorted(set(claim.covers) - known):

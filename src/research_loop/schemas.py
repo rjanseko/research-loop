@@ -147,6 +147,7 @@ class MaterialGap(BaseModel):
     question_id: str = Field(description="ID of an existing planned research question")
     follow_up_question: str = Field(description="One precise question for a researcher to investigate")
     reason: str = Field(description="How resolving this gap could change the answer")
+    coverage_id: str | None = Field(None, description="ID of the coverage item this follow-up targets, if any")
 
 
 class GapAnalysis(BaseModel):
