@@ -6,7 +6,7 @@ spends money on them. Nothing here produces good research; outputs are generated
 - `FuzzModel` stands in for every role. Seeded, it reads which role it plays from the output tool's
   schema and returns outputs aimed at edge cases: colliding and unknown IDs, quotes from the wrong
   source, empty and oversized fields, too many questions or gaps. It also injects provider faults: rate
-  limits, server errors, refusals, text where a tool call belongs, and usage large enough to trip cost
+  limits, server errors, refusals, one-time TLS faults on scout requests, text where a tool call belongs, and usage large enough to trip cost
   limits. It reports its usage under Luna's name, so every cost limit and budget guard is really tested.
 - `World` answers the research tools offline from a seeded corpus whose pages share passages, with
   identity variants (Wayback copies, ar5iv pages, DOIs in URLs, a doi.org redirect) and faults: 403,
@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import random
+import ssl
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
@@ -329,12 +330,18 @@ class FuzzInjectedError(Exception):
     from a real one."""
 
 
+class FuzzTransientNetworkError(ssl.SSLError):
+    """A TLS fault on one attempt of a request, as the OpenAI client raised unwrapped in st07 run 7a7fc5b5.
+    The fuzz model raises it once per request, so a call that ends on it was not retried."""
+
+
 class FuzzModel(FunctionModel):
     """A seeded model that plays every role with edge-case outputs and injected provider faults."""
 
     def __init__(self, *, seed: int, fault_rate: float = 0.2, name: str = "fuzz") -> None:
         super().__init__(self._respond, stream_function=self._stream, model_name=PRICED_AS[1])
         self.seed, self.fault_rate, self.fuzz_name = seed, fault_rate, name
+        self._network_faulted: set[tuple[str, int, str]] = set()
 
     # -- plumbing
     def _rng(self, messages: list[ModelMessage], info: AgentInfo) -> random.Random:
@@ -366,7 +373,14 @@ class FuzzModel(FunctionModel):
         rng = self._rng(messages, info)
         role = self._role(info)
         if rng.random() < self.fault_rate:
-            fault = rng.choice(["429", "429_retry", "500", "refusal", "text", "huge", "slow", "unexpected"])
+            fault = rng.choice(["429", "429_retry", "500", "refusal", "text", "huge", "slow", "unexpected", "network"])
+            if fault == "network" and role == "scout":
+                # Fails the request's first attempt only; the same request sent again succeeds.
+                key = (role, len(messages), hashlib.sha256(json.dumps(_prompt(messages), sort_keys=True,
+                                                                     default=str).encode()).hexdigest())
+                if key not in self._network_faulted:
+                    self._network_faulted.add(key)
+                    raise FuzzTransientNetworkError("[SSL: SSLV3_ALERT_BAD_RECORD_MAC] fuzz bad record mac")
             if fault == "unexpected" and role == "scout":
                 # An error no handler expects, as the UnicodeEncodeError from a PDF was: one scout's bug
                 # must cut off only its question.
@@ -677,6 +691,12 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         if stray and not any("inline citations" in p for p in checks.get("citation_problems") or []):
             problems.append(f"stray inline citations {sorted(stray)} survived without a citation problem")
 
+    # A TLS fault the fuzz model injects clears when the request is sent again, so a call may not end on it:
+    # one such fault lost st07's decisive question.
+    for call in calls:
+        if "FuzzTransientNetworkError" in str(call.get("stop_reason") or ""):
+            problems.append(f"call {call.get('role')} {call.get('question_id')} ended on a transient network "
+                            "error that one retry would have cleared")
     # A run note that calls something a bug is one, unless the fuzz model injected it on purpose.
     for note in record.get("notes") or []:
         if "this is a bug" in note and "FuzzInjectedError" not in note:

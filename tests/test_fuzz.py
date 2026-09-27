@@ -6,7 +6,14 @@ import asyncio
 import pytest
 
 from research_loop.config import ScoutModels, Settings
-from research_loop.dryrun import World, check_record, fuzz, fuzz_report, fuzz_settings
+from research_loop.dryrun import (
+    World,
+    check_record,
+    fuzz,
+    fuzz_one,
+    fuzz_report,
+    fuzz_settings,
+)
 
 FAKE = "fake:fuzz@high"
 
@@ -58,6 +65,15 @@ def test_the_oracles_catch_broken_records() -> None:
         {"role": "scout", "status": "succeeded", "stop_reason": "done", "cost_usd": 0.01}]))
     repeated = _record(plan={"questions": [{"id": "q1", "question": "Q?"}, {"id": "q1", "question": "Q2?"}]})
     assert any("question IDs repeat" in p for p in check_record(repeated, []))
+    assert any("one retry would have cleared" in p for p in check_record(_record(), [
+        {"role": "scout", "question_id": "q1", "status": "failed", "stop_reason": "network error FuzzTransientNetworkError",
+         "cost_usd": 0.01}]))
+
+
+def test_scouts_retry_the_tls_faults_the_fuzzer_found_ending_calls() -> None:
+    # Seeds 75 and 122 ended scouts on a one-time TLS fault before rate policy scout-429-v3 retried it.
+    findings = [finding for seed in (75, 122) for finding in asyncio.run(fuzz_one(seed))]
+    assert not findings, fuzz_report(findings, 2, 0.2)
 
 
 def test_a_fixed_fuzz_sweep_keeps_every_invariant() -> None:

@@ -2,15 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 
+import httpx
+import openai
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from research_loop.rate_limit import ScoutRateLimitModel, _retry_delay
+from research_loop.rate_limit import (
+    ScoutRateLimitModel,
+    _retry_delay,
+    transient_network_error,
+)
 
 
 def _limit_error(wait: str = "0.02s") -> ModelHTTPError:
@@ -194,3 +201,82 @@ def test_the_estimate_starts_from_the_last_billed_reply() -> None:
                              usage=RequestUsage(input_tokens=20_000, output_tokens=500)),
                ModelRequest(parts=[ToolReturnPart("fetch", "y" * 8_000, tool_call_id="t1")])]
     assert 20_500 + 2_000 <= estimated_tokens(history, ModelRequestParameters()) < 20_500 + 2_500
+
+
+def _wrapped(cause: BaseException) -> ModelAPIError:
+    """A provider fault as pydantic-ai raises it: a ModelAPIError from the client's own error."""
+    error = ModelAPIError("gpt-6-luna", str(cause))
+    error.__cause__ = cause
+    return error
+
+
+def test_only_connection_faults_that_are_not_timeouts_are_transient() -> None:
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    # st07 run 7a7fc5b5 lost its decisive question to this error, raised unwrapped by the OpenAI client.
+    assert transient_network_error(ssl.SSLError("[SSL: SSLV3_ALERT_BAD_RECORD_MAC] bad record mac"))
+    assert transient_network_error(ConnectionResetError())
+    assert transient_network_error(httpx.RemoteProtocolError("peer closed connection"))
+    assert transient_network_error(_wrapped(openai.APIConnectionError(request=request)))
+    assert not transient_network_error(TimeoutError())
+    assert not transient_network_error(httpx.ReadTimeout("slow"))
+    assert not transient_network_error(_wrapped(openai.APITimeoutError(request=request)))
+    assert not transient_network_error(ModelHTTPError(500, "gpt-6-luna"))
+    assert not transient_network_error(RuntimeError("study budget refused"))
+
+
+@pytest.mark.parametrize("fault", [ssl.SSLError("bad record mac"),
+                                   _wrapped(openai.APIConnectionError(request=httpx.Request("POST", "https://x.test")))])
+async def test_a_transient_network_fault_is_sent_again_once(monkeypatch, fault: BaseException) -> None:
+    monkeypatch.setattr("research_loop.rate_limit._NETWORK_RETRY_SECONDS", 0)
+    attempts = 0
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal attempts
+        del messages, info
+        attempts += 1
+        if attempts == 1:
+            raise fault
+        return ModelResponse(parts=[TextPart("ok")])
+
+    response = await ScoutRateLimitModel(FunctionModel(respond)).request([], None, ModelRequestParameters())
+    assert response.text == "ok" and attempts == 2
+
+
+async def test_a_second_network_fault_or_a_timeout_is_not_sent_again(monkeypatch) -> None:
+    monkeypatch.setattr("research_loop.rate_limit._NETWORK_RETRY_SECONDS", 0)
+    attempts = 0
+
+    def failing(error: BaseException):
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal attempts
+            del messages, info
+            attempts += 1
+            raise error
+        return respond
+
+    with pytest.raises(ssl.SSLError):
+        await ScoutRateLimitModel(FunctionModel(failing(ssl.SSLError("bad record mac")))).request(
+            [], None, ModelRequestParameters())
+    assert attempts == 2
+    attempts = 0
+    with pytest.raises(TimeoutError):
+        await ScoutRateLimitModel(FunctionModel(failing(TimeoutError()))).request([], None, ModelRequestParameters())
+    assert attempts == 1
+
+
+async def test_a_stream_is_sent_again_after_a_network_fault_only_before_it_opens(monkeypatch) -> None:
+    monkeypatch.setattr("research_loop.rate_limit._NETWORK_RETRY_SECONDS", 0)
+    attempts = 0
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo):
+        nonlocal attempts
+        del messages, info
+        attempts += 1
+        if attempts == 1:
+            raise ssl.SSLError("bad record mac")
+        yield "ok"
+
+    async with ScoutRateLimitModel(FunctionModel(stream_function=stream)).request_stream(
+            [], None, ModelRequestParameters()):
+        pass
+    assert attempts == 2

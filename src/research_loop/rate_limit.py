@@ -1,8 +1,10 @@
-"""Pace a run's scouts under their model's token rate limit, and retry an explicitly timed rate limit.
+"""Pace a run's scouts under their model's token rate limit, and retry an explicitly timed rate limit
+or a transient network fault.
 
 The provider SDK retries timeouts along with 429s. Scout keeps SDK retries disabled and handles only
-rate limits that say when to retry. One wrapper instance is shared by the run's scouts, so a 429 pauses
-new requests from all of them. Provider errors with no retry time, including exhausted balances, fail.
+rate limits that say when to retry, and connection faults that are not timeouts, which it sends once
+more. One wrapper instance is shared by the run's scouts, so a 429 pauses new requests from all of
+them. Provider errors with no retry time, including exhausted balances, fail, and so does a timeout.
 
 Retrying alone does not hold under a tight limit: OpenAI allows this account 200,000 gpt-6-luna tokens
 a minute, four scouts send about 550,000 in two minutes, and paused scouts resume together into the
@@ -20,20 +22,26 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
+import httpx
 import logfire
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-# v2 adds pacing under a configured tokens-per-minute limit.
-RATE_LIMIT_POLICY_VERSION = "scout-429-v2"
+# v2 adds pacing under a configured tokens-per-minute limit. v3 sends a request once more after a
+# transient network fault.
+RATE_LIMIT_POLICY_VERSION = "scout-429-v3"
 
 # A repeated 429 may name a later reset. The research deadline still bounds the total wait.
 _MAX_RETRIES = 2
 _RESET_MARGIN_SECONDS = 0.1
+# A connection fault that is not a timeout is sent again once, after this pause. In st07 run 7a7fc5b5 a
+# TLS "bad record mac" from the OpenAI client ended a scout that had read 8 pages, losing its question.
+_NETWORK_RETRIES = 1
+_NETWORK_RETRY_SECONDS = 1.0
 _BODY_WAIT = re.compile(r"try\s+again\s+in\s+(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)\b", re.IGNORECASE)
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)?$", re.IGNORECASE)
 
@@ -78,6 +86,20 @@ def _retry_delay(error: ModelHTTPError) -> float | None:
     if match := _BODY_WAIT.search(message):
         return _seconds("".join(match.groups()))
     return None
+
+
+def transient_network_error(error: BaseException) -> bool:
+    """A connection fault worth one more attempt: a TLS or socket error, raw or wrapped by the provider
+    client, but never a timeout, since a slow reply sent again twice would fill the research window."""
+    if isinstance(error, TimeoutError | httpx.TimeoutException):
+        return False
+    if isinstance(error, OSError | httpx.TransportError):
+        return True
+    if type(error) is ModelAPIError and (cause := error.__cause__) is not None:
+        # openai and anthropic wrap faults as APIConnectionError, and timeouts as its APITimeoutError.
+        name = type(cause).__name__
+        return name == "APIConnectionError" or transient_network_error(cause)
+    return False
 
 
 # Pace to this share of the limit: the provider counts a request somewhat differently than the estimate.
@@ -162,6 +184,14 @@ class ScoutRateLimitModel(WrapperModel):
             await asyncio.sleep(remaining)
         return await self.pacer.acquire(estimated_tokens(messages, parameters)) if self.pacer else None
 
+    @staticmethod
+    async def _network_retry(error: BaseException, attempts: int) -> bool:
+        if attempts >= _NETWORK_RETRIES or not transient_network_error(error):
+            return False
+        logfire.info("Scout network error {error}; sending the request again", error=type(error).__name__)
+        await asyncio.sleep(_NETWORK_RETRY_SECONDS)
+        return True
+
     async def _pause(self, error: ModelHTTPError) -> bool:
         if (delay := _retry_delay(error)) is None:
             return False
@@ -177,7 +207,7 @@ class ScoutRateLimitModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
-        retries = 0
+        retries = network = 0
         while True:
             entry = await self._wait(messages, model_request_parameters)
             try:
@@ -189,6 +219,10 @@ class ScoutRateLimitModel(WrapperModel):
                 if retries >= _MAX_RETRIES or not await self._pause(error):
                     raise
                 retries += 1
+            except (OSError, httpx.TransportError, ModelAPIError) as error:
+                if not await self._network_retry(error, network):
+                    raise
+                network += 1
 
     @asynccontextmanager
     async def request_stream(
@@ -198,7 +232,7 @@ class ScoutRateLimitModel(WrapperModel):
         model_request_parameters: ModelRequestParameters,
         run_context: Any = None,
     ) -> AsyncGenerator[StreamedResponse]:
-        retries = 0
+        retries = network = 0
         while True:
             entry = await self._wait(messages, model_request_parameters)
             opened = False
@@ -215,3 +249,8 @@ class ScoutRateLimitModel(WrapperModel):
                 if opened or retries >= _MAX_RETRIES or not await self._pause(error):
                     raise
                 retries += 1
+            except (OSError, httpx.TransportError, ModelAPIError) as error:
+                # Once the stream has been handed on, its reader has the partial reply and cannot restart.
+                if opened or not await self._network_retry(error, network):
+                    raise
+                network += 1
