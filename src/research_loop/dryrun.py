@@ -852,21 +852,24 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
     # No search result or scholarly record a scout saw comes from a blocked source: an Exa highlight can carry a
     # blocked page's text, and an OpenAlex record a blocked paper's abstract, such as a frozen case's expert report.
-    policy = SourcePolicy(tuple((record.get("config") or {}).get("blocked_urls") or []))
+    config = record.get("config") or {}
+    policy = SourcePolicy(tuple(config.get("blocked_urls") or []), titles=tuple(config.get("blocked_titles") or []))
     for call in calls:
         for message in call.get("messages") or []:
             for part in message.get("parts") or []:
                 content = part.get("content") if part.get("tool_name") == "web_search" else None
-                shown = [item.get("url", "") for item in (content or {}).get("results") or []] \
+                shown = [item for item in (content or {}).get("results") or [] if isinstance(item, dict)] \
                     if isinstance(content, dict) else []
-                if blocked := [url for url in shown if url and policy.blocks(url)]:
+                if blocked := [item.get("url", "") for item in shown
+                               if (item.get("url") and policy.blocks(item["url"]))
+                               or policy.blocks_title(f"{item.get('title') or ''} {item.get('snippet') or ''}")]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"search result: {blocked[0]}")
                 scholarly = part.get("content") if part.get("tool_name") in ("scholar_search", "scholar_get") else None
                 works = (scholarly.get("works") or []) if isinstance(scholarly, dict) else []
                 if blocked := [work.get("title") for work in works
                                if policy.blocks_work((work.get("url"), work.get("full_text_url")), work.get("doi"),
-                                                     work.get("arxiv_id"))]:
+                                                     work.get("arxiv_id"), title=work.get("title"))]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"scholarly record: {blocked[0]}")
     # A blocked page is never read, by our fetcher or any fallback reader.
@@ -874,7 +877,9 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         for message in call.get("messages") or []:
             for part in message.get("parts") or []:
                 content = part.get("content") if part.get("tool_name") == "fetch" else None
-                if isinstance(content, dict) and content.get("text") and policy.blocks(str(content.get("url") or "")):
+                if isinstance(content, dict) and content.get("text") and (
+                        policy.blocks(str(content.get("url") or ""))
+                        or (not content.get("start") and policy.blocks_document(str(content["text"])))):
                     problems.append(f"call {call.get('role')} {call.get('question_id')} read a blocked page "
                                     f"{content.get('url')} via {content.get('via', 'our fetcher')}")
     # Money: the run's cost is its calls' costs, plus what its paid web searches cost.

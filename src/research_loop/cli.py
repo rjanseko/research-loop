@@ -77,8 +77,8 @@ def _report(run: Any, out: Path | None, summary: str) -> int:
 
 async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
+    from .evals import case_blocked_titles, find_case
     from .evals import case_identity as frozen_case_identity
-    from .evals import find_case
     from .scout import StudyLabels, scout
     from .store import MemoryStore, PostgresStore
     from .study_budget import StudyBudget
@@ -96,6 +96,7 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     budget = StudyBudget(args.max_usd) if args.max_usd is not None else None
     question = case.objective if case else args.question
     blocked = case.blocked_urls if case else args.block
+    titles = case_blocked_titles(frozen_case_identity(case)) if case else args.block_title
     case_identity = None
     if case:
         case_identity = frozen_case_identity(case)
@@ -123,7 +124,7 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
         study = StudyLabels(args.study, args.arm, args.replicate) if args.study else None
         run = await scout(question, settings=settings, store=store, notes=args.note, blocked_urls=blocked,
                           study=study, follow_up=args.follow_up, budget=budget, case_identity=case_identity,
-                          depth=depth)
+                          depth=depth, blocked_titles=titles)
     stored = "stored" if isinstance(store, PostgresStore) else "not stored (no DATABASE_URL, or --no-persist)"
     support = f", answer {run.checks.answer_support}" if run.checks.answer_support else ""
     return _report(run, args.out, f"Run {run.run_id}: {run.status}{support}, ${run.cost_usd:.2f}, "
@@ -616,6 +617,8 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--note", action="append", default=[], help="A requirement every role follows; repeat for more")
     run.add_argument("--block", action="append", default=[], metavar="URL",
                      help="A source no tool may fetch and no evidence may cite; repeat for more")
+    run.add_argument("--block-title", action="append", default=[], metavar="TITLE",
+                     help="The title of a work to block wherever it appears, such as a copy at another address")
     run.add_argument("--follow-up", action="store_true",
                      help="Analyze material gaps and research up to three in parallel before synthesis (paid)")
     run.add_argument("--depth", choices=("auto", "quick", "standard", "deep"), default="auto",
@@ -708,7 +711,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "scout":
         if bool(args.question) == bool(args.case):
             parser.error("scout needs exactly one of a question or --case")
-        if args.case and (args.note or args.block or args.no_persist):
+        if args.case and (args.note or args.block or args.block_title or args.no_persist):
             parser.error("a frozen --case cannot add notes or blocks or disable persistence")
         if args.case and args.max_usd is None:
             parser.error("a frozen --case needs --max-usd for a hard stage ceiling")

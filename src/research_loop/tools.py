@@ -64,7 +64,8 @@ def research_toolset(search: WebSearch | HybridSearch, pages: WebAcquisition, sc
     policy = pages.policy
 
     def allowed(works: list[ScholarWork]) -> list[dict[str, Any]]:
-        return [_work(w) for w in works if not policy.blocks_work((w.url, w.full_text_url), w.doi, w.arxiv_id)]
+        return [_work(w) for w in works
+                if not policy.blocks_work((w.url, w.full_text_url), w.doi, w.arxiv_id, title=w.title)]
 
     async def web_search(query: str) -> dict[str, Any]:
         """Search the web. Returns titles, URLs, and short snippets (access: snippet); fetch a result to read it."""

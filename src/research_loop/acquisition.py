@@ -16,6 +16,7 @@ import socket
 import ssl
 import threading
 import time
+import unicodedata
 import urllib.request
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -28,7 +29,7 @@ from uuid import uuid4
 import httpcore
 import httpx
 
-from .evidence import identity_keys, printed_dois
+from .evidence import identity_keys, opening, printed_dois
 
 # Part of every cache key; bump it to invalidate recorded entries.
 CACHE_VERSION = 1
@@ -56,7 +57,9 @@ CACHE_VERSION = 1
 #     ClinicalTrials.gov API queries were refused as an unsupported content type.
 # 14: web search can be "hybrid", DuckDuckGo then Exa when DuckDuckGo finds nothing or fails; Exa's highlights
 #     are capped at 600 characters a result; and an unset reading fallback is every reader that can run.
-FETCH_VERSION = 14
+# 15: a blocked work is also known by its title (a frozen case's `blocked_title`): search results, scholarly
+#     records, and documents whose opening prints it are left out or refused, whatever their address.
+FETCH_VERSION = 15
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -206,11 +209,15 @@ class SourcePolicy:
     arXiv entry matches every form of the paper (abs, pdf, html, any version), and doi.org
     matches dx.doi.org. A work also matches by identifier: when an entry names a DOI or arXiv ID
     (a doi.org address, a publisher path holding the DOI), any address carrying that identifier,
-    such as a mirror at another host, and any record or citation giving it are blocked. Matching
-    errs toward blocking.
+    such as a mirror at another host, and any record or citation giving it are blocked. A work is also
+    known by its title (`titles`, a frozen case's `blocked_title`): a search result, a scholarly record, or a
+    cited source with that title, and a document whose opening prints it, are blocked. That catches a copy
+    at an address that carries neither a blocked address nor the DOI, such as a publisher's CDN, which Exa
+    search surfaced among its top results for drb2-task8. Matching errs toward blocking.
     """
 
     blocked: tuple[str, ...] = ()
+    titles: tuple[str, ...] = ()
 
     def blocks(self, url: str) -> str | None:
         """The blocked entry that `url` matches, if any, by its address or the identifier it carries."""
@@ -224,17 +231,31 @@ class SourcePolicy:
         return self._blocked_identifier(identity_keys(url=url))
 
     def blocks_work(self, urls: Iterable[str | None] = (), doi: str | None = None,
-                    arxiv_id: str | None = None) -> str | None:
-        """The blocked entry that a work matches by any of its addresses, its DOI, or its arXiv ID."""
+                    arxiv_id: str | None = None, title: str | None = None) -> str | None:
+        """The blocked entry that a work matches by any of its addresses, its DOI, its arXiv ID, or its title."""
         for url in urls:
             if url and (entry := self.blocks(url)):
                 return entry
-        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id))
+        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id)) or self.blocks_title(title)
 
-    def blocks_document(self, opening: str) -> str | None:
-        """The blocked entry whose DOI the opening of a fetched document prints as its own, if any: a copy of a
-        blocked paper at an address that names neither, such as a publisher's CDN, is known by its first page."""
-        return self._blocked_identifier(printed_dois(opening)) if self._identifiers else None
+    def blocks_document(self, text: str) -> str | None:
+        """The blocked entry whose DOI or title the opening of a fetched document prints as its own, if any: a
+        copy of a blocked paper at an address that names neither, such as a publisher's CDN, is known by its
+        first page."""
+        return ((self._blocked_identifier(printed_dois(text)) if self._identifiers else None)
+                or self.blocks_title(opening(text)))
+
+    def blocks_title(self, text: str | None) -> str | None:
+        """The blocked title that `text` contains, ignoring case, accents, punctuation, and spacing, as
+        "title: ..."; titles under four words are never matched, so a generic phrase cannot block a page."""
+        if not text or not self._titles:
+            return None
+        normal = f" {_normal_title(text)} "
+        return next((f"title: {title}" for title, key in self._titles if f" {key} " in normal), None)
+
+    @functools.cached_property
+    def _titles(self) -> tuple[tuple[str, str], ...]:
+        return tuple((title, key) for title in self.titles if len((key := _normal_title(title)).split()) >= 4)
 
     @functools.cached_property
     def _identifiers(self) -> tuple[tuple[str, frozenset[str]], ...]:
@@ -252,6 +273,12 @@ class SourcePolicy:
     def check(self, url: str) -> None:
         if entry := self.blocks(url):
             raise BlockedSource(url, entry)
+
+
+def _normal_title(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char)).lower()
+    return re.sub(r"[^a-z0-9]+", " ", plain).strip()
 
 
 def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str, str | None]) -> bool:

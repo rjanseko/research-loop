@@ -126,9 +126,11 @@ class WebSearch:
         self.policy = policy or SourcePolicy()
 
     def _allowed(self, results: list[dict[str, str]]) -> dict[str, Any]:
-        """The results with blocked sources left out, so a blocked page's text never reaches a scout as a
-        snippet: an Exa highlight can carry a passage of a frozen case's blocked expert report."""
-        kept = [item for item in results if not self.policy.blocks(item["url"])]
+        """The results with blocked sources left out, by address or by a blocked title in the result's title or
+        snippet, so a blocked page's text never reaches a scout as a snippet: an Exa highlight can carry a
+        passage of a frozen case's blocked expert report."""
+        kept = [item for item in results if not self.policy.blocks(item["url"])
+                and not self.policy.blocks_title(f"{item.get('title') or ''} {item.get('snippet') or ''}")]
         return {"results": kept} if kept else {"results": [], "hint": NO_RESULTS_HINT}
 
     async def search(self, query: str) -> dict[str, Any]:

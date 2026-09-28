@@ -107,6 +107,11 @@ def identity_keys(*, url: str | None = None, doi: str | None = None, arxiv_id: s
     return frozenset(keys)
 
 
+def opening(text: str) -> str:
+    """The opening of a document's first window, where a paper prints its own title and DOI."""
+    return text[:_OWN_DOI_CHARS]
+
+
 def printed_dois(text: str) -> frozenset[str]:
     """DOI keys printed in the opening of a document's first window: a paper's own DOI, which lets a
     publisher's PDF or HTML page count as the work its DOI names."""

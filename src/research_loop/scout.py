@@ -76,6 +76,7 @@ from .agents import (
 )
 from .budget_notes import LoopBudget
 from .config import ScoutLimits, Settings, split_model
+from .evals import case_blocked_titles
 from .evidence import (
     EvidenceLedger,
     Support,
@@ -147,9 +148,11 @@ from .web import HybridSearch, WebAcquisition, WebSearch, exa_engine
 # re-reading it to quote uses no loop budget; followup-v11 also lets a deep run give every other scout and
 # deep dive a second scout model (ScoutModels.scout_alt), with $3.00 for the follow-up envelope.
 # v11: old search snippets leave a scout's view past 16,000 characters, as old pages do (history.py).
-WORKFLOW_VERSION = "scout-v11"
-FOLLOWUP_VERSION = "scout-followup-v12"
-RESCOUT_VERSION = "scout-research-v11"
+# v12: a frozen case's blocked titles reach its scouts and gap analyzer beside its blocked addresses, and a
+# scout's evidence citing a blocked work by its title is refused.
+WORKFLOW_VERSION = "scout-v12"
+FOLLOWUP_VERSION = "scout-followup-v13"
+RESCOUT_VERSION = "scout-research-v12"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -366,7 +369,8 @@ class _Run:
     def __init__(self, question: str, settings: Settings, store: RunStore, notes: Sequence[str],
                  blocked_urls: Sequence[str], parent_run_id: UUID | None, study: StudyLabels | None,
                  follow_up: bool = False, budget: StudyBudget | None = None,
-                 case_identity: dict[str, Any] | None = None, depth: Depth | None = None) -> None:
+                 case_identity: dict[str, Any] | None = None, depth: Depth | None = None,
+                 blocked_titles: Sequence[str] = ()) -> None:
         self.question, self.settings, self.store, self.study = question, settings, store, study
         # The standard limits until a plan sets the depth (`_set_depth`).
         self.limits: ScoutLimits = settings.limits
@@ -378,7 +382,8 @@ class _Run:
         self.cost = Decimal(0)
         self.unpriced = False
         self.notes: list[str] = []
-        self.policy = SourcePolicy(tuple(blocked_urls))
+        self.blocked_titles = list(blocked_titles)
+        self.policy = SourcePolicy(tuple(blocked_urls), titles=tuple(blocked_titles))
         self.models: dict[tuple[Role, str], Model] = {}
         self.caches: list[AcquisitionCache] = []
         # Set when the research deadline, not a cancelled run, stopped the scouts still running.
@@ -522,6 +527,8 @@ class _Run:
         settings = self.settings.model_copy(update={"limits": self.limits})
         config = run_config(settings, self.notes_in, self.blocked_urls, follow_up=self.follow_up)
         config["follow_up"], config["depth"] = self.follow_up, self.depth
+        if self.blocked_titles:
+            config["blocked_titles"] = self.blocked_titles
         if (alt := self.settings.models.scout_alt) and self.depth == "deep":
             # Even-numbered scouts and deep dives (`_scout_spec`).
             config["models"]["scout_alt"] = {"model": split_model(alt)[0], "thinking": split_model(alt)[1],
@@ -552,7 +559,8 @@ class _Run:
         budget = LoopBudget(requests, productive, misses, time_left=time_left,
                             return_within=limits.request_timeout_seconds)
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
-                                       "blocked_urls": self.blocked_urls}
+                                       "blocked_urls": self.blocked_urls,
+                                       **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {})}
         if coverage:
             prompt_data["coverage"] = [item.model_dump(mode="json") for item in coverage]
         if deep:
@@ -623,6 +631,7 @@ class _Run:
 
     async def _analyze_gap(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> GapAnalysis | None:
         prompt = json.dumps({"question": self.question, "notes": self.notes_in, "blocked_urls": self.blocked_urls,
+                             **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {}),
                              "plan": plan.model_dump(mode="json"), "research": ledger.prompt_view(),
                              "not_established": _not_established(plan, ledger),
                              "coverage": _coverage_view(plan, ledger),
@@ -978,11 +987,13 @@ async def scout(question: str, *, settings: Settings | None = None, store: RunSt
                 notes: Sequence[str] = (), blocked_urls: Sequence[str] = (),
                 parent_run_id: UUID | None = None, study: StudyLabels | None = None,
                 follow_up: bool = False, budget: StudyBudget | None = None,
-                case_identity: dict[str, Any] | None = None, depth: Depth | None = None) -> ScoutRun:
+                case_identity: dict[str, Any] | None = None, depth: Depth | None = None,
+                blocked_titles: Sequence[str] = ()) -> ScoutRun:
     """Research `question` and return a cited answer within the configured limits.
 
     `notes` are requirements every role follows, such as "prefer peer-reviewed sources". `blocked_urls` are
-    sources no tool may fetch and no evidence may cite. Without a `store`, the run is kept in memory.
+    sources no tool may fetch and no evidence may cite, and `blocked_titles` the titles of blocked works, so a
+    copy at another address is blocked too. Without a `store`, the run is kept in memory.
     `study` labels the run as one arm and repetition of a study, so its records can be paired.
     `follow_up` adds one material-gap analysis and up to `max_gaps` targeted research passes in parallel.
     `depth` (quick, standard, or deep) fixes how much research the run gets; without it the planner chooses,
@@ -993,7 +1004,8 @@ async def scout(question: str, *, settings: Settings | None = None, store: RunSt
     settings = settings or Settings()
     check_config(settings)
     run = _Run(question.strip(), settings, store or MemoryStore(), notes, blocked_urls, parent_run_id, study,
-               follow_up=follow_up, budget=budget, case_identity=case_identity, depth=depth)
+               follow_up=follow_up, budget=budget, case_identity=case_identity, depth=depth,
+               blocked_titles=blocked_titles)
     return await run.execute()
 
 
@@ -1005,7 +1017,8 @@ def _rerun(source: dict[str, Any], settings: Settings, store: RunStore, study: S
     source_config = source.get("config") or {}
     runner = _Run(source["question"], settings, store, source_config.get("notes") or [],
                   source_config.get("blocked_urls") or [], UUID(str(source["id"])), study, budget=budget,
-                  case_identity=source_config.get("case"))
+                  case_identity=source_config.get("case"),
+                  blocked_titles=source_config.get("blocked_titles") or case_blocked_titles(source_config.get("case")))
     runner.plan = plan = ResearchPlan.model_validate(source["plan"])
     runner.depth, runner.limits = plan.depth, settings.limits.for_depth(plan.depth)
     runner.workflow_version = workflow_version

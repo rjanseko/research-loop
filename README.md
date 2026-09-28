@@ -139,6 +139,7 @@ flowchart TD
 research scout "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
 research scout "..." --note "Keep preprints and published papers distinct." --out report/
 research scout "..." --block https://example.org/paywalled-review --max-usd 1.00
+research scout "..." --block-title "The exact title of a work to keep out, wherever it appears"
 research scout "..." --follow-up
 research scout "..." --depth deep
 ```
@@ -398,7 +399,7 @@ A scout's request that fails on a connection fault that is not a timeout, such a
 
 The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
 
-`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results. A copy of a blocked work that carries neither its address nor its DOI can still reach a scout as a snippet, and Exa finds such copies more often.
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
 
 Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 

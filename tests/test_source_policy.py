@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from research_loop.acquisition import AcquisitionCache, SourcePolicy
+from research_loop.schemas import SourceRef
 from research_loop.scholar import ScholarResponse, ScholarWork
 from research_loop.tools import research_toolset
 from research_loop.web import WebAcquisition, WebSearch
@@ -194,3 +195,87 @@ async def test_a_copy_that_prints_a_blocked_doi_is_refused_even_from_the_cache(p
         assert (result["error"], result["blocked"]) == ("BlockedSource", DOI)
     assert "text" in await WebAcquisition(cache_root=tmp_path, cache_mode="reuse", policy=SourcePolicy(
         ("https://doi.org/10.9999/other",))).fetch(copy, max_chars=1000)
+
+
+# drb2-task8's blocked review, which Exa search returned twice in its top three results, and whose CDN copy
+# carries neither a blocked address nor the DOI (docs/study-log.md, 28 September 2026).
+TITLE = "Machine Learning-Based Methods for Materials Inverse Design: A Review"
+TITLED = SourcePolicy((DOI,), titles=(TITLE,))
+
+
+def test_a_blocked_title_matches_its_copies_whatever_the_case_punctuation_or_spacing() -> None:
+    blocked = f"title: {TITLE}"
+    assert TITLED.blocks_title("CMC | Machine Learning-Based Methods for Materials Inverse Design: A Review") == blocked
+    assert TITLED.blocks_title("machine learning based methods for materials inverse design  a review (2025)") == blocked
+    assert TITLED.blocks_title("Machine learning-based inverse design methods considering data characteristics") is None
+    # A title is matched whole, on word boundaries, and a short one is never matched.
+    assert TITLED.blocks_title("Machine Learning-Based Methods for Materials Inverse Design: A Reviewer's guide") is None
+    assert SourcePolicy(titles=("A Review",)).blocks_title("A review of everything") is None
+    assert SourcePolicy().blocks_title(TITLE) is None
+    assert TITLED.blocks_work(urls=("https://cdn.example/x.pdf",), title=TITLE) == blocked
+
+
+@pytest.mark.asyncio
+async def test_a_copy_known_only_by_its_title_is_left_out_of_search_scholarship_and_reading(public_urls,
+                                                                                           tmp_path) -> None:
+    async def engine(query: str) -> list[dict[str, str]]:
+        return [{"title": TITLE, "href": "https://cdn.example/review.pdf", "body": "Exploration-based methods..."},
+                {"title": "A mirror", "href": "https://mirror.example/r", "body": f"{TITLE}. Abstract: ..."},
+                {"title": "Another review", "href": "https://ok.example/r", "body": "Inverse design survey"}]
+
+    found = await WebSearch(engine=engine, retry_delays=(), policy=TITLED).search("materials inverse design review")
+    assert [item["url"] for item in found["results"]] == ["https://ok.example/r"]
+
+    class Scholar(_Scholar):
+        async def _works(self) -> ScholarResponse:
+            return ScholarResponse(works=[
+                ScholarWork(provider="stub", title=TITLE, url="https://cdn.example/review.pdf", abstract="Blocked"),
+                ScholarWork(provider="stub", title="Another paper", doi="10.5555/ok", abstract="Allowed text")])
+
+    tools = research_toolset(WebSearch(engine=None, retry_delays=()),
+                             WebAcquisition(cache_root=tmp_path, cache_mode="off", policy=TITLED), Scholar()).tools
+    assert [w["title"] for w in (await tools["scholar_search"].function("inverse design"))["works"]] == ["Another paper"]
+
+    # A page whose opening prints the title is refused; one that only cites it further down is read.
+    pages = {"https://cdn.example/review.pdf": f"<p>Computers, Materials &amp; Continua. {TITLE}.</p><p>{'Text. ' * 400}</p>",
+             "https://ok.example/citing": f"<p>{'Our own study of inverse design. ' * 200}</p><p>[12] {TITLE}.</p>"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"content-type": "text/html"},
+            text=f"<html><body><article>{pages[str(request.url)]}</article></body></html>"))) as http:
+        fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="off", client=http, policy=TITLED)
+        copy = await fetcher.fetch("https://cdn.example/review.pdf")
+        citing = await fetcher.fetch("https://ok.example/citing")
+    assert (copy["error"], copy["blocked"]) == ("BlockedSource", f"title: {TITLE}")
+    assert "text" in citing
+
+
+def test_a_scouts_evidence_citing_a_blocked_work_by_its_title_is_refused() -> None:
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelRetry
+
+    from research_loop.agents import Assignment, _result_fits_assignment
+    from research_loop.schemas import Claim, Evidence, ResearchQuestion, ResearchResult
+
+    evidence = Evidence(source=SourceRef(url="https://cdn.example/review.pdf", title=TITLE), excerpt="e",
+                        quote="q", confidence=1)
+    result = ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=1,
+                            claims=[Claim(id="c1", statement="s", evidence=[evidence], confidence=1)])
+    with pytest.raises(ModelRetry, match="blocked for this task"):
+        _result_fits_assignment(SimpleNamespace(deps=Assignment(ResearchQuestion(id="q1", question="Q?"), TITLED)),
+                                result)
+
+
+def test_every_frozen_case_blocks_its_expert_reports_title_and_a_rerun_recovers_it() -> None:
+    from research_loop.evals import (
+        blocked_titles,
+        case_blocked_titles,
+        case_identity,
+        study_cases,
+    )
+
+    drb2 = [case for case in study_cases().values() if case.id.startswith("drb2-")]
+    assert drb2 and all(blocked_titles(case) for case in drb2)
+    task8 = study_cases()["drb2-task8"]
+    assert case_blocked_titles(case_identity(task8)) == [TITLE]
+    assert case_blocked_titles(None) == [] and case_blocked_titles({"id": "no-such-case"}) == []

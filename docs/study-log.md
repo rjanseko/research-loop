@@ -31,6 +31,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
 | 09-28 | [The first free diagnosis of the deep-vs-standard study](#2026-09-28-the-first-free-diagnosis-of-the-deep-vs-standard-study) | free | With three runs per arm the study could detect only about 8-point differences, so its 5-point rule could not decide; 7 of 52 points never met |
 | 09-28 | [Hybrid search and capped Exa highlights: checks](#2026-09-28-hybrid-search-and-capped-exa-highlights-checks) | $0.12 | Capped highlights come to about 6,000 characters a search; in a cheap run Exa answered all 10 searches DuckDuckGo could not, and no blocked source reached a scout |
+| 09-28 | [Blocked works known by title](#2026-09-28-blocked-works-known-by-title) | free | 36 of 49 stored DRB-II case runs were shown their case's blocked title; every task68-plus run saw the expert report's abstract. Now blocked by title (fetch version 15) |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -584,3 +585,19 @@ Fetch version 14 adds a hybrid engine, which sends a query to Exa only when Duck
 - *A cheap run* on drb2-task8 at standard depth, with every role on Luna@low: `10e3fce3`, complete, $0.115, 152 s. Of 23 DuckDuckGo searches, 10 found nothing. Exa answered all 10, for $0.07 of the run's $0.088 in paid searches and reads, and the reading fallback read 4 pages through Exa. The blocked report appeared only in the scouts' block list, never in a tool result.
 
 A cheap run is a pass or fail check, not a measure of quality. Whether hybrid search raises rubric scores, and where points are lost, is left to a study with the diagnosis on.
+
+## 2026-09-28 Blocked works known by title
+
+The architectural audit left one known gap. A copy of a blocked work could reach a scout if its address carried neither a blocked address nor the work's DOI. Exa search makes such copies more likely to turn up. So a blocked work is now also known by its title, which every frozen case already records as `blocked_title`. Fetch version 15 leaves out or refuses:
+- search results whose title or snippet carries the title;
+- scholarly records with that title;
+- fetched documents whose first 3,000 characters print it.
+
+Scout-v12 refuses a scout's evidence that cites the work by title. It also shows scouts and the gap analyzer the blocked titles beside the blocked addresses. A page that only cites the work further down is still read. Titles shorter than four words are never matched. `--block-title` blocks a title for ordinary runs.
+
+**A free scan of the stored runs.** 36 of the 49 stored DRB-II case runs had been shown their case's blocked title:
+- **drb2-task68-plus, every stored run (v1 to v3).** Scouts were shown the blocked review's OpenAlex record with its 1,080-character abstract. The case blocks `mdpi.com/1424-8220/24/17/5551`, an address without the DOI 10.3390/s24175551, so neither the address nor the DOI check recognized the record. Its stored scores, such as the 14 of 54 baseline, were earned with the expert report's abstract in view.
+- **drb2-task8 before fetch version 12.** Search results at the blocked addresses carried abstract text in their snippets, and six v1 to v3 ledgers cite the review by title. That partly overlaps the audit's F06 finding.
+- **drb2-task8 at scout-v10.** Two runs of the deep-vs-standard study, `27701a2f` and `aea52be0`, were shown a Semantic Scholar page for the review. Its snippet gave only the title and authors, with no content, so their grades are unaffected in substance.
+
+Title blocking catches every case above. Scores from before fetch version 12 on drb2-task8, and every stored score on drb2-task68-plus, should be read with this exposure in mind.
