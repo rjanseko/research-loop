@@ -39,6 +39,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
 | 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
+| 09-28 | [Search engines on three drb2-task8 plans (scout-v14)](#2026-09-28-search-engines-on-three-drb2-task8-plans-scout-v14) | $4.99 | No engine advanced under the rule: Serper was disqualified by one partial unrelated to search and Exa by quote share; Serper is rerun on scout-v15 |
 | 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
@@ -306,3 +307,31 @@ So scout-v15 also loosened the budgets that are close, or that paid searching wi
 These are soft shares, and a run pays only for what it uses. The envelopes change what a run may spend, not what it typically spends: v14 standard rescouts used a median of 21% of theirs. A new test checks that a scout whose result fails its checks twice gets a third try; it fails with one retry.
 
 **The token limit.** Plan 3's DuckDuckGo rescout (`0acd61da`) lost a question to the 2,000,000-token limit. With trimming off, its scout resent its whole history on each of 20 requests. It billed 2,034,129 tokens for $0.040, 93% of them read from the cache, and it was cut off with its claims. scout-v15 raises `scout_tokens` to 8,000,000, because the dollar share already bounds what tokens cost. Nearing either limit now withdraws the scout's tools with the budget note, instead of cutting it off. The next request is estimated as twice the average so far, since each request resends the history, and two such requests must still fit. A new test covers the token case.
+
+## 2026-09-28 Search engines on three drb2-task8 plans (scout-v14)
+
+`studies/search-rescout-task8.toml`, labelled `search-rescout-task8-v14`, rescouted three stored drb2-task8 plans once per arm. The arms were DuckDuckGo, Serper, Brave, and Exa, each alone, with Luna@xhigh scouts and trimming off on scout-v14. GLM@high diagnosed every run. Its dry check was clean. In place of a cheap check, the user asked for the first plan's four rescouts to be checked for failures before the rest ran: all 16 scouts returned. It cost $4.99 of its $9.50 ceiling, diagnoses included.
+
+| Plan | DuckDuckGo | Serper | Brave | Exa |
+|---|---|---|---|---|
+| `aea52be0` | `281aa7e2` complete, 26 | `6a76c7bb` complete, 25 | `6fa930d6` complete, 29 | `3c6697be` complete, 30 |
+| `8f753940` | `9f116926` complete, 24 | `43e5c141` partial, 13 | `9b822c2d` complete, 23 | `ed4872c8` complete, 26 |
+| `27701a2f` | `0acd61da` partial, 24 | `b1de9f70` complete, 30 | `7060df48` complete, 32 | `0ba7d7b8` complete, 32 |
+
+Each cell gives the run, its status, and the rubric points its claims met, of 52.
+
+| Arm | Empty or failed searches | Verified quotes | Mean points claimed | Median rescout cost (search and reading) |
+|---|---|---|---|---|
+| DuckDuckGo | 62 of 160 (39%) | 221 of 240 (92.1%) | 24.7 | $0.159 ($0.03) |
+| Serper | 9 of 215 (4%) | 210 of 231 (90.9%) | 22.7 | $0.221 ($0.08) |
+| Brave | 44 of 163 (27%) | 226 of 255 (88.6%) | 28.0 | $0.388 ($0.26) |
+| Exa | 1 of 138 (1%) | 232 of 267 (86.9%) | 29.3 | $0.462 ($0.33) |
+
+**Decision: no engine advances, and DuckDuckGo stays the default.**
+- **Serper is disqualified.** It had a partial rescout (`43e5c141`) where DuckDuckGo had none on the same plan. The cause was not the engine: one scout's result left out a required field twice. Without that disqualification, Serper met every other condition: 4% empty against 39%, points within 2 of DuckDuckGo's (22.7 against 24.7, on the line), and $0.06 more.
+- **Exa is disqualified.** Its verified-quote share was 5.2 points below DuckDuckGo's, past the 5-point limit. It also cost $0.30 more a rescout, over the $0.15 allowed, though it found the most.
+- **Brave does not advance.** Its empty share (27%) is not half of DuckDuckGo's, and it cost $0.23 more.
+- No point difference is larger than the study can detect: the diagnosis gives 5 to 14 points by arm.
+- Two fetches of a blocked source were refused, and no blocked source reached a scout.
+
+Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).
