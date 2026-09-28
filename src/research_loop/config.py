@@ -90,6 +90,11 @@ class ScoutModels(BaseModel):
 
     planner: str = "openai:gpt-6-sol@high"
     scout: str = "openai:gpt-6-luna@high"
+    # A second scout model for deep runs, such as zai:glm-5.3@xhigh: when set, a deep run's even-numbered
+    # questions and deep dives use it, so its scouts draw on a second provider's rate limit. Paced under
+    # Luna's 200,000 tokens a minute, a deep run's scouts together sent about 115,000 tokens a minute
+    # (d8c8198e, 2c66e8bd), whatever their deadline.
+    scout_alt: str | None = None
     synthesizer: str = "anthropic:claude-opus-5-5@medium"
     fallback: str | None = "openai:gpt-6-sol@high"
     # Grades rubric points and assesses quality (evals.py, quality.py); each grade records it.
@@ -103,7 +108,7 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "synthesizer", "fallback", "judge")
+    @field_validator("planner", "scout", "scout_alt", "synthesizer", "fallback", "judge")
     @classmethod
     def _provider_model(cls, value: str | None) -> str | None:
         return None if value is None or not value.strip() else _model_spec(value)
@@ -117,6 +122,7 @@ class DepthTier(BaseModel):
     synthesis_usd: float | None = Field(None, gt=0)
     research_seconds: float | None = Field(None, gt=0)
     deadline_seconds: float | None = Field(None, gt=0)
+    followup_cost_usd: float | None = Field(None, gt=0)
     followup_deadline_seconds: float | None = Field(None, gt=0)
     deep_dive_seconds: float | None = Field(None, gt=0)
     scout_productive_calls: int | None = Field(None, ge=1)
@@ -134,8 +140,10 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research
 # In the first deep example run (d8c8198e), three of four Luna scouts were cut off at the 480-second research
 # deadline with over 90% of their dollar share unspent, and the fourth scout and a deep dive stopped on their
 # productive calls. Paced under Luna's token rate, eight scouts need far longer than four, so a deep run gets
-# more time and tool calls, and each deep dive a full scout's loop budget, but no more money.
-_DEEP = {"max_questions": 8, "follow_up": True, "research_seconds": 1200, "deadline_seconds": 1920,
+# more time and tool calls, and each deep dive a full scout's loop budget. Its $3.00 leaves eight scouts about
+# $0.21 each, room for a GLM-5.3 second scout model (ScoutModels.scout_alt), which costs about seven times Luna.
+_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 3.00, "research_seconds": 1200,
+         "deadline_seconds": 1920,
          "followup_deadline_seconds": 1920, "deep_dive_seconds": 480, "scout_productive_calls": 48,
          "deep_dive_requests": 20, "deep_dive_productive_calls": 32, "deep_dive_misses": 16}
 
@@ -335,6 +343,8 @@ class Settings(BaseSettings):
                  "judge": self.models.judge}
         if self.models.fallback:
             roles["fallback"] = self.models.fallback
+        if self.models.scout_alt:
+            roles["scout_alt"] = self.models.scout_alt
         if self.search_engine == "exa" and self.exa_api_key is None and self.offline_world is None:
             problems.append("web search: exa needs EXA_API_KEY")
         if self.offline_world is None:

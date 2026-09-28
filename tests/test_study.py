@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from research_loop.config import Settings
 from research_loop.study import StudySpec, load_spec, run_study, schedule, summary
 from research_loop.study import (
     _preflight as real_preflight,  # before the autouse fixture replaces it
@@ -294,3 +295,20 @@ def test_the_configuration_check_reports_what_the_command_would_refuse() -> None
     assert "offline world" in real_preflight({"RESEARCH_MODELS__SCOUT": FAKE_MODEL})
     run = schedule(StudySpec(study="s", cases=["c"], cap_usd=1, estimate_usd=0.1, ceiling_usd=1, arms=[{"name": "a"}]))[0]
     assert real_preflight(mode_env("dry", run)) is None
+
+
+def test_dry_and_cheap_studies_replace_a_second_scout_model_only_when_one_is_set(spec: StudySpec, monkeypatch) -> None:
+    from research_loop.study import CHEAP_MODEL, FAKE_MODEL, mode_env
+
+    monkeypatch.delenv("RESEARCH_MODELS__SCOUT_ALT", raising=False)
+    monkeypatch.setattr("research_loop.config.Settings.model_config", {**Settings.model_config, "env_file": None})
+    glm = spec.model_copy(update={"arms": [arm.model_copy(update={"env": {"RESEARCH_MODELS__SCOUT_ALT": "zai:glm-5.3@xhigh"}})
+                                           for arm in spec.arms]})
+    # A cheap check must never send the real GLM-5.3@xhigh scouts a study's arm names.
+    assert mode_env("cheap", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == CHEAP_MODEL
+    assert mode_env("dry", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == FAKE_MODEL
+    # Without one, the check runs one scout model like the real run; "" leaves the setting off.
+    assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == ""
+    monkeypatch.setenv("RESEARCH_MODELS__SCOUT_ALT", "zai:glm-5.3@xhigh")
+    assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == CHEAP_MODEL
+    assert mode_env("real", schedule(glm)[0]) == {}

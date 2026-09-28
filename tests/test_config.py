@@ -103,7 +103,7 @@ def test_each_depth_changes_only_what_it_sets() -> None:
     assert (quick.max_questions, quick.cost_usd, quick.synthesis_usd, quick.deadline_seconds) == (2, 0.30, 0.12, 360)
     assert quick.scout_requests == limits.scout_requests and limits.for_depth("standard") is limits
     assert limits.follows_up("deep") and not limits.follows_up("quick") and not limits.follows_up("standard")
-    assert limits.for_depth("deep").followup_scout_usd(8) == 0.0875
+    assert limits.followup_scout_usd(8) == 0.0875 and limits.for_depth("deep").followup_scout_usd(8) == 0.2125
     with pytest.raises(ValidationError, match="quick depth"):
         ScoutLimits(quick={"cost_usd": 0.10})
 
@@ -120,7 +120,7 @@ def test_setting_one_depth_limit_keeps_the_rest_of_that_depth(monkeypatch: pytes
     assert (quick.max_questions, quick.cost_usd, quick.deadline_seconds) == (2, 0.40, 360)
 
 
-def test_a_deep_run_gets_more_time_and_tool_calls_but_no_more_money() -> None:
+def test_a_deep_run_gets_more_time_tool_calls_and_scout_money() -> None:
     limits = ScoutLimits()
     deep = limits.for_depth("deep")
     assert deep.research_seconds > limits.research_seconds and deep.deep_dive_seconds > limits.deep_dive_seconds
@@ -128,5 +128,7 @@ def test_a_deep_run_gets_more_time_and_tool_calls_but_no_more_money() -> None:
     assert deep.scout_productive_calls > limits.scout_productive_calls
     assert (deep.deep_dive_requests, deep.deep_dive_productive_calls, deep.deep_dive_misses) == (
         limits.scout_requests, limits.scout_productive_calls, limits.scout_misses)
-    assert (deep.followup_cost_usd, deep.deep_dive_usd, deep.synthesis_usd) == (
-        limits.followup_cost_usd, limits.deep_dive_usd, limits.synthesis_usd)
+    # Only the scouts' part of the envelope grows: $1.70 for eight scouts instead of $0.70.
+    assert (deep.followup_cost_usd, limits.followup_cost_usd) == (3.00, 2.00)
+    assert (deep.deep_dive_usd, deep.synthesis_usd, deep.gap_usd) == (limits.deep_dive_usd, limits.synthesis_usd, limits.gap_usd)
+    assert deep.followup_scout_usd(8) == 0.2125

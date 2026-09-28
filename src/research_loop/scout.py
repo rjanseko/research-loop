@@ -91,12 +91,12 @@ from .models import (
     Role,
     build_model,
     role_model,
+    scout_model,
     sent_settings,
-    token_pacer,
 )
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
-from .rate_limit import RATE_LIMIT_POLICY_VERSION, ScoutRateLimitModel
+from .rate_limit import RATE_LIMIT_POLICY_VERSION
 from .reading import ExaContentsReader, ExternalSpend, FirecrawlReader, OpenAccessReader
 from .schemas import (
     EVIDENCE_VERSION,
@@ -143,9 +143,12 @@ from .web import WebAcquisition, WebSearch, exa_engine
 # scouts of a v6 deep run quoted 1 of 34 items, and 11 of its 30 statements rested on their summaries alone.
 # followup-v10: a deep run gets 20 minutes of research, 8-minute deep dives with a full scout's loop budget,
 # and 48 productive calls a scout (config.py); a single depth setting no longer resets the rest of the depth.
-WORKFLOW_VERSION = "scout-v9"
-FOLLOWUP_VERSION = "scout-followup-v10"
-RESCOUT_VERSION = "scout-research-v9"
+# v10: a fetched page's text leaves a scout's view two responses after it was read (history.py), and
+# re-reading it to quote uses no loop budget; followup-v11 also lets a deep run give every other scout and
+# deep dive a second scout model (ScoutModels.scout_alt), with $3.00 for the follow-up envelope.
+WORKFLOW_VERSION = "scout-v10"
+FOLLOWUP_VERSION = "scout-followup-v11"
+RESCOUT_VERSION = "scout-research-v10"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -262,7 +265,8 @@ class ScoutRun:
 def check_config(settings: Settings) -> None:
     """Refuse, before any call, models that cannot run or whose cost cannot be capped."""
     problems = settings.route_problems()
-    specs = {settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback}
+    specs = {settings.models.planner, settings.models.scout, settings.models.scout_alt, settings.models.synthesizer,
+             settings.models.fallback}
     models = {split_model(spec)[0] for spec in specs if spec}
     problems += [f"{model} has no price, so its cost cannot be capped; add it to prices.toml"
                  for model in sorted(models) if price_per_million(model) is None]
@@ -374,7 +378,7 @@ class _Run:
         self.unpriced = False
         self.notes: list[str] = []
         self.policy = SourcePolicy(tuple(blocked_urls))
-        self.models: dict[Role, Model] = {}
+        self.models: dict[tuple[Role, str], Model] = {}
         self.caches: list[AcquisitionCache] = []
         # Set when the research deadline, not a cancelled run, stopped the scouts still running.
         self.research_timed_out = False
@@ -389,19 +393,27 @@ class _Run:
     def _total_cost(self) -> Decimal:
         return self.cost + self.external_spend.usd
 
-    def _model(self, role: Role) -> Model:
-        if role not in self.models:
+    def _model(self, role: Role, spec: str) -> Model:
+        """The run's model for `role` on `spec`; scouts on one spec share its pacer and rate-limit pause."""
+        if (role, spec) not in self.models:
             if self.budget is None:
-                self.models[role] = role_model(role, self.settings)
+                self.models[role, spec] = role_model(role, self.settings, spec)
             else:
-                spec = getattr(self.settings.models, role)
                 model_id = split_model(spec)[0]
                 guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
                                            model_id, self.budget)
                 # The guard is inside the 429 wrapper, so every retry reserves a new request.
-                self.models[role] = (ScoutRateLimitModel(guarded, token_pacer(model_id, self.settings))
-                                     if role == "scout" else guarded)
-        return self.models[role]
+                self.models[role, spec] = (scout_model(guarded, model_id, self.settings)
+                                           if role == "scout" else guarded)
+        return self.models[role, spec]
+
+    def _scout_spec(self, index: int) -> str:
+        """The model of a deep run's `index`th scout or deep dive (from 0): the second scout model, when one
+        is set, takes every other one, so the scouts draw on two providers' rate limits."""
+        models = self.settings.models
+        if models.scout_alt and self.depth == "deep" and index % 2 == 1:
+            return models.scout_alt
+        return models.scout
 
     def _spend(self, usage: RunUsage, *, refused: bool = False) -> None:
         if not usage.requests:
@@ -419,13 +431,14 @@ class _Run:
                     toolsets: list[Any] | None = None, stream: bool = False, attempt: _Attempt | None = None,
                     finish: Callable[[Any], Any] | None = None, finished: Callable[[Any], str] | None = None,
                     cancelled: Callable[[], str] | None = None, tool_seconds: Callable[[], float] | None = None,
-                    call_role: str | None = None) -> Any:
+                    call_role: str | None = None, spec: str | None = None) -> Any:
         """Run one agent call as a recorded call; return its output, after `finish` when given.
 
         The call's row records why it stopped: `finished` names it for a result, `cancelled` for a
         cancellation (usually a deadline), and a failure is named by its exception.
         """
-        model_id = split_model(getattr(self.settings.models, role))[0]
+        spec = spec or getattr(self.settings.models, role)
+        model_id = split_model(spec)[0]
         call_id = await self.store.start_call(self.run_id, role=call_role or role, model=model_id, question_id=question_id)
         # Labels the agent run's span in the trace; PydanticAI keeps it out of the model's requests.
         metadata = {"run_id": str(self.run_id), "role": call_role or role, "question_id": question_id,
@@ -438,7 +451,7 @@ class _Run:
                     attempt.messages = messages
                 output_cap = (16_000 if role == "planner" else self.limits.guarded_scout_max_output_tokens
                               if role == "scout" else self.limits.synthesis_max_output_tokens)
-                result = await agent.run(prompt, model=self._model(role), deps=deps, usage_limits=limits, usage=usage,
+                result = await agent.run(prompt, model=self._model(role, spec), deps=deps, usage_limits=limits, usage=usage,
                                          model_settings={"max_tokens": output_cap} if self.budget else None,
                                          capabilities=capabilities, toolsets=toolsets, metadata=metadata,
                                          event_stream_handler=_ignore_events if stream else None)
@@ -508,6 +521,10 @@ class _Run:
         settings = self.settings.model_copy(update={"limits": self.limits})
         config = run_config(settings, self.notes_in, self.blocked_urls, follow_up=self.follow_up)
         config["follow_up"], config["depth"] = self.follow_up, self.depth
+        if (alt := self.settings.models.scout_alt) and self.depth == "deep":
+            # Even-numbered scouts and deep dives (`_scout_spec`).
+            config["models"]["scout_alt"] = {"model": split_model(alt)[0], "thinking": split_model(alt)[1],
+                                             "sent": sent_settings(alt, "scout", self.settings)}
         if self.budget:
             config["study_budget"] = {"cap_usd": str(self.budget.cap_usd), "policy": BUDGET_POLICY_VERSION,
                                       "sdk_retries": 0, "fallback": False,
@@ -518,8 +535,8 @@ class _Run:
 
     async def _scout(self, attempt: _Attempt, semaphore: asyncio.Semaphore, share: Decimal,
                      toolset: TimedToolset, deadline: float, *, gap: str | None = None,
-                     ledger: EvidenceLedger | None = None,
-                     coverage: Sequence[CoverageItem] = ()) -> ResearchResult:
+                     ledger: EvidenceLedger | None = None, coverage: Sequence[CoverageItem] = (),
+                     spec: str | None = None) -> ResearchResult:
         limits, question = self.limits, attempt.question
         # The budget note runs off the event loop, so the clock is taken here and only read later.
         clock = asyncio.get_running_loop()
@@ -560,7 +577,7 @@ class _Run:
                     limits=UsageLimits(
                         request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,
                         tool_calls_limit=budget.tool_call_limit),
-                    attempt=attempt, finish=checked,
+                    attempt=attempt, finish=checked, spec=spec,
                     finished=lambda result: budget.finish_reason(result.usage.requests, result.all_messages()),
                     cancelled=lambda: ("the deep-dive deadline passed" if deep else
                                        _reason(TimeoutError()) if self.research_timed_out else
@@ -582,8 +599,9 @@ class _Run:
                             else self.limits.scout_usd(len(attempts))))
         semaphore = asyncio.Semaphore(self.limits.parallel_scouts)
         tasks = [asyncio.create_task(self._scout(attempt, semaphore, share, toolset, deadline,
-                                                 coverage=_question_coverage(plan, attempt.question)))
-                 for attempt in attempts]
+                                                 coverage=_question_coverage(plan, attempt.question),
+                                                 spec=self._scout_spec(index)))
+                 for index, attempt in enumerate(attempts)]
         try:
             _, running = await asyncio.wait(tasks, timeout=max(deadline - asyncio.get_running_loop().time(), 0))
             self.research_timed_out = bool(running)
@@ -622,7 +640,7 @@ class _Run:
             return None
 
     async def _deep_dive(self, gap: MaterialGap, plan: ResearchPlan, ledger: EvidenceLedger,
-                         toolset: TimedToolset, deadline: float) -> ResearchResult:
+                         toolset: TimedToolset, deadline: float, index: int = 0) -> ResearchResult:
         """One gap's research, filed under the planned question it names. Every deep dive of a run sees the
         same ledger, which the caller extends only after all of them finish."""
         original = next(q for q in plan.questions if q.id == gap.question_id)
@@ -634,7 +652,8 @@ class _Run:
                 open_items = [item for item, _ in coverage_items(plan, ledger)
                               if item.kind != "assumption" and item.id in _open_ids(plan, ledger)]
                 result = await self._scout(attempt, asyncio.Semaphore(1), Decimal(str(self.limits.deep_dive_usd)),
-                                           toolset, deadline, gap=gap.reason, ledger=ledger, coverage=open_items)
+                                           toolset, deadline, gap=gap.reason, ledger=ledger, coverage=open_items,
+                                           spec=self._scout_spec(index))
         except TimeoutError:
             result = _cut_off(question, attempt.messages, "the deep-dive deadline passed")
         if result.cut_off:
@@ -732,8 +751,8 @@ class _Run:
                 analysis = await self._analyze_gap(plan, ledger, gap_deadline)
                 if analysis and analysis.gaps:
                     dive_deadline = min(loop.time() + self.limits.deep_dive_seconds, deadline - 90)
-                    dives = await asyncio.gather(*(self._deep_dive(gap, plan, ledger, toolset, dive_deadline)
-                                                   for gap in analysis.gaps))
+                    dives = await asyncio.gather(*(self._deep_dive(gap, plan, ledger, toolset, dive_deadline, index)
+                                                   for index, gap in enumerate(analysis.gaps)))
                     # Added in gap order, so claim IDs do not depend on which dive finished first.
                     for result in dives:
                         ledger.add(result)

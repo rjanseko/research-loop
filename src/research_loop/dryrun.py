@@ -920,7 +920,10 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
         "deep": base.limits.deep.model_dump() | times,
     })
     return base.model_copy(update={
-        "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake),
+        # A second scout model in some runs, so a deep run's scouts and dives split between two models' pacers,
+        # prices, and budget reservations.
+        "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake,
+                              scout_alt=rng.choice([None, "fake:fuzz-alt@high"])),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
         # Both engines, so the paid search path, its budget reservations, and its costs are fuzzed too.
         "search_engine": rng.choice(["duckduckgo", "exa"]),
