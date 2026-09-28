@@ -19,6 +19,17 @@ When each finishes:
 
 The trimming study's rule decides whether `RESEARCH_TRIM_HISTORY` defaults to off. The user expects trimming to hurt more than it helps, but the default changes only if the rule is met. The search study is a screen, so an engine can advance to a confirmation, but no default changes on its result.
 
+## 1b. Find where budgets bottleneck runs
+
+After the search study, and before the DeepSeek study, measure which limit actually stops each call, from the stored runs and for free: no model calls. The user asked for this on 28 September.
+
+For every planner, scout, deep dive, gap analysis, and synthesis call, by workflow version, depth, and model:
+- what stopped it: a limit (which one) or its own return;
+- how much of its dollar share, time window, requests, productive calls, input tokens, and output cap it used;
+- what the time went on: model time, tool time, pacing waits, and 429s.
+
+For each run, also record hard-cap and study-ceiling refusals, and paid search and reading spend against each share. Report which limits bind, and how often a binding limit cost claims (a cut-off keeps none). Then propose changes with the data behind them. Write it as a reusable script, so each study can be checked the same way. Record the findings in the study log.
+
 ## 2. Run the DeepSeek rescout study
 
 `studies/deepseek-rescout-task8.toml` compares Luna, DeepSeek Flash, and DeepSeek V4 Pro scouts, all at xhigh, on the same three plans ($10.50 ceiling, approved). Start it once one of the two running studies has finished, so that no more than two Luna studies run at once. If the trimming study turned trimming off, set `RESEARCH_TRIM_HISTORY = "false"` in every arm first and run its dry check again. Write it up as in step 1.
