@@ -96,11 +96,11 @@ There are two ways to work with Scout: using it to answer a question, and changi
 ### From a question to a report
 
 ```mermaid
-flowchart LR
-    doctor["Check the setup<br/>research doctor"] --> run["Run the question<br/>research scout"]
-    run --> read["Read the report<br/>status, support, needs review"]
-    read --> inspect["Inspect the run<br/>research show, research breakdown"]
-    read -. "optional" .-> audit["Audit its statements<br/>research audit"]
+flowchart TD
+    doctor["research doctor"] --> run["research scout"]
+    run --> read["Read the report"]
+    read --> inspect["research breakdown"]
+    read -. "optional" .-> audit["research audit"]
 ```
 
 1. Run `research doctor` once, and `research doctor --smoke` after changing a model or a key.
@@ -112,18 +112,15 @@ flowchart LR
 ### From a change to a decision
 
 ```mermaid
-flowchart LR
-    change["Change code or a prompt<br/>bump its version"] --> tests["Narrowest tests, then<br/>pytest, lint, fuzz"]
-    tests --> spec["Write a study spec<br/>decision rule first"]
-    spec --> dry["Dry run<br/>fake models, free"]
-    dry --> cheap["Cheap run<br/>real web, cents"]
-    cheap --> approve{"Estimate and cap<br/>approved?"}
-    approve -- "yes" --> paid["Paid study<br/>graded and audited"]
-    paid --> judge2["Regrade with<br/>the second judge"]
-    judge2 --> record["Record in<br/>docs/study-log.md"]
-    record --> decide{"Rule met?"}
+flowchart TD
+    change["Change and bump the version"] --> tests["Tests, lint, fuzz"]
+    tests --> spec["Study spec with a decision rule"]
+    spec --> checks["Dry run, then cheap run"]
+    checks --> approve{"Approved?"}
+    approve -- "yes" --> paid["Paid study, both judges"]
+    paid --> decide{"Rule met?"}
     decide -- "yes" --> adopt["Change the default"]
-    decide -- "no" --> keep["Keep the default<br/>record as undecided"]
+    decide -- "no" --> keep["Keep the default"]
 ```
 
 1. Make the change, and bump the version the change affects: the workflow version when prompts or scout behavior change, the evidence, fetch, budget, or rate-limit version when those rules change. Runs record every version, so results are only compared within one.
@@ -201,24 +198,20 @@ research db reconcile --older-than 30 --apply   # close out runs that a killed p
 ## How a run works
 
 ```mermaid
-flowchart LR
-    question(["Question"]) --> plan["Plan<br/>depth, coverage items,<br/>research questions"]
-    plan --> scouts[["Scout each question in parallel"]]
-    scouts <--> search["Web search<br/>DuckDuckGo or Exa"]
-    scouts <--> fetch["Read pages and PDFs<br/>public HTTPS only"]
-    scouts <--> scholar["Scholarly search<br/>OpenAlex, arXiv, Crossref"]
-    prior_plan[("Plan from a prior run")] -. "research rescout" .-> scouts
-    scouts --> check["Check the evidence in code<br/>quotes, sources, access level"]
+flowchart TD
+    question(["Question"]) --> plan["Plan the research"]
+    plan --> scouts[["Scouts, in parallel"]]
+    tools["Search, pages, papers"] <--> scouts
+    scouts --> check["Check evidence in code"]
     check --> ledger[("Evidence ledger")]
-    ledger -. "--follow-up or a deep plan" .-> gap{"Material gap?"}
-    gap -- "up to three gaps" --> dive[["Deep dives in parallel"]]
+    ledger -. "follow-up" .-> gap{"Material gap?"}
+    gap -- "yes" --> dive[["Deep dives"]]
     dive --> ledger
-    gap -- "none" --> synthesize
-    ledger --> synthesize["Write the report<br/>every statement cites claim IDs"]
-    prior_ledger[("Ledger from a prior run")] -. "research synthesize" .-> synthesize
-    synthesize --> report(["Report, support labels,<br/>needs review"])
-    report -. "research audit" .-> audit["Support audit<br/>by another vendor's model"]
+    ledger --> synthesize["Write the report"]
+    synthesize --> report(["Report"])
 ```
+
+`research rescout` reruns the scouts on a stored plan, and `research synthesize` rewrites the report from a stored ledger. `research audit` checks a finished report's statements with another vendor's model.
 
 A run has three steps, and each one is bounded in money and time.
 
@@ -374,7 +367,9 @@ The output bound is the call's output cap:
 - `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` (24,000) for scouts;
 - `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS` (32,000) for synthesis.
 
-Guarded runs disable the provider SDK's retries and the fallback model, so that nothing is sent without a reservation. The reservation policy is recorded with the run as `usage-anchor-v5`; earlier versions are described in `src/research_loop/study_budget.py`.
+The reservation prices the input bound at the model's highest input rate and the output bound at its output rate. It is never less than the price of one request that uses both bounds, so a long-context tier is covered. GPT-6 Luna and Sol, for example, charge 1.5 times as much for output once the input passes 272,000 tokens.
+
+Guarded runs disable the provider SDK's retries and the fallback model, so that nothing is sent without a reservation. The reservation policy is recorded with the run as `usage-anchor-v6`; earlier versions are described in `src/research_loop/study_budget.py`.
 
 `--max-usd` is required for frozen study cases and for `grade`, `assess`, `audit`, `synthesize`, and `rescout`. It is optional for ordinary runs.
 
