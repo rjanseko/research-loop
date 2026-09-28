@@ -161,7 +161,7 @@ async def test_paid_tools_that_spend_the_share_withdraw_tools_with_a_note() -> N
     assert offered == [["fetch"], ["fetch"], []]
     assert notes[2][-1].startswith(NOTE_PREFIX + "Your research budget is spent")
     assert budget.finish_reason(result.usage.requests, result.all_messages()) == \
-        "returned after its dollar share was spent"
+        "returned after its dollar or token budget was spent"
 
 
 async def test_a_returned_loop_says_which_budget_it_spent() -> None:
@@ -214,3 +214,15 @@ def test_the_prompt_fingerprint_covers_every_budget_note(monkeypatch: pytest.Mon
     before = prompts.prompt_fingerprint()
     monkeypatch.setitem(prompts.BUDGET_NOTES, "NOTE", "changed")
     assert prompts.prompt_fingerprint() != before
+
+
+def test_nearing_the_token_limit_counts_as_a_spent_budget() -> None:
+    # With the whole history resent, a scout billed 2,034,129 tokens in 20 requests for $0.04 and was cut off
+    # by the token limit with its claims (run 0acd61da); the loop now returns before that.
+    from pydantic_ai.usage import RunUsage
+
+    budget = LoopBudget(max_requests=30, max_productive=128, max_misses=16, max_tokens=2_000_000)
+    assert budget.out_of_money(RunUsage(requests=18, input_tokens=1_700_000))
+    assert not budget.out_of_money(RunUsage(requests=7, input_tokens=450_000))
+    assert budget.note(18, tool_yield([]), RunUsage(requests=18, input_tokens=1_700_000)).startswith(
+        NOTE_PREFIX + "Your research budget is spent")

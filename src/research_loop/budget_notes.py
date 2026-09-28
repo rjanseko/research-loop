@@ -121,9 +121,11 @@ class LoopBudget:
     time_left: Callable[[], float] | None = None
     return_within: float = 0
     # The call's dollar share, and what its tool calls have spent on paid searches and page reads, which
-    # the framework's cost limit does not see. Tools are withdrawn while the result request still fits.
+    # the framework's cost limit does not see; and its token limit. Tools are withdrawn while the result
+    # request still fits, since a call stopped by either limit keeps no claims.
     share: Decimal | None = None
     external: Callable[[], Decimal] | None = None
+    max_tokens: int | None = None
 
     @property
     def tool_call_limit(self) -> int:
@@ -135,13 +137,18 @@ class LoopBudget:
         return self.time_left is not None and self.time_left() <= self.return_within
 
     def out_of_money(self, usage: RunUsage | None) -> bool:
-        """Whether the model's cost and the paid tools' spend leave less of the share than two requests like
-        the average so far: one to run a batch of tools, and one to return the result."""
-        if self.share is None or usage is None or not usage.requests:
+        """Whether the model's cost and the paid tools' spend, or the tokens used, leave less of the share or
+        the token limit than two more requests: one to run a batch of tools, and one to return the result.
+        Each request resends the history, so the next one is taken as twice the average so far."""
+        if usage is None or not usage.requests:
+            return False
+        if self.max_tokens is not None and usage.total_tokens * (1 + 4 / usage.requests) >= self.max_tokens:
+            return True
+        if self.share is None:
             return False
         model = Decimal(str(usage.cost or 0))
         external = self.external() if self.external else Decimal(0)
-        return model + external + 2 * model / usage.requests >= self.share
+        return model + external + 4 * model / usage.requests >= self.share
 
     def note(self, requests_used: int, spent: ToolYield, usage: RunUsage | None = None) -> str:
         """The note for the next request, given what the loop has used so far."""
@@ -182,7 +189,7 @@ class LoopBudget:
         if any(isinstance(part, UserPromptPart) and isinstance(part.content, str)
                and part.content.startswith(MONEY_SPENT_NOTE.partition("{")[0])
                for message in messages if isinstance(message, ModelRequest) for part in message.parts):
-            return "returned after its dollar share was spent"
+            return "returned after its dollar or token budget was spent"
         counted = tool_yield(messages)
         if counted.productive >= self.max_productive:
             return "returned after its productive calls were spent"

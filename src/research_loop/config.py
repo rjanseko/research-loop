@@ -224,7 +224,10 @@ class ScoutLimits(BaseModel):
     scout_misses: int = Field(16, ge=1)
     # Billed input across a scout's requests; each request resends the loop's history. The most a scout used
     # was 660,000 with 12,000-character page windows; windows of 40,000 carry more a request.
-    scout_tokens: int = Field(2_000_000, ge=1_000)
+    # Since scout-v15, 8,000,000, and the loop budget withdraws tools before it is reached: with the whole history
+    # resent, a DuckDuckGo scout billed 2,034,129 tokens in 20 requests for $0.040, 93% of them cached, and was cut
+    # off with its claims (search-rescout-task8-v14, run 0acd61da). The dollar share bounds what tokens cost.
+    scout_tokens: int = Field(8_000_000, ge=1_000)
     # A scout's reply under a hard cap; the largest used 22,313 of 24,000 by 28 September 2026 (scout-v15 doubled it).
     guarded_scout_max_output_tokens: int = Field(48_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)

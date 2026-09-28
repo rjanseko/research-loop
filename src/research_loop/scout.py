@@ -172,7 +172,8 @@ def _paid_search(name: str) -> Any:
 # 64 calls (config.py). followup-v15 and research-v14 carry the same change.
 # v15: a scout's dollar share also counts its paid searches and page reads, and its tools are withdrawn with a
 # note once the share would not cover two more requests; productive calls become a loop guard at 128 (192 for a
-# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. Budgets grew to match: a standard run
+# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. A scout may bill 8,000,000 tokens, and
+# nearing that limit withdraws its tools like its share does, instead of cutting it off. Budgets grew to match: a standard run
 # $1.75 with $0.60 for synthesis, a follow-up $2.50 ($4.00 deep), a deep dive $0.35; and a scout's output gets two
 # retries. followup-v16 and research-v15 carry it.
 WORKFLOW_VERSION = "scout-v15"
@@ -590,7 +591,7 @@ class _Run:
         spend_key = uuid4().hex
         budget = LoopBudget(requests, productive, misses, time_left=time_left,
                             return_within=limits.request_timeout_seconds, share=share,
-                            external=lambda: self.external_spend.of(spend_key))
+                            external=lambda: self.external_spend.of(spend_key), max_tokens=limits.scout_tokens)
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
                                        "blocked_urls": self.blocked_urls,
                                        **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {})}

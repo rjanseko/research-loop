@@ -26,7 +26,7 @@ from research_loop.config import Settings
 _BUCKETS = (
     ("returned on its own", "own"), ("returned a result", "own"),
     ("productive calls were spent", "productive calls"), ("misses were spent", "misses"),
-    ("dollar share was spent", "dollar share (note)"), ("last request", "requests"),
+    ("dollar or token budget was spent", "dollar or tokens (note)"), ("last request", "requests"),
     ("research deadline was close", "deadline (returned)"), ("deadline passed", "deadline (cut off)"),
     ("Request timed out", "request timeout"), ("cost_limit", "dollar share (cut off)"),
     ("StudyBudgetRefusal", "hard cap"), ("would exceed", "hard cap"), ("request_limit", "requests (cut off)"),

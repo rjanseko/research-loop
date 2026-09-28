@@ -304,3 +304,5 @@ So scout-v15 also loosened the budgets that are close, or that paid searching wi
 | Scout output retries | 1 | 2 |
 
 These are soft shares, and a run pays only for what it uses. The envelopes change what a run may spend, not what it typically spends: v14 standard rescouts used a median of 21% of theirs. A new test checks that a scout whose result fails its checks twice gets a third try; it fails with one retry.
+
+**The token limit.** Plan 3's DuckDuckGo rescout (`0acd61da`) lost a question to the 2,000,000-token limit. With trimming off, its scout resent its whole history on each of 20 requests. It billed 2,034,129 tokens for $0.040, 93% of them read from the cache, and it was cut off with its claims. scout-v15 raises `scout_tokens` to 8,000,000, because the dollar share already bounds what tokens cost. Nearing either limit now withdraws the scout's tools with the budget note, instead of cutting it off. The next request is estimated as twice the average so far, since each request resends the history, and two such requests must still fit. A new test covers the token case.
