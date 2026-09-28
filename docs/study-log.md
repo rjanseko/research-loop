@@ -499,7 +499,7 @@ The first version of trimming stubbed every page two responses after it was read
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
-`studies/deep-vs-standard-task8.toml` asked whether a deep run is a large improvement over a standard one on the current code. No DeepSeek Bench II case had had a production run since scout-v6, when the smoke check `smoke-v6-task8` ran one of each. Its decision rule, written before any paid run, required all of these:
+`studies/deep-vs-standard-task8.toml` asked whether a deep run is a large improvement over a standard one on the current code. No DeepResearch Bench II case had had a production run since scout-v6, when the smoke check `smoke-v6-task8` ran one of each. Its decision rule, written before any paid run, required all of these:
 - a mean rubric score at least 5 of 52 points above standard's under both judges;
 - a supported-audit share no more than 5 points below standard's, and no failed deep run;
 - deep at $1.00 a run or less.
