@@ -27,6 +27,8 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap; a request's reservation missed long-context output prices. All three fixed |
 | 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | $0.16 | Clean on the new code once the keys were in `.env`; the runner now checks every arm first. Ceilings raised |
 | 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
+| 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
+| 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -495,3 +497,65 @@ The first version of trimming stubbed every page two responses after it was read
 **Other fixes.** A study check stopped with SIGTERM earlier on 27 September had left run `7b7d351c` and one of its scouts marked `running`. `research db reconcile --older-than 60 --apply` marked them failed (Abandoned). The CLI now stops on SIGTERM as it does on Ctrl-C, so a stopped run records itself as cancelled (3788d3d). A subprocess test checks this, and fails without the fix.
 
 **What it showed, and what it did not.** Deep runs on Luna are limited by the account's token rate, not by their deadline, their money, or the scouts' effort. More time or more questions spread the same throughput more thinly. The cheap checks show that trimming and the second model run end to end. They cannot show that either improves reports: they run cheap stand-in models, finish because low effort is fast, and are one run each. None of today's changes has been graded. A replicated, graded comparison on a frozen case, with its decision rule written first, should decide whether the deep changes stay. Everything is on PR #39.
+
+## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
+
+`studies/deep-vs-standard-task8.toml` asked whether a deep run is a large improvement over a standard one on the current code. No DeepResearch Bench II case had had a production run since scout-v6, when the smoke check `smoke-v6-task8` ran one of each. Its decision rule, written before any paid run, required all of these:
+- a mean rubric score at least 5 of 52 points above standard's under both judges;
+- a supported-audit share no more than 5 points below standard's, and no failed deep run;
+- deep at $1.00 a run or less.
+
+The spec's dry check (two seeds) and cheap check (runs `0cd21cbc` and `7efab7f1`, $0.08) were clean. The study ran six runs in alternating arm order, each graded by `gpt-6-sol@high` and audited by `zai:glm-5.3@high`. It cost $3.28 of its $5.00 ceiling. The six reports were then regraded by `zai:glm-5.3@high` for $0.23. The first attempt at that, capped at $0.10 a grade, was refused before dispatch, because the guard's reservation for one grade is about $0.20.
+
+| Arm | Rep | Run | Sol | GLM | Quotes verified | Audit supported / partial / unsupported / no quote | Coverage | Cost | Time |
+|---|---|---|---|---|---|---|---|---|---|
+| standard | 1 | `27701a2f` | 24 | 26 | 56 of 60 | 24 / 4 / 0 / 0 | 4/7 | $0.421 | 464 s |
+| deep | 1 | `3dfd1f92` | 26 | 36 | 90 of 106 | 28 / 3 / 0 / 0 | 5/7 | $0.730 | 1,150 s |
+| deep | 2 | `fdd47ad4` | 24 | 26 | 101 of 109 | 21 / 5 / 0 / 0 | 5/7 | $0.687 | 964 s |
+| standard | 2 | `8f753940` | 16 | 24 | 58 of 59 | 18 / 7 / 0 / 0 | 3/7 | $0.350 | 496 s |
+| standard | 3 | `aea52be0` | 17 | 26 | 62 of 69 | 12 / 5 / 1 / 0 | 4/7 | $0.422 | 454 s |
+| deep | 3 | `307f5e4d` | 22 | 28 | 80 of 86 | 39 / 2 / 0 / 1 | 5/7 | $0.669 | 1,152 s |
+
+| Arm | Sol mean | GLM mean | Audit supported | Mean cost | Mean time |
+|---|---|---|---|---|---|
+| standard | 19.0 | 25.3 | 54 of 71 statements (76%) | $0.40 | 7.9 min |
+| deep | 24.0 | 30.0 | 88 of 99 statements (89%) | $0.70 | 18.0 min |
+
+**Decision: undecided.** Deep scored 5.0 points more under Sol and 4.7 under GLM. The rule needs 5 under both, so the score condition is not met, and no disagreement was checked by hand because none could change that. The other two conditions held. Deep's reports rested on quotes more often, with 89% of statements supported against 76%. Every deep run completed, and deep averaged $0.70.
+
+Deep was ahead under both judges in every pairing but one: GLM's fdd47ad4 at 26 against standard's 24 and 26. Standard's Sol scores spread from 16 to 24, so three replicates cannot place a difference this size reliably. Deep costs 1.75 times as much and takes 2.3 times as long.
+
+**Against v6.** Judged the same way, the v6 smoke runs scored 22 (Sol) and 27 (GLM) for standard, and 31 and 33 for deep. Standard's are inside today's ranges. The single v6 deep run is above all three deep runs under Sol, and inside the range under GLM. One run per arm cannot show whether v7 to v11 changed scores.
+
+The GLP-1 example waits on this. With deep neither adopted nor rejected, the next step is either more replicates or a held-out case, with a rule written first.
+
+## 2026-09-28 Where drb2-task8's rubric points are lost
+
+This was a free audit of the six study runs above: 12 grades, each run graded by both judges. It uses the stored grades, ledgers, plans, and reports, with no model calls. Its aim was to find what would raise rubric scores before designing the next test.
+
+**Which points fail.** Of 52 points, 17 were met in 9 or more of the 12 grades, 10 in 5 to 8, 14 in 1 to 4, and 11 in none. The failing points fall into three groups:
+- **Category-level method statements, about 14 points.** Examples: RL, MCTS, and PSO as exploration-based algorithms; each category's advantages and disadvantages, such as "high computational cost, slow convergence"; and what GANs, RL, and topology optimization each do.
+- **Database members that sources named but that were never established, about 4 points.** CSD, and NOMAD's URL.
+- **Items probably found only in the blocked expert report, about 6 points.** The Dynamic Database of Solid-State Electrolytes, OQMD's "1.2 million structures", and ASM's description and URL. No ledger mentioned the first two. These are a ceiling.
+
+**What the audit ruled out.**
+- *The judge's view.* `evals.reader_text` gives the judge the whole answer, key statements, caveats, and cited sources, leaving out only the executive summary, with no truncation.
+- *Synthesis dropping claims.* The reports cite 90 to 100% of their ledgers' claims.
+- *The plan.* Every run split the task into its natural four questions: one per method category, and one for databases. Its coverage items name the categories and dimensions, such as algorithms, advantages, and disadvantages for each category.
+
+**Where the points go.** They are lost before synthesis, in what scouts turn into claims.
+- "Computational cost" appears in five of six ledgers, but mostly only in a quote's evidence text: the claim built on it is narrower than its source.
+- CSD appears in open items and `unresolved`. Sources named it, and no claim established it.
+- For the exploration-based question, each run's claims cite only 2 to 6 sources. Most are single-method papers, such as "Deep Reinforcement Learning for Inverse Inorganic Materials Design". At most two are reviews, and some reviews were read only as abstracts. The scout prompt already asks for surveys first.
+- Coverage treats a dimension such as "main disadvantages of each strategy" as one item, met by any claim. So it can read as covered while two of the three categories have no disadvantage at all.
+
+**The judges.** They disagreed on 45 of 312 verdicts (14%), and GLM gave the credit in 41 of them. The disputes cluster on database descriptions and URLs. Reports gave `https://oqmd.org/`, `https://materialsproject.org/`, and `https://nomad-lab.eu/nomad-lab/index.html`, while the rubric lists `https://www.oqmd.org/`, `https://next-gen.materialsproject.org/`, and `https://nomad-lab.eu/nomad`. Sol does not credit equivalent addresses. That is measurement noise, not research quality. Any change to it would need a new judge version.
+
+**Another case.** drb2-task68-plus, cloud auto-scaling, has only two graded runs, both scout-v1. On it, 31 of 54 points were met in at most a third of grades. They have the same shape: techniques under each category ("under proactive methods, identify reinforcement learning"), category-level explanations, and about 13 points that require citing specific papers, which is largely a ceiling there.
+
+**What follows.** Three changes should reach the failing points without reaching into the blocked source:
+- coverage items that cross each category with each requested dimension;
+- scouts that read at least one review in full for a category question, and state its category-level characterizations as quoted claims;
+- scouts that give every set member a source names its own claim, or mark it not established.
+
+They should be tested on more than one development case at standard depth, with the decision rule written first. If they work, earlier model comparisons judged under the old claim behavior should be looked at again.
