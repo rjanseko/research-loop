@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import signal
 import sys
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -463,6 +464,16 @@ def _db(args: argparse.Namespace, settings: Settings, parser: argparse.ArgumentP
     return 0
 
 
+def _interrupt_on_sigterm() -> None:
+    """Stop on SIGTERM, which `kill` and process managers send, as on Ctrl-C: the run's tasks are cancelled
+    and record themselves as cancelled. A process that dies without that, as on SIGKILL, leaves its run
+    running until `research db reconcile` closes it out."""
+    def interrupt(signum: int, frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt)
+
+
 def main(argv: list[str] | None = None) -> None:
     from .db import MigrationsPending
 
@@ -575,6 +586,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--max-usd must be positive")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
+    _interrupt_on_sigterm()
     try:
         if args.command == "scout":
             code = asyncio.run(_scout(args, settings))

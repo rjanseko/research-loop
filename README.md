@@ -578,7 +578,7 @@ The scouts are probably waiting under the token rate limit. Long tool results, s
 <details>
 <summary>Runs stay <code>running</code> in the database after a process was killed</summary>
 
-Run `research db reconcile --older-than 30` to count them, and add `--apply` to mark them failed.
+A run stopped with Ctrl-C or SIGTERM, the signal `kill` and process managers send, records itself and its calls as `cancelled`. One whose process died without that, as on SIGKILL or a crash, stays `running`. Run `research db reconcile --older-than 30` to count them, and add `--apply` to mark them failed.
 
 </details>
 
