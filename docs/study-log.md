@@ -40,6 +40,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
 | 09-28 | [Search engines on three drb2-task8 plans (scout-v14)](#2026-09-28-search-engines-on-three-drb2-task8-plans-scout-v14) | $4.99 | No engine advanced under the rule: Serper was disqualified by one partial unrelated to search and Exa by quote share; Serper is rerun on scout-v15 |
+| 09-28 | [Sol regrades ten search-study rescouts](#2026-09-28-sol-regrades-ten-search-study-rescouts) | $1.58 | Sol gives 3 to 9 fewer claimed points than GLM (mean 21.6 against 27.7) but ranks the arms the same way |
 | 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
@@ -337,3 +338,24 @@ Each cell gives the run, its status, and the rubric points its claims met, of 52
 Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).
 
 **Trimming removed.** At the user's request, the history-trimming code (`history.py`, `RESEARCH_TRIM_HISTORY`) was removed, after the trimming study turned it off by default. Runs at the defaults send the same requests as before, so no workflow version changes. The prompt fingerprint changes, because it no longer includes the trimming notes. Re-reading a page window a scout has already read still uses no loop budget, and its test moved to the budget-notes tests. The trimming spec is kept as the record, marked historical, and the other specs no longer set the removed variable.
+
+## 2026-09-28 Sol regrades ten search-study rescouts
+
+The v14 search study was diagnosed by GLM@high alone. To see whether a second judge would change what the rescout studies show, `gpt-6-sol@high` diagnosed ten of its complete rescouts: `research diagnose RUN --model openai:gpt-6-sol@high`, one run at a time, each under a $1.80 cap. The first attempt, under a $0.40 cap, was refused before dispatch, because the guard reserves $0.54 for Sol's claims view and $1.24 for its research view. The ten runs cost $1.58, or $0.16 a run against GLM's $0.12. The user asked for a handful rather than all 33 rescouts of the day's studies.
+
+| Run | Arm | Claims, GLM | Claims, Sol | Research, GLM | Research, Sol |
+|---|---|---|---|---|---|
+| `281aa7e2` | DuckDuckGo | 26 | 18 | 26 | 24 |
+| `9f116926` | DuckDuckGo | 24 | 19 | 22 | 21 |
+| `6a76c7bb` | Serper | 25 | 17 | 26 | 21 |
+| `b1de9f70` | Serper | 30 | 26 | 32 | 27 |
+| `6fa930d6` | Brave | 29 | 21 | 25 | 21 |
+| `9b822c2d` | Brave | 23 | 20 | 26 | 21 |
+| `7060df48` | Brave | 32 | 27 | 30 | 27 |
+| `3c6697be` | Exa | 30 | 23 | 32 | 24 |
+| `ed4872c8` | Exa | 26 | 18 | 30 | 24 |
+| `0ba7d7b8` | Exa | 32 | 27 | 33 | 25 |
+
+Sol gave fewer claimed points on every run, 3 to 9 fewer and 6.1 fewer on average (21.6 against 27.7). That matches the report grades, where GLM credited more and Sol read URLs and wording literally. The two judges order the runs much the same: both put `7060df48` and `0ba7d7b8` at the top. On the same runs, both put DuckDuckGo lowest: 18.5 under Sol and 25.0 under GLM, with the other engines 3 to 4 points above it under either judge. A second judge would not have changed the search study's decision.
+
+**Decision.** GLM stays the single judge for screens. Sol, or both judges, is used where a decision rests on a few points, such as a confirmation. Which judge is right on a disputed point is a hand check, and none was done here.
