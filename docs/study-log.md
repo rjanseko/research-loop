@@ -25,7 +25,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | $0.10 and free-tier credits | A chain of our fetcher, open access, Exa, and Firecrawl reads 139 of 160 failed pages |
 | 09-27 | [Reading fallback: dry and cheap checks](#2026-09-27-reading-fallback-dry-and-cheap-checks) | $0.17 | A screen: with the fallback, failed page fetches fell from 12 to 0 on st07 and from 10 to 1 on drb2-task8 |
 | 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap; a request's reservation missed long-context output prices. All three fixed |
-| 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | about $0.04 | The fallback arm could not start without its keys; the runner now checks every arm first. Ceilings raised |
+| 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | $0.16 | Clean on the new code once the keys were in `.env`; the runner now checks every arm first. Ceilings raised |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -448,4 +448,17 @@ The audit fixes changed the code the reading-fallback specs run: fetch version 1
 - drb2-task8: $3.20 to $4.00.
 
 The first cheap attempt failed. Its fallback arm refused to start, because `EXA_API_KEY` and `FIRECRAWL_API_KEY` were missing from `.env`; the earlier cheap checks had them only in the shell that ran them. By then the own arm had already run on short and st07, as runs `f56754c6` and `ae40efa3` with their cheap grades and audits. The drb2-task8 check was stopped during its own arm's run, `7b7d351c`, which stays marked `running` in the database. The attempt cost about $0.04. The runner now checks every arm's configuration, with its environment and code, before the first run, and refuses the study if an arm could not start.
+
+With the keys in `.env`, the second attempt ran all three cheap checks, with every role on `gpt-6-luna@low`. It cost $0.12, with no invariant violations or tracebacks, so the two attempts cost $0.16 in all. As before, one run per arm with cheap models is a screen: its grades come from the cheap judge and cannot change a default.
+
+| Case | Arm | Run | Status, answer | Pages failed | Read by the fallback | Paid reads | Run cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| st04 | own | `491ac2fa` | complete, supported | 0 | | | $0.005 | 28 s |
+| st04 | fallback | `87e05cab` | complete, weak | 0 | none needed | | $0.002 | 12 s |
+| st07 | own | `bf4cfc67` | complete, supported | 11 | | | $0.017 | 167 s |
+| st07 | fallback | `79581927` | complete, supported | 0 | 5 (Exa) | none | $0.019 | 57 s |
+| drb2-task8 (deep) | own | `89e44ef9` | complete, weak | 6 | | | $0.033 | 165 s |
+| drb2-task8 (deep) | fallback | `b1381c69` | complete, weak | 2 | 6 (Exa 5, Europe PMC 1) | $0.009 | $0.039 | 192 s |
+
+The pattern matches the first cheap checks. The fallback arm read the pages our fetcher could not: on st07, 11 failures fell to 0; on drb2-task8, 6 fell to 2, a 404 and a site's home page. st07's fallback paid for nothing, because every page it read came from the study's reading cache (11 hits, no misses), written by the first cheap check. The paid study shares one cache between its arms in the same way.
 
