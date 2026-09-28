@@ -143,7 +143,7 @@ def test_the_study_runner_reads_every_grade_line(met: int, extra: int, score: fl
 
 @SETTINGS
 @given(st.lists(st.sampled_from(["a", "b", "c"]), min_size=1, max_size=3, unique=True), st.integers(1, 5))
-def test_every_replicate_runs_each_arm_once_in_alternating_order(arms: list[str], replicates: int) -> None:
+def test_every_replicate_runs_each_arm_once_in_rotating_order(arms: list[str], replicates: int) -> None:
     from research_loop.study import StudySpec, schedule
 
     spec = StudySpec.model_validate({"study": "s", "cases": ["c"], "replicates": replicates, "cap_usd": 1,
@@ -151,4 +151,5 @@ def test_every_replicate_runs_each_arm_once_in_alternating_order(arms: list[str]
     runs = schedule(spec)
     for replicate in range(1, replicates + 1):
         order = [run.arm.name for run in runs if run.replicate == replicate]
-        assert order == (arms if replicate % 2 else list(reversed(arms)))
+        turn = (replicate - 1) % len(arms)
+        assert order == arms[turn:] + arms[:turn]  # two arms alternate (ABBA)

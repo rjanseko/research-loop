@@ -33,6 +33,10 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Hybrid search and capped Exa highlights: checks](#2026-09-28-hybrid-search-and-capped-exa-highlights-checks) | $0.12 | Capped highlights come to about 6,000 characters a search; in a cheap run Exa answered all 10 searches DuckDuckGo could not, and no blocked source reached a scout |
 | 09-28 | [Blocked works known by title](#2026-09-28-blocked-works-known-by-title) | $0.12 | 36 of 49 stored DRB-II case runs were shown their case's blocked title; every task68-plus run saw the expert report's abstract. Now blocked by title (fetch version 15) |
 | 09-28 | [Luna's rate limit is ten times what the pacer assumed](#2026-09-28-lunas-rate-limit-is-ten-times-what-the-pacer-assumed) | under $0.01 | 2,000,000 tokens a minute, not 200,000: the deep runs' throughput ceiling was our own pacer |
+| 09-28 | [Serper, Brave, and DeepSeek study design and dry checks](#2026-09-28-serper-brave-and-deepseek-study-design-and-dry-checks) | free | Two 12-run offline checks had no invariant violations; paid screens remain unrun |
+| 09-28 | [Search replay, DeepSeek smoke, and the screens' cheap checks](#2026-09-28-search-replay-deepseek-smoke-and-the-screens-cheap-checks) | $0.29 | On 40 replayed scout queries DuckDuckGo found nothing for 18, Serper and Brave for 4 each; both DeepSeek scouts call tools after the Flash profile fix |
+| 09-28 | [What scouts see and skip, and MDPI's bot wall (fetch version 17)](#2026-09-28-what-scouts-see-and-skip-and-mdpis-bot-wall-fetch-version-17) | free | Scouts fetched 1 of 545 scholarly works shown and mostly the top web results; 29% of fetches failed. MDPI challenges our fetcher, so its articles now find their DOI and a free copy first: 3 of 11 recovered |
+| 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -142,3 +146,80 @@ Title blocking catches every case above. Scores from before fetch version 12 on 
 One small Luna request read OpenAI's rate-limit headers. It cost under a cent. `gpt-6-luna` allows **2,000,000 tokens and 5,000 requests a minute**. The pacer's default, `RESEARCH_TOKENS_PER_MINUTE={"openai:gpt-6-luna": 200000}`, dates from 25 September, when that was the tier. So every run since the tier rose has held its scouts to about a tenth of the real limit.
 
 The throughput ceiling of about 115,000 tokens a minute, which cut off the scouts of both deep GLP-1 runs (`d8c8198e`, `2c66e8bd`), came from our pacer, not from OpenAI. Trimming still saves tokens and money. The second scout model's purpose, a second provider's rate limit, matters much less than it seemed. The deep-vs-standard study also ran under the throttle.
+
+## 2026-09-28 Serper, Brave, and DeepSeek study design and dry checks
+
+The protocol and confirmation rules are in [evaluation.md](evaluation.md#serper-brave-and-deepseek-integration-study). The two one-replicate screen specs compare DuckDuckGo/Serper/Brave and Luna/DeepSeek Flash/DeepSeek V4 Pro separately on four frozen development cases. Each spec parsed and fit its ceiling ($8.40 estimated under $9.00 for search, $10.20 under $11.00 for DeepSeek). Both `research study run SPEC --dry` checks finished with **no invariant violations**. After making the scout model and the absence of a second scout explicit in the specs, both final specs were dry-checked again, also with no invariant violations. Dry runs used fake models, the offline world, and `research_dry`; their synthetic charges in the generated summaries are not provider charges. Actual spend: **$0**. A fake fault caused one DeepSeek-screen grade to fail; it was accounted for under the dry study's ceiling.
+
+Run IDs in case order st04, st05, st07, drb2-task8, with arms in spec order:
+
+| Dry study | st04 | st05 | st07 | drb2-task8 |
+|---|---|---|---|---|
+| Search: DuckDuckGo / Serper / Brave | `a81091e7` / `a95c5932` / `fcdeb838` | `283befb7` / `89f2efe1` / `b7050f54` | `3e3964db` / `3d219886` / `0f0ec82a` | `a8e187d3` / `75837dd3` / `fadd4390` |
+| Models: Luna / Flash / V4 Pro | `2c8a80af` / `b43eb65a` / `eded7367` | `bf9bd084` / `de6a71cd` / `57d4effb` | `1d9cc567` / `cecb49a3` / `fc674233` | `9ba4d688` / `eb64de62` / `88d5ca76` |
+
+
+The final-spec reruns, in the same case and arm order, produced these IDs:
+
+| Final dry study | st04 | st05 | st07 | drb2-task8 |
+|---|---|---|---|---|
+| Search: DuckDuckGo / Serper / Brave | `2e6b256b` / `c5dfc7ba` / `a1416c0b` | `710d6e42` / `1411ce96` / `f55a177f` | `056744ec` / `f9f93705` / `44e4acee` | `1162c967` / `501d6a9b` / `6707247f` |
+| Models: Luna / Flash / V4 Pro | `4d53cd5b` / `a4aae00d` / `48d1be8f` | `67006356` / `4a4676e1` / `97b09ce4` | `e3c72ab2` / `69f8d273` / `6c9ea237` | `fd8da612` / `965265a9` / `f7c780e0` |
+
+These fake outcomes do not rate the providers. Before either paid screen, the same spec still needs a clean `--cheap` check; the DeepSeek model IDs also need a live smoke check. A paid screen needs approval under AGENTS.md and its hard study ceiling.
+
+## 2026-09-28 Search replay, DeepSeek smoke, and the screens' cheap checks
+
+The two integration screens above would have cost up to $20 together and could not change a default. Before spending that, three cheaper checks. Total spend: **$0.29**.
+
+**Cheap checks, $0.051.** Both specs ran with `--cheap`, which replaces every model with Luna@low and keeps the real search engines. They stopped after st04, so each covered one case per arm: search screen `e39bc0f7` (DuckDuckGo, $0.003), `887f7cc0` (Serper, $0.010), `18e3adc3` (Brave, $0.029); DeepSeek screen `cc2be58f`, `f23e7455`, `f4d9819c` (all Luna@low, about $0.003 each). All completed. The cheap mode does not call DeepSeek, so the second three show nothing about it.
+
+**DeepSeek smoke, $0.0005.** DeepSeek rejects `tool_choice=required` with thinking on, and PydanticAI did not know `deepseek-flash` as a thinking model, so Flash failed every structured call with HTTP 400. With the profile fix in `models.py`, `deepseek:deepseek-flash@high` and `deepseek:deepseek-v4-pro@high` each answered the smoke tool call (3.1 s and 3.3 s). Earlier smoke checks the same day are not recorded here; their output was not kept.
+
+**Search replay, $0.24.** `scripts/search_replay.py` sampled 40 of the 1,264 distinct queries production scouts sent to DuckDuckGo, 20 whose stored search had found nothing and 20 that had found results, and sent each to DuckDuckGo, Serper, and Brave at once through the run's own `WebSearch` (seed 20260928; per-query results in `benchmark_outputs/search-replay/replay-20260928-114836.json`).
+
+| Stored DuckDuckGo outcome | Queries | DuckDuckGo found / empty / failed | Serper | Brave |
+|---|---|---|---|---|
+| found nothing | 20 | 11 / 9 / 0 | 16 / 4 / 0 | 18 / 2 / 0 |
+| found results | 20 | 11 / 9 / 0 | 20 / 0 / 0 | 18 / 2 / 0 |
+
+DuckDuckGo came back empty as often on queries that had found results before as on those that had not, so its empties are the scraper's failures, not hard queries. Serper found results for 15 of DuckDuckGo's 18 empties and Brave for 16; both came back empty on only 2 queries. Found searches returned a median of 10 results on Serper and Brave, 7 on DuckDuckGo. Median search time was 0.5 s on Brave, 1.1 s on Serper, and 1.6 s on DuckDuckGo.
+
+This meets the search screen's availability condition (a lower empty/error share) by a wide margin, on paired queries rather than one run per arm, so the full search screen is not needed for availability. It says nothing about report quality, and no default changes. Serper is a fifth of Brave's price per search ($0.001 against $0.005) for about the same availability.
+
+**Code found along the way.** Rescout and resynthesis accepted source runs from scout-v1 to v8 and the current version only, so every run from v9 to v12 was refused as a source; the list is now derived from the current versions. The study summary now counts searches found, empty, and failed, and pages read and failed, per run (`study.tool_counts`).
+
+## 2026-09-28 What scouts see and skip, and MDPI's bot wall (fetch version 17)
+
+A free check of the stored drb2-task8 runs, asking whether a source ranker would help: do scouts leave good sources unread among what their searches return? It read the tool messages of runs `aea52be0`, `8f753940`, `27701a2f`, `0cd21cbc` (scout-v10), `10e3fce3` (v11), and `a44bd2e3` (v12), 18 scout calls in all.
+
+| What scouts were shown | Distinct results | Fetched |
+|---|---|---|
+| Scholarly search works | 545 | 1 |
+| Web search results | 988 | 118 |
+
+Of 177 fetches, 119 were of a result the scouts had been shown and 52 failed. Scouts fetched the first web result 44 times and the fifth or lower 29 times. Most review-titled results they left unread were off the topic: scholarly search returns highly cited works such as AlphaFold, fairness surveys, and EEG reviews. A few on-topic reviews were shown and not read, such as "Deep Generative Models in Engineering Design: A Review". Reordering results would therefore gain little on this case; the earlier audit places its lost points in claims. Scholarly search's off-topic works cost context, not reads.
+
+**The failed fetches.** 21 were mdpi.com, all "empty extraction", and 14 were pubs.rsc.org 403s. Across every stored run, all MDPI fetches by our own fetcher failed, in every version: mdpi.com is behind Akamai Bot Manager, which refuses our User-Agent with a 403 and gives the browser retry a JavaScript challenge page. Since scout-v11 the Exa reader has read them, paid. We do not try to pass the challenge. An MDPI address carries no DOI, so the free open-access reader never ran for one. Of the 11 MDPI articles stored runs failed to read, OpenAlex gives a DOI for 10 from the address's ISSN, volume, issue, and article number, and 3 of those are in Europe PMC.
+
+**Change (fetch version 17).** The open-access reader looks up an MDPI address's DOI in OpenAlex, and after OpenAlex's best location it tries PDFs at up to three of its other locations, such as repository copies. Run live on the 11 articles, it read 3 from Europe PMC; one repository copy (Middlesex eprints) did not respond. The other 7 still go to Exa. CORE, which aggregates repository full text, is not used and might cover some of them.
+
+## 2026-09-28 Rescout studies graded on claims; the DeepSeek and trimming specs' checks
+
+The DeepSeek comparison was redesigned to rescout fixed plans (see "Serper, Brave, and DeepSeek study design" above), but a rescout writes no report, so it could not be graded. Now `research diagnose` accepts a fixed-plan rescout and grades only its claims and research, and a rescout study with `diagnose = true` compares arms on the rubric points their claims met. Three more runner changes came with it:
+- a dry rescout or synthesis study copies its source runs into the dry database first; before this, it could not run at all;
+- the arm order rotates on every target as well as every replicate, so with three arms on three plans each arm goes first once against the shared cache;
+- the cheap mode's run estimate is $0.05, not $0.06, so three arms and their diagnoses plan under its $0.25 ceiling. Cheap runs have cost $0.003 to $0.03.
+
+**Trimming.** Stored Luna@high scouts read 67 to 74% of their input from OpenAI's prompt cache before history trimming (scout-v6, v9, research-v3) and 43 to 49% after it (v10, followup-v11). `RESEARCH_TRIM_HISTORY` (default on) now turns it off, and each run records it. See [notes.md](notes.md).
+
+**Checks.**
+- `studies/deepseek-rescout-task8.toml` and `studies/trim-history-rescout-task8.toml` ran `--dry` with no invariant violations.
+- The DeepSeek spec's cheap check (`eab6ad79`, `5a0ad3d8`, `cc20d317`, source `aea52be0`) failed: every Luna@low scout request and every diagnosis grade got HTTP 500 from OpenAI. It cost under $0.01.
+- `research doctor --smoke` right after returned HTTP 500 for both `gpt-6-sol@high` and `gpt-6-luna@low`, while `claude-opus-5-5@medium` answered ($0.0038). This was an OpenAI outage, not our code. Both specs need a clean cheap check before any paid run.
+- Once OpenAI answered the smoke check again (Sol $0.0006, Luna under $0.0001), both cheap checks ran with no invariant violations: trimming study `bc15967a` (trimmed, complete) and `d6e3e191` (untrimmed, partial), $0.11; DeepSeek study `e874d730`, `557604ff`, `d9f0d0b8` (all Luna@low in cheap mode, partial), $0.15. Of the five scouts that failed, three got a leftover HTTP 500 and two hit the cheap mode's run cap. The cheap scores say nothing about quality.
+
+**A single provider 500 loses a scout's question.** The scout wrapper retries only timed rate limits (`rate_limit.py`), so one HTTP 500 ends that research question for the run. A paid study during a flaky hour would count those losses against whichever arm met them. A bounded retry of 5xx responses, with a `RATE_LIMIT_POLICY_VERSION` bump, would prevent it.
+
+**Server-error retries and CORE.** With the user's approval, scouts now send a request again twice after an HTTP 500, 502, 503, or 504, pausing 2 then 8 seconds (`scout-429-v5`). The open-access reader asks CORE last for its full text of the DOI (fetch version 18). CORE allows 100 requests a day without a key, so requests are spaced 6.5 seconds apart, and none is sent after a 429 until CORE's reset time. The dry world sends injected 500s again at once; with the real pauses the fixed fuzz sweep took 30 s instead of 12 s. Both specs' dry checks, then their cheap checks, ran clean on this code: trimming study `7a637fe8` (trimmed, complete) and `63026306` (untrimmed, partial), $0.13; DeepSeek study `dd80a830`, `82ea3f46`, `80945be6`, $0.13. The three partials each hit the cheap mode's run cap.
+

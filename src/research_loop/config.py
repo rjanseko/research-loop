@@ -337,12 +337,19 @@ class Settings(BaseSettings):
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
     serper_api_key: SecretStr | None = Field(None, validation_alias="SERPER_API_KEY")
     brave_api_key: SecretStr | None = Field(None, validation_alias="BRAVE_API_KEY")
+    # Whether a scout's requests leave out its oldest pages and search snippets (history.py). Trimming was
+    # added for throughput under a 200,000 tokens-a-minute pacer that was ten times too low, and it breaks
+    # the cached prompt prefix: Luna scouts read 67-74% of input from the cache untrimmed (v6, v9) and
+    # 43-49% trimmed (v10). On until a paired study decides (docs/notes.md).
+    trim_history: bool = True
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
     # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
     # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in
     # the fetch bake-off this chain read 139 of 160 pages our fetch could not. An empty value turns it off.
     read_fallback: Annotated[tuple[str, ...] | None, NoDecode] = None
     firecrawl_api_key: SecretStr | None = Field(None, validation_alias="FIRECRAWL_API_KEY")
+    # Optional: raises CORE's limit for the open-access reader from 100 requests a day to 1,000 (reading.py).
+    core_api_key: SecretStr | None = Field(None, validation_alias="CORE_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
     offline_world: int | None = None

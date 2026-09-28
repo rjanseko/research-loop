@@ -5,7 +5,9 @@ also grades two earlier views of a stored run:
 - `claims`: the research's claim statements, each with the titles and addresses of its sources;
 - `research`: everything the synthesizer was shown (EvidenceLedger.prompt_view), including quotes,
   excerpts, conclusions, open items, and what the scouts could not establish.
-A point the report missed takes the earliest stage that met it (`STAGES`). In the audit of drb2-task8 on
+A point the report missed takes the earliest stage that met it (`STAGES`). A fixed-plan rescout writes no
+report, so only its claims and research are graded, and its points start at "claimed": this compares scout
+models on one plan without a synthesizer's variation. In the audit of drb2-task8 on
 28 September 2026, most missed points had reached the synthesizer only as quote text or open items, which
 no claim stated, and about six were never found at all.
 
@@ -83,12 +85,13 @@ def verdicts(points: Iterable[dict[str, Any]]) -> dict[Point, bool]:
 
 @dataclass
 class RunDiagnosis:
-    """One run's verdicts under one judge: on its report, and on its claims and research when graded."""
+    """One run's verdicts under one judge: on its report, and on its claims and research when graded. A
+    rescout has no report (`report` None)."""
 
     run_id: UUID
     case: StudyCase
     report_text: str
-    report: dict[Point, bool]
+    report: dict[Point, bool] | None
     claims: dict[Point, bool] | None = None
     research: dict[Point, bool] | None = None
     arm: str | None = None
@@ -97,20 +100,26 @@ class RunDiagnosis:
         """Each point's stage: reported, or the earliest earlier view that met it, or not found."""
         if self.claims is None or self.research is None:
             return None
+        report = self.report if self.report is not None else dict.fromkeys(self.claims, False)
         return {point: "reported" if met else "claimed" if self.claims.get(point)
                 else "seen" if self.research.get(point) else "not_found"
-                for point, met in self.report.items()}
+                for point, met in report.items()}
+
+    def score(self) -> int | None:
+        """Points met by what the arms are compared on: the report, or a rescout's claims."""
+        met = self.report if self.report is not None else self.claims
+        return None if met is None else sum(met.values())
 
     def beyond_research(self) -> list[Point]:
         """Points the report met that neither its claims nor its research did: judge noise, or the synthesizer
         writing from its own knowledge."""
-        if self.claims is None or self.research is None:
+        if self.claims is None or self.research is None or self.report is None:
             return []
         return [point for point, met in self.report.items()
                 if met and not self.claims.get(point) and not self.research.get(point)]
 
     def equivalent_urls(self) -> list[Point]:
-        return equivalent_urls(self.case, self.report_text, self.report)
+        return [] if self.report is None else equivalent_urls(self.case, self.report_text, self.report)
 
 
 def _host(url: str) -> str:
@@ -208,7 +217,7 @@ def render(diagnoses: Sequence[RunDiagnosis], judge: str, grades: Sequence[dict[
     for case_id in dict.fromkeys(d.case.id for d in diagnoses):
         runs = [d for d in diagnoses if d.case.id == case_id]
         case = runs[0].case
-        total = len(runs[0].report)
+        total = sum(len(items) for items in case.rubrics.values())
         out += [f"## {case_id}: where the points were lost ({judge}, diagnose v{DIAGNOSE_VERSION})", "",
                 "| Run | Arm | " + " | ".join(STAGE_NAMES[s] for s in STAGES) + " | Reported beyond research "
                 "| Missed, equivalent URL |",
@@ -217,19 +226,22 @@ def render(diagnoses: Sequence[RunDiagnosis], judge: str, grades: Sequence[dict[
         for d in runs:
             stages = d.stages()
             if stages is None:
-                reported = sum(d.report.values())
+                reported = sum(d.report.values()) if d.report is not None else "no report"
                 out.append(f"| {str(d.run_id)[:8]} | {d.arm or ''} | {reported} | not graded | not graded | "
-                           f"not graded | | {len(d.equivalent_urls())} |")
+                           f"not graded | | {'' if d.report is None else len(d.equivalent_urls())} |")
                 continue
             counts[d.run_id] = Counter(stages.values())
             out.append(f"| {str(d.run_id)[:8]} | {d.arm or ''} | "
-                       + " | ".join(str(counts[d.run_id][s]) for s in STAGES)
-                       + f" | {len(d.beyond_research())} | {len(d.equivalent_urls())} |")
+                       + " | ".join("no report" if s == "reported" and d.report is None else str(counts[d.run_id][s])
+                                    for s in STAGES)
+                       + (" | | |" if d.report is None else f" | {len(d.beyond_research())} | {len(d.equivalent_urls())} |"))
         for arm in dict.fromkeys(d.arm for d in runs if d.run_id in counts):
             members = [counts[d.run_id] for d in runs if d.arm == arm and d.run_id in counts]
+            reportless = all(d.report is None for d in runs if d.arm == arm)
             if len(members) > 1:
                 out.append(f"| mean of {len(members)} | {arm or ''} | "
-                           + " | ".join(f"{statistics.mean(c[s] for c in members):.1f}" for s in STAGES) + " | | |")
+                           + " | ".join("no report" if s == "reported" and reportless
+                                        else f"{statistics.mean(c[s] for c in members):.1f}" for s in STAGES) + " | | |")
         out += ["", f"Each run's {total} points: a point the report missed is put at the earliest stage that met it."]
         lost: dict[str, Counter[Point]] = {stage: Counter() for stage in STAGES[1:]}
         for d in runs:
@@ -259,7 +271,20 @@ def render(diagnoses: Sequence[RunDiagnosis], judge: str, grades: Sequence[dict[
                    f"{len(history.get(case_id, []))} stored grades of {case_id}. Possibly out of reach; confirm by hand"
                    + (":" if unreached else "."))
         out += [f"  - {_label(case, point)}" for point in unreached]
-        arms = list(dict.fromkeys(d.arm for d in runs))
+        # The rescouts the stage table counts: both views graded.
+        rescouts = [d for d in runs if d.report is None and d.stages() is not None]
+        if rescouts:
+            claimed = {arm: [d.score() or 0 for d in rescouts if d.arm == arm] for arm in dict.fromkeys(d.arm for d in rescouts)}
+            out.append(f"- **Points claimed ({judge}):** " + "; ".join(
+                f"{arm or 'no arm'} {statistics.mean(scores):.1f} over {len(scores)} rescouts ({', '.join(map(str, scores))})"
+                for arm, scores in claimed.items()) + ".")
+            first, *others = claimed
+            for arm in others:
+                smallest = detectable_difference(claimed[first], claimed[arm])
+                if smallest is not None:
+                    out.append(f"  - {arm} against {first}: arms that differ by less than about {smallest:.1f} "
+                               "points cannot be told apart from run-to-run variation.")
+        arms = list(dict.fromkeys(d.arm for d in runs if d.report is not None))
         if len(arms) == 2:
             for name in sorted({_judge_name(g) for g in grades}):
                 scores = {arm: [sum(verdicts(g["points"]).values()) for g in grades if g["status"] == "succeeded"

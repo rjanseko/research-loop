@@ -1,10 +1,11 @@
-"""Pace a run's scouts under their model's token rate limit, and retry an explicitly timed rate limit
-or a transient network fault.
+"""Pace a run's scouts under their model's token rate limit, and retry an explicitly timed rate limit,
+a transient network fault, or a server error.
 
 The provider SDK retries timeouts along with 429s. Scout keeps SDK retries disabled and handles only
 rate limits that say when to retry, and connection faults that are not timeouts, which it sends once
 more. One wrapper instance is shared by the run's scouts, so a 429 pauses new requests from all of
-them. Provider errors with no retry time, including exhausted balances, fail, and so does a timeout.
+them. A server error (500, 502, 503, 504) is sent again twice, after short pauses. Other provider errors
+with no retry time, including exhausted balances, fail, and so does a timeout.
 
 Retrying alone does not hold under a tight limit: when OpenAI allowed this account 200,000 gpt-6-luna
 tokens a minute, four scouts sent about 550,000 in two minutes, and paused scouts resumed together into
@@ -40,7 +41,8 @@ from pydantic_ai.usage import RequestUsage
 
 # v2 adds pacing under a configured tokens-per-minute limit. v3 sends a request once more after a
 # transient network fault. v4 paces under the limit the provider reports, unless one was set explicitly.
-RATE_LIMIT_POLICY_VERSION = "scout-429-v4"
+# v5 sends a request again after a server error.
+RATE_LIMIT_POLICY_VERSION = "scout-429-v5"
 
 # Each model's tokens-per-minute limit as its provider last reported it, by `provider:model`.
 _REPORTED_TOKENS_PER_MINUTE: dict[str, int] = {}
@@ -70,6 +72,10 @@ _RESET_MARGIN_SECONDS = 0.1
 # TLS "bad record mac" from the OpenAI client ended a scout that had read 8 pages, losing its question.
 _NETWORK_RETRIES = 1
 _NETWORK_RETRY_SECONDS = 1.0
+# A server error is sent again after each of these pauses. On 28 September 2026 OpenAI answered HTTP 500
+# for a while, and each 500 ended a scout's research question: cheap checks eab6ad79, 5a0ad3d8, cc20d317.
+_SERVER_ERROR_PAUSES = (2.0, 8.0)
+_SERVER_ERRORS = frozenset({500, 502, 503, 504})
 _BODY_WAIT = re.compile(r"try\s+again\s+in\s+(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)\b", re.IGNORECASE)
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)?$", re.IGNORECASE)
 
@@ -228,6 +234,14 @@ class ScoutRateLimitModel(WrapperModel):
         await asyncio.sleep(_NETWORK_RETRY_SECONDS)
         return True
 
+    @staticmethod
+    async def _server_retry(error: ModelHTTPError, attempts: int) -> bool:
+        if attempts >= len(_SERVER_ERROR_PAUSES) or error.status_code not in _SERVER_ERRORS:
+            return False
+        logfire.info("Scout provider error {status}; sending the request again", status=error.status_code)
+        await asyncio.sleep(_SERVER_ERROR_PAUSES[attempts])
+        return True
+
     async def _pause(self, error: ModelHTTPError) -> bool:
         if (delay := _retry_delay(error)) is None:
             return False
@@ -243,7 +257,7 @@ class ScoutRateLimitModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
-        retries = network = 0
+        retries = network = server = 0
         while True:
             entry = await self._wait(messages, model_request_parameters)
             try:
@@ -252,9 +266,12 @@ class ScoutRateLimitModel(WrapperModel):
                     TokenPacer.settle(entry, response.usage)
                 return response
             except ModelHTTPError as error:
-                if retries >= _MAX_RETRIES or not await self._pause(error):
+                if retries < _MAX_RETRIES and await self._pause(error):
+                    retries += 1
+                elif await self._server_retry(error, server):
+                    server += 1
+                else:
                     raise
-                retries += 1
             except (OSError, httpx.TransportError, ModelAPIError) as error:
                 if not await self._network_retry(error, network):
                     raise
@@ -268,7 +285,7 @@ class ScoutRateLimitModel(WrapperModel):
         model_request_parameters: ModelRequestParameters,
         run_context: Any = None,
     ) -> AsyncGenerator[StreamedResponse]:
-        retries = network = 0
+        retries = network = server = 0
         while True:
             entry = await self._wait(messages, model_request_parameters)
             opened = False
@@ -282,9 +299,14 @@ class ScoutRateLimitModel(WrapperModel):
                     TokenPacer.settle(entry, stream.usage)
                 return
             except ModelHTTPError as error:
-                if opened or retries >= _MAX_RETRIES or not await self._pause(error):
+                if opened:
                     raise
-                retries += 1
+                if retries < _MAX_RETRIES and await self._pause(error):
+                    retries += 1
+                elif await self._server_retry(error, server):
+                    server += 1
+                else:
+                    raise
             except (OSError, httpx.TransportError, ModelAPIError) as error:
                 # Once the stream has been handed on, its reader has the partial reply and cannot restart.
                 if opened or not await self._network_retry(error, network):

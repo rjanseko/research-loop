@@ -63,7 +63,11 @@ CACHE_VERSION = 1
 #     (median page 44,000), and scouts asked for a later window for only 588 of the 1,202 cut. Web search
 #     can run on Serper and Brave, and on any engines in order (web.SearchChain). A scholarly search returns
 #     up to 25 works, not 10: scouts asked for 8 to 10 in 371 of 852 searches.
-FETCH_VERSION = 16
+# 17: the open-access reader finds an MDPI address's DOI through OpenAlex (MDPI gives scripted clients a bot
+#     challenge, and all 11 MDPI articles scouts failed to read went to a paid reader or were lost; 3 are in
+#     Europe PMC), and tries up to three PDFs at OpenAlex's other locations after its best one.
+# 18: the open-access reader tries CORE's repository full text last, within CORE's rate limits.
+FETCH_VERSION = 18
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -168,7 +172,7 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
 _RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2, "serper": 0.1,
-                  "brave": 0.05}
+                  "brave": 0.05, "core": 6.5}
 
 
 async def wait_rate_slot(provider: str) -> None:

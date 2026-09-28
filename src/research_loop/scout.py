@@ -171,8 +171,11 @@ RESCOUT_VERSION = "scout-research-v13"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
-_SOURCE_VERSIONS = (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION,
-                    *(f"scout-{kind}v{n}" for kind in ("", "followup-", "research-") for n in (1, 2, 3, 4, 5, 6, 7, 8)))
+# Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
+# list stopped at v8 and refused every v9 to v12 source.
+_SOURCE_VERSIONS = tuple(
+    f"scout-{kind}v{n}" for kind in ("", "followup-", "research-")
+    for n in range(1, 1 + max(int(v.rpartition("v")[2]) for v in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION))))
 # Whether the run did its work: `complete` when the report was written and every step ran to its end,
 # `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
 # Whether the answer is backed is `RunChecks.answer_support`.
@@ -324,7 +327,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
-        "read_fallback": list(settings.readers()),
+        "read_fallback": list(settings.readers()), "trim_history": settings.trim_history,
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -814,7 +817,8 @@ class _Run:
         readers: list[Any] = []
         for name in self.settings.readers():
             if name == "oa":
-                readers.append(OpenAccessReader(client, extract))
+                core_key = self.settings.core_api_key
+                readers.append(OpenAccessReader(client, extract, core_key.get_secret_value() if core_key else None))
             elif name == "exa" and exa_key:
                 readers.append(ExaContentsReader(client, exa_key, self.external_spend, self.budget))
             elif name == "firecrawl" and firecrawl_key:

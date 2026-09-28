@@ -10,7 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from research_loop.config import Settings
-from research_loop.study import StudySpec, load_spec, run_study, schedule, summary
+from research_loop.study import (
+    StudySpec,
+    load_spec,
+    run_study,
+    schedule,
+    summary,
+    tool_counts,
+)
 from research_loop.study import (
     _preflight as real_preflight,  # before the autouse fixture replaces it
 )
@@ -70,6 +77,15 @@ def test_arms_alternate_order_on_every_other_replicate(spec: StudySpec) -> None:
     assert order == [("standard", 1), ("deep", 1), ("deep", 2), ("standard", 2)]
 
 
+def test_three_arms_on_three_stored_plans_each_go_first_once() -> None:
+    # One replicate per plan would otherwise run the same arm first every time, warming the shared
+    # search cache for the others.
+    spec = StudySpec(study="s", kind="rescout", sources=["p1", "p2", "p3"], cap_usd=1, estimate_usd=0.1,
+                     ceiling_usd=5, arms=[{"name": n, "args": ["--model", "m"]} for n in ("luna", "flash", "pro")])
+    firsts = [run.arm.name for run in schedule(spec)][::3]
+    assert firsts == ["luna", "flash", "pro"] and len(schedule(spec)) == 9
+
+
 def test_specs_must_name_what_their_kind_needs() -> None:
     base = {"study": "s", "cap_usd": 1, "estimate_usd": 0.1, "ceiling_usd": 1, "arms": [{"name": "a"}]}
     with pytest.raises(ValidationError, match="lists `cases`"):
@@ -115,7 +131,7 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     assert "PYTHONPATH" not in first_env
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
-    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table
+    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s |  | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table
 
 
 def test_an_audited_study_runs_the_audit_with_the_modes_model_and_counts_its_cost(spec: StudySpec, tmp_path: Path) -> None:
@@ -444,3 +460,32 @@ def test_study_freezes_model_settings_before_running_arms(spec: StudySpec, tmp_p
     assert [env["RESEARCH_MODELS__SCOUT"] for env in seen] == ["openai:gpt-6-luna@high"] * 2
     assert audited == ["zai:glm-5.3@high"] * 2
     assert [env["RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS"] for env in seen] == ["240.0"] * 2
+
+
+def _returned(tool: str, content: dict) -> dict:
+    return {"parts": [{"part_kind": "tool-return", "tool_name": tool, "content": content}]}
+
+
+def test_a_studys_runs_count_searches_found_empty_and_failed_and_pages_read(spec: StudySpec, tmp_path: Path) -> None:
+    # A search engine comparison turns on how often searches come back empty or fail, which the run record lacks.
+    stored = [{"messages": [
+        _returned("web_search", {"results": [{"url": "https://a.example"}]}),
+        _returned("web_search", {"results": [], "hint": "No results for this query."}),
+        _returned("web_search", {"error": "SearchUnavailable (TimeoutException)"}),
+        _returned("fetch", {"url": "https://a.example", "text": "page", "start": 0}),
+        _returned("fetch", {"url": "https://a.example", "text": "more", "start": 40000}),
+        _returned("fetch", {"url": "https://b.example", "error": "HTTPStatusError", "status": 403}),
+        {"parts": [{"part_kind": "tool-call", "tool_name": "web_search", "args": {"query": "q"}}]}]}]
+    assert tool_counts(stored) == {"searches_found": 1, "searches_empty": 1, "searches_failed": 1,
+                                   "pages_read": 1, "pages_failed": 1}
+
+    def invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record("00000001-run", 0.30)))
+        return 0, ""
+
+    one = spec.model_copy(update={"replicates": 1, "arms": spec.arms[:1], "grade": False})
+    outcomes = run_study(one, tmp_path, invoke=invoke, worktrees=_no_worktrees, dsn="postgresql://unused",
+                         calls=lambda dsn, run_id: stored)
+    assert "| 300 s | 1 / 1 / 1 · 1 / 1 |" in summary(one, outcomes)

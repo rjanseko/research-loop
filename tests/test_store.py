@@ -239,3 +239,32 @@ def test_diagnose_grades_each_view_once_and_then_reuses_the_stored_grades(dsn: s
         main(["diagnose", str(run_id), "--model", "zai:glm-5.3@high", "--free"])
     out = capsys.readouterr().out
     assert again.value.code == 0 and len(seen) == 3 and "0 new grade(s) and 3 reused" in out
+
+
+@pytest.mark.postgres
+def test_a_dry_rescout_study_gets_its_sources_copied_without_their_parents(dsn: str, monkeypatch) -> None:
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    from research_loop.db import apply_migrations, migration_files
+    from research_loop.study import copy_sources_to_dry
+
+    dry = make_conninfo(dsn, options="-csearch_path=dry")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("drop schema if exists dry cascade")
+        conn.execute("create schema dry")
+        apply_migrations(conn, migration_files())
+    with psycopg.connect(dry, autocommit=True) as conn:
+        apply_migrations(conn, migration_files())
+    parent, source = uuid4(), uuid4()
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for run_id, parent_id in ((parent, None), (source, parent)):
+            conn.execute("insert into runs (id, parent_run_id, mode, workflow_version, question, status, plan) "
+                         "values (%s, %s, 'scout', 'scout-v13', 'Q?', 'complete', '{\"questions\": []}')",
+                         (run_id, parent_id))
+    monkeypatch.setenv("RESEARCH_DRY_DATABASE_URL", dry)
+    assert copy_sources_to_dry(dsn, [str(source), "00000000-0000-0000-0000-000000000000"]) == [
+        "00000000-0000-0000-0000-000000000000"]
+    assert copy_sources_to_dry(dsn, [str(source)]) == []  # a second copy leaves the first as it is
+    with psycopg.connect(dry) as conn:
+        assert conn.execute("select parent_run_id, plan from runs").fetchall() == [(None, {"questions": []})]

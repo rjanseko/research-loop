@@ -209,6 +209,7 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
         REPO,
         StudyCeilingError,
         StudyConfigError,
+        copy_sources_to_dry,
         dry_database_url,
         for_mode,
         load_spec,
@@ -237,6 +238,11 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
             print(f"{run.label}: {run.target} {run.arm.name} replicate {run.replicate}"
                   + (f" at {run.arm.ref}" if run.arm.ref else ""))
         return 0 if spec.worst_case_usd() <= spec.ceiling_usd else 2
+    # A dry rescout or synthesis study needs its source runs in the dry database.
+    if (mode == "dry" and spec.kind != "scout" and settings.database_dsn
+            and (missing := copy_sources_to_dry(settings.database_dsn, spec.sources))):
+        print(f"Cannot run: no stored run {', '.join(missing)}", file=sys.stderr)
+        return 2
     out = args.out or REPO / "runs" / spec.study
     try:
         outcomes = run_study(spec, out, mode=mode, dsn=settings.database_dsn)
@@ -467,7 +473,9 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
         stage_grades = list(await load_stage_grades(pool, args.run_ids))
         for run_id in args.run_ids:
             row = await load_run(pool, run_id)
-            if row is None or not row.get("report"):
+            # A fixed-plan rescout writes no report; its claims and research are graded alone.
+            rescout = row is not None and row.get("mode") == "fixed-plan"
+            if row is None or not (row.get("report") or rescout):
                 print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
                 code = 1
                 continue
@@ -482,10 +490,10 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
                 code = 1
                 continue
             ledger = EvidenceLedger.from_json(row["ledger"] or {})
-            text = reader_text(FinalReport.model_validate(row["report"]), ledger)
+            text = reader_text(FinalReport.model_validate(row["report"]), ledger) if row.get("report") else ""
             spent, new, reused, failed = Decimal(0), 0, 0, []
             found: dict[str, list[dict[str, Any]]] = {}
-            views = {"report": text, **{view: make(ledger) for view, make in VIEW_TEXT.items()}}
+            views = {**({"report": text} if text else {}), **{view: make(ledger) for view, make in VIEW_TEXT.items()}}
             for view, view_text in views.items():
                 prior = stored(report_grades if view == "report" else stage_grades, run_id, case.rubric_version,
                                None if view == "report" else view)
@@ -506,8 +514,8 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
                     found[view] = grade.points
                 else:
                     failed.append(f"{view} ({type(grade.error).__name__})")
-            if "report" in found:
-                diagnoses.append(RunDiagnosis(run_id, case, text, verdicts(found["report"]),
+            if "report" in found or (not text and "claims" in found):
+                diagnoses.append(RunDiagnosis(run_id, case, text, verdicts(found["report"]) if text else None,
                                               claims=verdicts(found["claims"]) if "claims" in found else None,
                                               research=verdicts(found["research"]) if "research" in found else None,
                                               arm=row.get("arm")))

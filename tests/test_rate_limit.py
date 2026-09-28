@@ -332,3 +332,30 @@ def test_openai_models_record_the_rate_limit_their_responses_report(monkeypatch)
     model = build_model("openai:gpt-6-luna@high", "scout", Settings(_env_file=None))
     hooks = model.client._client.event_hooks["response"]
     assert [hook.__qualname__ for hook in hooks] == ["rate_limit_hook.<locals>.record"]
+
+
+async def test_a_server_error_is_sent_again_twice_and_other_errors_are_not(monkeypatch) -> None:
+    # One OpenAI 500 used to end a scout's research question (cheap checks on 28 September 2026).
+    monkeypatch.setattr("research_loop.rate_limit._SERVER_ERROR_PAUSES", (0, 0))
+    attempts = 0
+
+    def failing(status: int, times: int):
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal attempts
+            del messages, info
+            attempts += 1
+            if attempts <= times:
+                raise ModelHTTPError(status, "gpt-6-luna", body={"message": "The server had an error"})
+            return ModelResponse(parts=[TextPart("ok")])
+        return respond
+
+    response = await ScoutRateLimitModel(FunctionModel(failing(500, 2))).request([], None, ModelRequestParameters())
+    assert response.text == "ok" and attempts == 3
+    attempts = 0
+    with pytest.raises(ModelHTTPError):
+        await ScoutRateLimitModel(FunctionModel(failing(503, 3))).request([], None, ModelRequestParameters())
+    assert attempts == 3
+    attempts = 0
+    with pytest.raises(ModelHTTPError):  # a bad request is not a server fault
+        await ScoutRateLimitModel(FunctionModel(failing(400, 1))).request([], None, ModelRequestParameters())
+    assert attempts == 1

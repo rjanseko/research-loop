@@ -104,8 +104,16 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
         model = ZaiModel(name, provider=ZaiProvider(api_key=key), settings=own)
     elif provider == "deepseek":
         from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
         from pydantic_ai.providers.deepseek import DeepSeekProvider
-        model = OpenAIChatModel(name, provider=DeepSeekProvider(api_key=key), settings=own)
+
+        # PydanticAI does not yet recognize the deepseek-flash alias as a thinking model. Our settings
+        # enable thinking for it, so its profile must also stop forcing tool_choice=required: DeepSeek
+        # rejects that combination with HTTP 400. V4 Pro already has the correct provider profile.
+        profile = (OpenAIModelProfile(supports_thinking=True, openai_reasoning_enabled_by_default=True,
+                                     openai_supports_forced_tool_choice_with_thinking=False)
+                   if name == "deepseek-flash" else None)
+        model = OpenAIChatModel(name, provider=DeepSeekProvider(api_key=key), profile=profile, settings=own)
     else:
         from google.genai.types import HttpRetryOptions
         from pydantic_ai.models.google import GoogleModel
@@ -128,8 +136,10 @@ def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
 
 def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
     """A scout's model: `inner` behind a run-shared wrapper that retries only timed rate limits and paces
-    `model_id` under its token rate, and with old page text trimmed from each request (history.py)."""
-    return TrimmedHistoryModel(ScoutRateLimitModel(inner, token_pacer(model_id, settings)))
+    `model_id` under its token rate, and with old page text trimmed from each request (history.py) unless
+    `trim_history` is off."""
+    model = ScoutRateLimitModel(inner, token_pacer(model_id, settings))
+    return TrimmedHistoryModel(model) if settings.trim_history else model
 
 
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:

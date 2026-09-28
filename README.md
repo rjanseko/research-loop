@@ -319,6 +319,7 @@ These are all the outside services the code calls, what it sends them, and what 
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
 | The public web | Reading pages and PDFs | Default | None | Free | Requests to public HTTPS addresses only |
 | Europe PMC | Open-access full text of a paper our fetch could not read | The reading fallback's `oa`, on by default | None | Free | DOIs |
+| CORE | Repository full text of a paper, when Europe PMC and OpenAlex have no readable copy | The reading fallback's `oa`, on by default | `CORE_API_KEY` (optional) | Free: 100 requests a day without a key, 1,000 with one | DOIs |
 | Exa | Reading a page from Exa's crawl (`/contents`) | The reading fallback's `exa`, on by default when `EXA_API_KEY` is set | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
 | Firecrawl | Scraping a page our fetch could not read, with basic proxies only | The reading fallback's `firecrawl`, on by default when `FIRECRAWL_API_KEY` is set | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
 | Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` or `logfire auth` | Your Logfire plan | Prompts, tool results, and timings |
@@ -396,14 +397,14 @@ Retrying is not enough when parallel scouts regularly send more than the limit a
 
 The limit paced under is the one OpenAI reports. Every OpenAI response carries `x-ratelimit-limit-tokens`, and from a run's first response on, its pacer uses that value for the model. So a change of tier is picked up without a setting. Until then it uses the configured default, `{"openai:gpt-6-luna": 2000000}`, this project's OpenAI tier; on a lower tier, the first response brings the limit down. Setting `RESEARCH_TOKENS_PER_MINUTE` explicitly fixes the limit instead, and `'{}'` turns pacing off.
 
-The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v4`.
+The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v5`.
 
 A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $3.00.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
 
-A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. The retry policy is part of `scout-429-v4`.
+A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. A server error (HTTP 500, 502, 503, or 504) is sent again twice, after pauses of 2 and 8 seconds; before this, one provider 500 ended a scout's research question. The retry policy is part of `scout-429-v5`.
 
 ### Web search
 
@@ -419,7 +420,7 @@ Each Exa search's reported cost is added to the run's cost, and shown as `extern
 ### Reading fallback
 
 About 20% of the pages scouts tried to read in production runs failed, mostly with 403s from publishers behind bot protection: MDPI, RSC, ACS, OUP, AIP, and ScienceDirect were read 2 to 9% of the time. A page our fetch cannot read is tried with each reader of the reading fallback in turn. Unset, `RESEARCH_READ_FALLBACK` is every reader that can run: `oa`, which is free, always, then `exa` and `firecrawl` when their keys are set. An empty value turns the fallback off, and a list such as `oa,exa` names the readers and their order.
-- `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID), through Europe PMC's full text or OpenAlex's best open-access location, and reads it with our own fetcher;
+- `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID; for an MDPI address, the DOI OpenAlex records for its journal, volume, issue, and article number), through Europe PMC's full text, OpenAlex's best open-access location, or a PDF at up to three of OpenAlex's other locations, such as a repository's copy, and reads it with our own fetcher; last, it asks CORE for its full text of the DOI, spacing requests 6.5 seconds apart and stopping until CORE's reset time after a 429 or once CORE reports none left (100 requests a day without `CORE_API_KEY`, 1,000 with a free key);
 - `exa` reads the page from Exa's crawl;
 - `firecrawl` scrapes it with Firecrawl, using basic proxies only, never stealth or residential proxies.
 
@@ -459,6 +460,8 @@ Standalone `research audit` and `research diagnose` use their configured default
 
 A model is named with the reasoning effort it runs at, as `provider:model@effort`. A live provider is `openai`, `anthropic`, `zai`, `google`, or `deepseek`; the offline dry model uses `fake`. The effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
 
+DeepSeek Flash uses automatic tool choice in thinking mode. DeepSeek rejects a forced tool choice in that mode; `research doctor --smoke` checks that the configured model can call a tool before a study.
+
 Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
 
 A model selected for a paid command is refused before calls if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
@@ -489,9 +492,11 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 
 `research study run SPEC.toml` runs a whole study from a spec, in this way:
 - every arm, case or stored run, and replicate runs one at a time;
-- each arm goes first on alternate replicates;
+- the arm order rotates by one place on each replicate and target, so each arm goes first equally often against the study's shared cache (two arms alternate);
 - each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
 - when the spec says so, each run is graded (`grade = true`), audited (`audit = true`), and diagnosed (`diagnose = true`).
+
+A rescout writes no report, so a rescout study cannot be graded or audited. Its `diagnose = true` grades each rescout's claims and research instead, and the summary compares arms on the rubric points their claims met (`research diagnose` accepts a rescout's run ID the same way). This compares scout models on one fixed plan with no planner or synthesizer in between. `--dry` copies a rescout or synthesis study's source runs from the main database into the dry one first.
 
 It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It snapshots model IDs, effort, and model-call limits from the parent configuration once at the start, then applies each arm's overrides and the dry or cheap mode. It checks each arm with that effective environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far. A spec’s `audit_model` or `diagnose_model` overrides the corresponding model from the arm’s environment; when omitted, the study uses the configured defaults above.
 
@@ -658,6 +663,7 @@ The last three make no model calls.
 | [study-log.md](docs/study-log.md) | Index of every study, paid run, and offline re-scoring, linking to archived detail where needed |
 | [evaluation.md](docs/evaluation.md) | How quality is measured and how a comparison is set up so that it can decide |
 | [lessons.md](docs/lessons.md) | What the first design and Scout's first days taught |
+| [notes.md](docs/notes.md) | Ideas with some evidence but no decision yet: cache warming and a source ranker |
 | [archive/](docs/archive/) | Superseded plans and dated historical study-log entries |
 
 `.agents/skills/` holds agent skills used as API references, such as Exa's `build-with-exa`. The first design of this project, a six-role graph with benchmark adapters and long-horizon studies, is kept at the git tag `archive/pre-scout-2026-09`.

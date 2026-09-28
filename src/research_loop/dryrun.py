@@ -361,7 +361,7 @@ class World:
     def install(self, stack: AsyncExitStack, policy: Any = None) -> None:
         """Serve the world for the rest of `stack`: hosts count as public, rate slots never wait, and the
         world's PDFs extract to their text. Everything is restored when `stack` closes."""
-        from . import acquisition, scholar, web
+        from . import acquisition, rate_limit, reading, scholar, web
 
         async def public(url: str) -> bool:
             parsed = urlparse(url)
@@ -382,7 +382,10 @@ class World:
             return original_pdf(content)
 
         patches = [(acquisition, "public_url", public), (web, "public_url", public), (web, "wait_rate_slot", no_wait),
-                   (scholar, "wait_rate_slot", no_wait), (web, "_pdf_text", pdf_text)]
+                   (scholar, "wait_rate_slot", no_wait), (reading, "wait_rate_slot", no_wait),
+                   (web, "_pdf_text", pdf_text),
+                   # Injected 500s are sent again at once: real pauses would eat the dry runs' short deadlines.
+                   (rate_limit, "_SERVER_ERROR_PAUSES", (0.0, 0.0))]
         for module, name, value in patches:
             previous = getattr(module, name)
             setattr(module, name, value)
