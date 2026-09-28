@@ -91,9 +91,9 @@ class ScoutModels(BaseModel):
     planner: str = "openai:gpt-6-sol@high"
     scout: str = "openai:gpt-6-luna@high"
     # A second scout model for deep runs, such as zai:glm-5.3@xhigh: when set, a deep run's even-numbered
-    # questions and deep dives use it, so its scouts draw on a second provider's rate limit. Paced under
-    # Luna's 200,000 tokens a minute, a deep run's scouts together sent about 115,000 tokens a minute
-    # (d8c8198e, 2c66e8bd), whatever their deadline.
+    # questions and deep dives use it, so its scouts draw on a second provider's rate limit. It was built
+    # when a deep run's scouts sent only about 115,000 tokens a minute (d8c8198e, 2c66e8bd); that ceiling
+    # turned out to be the pacer's stale 200,000 limit, a tenth of the account's real one.
     scout_alt: str | None = None
     synthesizer: str = "anthropic:claude-opus-5-5@medium"
     fallback: str | None = "openai:gpt-6-sol@high"
@@ -256,9 +256,11 @@ class Settings(BaseSettings):
     models: ScoutModels = Field(default_factory=ScoutModels)
     limits: ScoutLimits = Field(default_factory=ScoutLimits)
     # Provider token rate limits per minute, by provider:model; scouts on a listed model are paced under
-    # it (rate_limit.py). The default is this account's OpenAI tier. Set as JSON, such as
-    # RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna": 200000}'; '{}' turns pacing off.
-    tokens_per_minute: dict[str, int] = Field(default_factory=lambda: {"openai:gpt-6-luna": 200_000})
+    # it (rate_limit.py). Unset, a run starts from this default and switches to the limit OpenAI reports
+    # with its first response; set, as JSON such as RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna":
+    # 2000000}', the limit is fixed, and '{}' turns pacing off. The default is this account's OpenAI tier,
+    # read from its response headers on 28 September 2026.
+    tokens_per_minute: dict[str, int] = Field(default_factory=lambda: {"openai:gpt-6-luna": 2_000_000})
 
     openai_api_key: SecretStr | None = Field(None, validation_alias="OPENAI_API_KEY")
     anthropic_api_key: SecretStr | None = Field(None, validation_alias="ANTHROPIC_API_KEY")

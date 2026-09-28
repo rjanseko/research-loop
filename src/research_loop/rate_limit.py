@@ -14,7 +14,8 @@ until the tokens sent in the last minute plus the request fit under most of that
 The limit is the one the provider reports: OpenAI sends `x-ratelimit-limit-tokens` with every response,
 and `rate_limit_hook` records it, so a pacer uses the account's current tier from its first response on.
 A configured `RESEARCH_TOKENS_PER_MINUTE` is only the starting point, unless it was set explicitly. The
-configured 200,000 had held scouts to a tenth of the real limit after the tier rose to 2,000,000.
+configured 200,000 had held scouts to a tenth of the real limit after the tier rose to 2,000,000; the
+default is now 2,000,000.
 """
 from __future__ import annotations
 
