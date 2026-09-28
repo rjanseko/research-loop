@@ -41,6 +41,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
 | 09-28 | [Search engines on three drb2-task8 plans (scout-v14)](#2026-09-28-search-engines-on-three-drb2-task8-plans-scout-v14) | $4.99 | No engine advanced under the rule: Serper was disqualified by one partial unrelated to search and Exa by quote share; Serper is rerun on scout-v15 |
 | 09-28 | [Sol regrades ten search-study rescouts](#2026-09-28-sol-regrades-ten-search-study-rescouts) | $1.58 | Sol gives 3 to 9 fewer claimed points than GLM (mean 21.6 against 27.7) but ranks the arms the same way |
+| 09-28 | [Case contamination audit (scout-v16)](#2026-09-28-case-contamination-audit-scout-v16) | $0.04 | drb2-task8's wording was in model-visible examples since v6 and v13; its absolute scores since v6 are suspect, comparisons within a study stand; held-out cases untouched |
 | 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
@@ -359,3 +360,13 @@ The v14 search study was diagnosed by GLM@high alone. To see whether a second ju
 Sol gave fewer claimed points on every run, 3 to 9 fewer and 6.1 fewer on average (21.6 against 27.7). That matches the report grades, where GLM credited more and Sol read URLs and wording literally. The two judges order the runs much the same: both put `7060df48` and `0ba7d7b8` at the top. On the same runs, both put DuckDuckGo lowest: 18.5 under Sol and 25.0 under GLM, with the other engines 3 to 4 points above it under either judge. A second judge would not have changed the search study's decision.
 
 **Decision.** GLM stays the single judge for screens. Sol, or both judges, is used where a decision rests on a few points, such as a confirmation. Which judge is right on a disputed point is a hand check, and none was done here.
+
+## 2026-09-28 Case contamination audit (scout-v16)
+
+The user stopped all paid calls and asked for an audit, after the claim fix, designed from drb2-task8's rubric, was about to be measured on drb2-task8. The DeepSeek study was stopped after 5 of its 9 rescouts ($2.48 of rescouts; `e994230a` was cut off). The Serper rerun had finished ($1.87). Neither is written up yet. The full audit is [audit-2026-09-28-case-contamination.md](audit-2026-09-28-case-contamination.md).
+
+- **What a run receives is clean.** It gets the case's question, blocked addresses, and blocked titles, and no rubric.
+- **The models' examples carried drb2-task8's wording.** An expected database, ICSD, was in the scouts' output schema since scout-v6, and the case's category names and database fields were in the planner's and scouts' examples since scout-v13. So drb2-task8's absolute scores since v6 are suspect, while comparisons within a study stand.
+- **The held-out cases are untouched.** They have no runs, grades, or expected sets, and share no wording with the prompts.
+- **scout-v16** replaces the examples, adds a test that keeps every frozen case's wording out of model-visible text, and makes a stopped study stop its current run with SIGTERM, so the run records itself as cancelled.
+- **The planner calls.** The three planner-only calls earlier the same day cost $0.04 and used the v13 planner, whose example came from the case.

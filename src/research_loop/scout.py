@@ -176,9 +176,12 @@ def _paid_search(name: str) -> Any:
 # nearing that limit withdraws its tools like its share does, instead of cutting it off. Budgets grew to match: a standard run
 # $1.75 with $0.60 for synthesis, a follow-up $2.50 ($4.00 deep), a deep dive $0.35; and a scout's output gets two
 # retries. followup-v16 and research-v15 carry it.
-WORKFLOW_VERSION = "scout-v15"
-FOLLOWUP_VERSION = "scout-followup-v16"
-RESCOUT_VERSION = "scout-research-v15"
+# v16: the planner's, scouts', and output schema's examples no longer carry drb2-task8's wording (an ICSD example
+# since v6; its categories and database fields since v13), and a test keeps every frozen case's wording out of
+# model-visible text (docs/audit-2026-09-28-case-contamination.md). followup-v17 and research-v16 carry it.
+WORKFLOW_VERSION = "scout-v16"
+FOLLOWUP_VERSION = "scout-followup-v17"
+RESCOUT_VERSION = "scout-research-v16"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"

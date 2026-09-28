@@ -489,3 +489,29 @@ def test_a_studys_runs_count_searches_found_empty_and_failed_and_pages_read(spec
     outcomes = run_study(one, tmp_path, invoke=invoke, worktrees=_no_worktrees, dsn="postgresql://unused",
                          calls=lambda dsn, run_id: stored)
     assert "| 300 s | 1 / 1 / 1 · 1 / 1 |" in summary(one, outcomes)
+
+
+def test_an_interrupted_study_stops_its_run_with_sigterm_not_sigkill(tmp_path, monkeypatch) -> None:
+    # subprocess.run killed a stopped study's rescout with SIGKILL, so the rescout never recorded itself as
+    # cancelled and its run stayed "running" (audit, 28 September 2026).
+    import subprocess
+    import sys
+
+    from research_loop.study import run_child
+
+    marker = tmp_path / "got-sigterm"
+    child = ("import signal, sys, time\n"
+             f"signal.signal(signal.SIGTERM, lambda *_: (open({str(marker)!r}, 'w').close(), sys.exit(130)))\n"
+             "print('ready', flush=True)\ntime.sleep(30)\n")
+    real = subprocess.Popen.communicate
+
+    def interrupted(self, *args, **kwargs):
+        if not kwargs.get("timeout"):
+            self.stdout.readline()  # the child's handler is installed
+            raise KeyboardInterrupt
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_child([sys.executable, "-c", child], {}, capture_stdout=True)
+    assert marker.exists()

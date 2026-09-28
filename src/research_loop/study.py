@@ -338,10 +338,26 @@ def _cap(limit: float, room: Decimal) -> Decimal:
 Invoke = Callable[[list[str], dict[str, str]], tuple[int, str]]
 
 
+def run_child(command: list[str], env: dict[str, str], *, capture_stdout: bool) -> subprocess.CompletedProcess[str]:
+    """Run one `research` command to its end. When the study is interrupted, the command gets SIGTERM, which it
+    handles like Ctrl-C by recording its run as cancelled, and up to a minute to do so. `subprocess.run` sends
+    SIGKILL instead, which left two stopped rescouts marked running (audit, 28 September 2026)."""
+    with subprocess.Popen(command, cwd=REPO, env={**os.environ, **env}, text=True, stderr=subprocess.PIPE,
+                          stdout=subprocess.PIPE if capture_stdout else None) as child:
+        try:
+            out, err = child.communicate()
+        except KeyboardInterrupt:
+            child.terminate()
+            try:
+                child.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                child.kill()
+            raise
+    return subprocess.CompletedProcess(command, child.returncode, out, err)
+
+
 def _invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
-    executable = Path(sys.executable).with_name("research")
-    done = subprocess.run([str(executable), *args], cwd=REPO, env={**os.environ, **env}, check=False,
-                          stderr=subprocess.PIPE, text=True)
+    done = run_child([str(Path(sys.executable).with_name("research")), *args], env, capture_stdout=False)
     sys.stderr.write(done.stderr)
     return done.returncode, done.stderr
 
@@ -433,9 +449,7 @@ def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
 
 
 def _invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
-    executable = Path(sys.executable).with_name("research")
-    done = subprocess.run([str(executable), *args], cwd=REPO, env={**os.environ, **env}, check=False,
-                          capture_output=True, text=True)
+    done = run_child([str(Path(sys.executable).with_name("research")), *args], env, capture_stdout=True)
     sys.stderr.write(done.stderr)
     return done.returncode, done.stdout
 

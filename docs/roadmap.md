@@ -8,6 +8,16 @@ Every paid step follows AGENTS.md: a spec with its decision rule, a clean dry ch
 
 The trimming study finished and turned trimming off. The first search study was stopped after request timeouts, and scout-v14 raised the scout request timeout to 600 seconds and the time, call, and request limits (study log, "Trimming off, and limits as safety nets"). The search study is rerunning as `search-rescout-task8-v14`: check its first plan's four rescouts for failures before letting the rest run. scout-v15 (scouts pay for their own paid searches, productive calls a loop guard at 128, 48,000-token replies) waits on branch `claude/scout-v15` and is merged once the search study finishes. The DeepSeek study then runs on scout-v15, with its dry check rerun first.
 
+## Paused: audit (28 September, evening)
+
+All paid calls are paused until the contamination audit passes ([audit](audit-2026-09-28-case-contamination.md)). Its pass criteria:
+- the v16 fixes are merged;
+- the stale runs are closed;
+- the study log marks the results since v6;
+- the claim fix is measured on held-out cases only.
+
+After it passes, write up the Serper rerun and the partial DeepSeek study, then design a held-out measurement of the claim fix with its baseline and cost, for approval.
+
 ## 1. Finish the two running studies
 
 The trimming study (`studies/trim-history-rescout-task8.toml`, $3.00 ceiling) and the search-engine study (`studies/search-rescout-task8.toml`, $9.50 ceiling) were started detached on 28 September. Check them with `pgrep -af "study run"`, then read `runs/<study>/run.log` and `runs/<study>/summary.md`.

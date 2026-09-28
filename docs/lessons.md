@@ -102,3 +102,12 @@ These come from Scout's first three days of studies; the runs behind them are in
 **Fuzzing guards plumbing, not quality.** The bug-finding harness found five bugs as it was built, one of them by fuzzing, and catches every earlier bug when it is put back. It cannot see a claim that overreaches its quote or a page that cannot be read. A bug a paid run finds now gets the narrowest test that would have caught it, and fuzzing only when it comes from parts of a run interacting.
 
 **A guarantee covers only the paths that enforce it.** Blocked sources were matched by address in web search and fetch but not in the scholarly tools, and drb2-task8's blocked expert report reached five early ledgers by its DOI. The study ceiling was compared with estimates while each run kept its full cap, so it did not bound spending. An outside audit found both by writing counterexamples against the stated guarantee rather than against the code's own rules. The fuzz model shared those rules, so it could not find them.
+
+## Lessons from 28 September 2026
+
+**An example in a prompt is part of the test.** The claim fix was designed from drb2-task8's rubric, and its examples were drb2-task8's own: its category names, its database fields, and, since scout-v6, one of its expected databases in the scouts' output schema. A higher drb2-task8 score could then come from the prompt echoing the case rather than from the fix. A development case may shape a fix, but not the text a model sees, and a fix is confirmed on held-out cases. A test now keeps every frozen case's wording out of model-visible text; a paraphrase still needs reading ([audit](audit-2026-09-28-case-contamination.md)).
+
+**A limit should stop work only where it saves something.** In one day, request timeouts, the token limit, and output checks each cost a question while money and time were left. Where a limit is reached, the scout should return what it has, and the dollar share and deadline should bound the work.
+
+**Stopping a study must stop its runs cleanly.** `subprocess.run` answers an interrupt with SIGKILL, so a stopped study's current run could not record itself and stayed marked running.
+

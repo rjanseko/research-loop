@@ -176,7 +176,7 @@ class ResearchResult(BaseModel):
     unresolved: list[str] = Field(default_factory=list, description="What this research could not establish")
     open_items: list[str] = Field(default_factory=list, description=(
         "Members or categories of the requested set that sources name but this research did not establish, "
-        "each as a short name such as 'Inorganic Crystal Structure Database (ICSD)'"))
+        "each as a short name such as 'Protein Data Bank (PDB)'"))
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code: queries and pages the research tried, which stay useful when it was cut off without claims.
     searches: SkipJsonSchema[list[str]] = Field(default_factory=list)
