@@ -27,6 +27,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap; a request's reservation missed long-context output prices. All three fixed |
 | 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | $0.16 | Clean on the new code once the keys were in `.env`; the runner now checks every arm first. Ceilings raised |
 | 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
+| 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -495,3 +496,34 @@ The first version of trimming stubbed every page two responses after it was read
 **Other fixes.** A study check stopped with SIGTERM earlier on 27 September had left run `7b7d351c` and one of its scouts marked `running`. `research db reconcile --older-than 60 --apply` marked them failed (Abandoned). The CLI now stops on SIGTERM as it does on Ctrl-C, so a stopped run records itself as cancelled (3788d3d). A subprocess test checks this, and fails without the fix.
 
 **What it showed, and what it did not.** Deep runs on Luna are limited by the account's token rate, not by their deadline, their money, or the scouts' effort. More time or more questions spread the same throughput more thinly. The cheap checks show that trimming and the second model run end to end. They cannot show that either improves reports: they run cheap stand-in models, finish because low effort is fast, and are one run each. None of today's changes has been graded. A replicated, graded comparison on a frozen case, with its decision rule written first, should decide whether the deep changes stay. Everything is on PR #39.
+
+## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
+
+`studies/deep-vs-standard-task8.toml` asked whether a deep run is a large improvement over a standard one on the current code. No DeepSeek Bench II case had had a production run since scout-v6, when the smoke check `smoke-v6-task8` ran one of each. Its decision rule, written before any paid run, required all of these:
+- a mean rubric score at least 5 of 52 points above standard's under both judges;
+- a supported-audit share no more than 5 points below standard's, and no failed deep run;
+- deep at $1.00 a run or less.
+
+The spec's dry check (two seeds) and cheap check (runs `0cd21cbc` and `7efab7f1`, $0.08) were clean. The study ran six runs in alternating arm order, each graded by `gpt-6-sol@high` and audited by `zai:glm-5.3@high`. It cost $3.28 of its $5.00 ceiling. The six reports were then regraded by `zai:glm-5.3@high` for $0.23. The first attempt at that, capped at $0.10 a grade, was refused before dispatch, because the guard's reservation for one grade is about $0.20.
+
+| Arm | Rep | Run | Sol | GLM | Quotes verified | Audit supported / partial / unsupported / no quote | Coverage | Cost | Time |
+|---|---|---|---|---|---|---|---|---|---|
+| standard | 1 | `27701a2f` | 24 | 26 | 56 of 60 | 24 / 4 / 0 / 0 | 4/7 | $0.421 | 464 s |
+| deep | 1 | `3dfd1f92` | 26 | 36 | 90 of 106 | 28 / 3 / 0 / 0 | 5/7 | $0.730 | 1,150 s |
+| deep | 2 | `fdd47ad4` | 24 | 26 | 101 of 109 | 21 / 5 / 0 / 0 | 5/7 | $0.687 | 964 s |
+| standard | 2 | `8f753940` | 16 | 24 | 58 of 59 | 18 / 7 / 0 / 0 | 3/7 | $0.350 | 496 s |
+| standard | 3 | `aea52be0` | 17 | 26 | 62 of 69 | 12 / 5 / 1 / 0 | 4/7 | $0.422 | 454 s |
+| deep | 3 | `307f5e4d` | 22 | 28 | 80 of 86 | 39 / 2 / 0 / 1 | 5/7 | $0.669 | 1,152 s |
+
+| Arm | Sol mean | GLM mean | Audit supported | Mean cost | Mean time |
+|---|---|---|---|---|---|
+| standard | 19.0 | 25.3 | 54 of 71 statements (76%) | $0.40 | 7.9 min |
+| deep | 24.0 | 30.0 | 88 of 99 statements (89%) | $0.70 | 18.0 min |
+
+**Decision: undecided.** Deep scored 5.0 points more under Sol and 4.7 under GLM. The rule needs 5 under both, so the score condition is not met, and no disagreement was checked by hand because none could change that. The other two conditions held. Deep's reports rested on quotes more often, with 89% of statements supported against 76%. Every deep run completed, and deep averaged $0.70.
+
+Deep was ahead under both judges in every pairing but one: GLM's fdd47ad4 at 26 against standard's 24 and 26. Standard's Sol scores spread from 16 to 24, so three replicates cannot place a difference this size reliably. Deep costs 1.75 times as much and takes 2.3 times as long.
+
+**Against v6.** Judged the same way, the v6 smoke runs scored 22 (Sol) and 27 (GLM) for standard, and 31 and 33 for deep. Standard's are inside today's ranges. The single v6 deep run is above all three deep runs under Sol, and inside the range under GLM. One run per arm cannot show whether v7 to v11 changed scores.
+
+The GLP-1 example waits on this. With deep neither adopted nor rejected, the next step is either more replicates or a held-out case, with a rule written first.
