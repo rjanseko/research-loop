@@ -39,6 +39,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
 | 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
+| 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -271,3 +272,12 @@ The slowest tenth of standard scouts took 340 seconds of 480 and spent $0.037 of
 | Standard envelope | $0.75 ($0.075 a scout) | $1.25 ($0.20 a scout) |
 
 A timed-out request is still not sent again: at 600 seconds a second attempt would rarely fit, and the research deadline bounds time. Tests, lint, and 200 fuzz runs are clean. The user asked that the first case of the rerun search study be checked for failures before the rest runs.
+
+## 2026-09-28 Scouts pay for their own searches (scout-v15)
+
+A scout's dollar share bounded only its model requests. Paid searches and page reads were charged to the run and seen only by a hard cap, so the productive-call limit was the one per-scout bound on them: one Exa rescout spent $0.45 on searches and reads against $0.08 on its model. At the user's request, scout-v15 (followup-v16, research-v15) changes three things:
+- **Paid spend by scout.** Each scout call gets its own spend key, set on every tool call it makes (`reading.charged_question`), so `ExternalSpend.by_question` holds what each call's paid searches and page reads cost.
+- **Money as the budget.** The scout's loop budget withdraws its tools, with a new note ("Your research budget is spent"), once its model cost plus that spend would leave less than two requests like its average (`LoopBudget.out_of_money`). A scout that stops this way is recorded as "returned after its dollar share was spent". The note is part of the prompt fingerprint.
+- **Wider caps.** Productive calls became a guard against loops rather than a budget: 128 a scout and a deep dive, 192 a deep scout. A scout's reply under a hard cap may be 48,000 tokens, up from 24,000; the largest had used 22,313.
+
+Smoke calls with a 48,000-token cap were answered by `openai:gpt-6-luna@xhigh`, `deepseek:deepseek-flash@xhigh`, and `deepseek:deepseek-v4-pro@xhigh`, for under $0.001 in all. Tests (369, with the Postgres tests), lint, and 200 fuzz runs are clean, with new tests for spend attributed across two concurrent scout calls and for the money note. The change was built in a separate worktree while `search-rescout-task8-v14` ran on scout-v14, and it is merged after that study, so the study runs on one version.

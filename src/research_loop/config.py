@@ -172,8 +172,8 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research
 # 1,800 seconds, and a deep dive keeps a full standard scout's loop budget.
 _DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 3.00, "research_seconds": 1800,
          "deadline_seconds": 2520,
-         "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 64,
-         "deep_dive_requests": 30, "deep_dive_productive_calls": 48, "deep_dive_misses": 16}
+         "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 192,
+         "deep_dive_requests": 30, "deep_dive_productive_calls": 128, "deep_dive_misses": 16}
 
 
 class ScoutLimits(BaseModel):
@@ -211,14 +211,17 @@ class ScoutLimits(BaseModel):
     # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
     # 12, 16, and 12 to stop Flash loops that only failed; with Luna, 39 of 68 scouts stopped on the 16
     # productive calls after reading one to eight pages, while spending about 15% of their dollar share.
-    # Since scout-v14, 30 and 48: a standard scout had used 19 of 20 requests, and 16% stopped on 32 calls.
+    # Since scout-v14, 30 requests: a standard scout had used 19 of 20. Since scout-v15, 128 productive calls, a
+    # guard against loops rather than a budget: the dollar share, which now also counts a scout's paid searches
+    # and page reads, and the research deadline bound its work (budget_notes.LoopBudget.out_of_money).
     scout_requests: int = Field(30, ge=2)
-    scout_productive_calls: int = Field(48, ge=1)
+    scout_productive_calls: int = Field(128, ge=1)
     scout_misses: int = Field(16, ge=1)
     # Billed input across a scout's requests; each request resends the loop's history. The most a scout used
     # was 660,000 with 12,000-character page windows; windows of 40,000 carry more a request.
     scout_tokens: int = Field(2_000_000, ge=1_000)
-    guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
+    # A scout's reply under a hard cap; the largest used 22,313 of 24,000 by 28 September 2026 (scout-v15 doubled it).
+    guarded_scout_max_output_tokens: int = Field(48_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
     # Since scout-v14, 1,320 and 900: standard scouts had taken up to 435 of 480 seconds.

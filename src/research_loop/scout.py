@@ -170,9 +170,12 @@ def _paid_search(name: str) -> Any:
 # than 120 (`scout_request_timeout_seconds`); and the limits became safety nets: a standard run gets $1.25,
 # 900 seconds of research, and 30 requests and 48 productive calls a scout, and a deep run 1,800 seconds and
 # 64 calls (config.py). followup-v15 and research-v14 carry the same change.
-WORKFLOW_VERSION = "scout-v14"
-FOLLOWUP_VERSION = "scout-followup-v15"
-RESCOUT_VERSION = "scout-research-v14"
+# v15: a scout's dollar share also counts its paid searches and page reads, and its tools are withdrawn with a
+# note once the share would not cover two more requests; productive calls become a loop guard at 128 (192 for a
+# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. followup-v16 and research-v15 carry it.
+WORKFLOW_VERSION = "scout-v15"
+FOLLOWUP_VERSION = "scout-followup-v16"
+RESCOUT_VERSION = "scout-research-v15"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -581,8 +584,11 @@ class _Run:
         requests = limits.deep_dive_requests if deep else limits.scout_requests
         productive = limits.deep_dive_productive_calls if deep else limits.scout_productive_calls
         misses = limits.deep_dive_misses if deep else limits.scout_misses
+        # The share covers this call's paid searches and page reads as well as its model requests.
+        spend_key = uuid4().hex
         budget = LoopBudget(requests, productive, misses, time_left=time_left,
-                            return_within=limits.request_timeout_seconds)
+                            return_within=limits.request_timeout_seconds, share=share,
+                            external=lambda: self.external_spend.of(spend_key))
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
                                        "blocked_urls": self.blocked_urls,
                                        **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {})}
@@ -606,7 +612,7 @@ class _Run:
                 return await self._call(
                     role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
                     prompt=prompt, question_id=question.id,
-                    deps=Assignment(question, self.policy, frozenset(item.id for item in coverage)),
+                    deps=Assignment(question, self.policy, frozenset(item.id for item in coverage), spend_key),
                     toolsets=[toolset], capabilities=budget.capabilities(),
                     limits=UsageLimits(
                         request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,

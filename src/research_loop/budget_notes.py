@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -30,6 +31,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.usage import RunUsage
 
 from .tools import FETCH as fetch_tool
 from .tools import fetched_text, productive
@@ -39,6 +41,10 @@ LAST_REQUEST_NOTE = NOTE_PREFIX + "This is your last model request. Do not call 
 DEADLINE_NOTE = NOTE_PREFIX + "The research deadline is close. Do not call tools; return your result now."
 PRODUCTIVE_SPENT_NOTE = (
     NOTE_PREFIX + "No productive tool calls are left, and {requests} of {max_requests} model requests are. "
+    "Do not call tools; return your result now."
+)
+MONEY_SPENT_NOTE = (
+    NOTE_PREFIX + "Your research budget is spent, and {requests} of {max_requests} model requests are. "
     "Do not call tools; return your result now."
 )
 MISS_SPENT_NOTE = (
@@ -114,6 +120,10 @@ class LoopBudget:
     # takes: a request started with less than that left would be cut off, and a cutoff keeps no claims.
     time_left: Callable[[], float] | None = None
     return_within: float = 0
+    # The call's dollar share, and what its tool calls have spent on paid searches and page reads, which
+    # the framework's cost limit does not see. Tools are withdrawn while the result request still fits.
+    share: Decimal | None = None
+    external: Callable[[], Decimal] | None = None
 
     @property
     def tool_call_limit(self) -> int:
@@ -124,13 +134,24 @@ class LoopBudget:
         """Whether the next request must be the result so it can finish before the research deadline."""
         return self.time_left is not None and self.time_left() <= self.return_within
 
-    def note(self, requests_used: int, spent: ToolYield) -> str:
+    def out_of_money(self, usage: RunUsage | None) -> bool:
+        """Whether the model's cost and the paid tools' spend leave less of the share than two requests like
+        the average so far: one to run a batch of tools, and one to return the result."""
+        if self.share is None or usage is None or not usage.requests:
+            return False
+        model = Decimal(str(usage.cost or 0))
+        external = self.external() if self.external else Decimal(0)
+        return model + external + 2 * model / usage.requests >= self.share
+
+    def note(self, requests_used: int, spent: ToolYield, usage: RunUsage | None = None) -> str:
         """The note for the next request, given what the loop has used so far."""
         if self.closing():
             return DEADLINE_NOTE
         requests = max(self.max_requests - requests_used, 0)
         if requests <= 1:
             return LAST_REQUEST_NOTE
+        if self.out_of_money(usage):
+            return MONEY_SPENT_NOTE.format(requests=requests, max_requests=self.max_requests)
         if spent.productive >= self.max_productive:
             return PRODUCTIVE_SPENT_NOTE.format(requests=requests, max_requests=self.max_requests)
         if spent.misses >= self.max_misses:
@@ -144,9 +165,10 @@ class LoopBudget:
                            productive=max(self.max_productive - spent.productive, 0), max_productive=self.max_productive,
                            misses=max(self.max_misses - spent.misses, 0), max_misses=self.max_misses, batch=batch)
 
-    def spent(self, requests_used: int, messages: list[ModelMessage]) -> bool:
-        """Whether the loop is on its last request, out of time, or has spent its productive calls or misses."""
-        if self.closing():
+    def spent(self, requests_used: int, messages: list[ModelMessage], usage: RunUsage | None = None) -> bool:
+        """Whether the loop is on its last request, out of time or money, or has spent its productive calls or
+        misses."""
+        if self.closing() or self.out_of_money(usage):
             return True
         counted = tool_yield(messages)
         return (self.max_requests - requests_used <= 1
@@ -157,6 +179,10 @@ class LoopBudget:
         if any(isinstance(part, UserPromptPart) and part.content == DEADLINE_NOTE
                for message in messages if isinstance(message, ModelRequest) for part in message.parts):
             return "returned because the research deadline was close"
+        if any(isinstance(part, UserPromptPart) and isinstance(part.content, str)
+               and part.content.startswith(MONEY_SPENT_NOTE.partition("{")[0])
+               for message in messages if isinstance(message, ModelRequest) for part in message.parts):
+            return "returned after its dollar share was spent"
         counted = tool_yield(messages)
         if counted.productive >= self.max_productive:
             return "returned after its productive calls were spent"
@@ -181,11 +207,11 @@ class LoopBudget:
                 return messages  # already noted
             notes = [UserPromptPart(DROPPED_NOTE.format(kept=kept, asked=asked)) for kept, asked in dropped]
             dropped.clear()
-            notes.append(UserPromptPart(self.note(ctx.usage.requests, tool_yield(messages))))
+            notes.append(UserPromptPart(self.note(ctx.usage.requests, tool_yield(messages), ctx.usage)))
             return [*messages[:-1], replace(last, parts=[*last.parts, *notes])]
 
         async def withdraw(ctx: RunContext[Any], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
-            return [] if self.spent(ctx.usage.requests, ctx.messages) else tool_defs
+            return [] if self.spent(ctx.usage.requests, ctx.messages, ctx.usage) else tool_defs
 
         def trim(ctx: RunContext[Any], /, *, request_context: ModelRequestContext,
                  response: ModelResponse) -> ModelResponse:

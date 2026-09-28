@@ -40,6 +40,9 @@ class Assignment:
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
     # The coverage items a claim may say it addresses.
     coverage_ids: frozenset[str] = frozenset()
+    # Names this scout call's paid searches and page reads (reading.ExternalSpend.by_question); a deep dive
+    # researches a planned question's ID too, so each call gets its own.
+    spend_key: str = ""
 
 
 @dataclass(frozen=True)

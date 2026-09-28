@@ -52,10 +52,10 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `request_timeout_seconds` per planner, gap, or synthesis request | 120 | 120 | 120 |
 | `scout_request_timeout_seconds` per scout or deep-dive request | 600 | 600 | 600 |
 | `scout_requests` model requests | 30 | 30 | 30 |
-| `scout_productive_calls` | 48 | 48 | 64 |
+| `scout_productive_calls` | 128 | 128 | 192 |
 | `scout_misses` | 16 | 16 | 16 |
 | `scout_tokens` total token limit | 2,000,000 | 2,000,000 | 2,000,000 |
-| `guarded_scout_max_output_tokens` per request | 24,000 | 24,000 | 24,000 |
+| `guarded_scout_max_output_tokens` per request | 48,000 | 48,000 | 48,000 |
 | `synthesis_tokens` total token limit | 200,000 | 200,000 | 200,000 |
 | `synthesis_max_output_tokens` per request | 32,000 | 32,000 | 32,000 |
 | `followup_cost_usd` follow-up soft envelope | $2.00 | $2.00 | $3.00 |
@@ -66,13 +66,13 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `deep_dive_usd` per dive | $0.25 | $0.25 | $0.25 |
 | `deep_dive_seconds` per dive | 240 | 240 | 480 |
 | `deep_dive_requests` model requests | 12 | 12 | 30 |
-| `deep_dive_productive_calls` | 16 | 16 | 48 |
+| `deep_dive_productive_calls` | 16 | 16 | 128 |
 | `deep_dive_misses` | 8 | 8 | 16 |
 | `quick.follow_up` / `deep.follow_up` | `false` | `false` | `true` |
 
 *Deep automatically uses follow-up, so its active envelope is **$3.00** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
 
-The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.20** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap.
+The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.20** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap. Since scout-v15 a scout's share also counts its own paid searches and page reads (`ExternalSpend.by_question`), and its tools are withdrawn with a note once the share would not cover two more requests like its average (`LoopBudget.out_of_money`).
 
 At the committed defaults, the planner and gap analyzer each have a **2-request, 100,000-total-token** limit and a **16,000-token output** cap per request. The synthesizer has a **2-request** limit in addition to `synthesis_tokens`. These values can be overridden through `RESEARCH_MODEL_CALLS__...` below. A scout's framework tool-call limit is `productive + misses + 12 batch slack + 16 re-read slack`: **76** for an ordinary quick/standard scout, **92** for a deep scout, **52** for a quick/standard deep dive, and **76** for a deep-run dive. Re-reading a memoized page does not spend the productive/miss loop budget. A scout result keeps at most **5 open-item names of 60 characters each**; longer or sentence-like items are dropped. Source: [`scout.py`](../src/research_loop/scout.py), [`budget_notes.py`](../src/research_loop/budget_notes.py), [`agents.py`](../src/research_loop/agents.py), [`models.py`](../src/research_loop/models.py).
 

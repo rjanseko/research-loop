@@ -104,8 +104,7 @@ def _paid_engine(name: str, reserve: Decimal, send: Callable[[str], Awaitable[ht
         response.raise_for_status()
         data = response.json()
         charged = cost(data) if cost else reserve
-        spend.usd += charged
-        spend.searches += 1
+        spend.charge(charged, searches=1)
         if budget and charge is not None:
             budget.settle_fixed(charge, charged)
         return results(data)
