@@ -157,6 +157,10 @@ class World:
             return self._scholarly(request)
         if host == "api.exa.ai":
             return self._exa_contents(request) if request.url.path == "/contents" else self._exa(request)
+        if host == "google.serper.dev":
+            return self._search_api(request, "serper")
+        if host == "api.search.brave.com":
+            return self._search_api(request, "brave")
         if host == "api.firecrawl.dev":
             return self._firecrawl(request)
         url = str(request.url)
@@ -244,6 +248,35 @@ class World:
         status = 403 if rng.random() < 0.1 else 200
         return httpx.Response(200, json={"success": True, "data": {"markdown": self._page_text(url, rng),
                                                                   "metadata": {"statusCode": status}}})
+
+    def _search_api(self, request: httpx.Request, engine: str) -> httpx.Response:
+        """Serper's and Brave's search endpoints (web.serper_engine, web.brave_engine): results in each one's
+        shape, or a fault. Like Exa's, their results include the blocked page, which must never reach a scout."""
+        query = (json.loads(request.content or b"{}").get("q", "") if engine == "serper"
+                 else request.url.params.get("q", ""))
+        rng = random.Random(_stable(self.seed, engine, query))
+        roll = rng.random()
+        if roll < self.fault_rate * 0.2:
+            return httpx.Response(429, json={"error": "rate limit"})
+        if roll < self.fault_rate * 0.3:
+            return httpx.Response(500)
+        if roll < self.fault_rate * 0.35:
+            return httpx.Response(401, json={"error": "invalid API key"})
+        if roll < self.fault_rate * 0.4:
+            return httpx.Response(200, content=b"{not json")
+        urls = list(self.pages)
+        chosen = rng.sample(urls, min(len(urls), rng.randint(0, 10)))
+        if rng.random() < 0.3 and self.blocked not in chosen:
+            chosen.append(self.blocked)
+        found = []
+        for url in chosen:
+            page = self.pages[url]
+            sentences = [part for part in page.text.split(". ") if part]
+            found.append((page.title, url, rng.choice(sentences) if sentences else ""))
+        if engine == "serper":
+            return httpx.Response(200, json={"organic": [{"title": t, "link": u, "snippet": s} for t, u, s in found]})
+        return httpx.Response(200, json={"web": {"results": [
+            {"title": t, "url": u, "description": f"<strong>{s[:40]}</strong>{s[40:]}"} for t, u, s in found]}})
 
     def _exa(self, request: httpx.Request) -> httpx.Response:
         """Exa's search endpoint (web.exa_engine): results with highlights and a reported cost, or a fault.
@@ -852,21 +885,24 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
     # No search result or scholarly record a scout saw comes from a blocked source: an Exa highlight can carry a
     # blocked page's text, and an OpenAlex record a blocked paper's abstract, such as a frozen case's expert report.
-    policy = SourcePolicy(tuple((record.get("config") or {}).get("blocked_urls") or []))
+    config = record.get("config") or {}
+    policy = SourcePolicy(tuple(config.get("blocked_urls") or []), titles=tuple(config.get("blocked_titles") or []))
     for call in calls:
         for message in call.get("messages") or []:
             for part in message.get("parts") or []:
                 content = part.get("content") if part.get("tool_name") == "web_search" else None
-                shown = [item.get("url", "") for item in (content or {}).get("results") or []] \
+                shown = [item for item in (content or {}).get("results") or [] if isinstance(item, dict)] \
                     if isinstance(content, dict) else []
-                if blocked := [url for url in shown if url and policy.blocks(url)]:
+                if blocked := [item.get("url", "") for item in shown
+                               if (item.get("url") and policy.blocks(item["url"]))
+                               or policy.blocks_title(f"{item.get('title') or ''} {item.get('snippet') or ''}")]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"search result: {blocked[0]}")
                 scholarly = part.get("content") if part.get("tool_name") in ("scholar_search", "scholar_get") else None
                 works = (scholarly.get("works") or []) if isinstance(scholarly, dict) else []
                 if blocked := [work.get("title") for work in works
                                if policy.blocks_work((work.get("url"), work.get("full_text_url")), work.get("doi"),
-                                                     work.get("arxiv_id"))]:
+                                                     work.get("arxiv_id"), title=work.get("title"))]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"scholarly record: {blocked[0]}")
     # A blocked page is never read, by our fetcher or any fallback reader.
@@ -874,7 +910,9 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
         for message in call.get("messages") or []:
             for part in message.get("parts") or []:
                 content = part.get("content") if part.get("tool_name") == "fetch" else None
-                if isinstance(content, dict) and content.get("text") and policy.blocks(str(content.get("url") or "")):
+                if isinstance(content, dict) and content.get("text") and (
+                        policy.blocks(str(content.get("url") or ""))
+                        or (not content.get("start") and policy.blocks_document(str(content["text"])))):
                     problems.append(f"call {call.get('role')} {call.get('question_id')} read a blocked page "
                                     f"{content.get('url')} via {content.get('via', 'our fetcher')}")
     # Money: the run's cost is its calls' costs, plus what its paid web searches cost.
@@ -925,8 +963,9 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
         "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake,
                               scout_alt=rng.choice([None, "fake:fuzz-alt@high"])),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
-        # Both engines, so the paid search path, its budget reservations, and its costs are fuzzed too.
-        "search_engine": rng.choice(["duckduckgo", "exa"]),
+        # Every engine, so the paid search path, its budget reservations, and its costs are fuzzed too.
+        "search_engine": rng.choice(["duckduckgo", "exa", "hybrid", "serper", "brave", "serper,exa",
+                                     "duckduckgo,brave,exa"]),
         # The reading fallback in several orders, off in some runs, so its money and results are fuzzed too.
         "read_fallback": rng.choice([(), ("oa", "exa", "firecrawl"), ("exa",), ("firecrawl", "exa")]),
         "tokens_per_minute": {}, "logfire": False,

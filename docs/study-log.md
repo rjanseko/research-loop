@@ -29,6 +29,10 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
 | 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
 | 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
+| 09-28 | [The first free diagnosis of the deep-vs-standard study](#2026-09-28-the-first-free-diagnosis-of-the-deep-vs-standard-study) | free | With three runs per arm the study could detect only about 8-point differences, so its 5-point rule could not decide; 7 of 52 points never met |
+| 09-28 | [Hybrid search and capped Exa highlights: checks](#2026-09-28-hybrid-search-and-capped-exa-highlights-checks) | $0.12 | Capped highlights come to about 6,000 characters a search; in a cheap run Exa answered all 10 searches DuckDuckGo could not, and no blocked source reached a scout |
+| 09-28 | [Blocked works known by title](#2026-09-28-blocked-works-known-by-title) | $0.12 | 36 of 49 stored DRB-II case runs were shown their case's blocked title; every task68-plus run saw the expert report's abstract. Now blocked by title (fetch version 15) |
+| 09-28 | [Luna's rate limit is ten times what the pacer assumed](#2026-09-28-lunas-rate-limit-is-ten-times-what-the-pacer-assumed) | under $0.01 | 2,000,000 tokens a minute, not 200,000: the deep runs' throughput ceiling was our own pacer |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -559,3 +563,50 @@ This was a free audit of the six study runs above: 12 grades, each run graded by
 - scouts that give every set member a source names its own claim, or mark it not established.
 
 They should be tested on more than one development case at standard depth, with the decision rule written first. If they work, earlier model comparisons judged under the old claim behavior should be looked at again.
+
+## 2026-09-28 The first free diagnosis of the deep-vs-standard study
+
+`research diagnose` (diagnose version 1, PR #41) was first run with `--free` on the six runs of the deep-vs-standard study. With `--free` it makes no calls, so only the report grades already stored were read, and the stage columns stay ungraded until the claims and research views are graded (about $0.50 to $0.80, held for now). Its checks of the score itself reproduced the hand audit:
+- **Judges.** Sol and GLM differ on 45 of 312 verdicts (14%). GLM alone credits 41 of them, and the most disputed points are database descriptions and URLs.
+- **Equivalent URLs.** 5 missed URL points name a site the report gives at another address.
+- **Never met.** 7 of 52 points were never met in any of the 32 stored grades of drb2-task8: DDSE (3 points), ASM Alloy Center (3), and model-based design's advantages (1).
+
+**The lesson.** With three runs per arm, the smallest difference the study could detect at 80% power is about 7.8 points under Sol and 8.8 under GLM. So its 5-point rule could not have been met reliably, and the study was bound to come out undecided. It would have taken about 12 runs per arm on this one case to see 4 points.
+
+The next study should rest its decision on measures that vary less, such as the count of points seen but never claimed, and on more than one development case, with its detectable difference computed before it is paid for.
+
+## 2026-09-28 Hybrid search and capped Exa highlights: checks
+
+A free look at the stored searches came first. DuckDuckGo is reached through `ddgs`, which scrapes whichever of several search sites it picks. Of 2,636 production searches, 34% returned nothing and 104 more timed out. Results were almost always none or about seven, and plain queries came back empty about as often as those with quotes or `site:`. Four of six queries that had come back empty returned results when tried again. So the empty searches are the scraper's failures, not the scouts' queries.
+
+Fetch version 14 adds a hybrid engine, which sends a query to Exa only when DuckDuckGo finds nothing or fails. It also caps Exa's highlights at 600 characters a result, and makes the reading fallback on by default. Scout-v11 drops old search snippets from a scout's view past 16,000 characters.
+
+**Checks, $0.12.**
+- *One Exa search*, $0.007. Ten results carried 583 to 600 characters each, 5,955 in all. Uncapped, the median had been 3,900 to 6,400 a result. Two of the top three results were copies of drb2-task8's blocked expert report. That search ran without a case, and the case's block list catches both addresses.
+- *A cheap run* on drb2-task8 at standard depth, with every role on Luna@low: `10e3fce3`, complete, $0.115, 152 s. Of 23 DuckDuckGo searches, 10 found nothing. Exa answered all 10, for $0.07 of the run's $0.088 in paid searches and reads, and the reading fallback read 4 pages through Exa. The blocked report appeared only in the scouts' block list, never in a tool result.
+
+A cheap run is a pass or fail check, not a measure of quality. Whether hybrid search raises rubric scores, and where points are lost, is left to a study with the diagnosis on.
+
+## 2026-09-28 Blocked works known by title
+
+The architectural audit left one known gap. A copy of a blocked work could reach a scout if its address carried neither a blocked address nor the work's DOI. Exa search makes such copies more likely to turn up. So a blocked work is now also known by its title, which every frozen case already records as `blocked_title`. Fetch version 15 leaves out or refuses:
+- search results whose title or snippet carries the title;
+- scholarly records with that title;
+- fetched documents whose first 3,000 characters print it.
+
+Scout-v12 refuses a scout's evidence that cites the work by title. It also shows scouts and the gap analyzer the blocked titles beside the blocked addresses. A page that only cites the work further down is still read. Titles shorter than four words are never matched. `--block-title` blocks a title for ordinary runs.
+
+**A free scan of the stored runs.** 36 of the 49 stored DRB-II case runs had been shown their case's blocked title:
+- **drb2-task68-plus, every stored run (v1 to v3).** Scouts were shown the blocked review's OpenAlex record with its 1,080-character abstract. The case blocks `mdpi.com/1424-8220/24/17/5551`, an address without the DOI 10.3390/s24175551, so neither the address nor the DOI check recognized the record. Its stored scores, such as the 14 of 54 baseline, were earned with the expert report's abstract in view.
+- **drb2-task8 before fetch version 12.** Search results at the blocked addresses carried abstract text in their snippets, and six v1 to v3 ledgers cite the review by title. That partly overlaps the audit's F06 finding.
+- **drb2-task8 at scout-v10.** Two runs of the deep-vs-standard study, `27701a2f` and `aea52be0`, were shown a Semantic Scholar page for the review. Its snippet gave only the title and authors, with no content, so their grades are unaffected in substance.
+
+Title blocking catches every case above. Scores from before fetch version 12 on drb2-task8, and every stored score on drb2-task68-plus, should be read with this exposure in mind.
+
+**Check, $0.12.** A cheap hybrid run on drb2-task8 at scout-v12, with every role on Luna@low: `a44bd2e3`, complete, $0.119, 180 s. It recorded the case's blocked title and made 13 Exa searches, and the same scan found no blocked title in any of its tool results.
+
+## 2026-09-28 Luna's rate limit is ten times what the pacer assumed
+
+One small Luna request read OpenAI's rate-limit headers. It cost under a cent. `gpt-6-luna` allows **2,000,000 tokens and 5,000 requests a minute**. The pacer's default, `RESEARCH_TOKENS_PER_MINUTE={"openai:gpt-6-luna": 200000}`, dates from 25 September, when that was the tier. So every run since the tier rose has held its scouts to about a tenth of the real limit.
+
+The throughput ceiling of about 115,000 tokens a minute, which cut off the scouts of both deep GLP-1 runs (`d8c8198e`, `2c66e8bd`), came from our pacer, not from OpenAI. Trimming still saves tokens and money. The second scout model's purpose, a second provider's rate limit, matters much less than it seemed. The deep-vs-standard study also ran under the throttle.

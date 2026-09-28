@@ -22,3 +22,23 @@ output = "1.25"
 source = "https://docs.z.ai/guides/overview/pricing"
 checked = 2026-09-25
 note = "Missing from genai-prices 0.1.8 and 0.1.9."
+
+[[model]]
+provider = "deepseek"
+model = "deepseek-flash"
+input = "0.30"
+cached_input = "0.006"
+output = "1.20"
+source = "https://api-docs.deepseek.com/quick_start/pricing"
+checked = 2026-09-28
+note = "DeepSeek-V4.1-Flash, missing from genai-prices. Peak prices; off-peak are half, so a cap is never exceeded."
+
+[[model]]
+provider = "deepseek"
+model = "deepseek-v4-pro"
+input = "1.32"
+cached_input = "0.044"
+output = "3.96"
+source = "https://api-docs.deepseek.com/quick_start/pricing"
+checked = 2026-09-28
+note = "genai-prices charges by time of day, so a reservation made off-peak is half the peak price. Peak prices, so a cap is never exceeded."

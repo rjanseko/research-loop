@@ -116,6 +116,20 @@ def drb2_case(row: dict[str, Any], role: str | None = None) -> StudyCase:
                      rubric_version=f"drb2-{DRB2_REVISION[:7]}", rubrics=rubric, blocked_urls=urls, metadata=metadata)
 
 
+def blocked_titles(case: StudyCase) -> list[str]:
+    """The titles of the works a frozen case blocks: its expert report's, from the benchmark's metadata."""
+    title = case.metadata.get("blocked_title")
+    return [title] if isinstance(title, str) and title.strip() else []
+
+
+def case_blocked_titles(identity: dict[str, Any] | None) -> list[str]:
+    """The blocked titles of the frozen case a run's recorded identity names; none for another run."""
+    try:
+        return blocked_titles(find_case(identity["id"])) if identity and identity.get("id") else []
+    except KeyError:
+        return []
+
+
 def case_identity(case: StudyCase) -> dict[str, str]:
     """Identity recorded on a frozen case run, independently of its report."""
     return {"id": case.id, "rubric_version": case.rubric_version,

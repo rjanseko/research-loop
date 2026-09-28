@@ -111,11 +111,12 @@ def _gaps_name_plan_questions(ctx: RunContext[GapRefs], output: GapAnalysis) -> 
 @scout_agent.output_validator
 def _result_fits_assignment(ctx: RunContext[Assignment], output: ResearchResult) -> ResearchResult:
     """File the result under the question asked, and refuse evidence from blocked sources, whether it cites
-    them by address, DOI, or arXiv ID."""
+    them by address, DOI, arXiv ID, or title."""
     policy = ctx.deps.source_policy
     blocked = sorted({entry for claim in output.claims for item in claim.evidence
                       if (entry := policy.blocks_work((str(item.source.url) if item.source.url else None,),
-                                                      item.source.doi, item.source.arxiv_id))})
+                                                      item.source.doi, item.source.arxiv_id,
+                                                      title=item.source.title))})
     if blocked:
         _retry_on([(f"These sources are blocked for this task: {', '.join(blocked)}. Drop the evidence that cites "
                     "them, or support the claim from other sources.")])

@@ -16,6 +16,7 @@ import socket
 import ssl
 import threading
 import time
+import unicodedata
 import urllib.request
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -28,7 +29,7 @@ from uuid import uuid4
 import httpcore
 import httpx
 
-from .evidence import identity_keys, printed_dois
+from .evidence import identity_keys, opening, printed_dois
 
 # Part of every cache key; bump it to invalidate recorded entries.
 CACHE_VERSION = 1
@@ -54,14 +55,22 @@ CACHE_VERSION = 1
 #     (docs/architectural-audit-2026-09-27.md, F06).
 # 13: web_fetch reads JSON, laid out one value a line, and plain text: the first deep example run's three
 #     ClinicalTrials.gov API queries were refused as an unsupported content type.
-FETCH_VERSION = 13
+# 14: web search can be "hybrid", DuckDuckGo then Exa when DuckDuckGo finds nothing or fails; Exa's highlights
+#     are capped at 600 characters a result; and an unset reading fallback is every reader that can run.
+# 15: a blocked work is also known by its title (a frozen case's `blocked_title`): search results, scholarly
+#     records, and documents whose opening prints it are left out or refused, whatever their address.
+# 16: a fetch returns up to 40,000 characters, not 12,000: 66% of 1,831 pages scouts read were cut at 12,000
+#     (median page 44,000), and scouts asked for a later window for only 588 of the 1,202 cut. Web search
+#     can run on Serper and Brave, and on any engines in order (web.SearchChain). A scholarly search returns
+#     up to 25 works, not 10: scouts asked for 8 to 10 in 371 of 852 searches.
+FETCH_VERSION = 16
 
 
 def is_pdf(media: str, content: bytes) -> bool:
     """A PDF by its declared type or, as servers often send one as octet-stream, by its first bytes."""
     return media == "application/pdf" or content[:5] == b"%PDF-"
-# Longest text window one fetch returns; `start` pages through the rest.
-MAX_FETCH_CHARS = 12_000
+# Longest text window one fetch returns; `start` pages through the rest. A median page is about 44,000.
+MAX_FETCH_CHARS = 40_000
 CacheMode = Literal["off", "live", "record", "replay", "reuse"]
 
 
@@ -158,7 +167,8 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2}
+_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2, "serper": 0.1,
+                  "brave": 0.05}
 
 
 async def wait_rate_slot(provider: str) -> None:
@@ -204,11 +214,15 @@ class SourcePolicy:
     arXiv entry matches every form of the paper (abs, pdf, html, any version), and doi.org
     matches dx.doi.org. A work also matches by identifier: when an entry names a DOI or arXiv ID
     (a doi.org address, a publisher path holding the DOI), any address carrying that identifier,
-    such as a mirror at another host, and any record or citation giving it are blocked. Matching
-    errs toward blocking.
+    such as a mirror at another host, and any record or citation giving it are blocked. A work is also
+    known by its title (`titles`, a frozen case's `blocked_title`): a search result, a scholarly record, or a
+    cited source with that title, and a document whose opening prints it, are blocked. That catches a copy
+    at an address that carries neither a blocked address nor the DOI, such as a publisher's CDN, which Exa
+    search surfaced among its top results for drb2-task8. Matching errs toward blocking.
     """
 
     blocked: tuple[str, ...] = ()
+    titles: tuple[str, ...] = ()
 
     def blocks(self, url: str) -> str | None:
         """The blocked entry that `url` matches, if any, by its address or the identifier it carries."""
@@ -222,17 +236,31 @@ class SourcePolicy:
         return self._blocked_identifier(identity_keys(url=url))
 
     def blocks_work(self, urls: Iterable[str | None] = (), doi: str | None = None,
-                    arxiv_id: str | None = None) -> str | None:
-        """The blocked entry that a work matches by any of its addresses, its DOI, or its arXiv ID."""
+                    arxiv_id: str | None = None, title: str | None = None) -> str | None:
+        """The blocked entry that a work matches by any of its addresses, its DOI, its arXiv ID, or its title."""
         for url in urls:
             if url and (entry := self.blocks(url)):
                 return entry
-        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id))
+        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id)) or self.blocks_title(title)
 
-    def blocks_document(self, opening: str) -> str | None:
-        """The blocked entry whose DOI the opening of a fetched document prints as its own, if any: a copy of a
-        blocked paper at an address that names neither, such as a publisher's CDN, is known by its first page."""
-        return self._blocked_identifier(printed_dois(opening)) if self._identifiers else None
+    def blocks_document(self, text: str) -> str | None:
+        """The blocked entry whose DOI or title the opening of a fetched document prints as its own, if any: a
+        copy of a blocked paper at an address that names neither, such as a publisher's CDN, is known by its
+        first page."""
+        return ((self._blocked_identifier(printed_dois(text)) if self._identifiers else None)
+                or self.blocks_title(opening(text)))
+
+    def blocks_title(self, text: str | None) -> str | None:
+        """The blocked title that `text` contains, ignoring case, accents, punctuation, and spacing, as
+        "title: ..."; titles under four words are never matched, so a generic phrase cannot block a page."""
+        if not text or not self._titles:
+            return None
+        normal = f" {_normal_title(text)} "
+        return next((f"title: {title}" for title, key in self._titles if f" {key} " in normal), None)
+
+    @functools.cached_property
+    def _titles(self) -> tuple[tuple[str, str], ...]:
+        return tuple((title, key) for title in self.titles if len((key := _normal_title(title)).split()) >= 4)
 
     @functools.cached_property
     def _identifiers(self) -> tuple[tuple[str, frozenset[str]], ...]:
@@ -250,6 +278,12 @@ class SourcePolicy:
     def check(self, url: str) -> None:
         if entry := self.blocks(url):
             raise BlockedSource(url, entry)
+
+
+def _normal_title(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char)).lower()
+    return re.sub(r"[^a-z0-9]+", " ", plain).strip()
 
 
 def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str, str | None]) -> bool:

@@ -32,7 +32,12 @@ PROVIDER_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "zai": "ZAI_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
+
+# The web search engines (web.py) and the keys of the paid ones.
+SEARCH_ENGINES = ("duckduckgo", "serper", "brave", "exa")
+SEARCH_KEYS = {"serper": "SERPER_API_KEY", "brave": "BRAVE_API_KEY", "exa": "EXA_API_KEY"}
 
 
 # Reasoning effort, named with every model as `provider:model@effort`. GLM's `xhigh` is sent as `max`.
@@ -91,9 +96,9 @@ class ScoutModels(BaseModel):
     planner: str = "openai:gpt-6-sol@high"
     scout: str = "openai:gpt-6-luna@high"
     # A second scout model for deep runs, such as zai:glm-5.3@xhigh: when set, a deep run's even-numbered
-    # questions and deep dives use it, so its scouts draw on a second provider's rate limit. Paced under
-    # Luna's 200,000 tokens a minute, a deep run's scouts together sent about 115,000 tokens a minute
-    # (d8c8198e, 2c66e8bd), whatever their deadline.
+    # questions and deep dives use it, so its scouts draw on a second provider's rate limit. It was built
+    # when a deep run's scouts sent only about 115,000 tokens a minute (d8c8198e, 2c66e8bd); that ceiling
+    # turned out to be the pacer's stale 200,000 limit, a tenth of the account's real one.
     scout_alt: str | None = None
     synthesizer: str = "anthropic:claude-opus-5-5@medium"
     fallback: str | None = "openai:gpt-6-sol@high"
@@ -182,8 +187,9 @@ class ScoutLimits(BaseModel):
     scout_requests: int = Field(20, ge=2)
     scout_productive_calls: int = Field(32, ge=1)
     scout_misses: int = Field(16, ge=1)
-    # Billed input across a scout's requests; each request resends the loop's history.
-    scout_tokens: int = Field(1_000_000, ge=1_000)
+    # Billed input across a scout's requests; each request resends the loop's history. The most a scout used
+    # was 660,000 with 12,000-character page windows; windows of 40,000 carry more a request.
+    scout_tokens: int = Field(2_000_000, ge=1_000)
     guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
@@ -256,14 +262,17 @@ class Settings(BaseSettings):
     models: ScoutModels = Field(default_factory=ScoutModels)
     limits: ScoutLimits = Field(default_factory=ScoutLimits)
     # Provider token rate limits per minute, by provider:model; scouts on a listed model are paced under
-    # it (rate_limit.py). The default is this account's OpenAI tier. Set as JSON, such as
-    # RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna": 200000}'; '{}' turns pacing off.
-    tokens_per_minute: dict[str, int] = Field(default_factory=lambda: {"openai:gpt-6-luna": 200_000})
+    # it (rate_limit.py). Unset, a run starts from this default and switches to the limit OpenAI reports
+    # with its first response; set, as JSON such as RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna":
+    # 2000000}', the limit is fixed, and '{}' turns pacing off. The default is this account's OpenAI tier,
+    # read from its response headers on 28 September 2026.
+    tokens_per_minute: dict[str, int] = Field(default_factory=lambda: {"openai:gpt-6-luna": 2_000_000})
 
     openai_api_key: SecretStr | None = Field(None, validation_alias="OPENAI_API_KEY")
     anthropic_api_key: SecretStr | None = Field(None, validation_alias="ANTHROPIC_API_KEY")
     zai_api_key: SecretStr | None = Field(None, validation_alias="ZAI_API_KEY")
     google_api_key: SecretStr | None = Field(None, validation_alias="GOOGLE_API_KEY")
+    deepseek_api_key: SecretStr | None = Field(None, validation_alias="DEEPSEEK_API_KEY")
     # Comma-separated; empty means every provider with a key.
     enabled_providers: Annotated[tuple[str, ...], NoDecode] = ()
 
@@ -278,13 +287,21 @@ class Settings(BaseSettings):
     # Where a study's runs keep their lookups (`for_study`).
     study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
-    # The web search engine behind the scouts' `web_search` tool. DuckDuckGo stays the default until a
-    # paired study shows Exa is better; Exa is paid per search and needs EXA_API_KEY (web.exa_engine).
-    search_engine: Literal["duckduckgo", "exa"] = "duckduckgo"
+    # The web search engines behind the scouts' `web_search` tool, tried in order: a query goes to the next
+    # engine only when the one before it finds nothing or fails (web.SearchChain), so only those searches
+    # cost a later engine's price. "duckduckgo" (free, through the `ddgs` scraping library), "serper"
+    # (Google's results), "brave", and "exa"; "hybrid" names "duckduckgo,exa". DuckDuckGo returned nothing
+    # for 34% of 2,636 production searches, and 4 of 6 such queries found results when tried again later.
+    # It stays the default until a paired study shows another is better. The paid engines need their keys.
+    search_engine: str = "duckduckgo"
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
+    serper_api_key: SecretStr | None = Field(None, validation_alias="SERPER_API_KEY")
+    brave_api_key: SecretStr | None = Field(None, validation_alias="BRAVE_API_KEY")
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
-    # Off until a paired study shows it helps; exa needs EXA_API_KEY and firecrawl FIRECRAWL_API_KEY.
-    read_fallback: Annotated[tuple[str, ...], NoDecode] = ()
+    # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
+    # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in
+    # the fetch bake-off this chain read 139 of 160 pages our fetch could not. An empty value turns it off.
+    read_fallback: Annotated[tuple[str, ...] | None, NoDecode] = None
     firecrawl_api_key: SecretStr | None = Field(None, validation_alias="FIRECRAWL_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
@@ -292,16 +309,45 @@ class Settings(BaseSettings):
     offline_fault_rate: float = Field(0.2, ge=0, le=1)
     crossref_mailto: str | None = Field(None, validation_alias="CROSSREF_MAILTO")
 
+    @field_validator("search_engine")
+    @classmethod
+    def _engines(cls, value: str) -> str:
+        names = [part.strip().lower() for part in value.split(",") if part.strip()]
+        if not names:
+            raise ValueError("name at least one search engine")
+        if unknown := sorted(set(names) - {*SEARCH_ENGINES, "hybrid"}):
+            raise ValueError(f"unknown search engines: {', '.join(unknown)}; choose from {', '.join(SEARCH_ENGINES)}")
+        return ",".join(names)
+
+    def search_engines(self) -> tuple[str, ...]:
+        """The search engines a run tries, in order; "hybrid" is DuckDuckGo then Exa."""
+        names = [name for part in self.search_engine.split(",")
+                 for name in (("duckduckgo", "exa") if part == "hybrid" else (part,))]
+        return tuple(dict.fromkeys(names))
+
+    def search_key(self, engine: str) -> str | None:
+        """The API key of a paid search engine, when it is set."""
+        key = {"exa": self.exa_api_key, "serper": self.serper_api_key, "brave": self.brave_api_key}.get(engine)
+        return key.get_secret_value() if key else None
+
     @field_validator("read_fallback", mode="before")
     @classmethod
     def _readers(cls, value: object) -> object:
         from .reading import READERS
 
+        if value is None:
+            return None
         if isinstance(value, str):
             value = tuple(part.strip().lower() for part in value.split(",") if part.strip())
         if unknown := sorted(set(value or ()) - set(READERS)):  # type: ignore[arg-type]
             raise ValueError(f"unknown readers: {', '.join(unknown)}; choose from {', '.join(READERS)}")
         return value
+
+    def readers(self) -> tuple[str, ...]:
+        """The reading fallback a run uses: `read_fallback` when set, else every reader that can run."""
+        if self.read_fallback is not None:
+            return self.read_fallback
+        return ("oa", *(("exa",) if self.exa_api_key else ()), *(("firecrawl",) if self.firecrawl_api_key else ()))
 
     @field_validator("enabled_providers", mode="before")
     @classmethod
@@ -345,12 +391,12 @@ class Settings(BaseSettings):
             roles["fallback"] = self.models.fallback
         if self.models.scout_alt:
             roles["scout_alt"] = self.models.scout_alt
-        if self.search_engine == "exa" and self.exa_api_key is None and self.offline_world is None:
-            problems.append("web search: exa needs EXA_API_KEY")
         if self.offline_world is None:
-            if "exa" in self.read_fallback and self.exa_api_key is None:
+            problems += [f"web search: {engine} needs {SEARCH_KEYS[engine]}" for engine in self.search_engines()
+                         if engine in SEARCH_KEYS and self.search_key(engine) is None]
+            if "exa" in self.readers() and self.exa_api_key is None:
                 problems.append("reading fallback: exa needs EXA_API_KEY")
-            if "firecrawl" in self.read_fallback and self.firecrawl_api_key is None:
+            if "firecrawl" in self.readers() and self.firecrawl_api_key is None:
                 problems.append("reading fallback: firecrawl needs FIRECRAWL_API_KEY")
         fake = {role for role, spec in roles.items() if spec.startswith(f"{FAKE_PROVIDER}:")}
         if fake and self.offline_world is None:

@@ -71,8 +71,8 @@ Settings come from `.env` or the environment, and exported variables override th
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
-| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free) or `exa` (paid per search, needs the key). See [Web search](#web-search). |
-| `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Off by default. See [Reading fallback](#reading-fallback). |
+| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free), `hybrid` (DuckDuckGo, then Exa when it finds nothing), or `exa`. The last two need the key. See [Web search](#web-search). |
+| `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Unset, every reader that can run: `oa` always, `exa` and `firecrawl` when their keys are set. Empty turns it off. See [Reading fallback](#reading-fallback). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
 
@@ -129,8 +129,8 @@ flowchart TD
 3. Write a study spec in `studies/`. Put the decision rule in its header before anything is paid for: what must not regress, what must improve, and by how much, and what added cost is acceptable. [docs/evaluation.md](docs/evaluation.md) explains how to make a comparison able to decide.
 4. Run `research study run SPEC --dry`, which is free, then `--cheap`, which costs cents. Both must report no invariant violations.
 5. Estimate the paid study from the most expensive comparable run, set a hard cap per run and a ceiling for the study, and get approval.
-6. Run the study with `grade = true` and `audit = true`, one Luna study at a time.
-7. Grade the runs again with the second judge (`RESEARCH_MODELS__JUDGE=zai:glm-5.3@high research grade ...`), and check disagreements by hand.
+6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, one Luna study at a time. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
+7. Check the judges' disagreements and any points the diagnosis marks as never met by hand.
 8. Record the runs, costs, and outcome in [docs/study-log.md](docs/study-log.md), and change the default only if the rule was met.
 
 ## Run a research question
@@ -139,6 +139,7 @@ flowchart TD
 research scout "Is SWE-bench Verified still a trustworthy measure of coding-agent progress?"
 research scout "..." --note "Keep preprints and published papers distinct." --out report/
 research scout "..." --block https://example.org/paywalled-review --max-usd 1.00
+research scout "..." --block-title "The exact title of a work to keep out, wherever it appears"
 research scout "..." --follow-up
 research scout "..." --depth deep
 ```
@@ -190,6 +191,7 @@ A report opens with a line giving the run's status, its answer's support, how ma
 research show <run id>              # render a stored run again as Markdown, or --format json
 research breakdown <run id>         # where the money and time went, call by call, and why each call stopped
 research audit <run id> --model zai:glm-5.3@high --max-usd 0.30   # do the quotes support each statement?
+research diagnose <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.50   # where were rubric points lost?
 research db status                  # which migrations are applied
 research db reconcile --older-than 30 --apply   # close out runs that a killed process left running
 ```
@@ -230,7 +232,7 @@ A scout returns claims. Each claim carries evidence: a source, a summary of what
 
 Each scout is told on every request how much of its budget is left. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A request that fails on a transient network fault is sent once more. A scout that fails or is still running at the deadline leaves its question unanswered, but keeps the searches it made and the pages it read.
 
-Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
+Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. Search results are treated the same way past 16,000 characters of snippets, keeping each result's title and address. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
@@ -303,14 +305,14 @@ These are all the outside services the code calls, what it sends them, and what 
 | Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
-| Exa | Web search (`/search`, with highlights) | `RESEARCH_SEARCH_ENGINE=exa` | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
+| Exa | Web search (`/search`, with highlights capped at 600 characters a result) | `RESEARCH_SEARCH_ENGINE=exa`, or `hybrid` for the searches DuckDuckGo cannot answer | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
 | OpenAlex | Scholarly search and records, with abstracts and open-access links | Default | `OPENALEX_API_KEY` (optional) | Free | Search terms and identifiers |
 | arXiv | Preprint search and records | Default | None | Free | Search terms and IDs |
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
 | The public web | Reading pages and PDFs | Default | None | Free | Requests to public HTTPS addresses only |
-| Europe PMC | Open-access full text of a paper our fetch could not read | `RESEARCH_READ_FALLBACK` includes `oa` | None | Free | DOIs |
-| Exa | Reading a page from Exa's crawl (`/contents`) | `RESEARCH_READ_FALLBACK` includes `exa` | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
-| Firecrawl | Scraping a page our fetch could not read, with basic proxies only | `RESEARCH_READ_FALLBACK` includes `firecrawl` | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
+| Europe PMC | Open-access full text of a paper our fetch could not read | The reading fallback's `oa`, on by default | None | Free | DOIs |
+| Exa | Reading a page from Exa's crawl (`/contents`) | The reading fallback's `exa`, on by default when `EXA_API_KEY` is set | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
+| Firecrawl | Scraping a page our fetch could not read, with basic proxies only | The reading fallback's `firecrawl`, on by default when `FIRECRAWL_API_KEY` is set | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
 | Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` | Your Logfire plan | Prompts, tool results, and timings |
 | Postgres | Run records, grades, assessments, and audits | Local | `DATABASE_URL` | Free | Everything a run records |
 
@@ -384,34 +386,38 @@ When a provider rejects a scout's request with a token rate limit and says when 
 
 Retrying is not enough when parallel scouts regularly send more than the limit allows, so scouts on a model listed in `RESEARCH_TOKENS_PER_MINUTE` are also paced. Before each request, the run waits until the tokens its scouts sent that model in the last minute, plus an estimate for this request, fit under 90% of the limit. The estimate starts from the previous reply's billed tokens and counts four bytes a token for what was added since; the billed count replaces it when the reply returns.
 
-The default is `{"openai:gpt-6-luna": 200000}`, the OpenAI tier this project runs on, which four unpaced Luna scouts overran. Set the limit for your own account's tier, or `'{}'` to turn pacing off. Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history.
+The limit paced under is the one OpenAI reports. Every OpenAI response carries `x-ratelimit-limit-tokens`, and from a run's first response on, its pacer uses that value for the model. So a change of tier is picked up without a setting. Until then it uses the configured default, `{"openai:gpt-6-luna": 2000000}`, this project's OpenAI tier; on a lower tier, the first response brings the limit down. Setting `RESEARCH_TOKENS_PER_MINUTE` explicitly fixes the limit instead, and `'{}'` turns pacing off.
+
+The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v4`.
 
 A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $3.00.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
 
-A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. The retry policy is recorded with the run as `scout-429-v3`.
+A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. The retry policy is part of `scout-429-v4`.
 
 ### Web search
 
-The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE=exa`. Exa is sent the request its documentation recommends: the query, with `auto` search and highlights. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full.
+The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
+
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
 
 Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 > [!NOTE]
-> Exa's uncapped highlights carry about 20 times the text of a DuckDuckGo search, which slows scouts under the rate limit. DuckDuckGo stays the default until a comparison with capped highlights decides otherwise; see [docs/study-log.md](docs/study-log.md).
+> Uncapped, Exa's highlights carried about 20 times the text of a DuckDuckGo search, which slowed scouts under the rate limit. Capped, ten results come to about 6,000 characters, three times a DuckDuckGo search, and old search snippets leave a scout's view like old pages (see [Scouts](#how-a-run-works)). DuckDuckGo stays the default until a comparison decides otherwise; see [docs/study-log.md](docs/study-log.md).
 
 ### Reading fallback
 
-About 38% of the pages scouts tried to read in production runs failed, mostly with 403s, challenge pages, and JavaScript-only pages from the publishers research needs. With `RESEARCH_READ_FALLBACK=oa,exa,firecrawl`, a page our fetch cannot read is tried with each reader in turn:
+About 20% of the pages scouts tried to read in production runs failed, mostly with 403s from publishers behind bot protection: MDPI, RSC, ACS, OUP, AIP, and ScienceDirect were read 2 to 9% of the time. A page our fetch cannot read is tried with each reader of the reading fallback in turn. Unset, `RESEARCH_READ_FALLBACK` is every reader that can run: `oa`, which is free, always, then `exa` and `firecrawl` when their keys are set. An empty value turns the fallback off, and a list such as `oa,exa` names the readers and their order.
 - `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID), through Europe PMC's full text or OpenAlex's best open-access location, and reads it with our own fetcher;
 - `exa` reads the page from Exa's crawl;
 - `firecrawl` scrapes it with Firecrawl, using basic proxies only, never stealth or residential proxies.
 
 The fallback runs after a 401, 403, 429, 451, or server error, a timeout or dropped connection, an empty extraction, or a page over the size limit, but not after a 404, which is usually a guessed address. A blocked URL is refused before any reader sees it. Text that is short or looks like a challenge page counts as not found, and the next reader is tried. When one succeeds, the result says `via` which one read it, quotes are checked against its text as usual, and the run counts pages by reader in `pages_read_via`. When every reader fails, the scout is told what was tried. Paid reads are recorded in `external_usd` and reserved under `--max-usd` like paid searches. Pages the fallback read are cached apart from our own, so a study arm without the fallback never gets a page only the fallback could read.
 
-On the 160 pages our fetcher failed on, this chain read 139 and recovered 68 of the 79 quotes scouts had cited from them. It stays off by default until a comparison of whole runs shows it improves reports.
+On the 160 pages our fetcher failed on, this chain read 139 and recovered 68 of the 79 quotes scouts had cited from them. It has been on by default since fetch version 14, at about $0.02 a run in paid reads; a comparison of whole runs has not yet measured its effect on reports.
 
 ### The research cache
 
@@ -471,7 +477,7 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 - every arm, case or stored run, and replicate runs one at a time;
 - each arm goes first on alternate replicates;
 - each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
-- when the spec says so, each run is graded (`grade = true`) and audited (`audit = true`).
+- when the spec says so, each run is graded (`grade = true`), audited (`audit = true`), and diagnosed (`diagnose = true`).
 
 It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It checks each arm with that arm's environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
 
@@ -620,6 +626,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `render.py`, `cli.py`, `doctor.py`, `telemetry.py`, `breakdown.py` | Reports, the `research` command, setup checks, Logfire, and cost and time breakdowns |
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
 | `audit.py` | The support audit: whether the verified quotes behind each report statement say what it says |
+| `diagnose.py` | The post-run diagnosis: where a run's rubric points were lost, and whether a score can show a change |
 | `study.py`, `coverage.py` | The study runner, and the count of a development case's expected set a run found |
 | `dryrun.py` | The bug-finding harness: the fuzz model, the offline world, the invariants, and `research fuzz` |
 

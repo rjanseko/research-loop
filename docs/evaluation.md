@@ -94,6 +94,28 @@ The first audit of all stored reports found that about one in five quoted statem
 
 The judge itself matters more than that stability suggests. Regraded by `zai:glm-5.3` with the same prompt, the stored reports agreed on 92.6% of rubric points, but GLM credited 27 points that `gpt-6-sol` did not, and on the DeepResearch Bench II cases the judge alone moved a score by up to 8 points, as much as the run-to-run variation a study tries to see past. In the disputes checked by hand, `gpt-6-sol` was too strict about equivalent wording. So a decision that rests on a few rubric points uses both judges and has their disagreements checked by hand.
 
+### Where the points were lost: `research diagnose`
+
+A rubric score says how many points a report met, not why it missed the others, and a change can move it for reasons that have nothing to do with the research. `research diagnose` (diagnose.py, diagnose version 1) is the step after grading that answers both. It grades three views of each run with one judge, `zai:glm-5.3@high` by default:
+- **the report**, exactly as a report grade does, stored in `grades` like any other;
+- **the claims**: every claim statement, with the titles and addresses of its sources;
+- **the research**: everything the synthesizer was shown, including quotes, excerpts, conclusions, open items, and `unresolved`.
+
+The two earlier views are stored in `stage_grades`, apart from report grades, so no report score takes one in. Each point the report missed is put at the earliest view that met it:
+- *claimed, not reported*: the synthesis dropped a claim;
+- *seen, not claimed*: the synthesizer was shown it, but only in a quote or an open item, and no claim stated it;
+- *not found*: nothing the research returned met it.
+
+A point the report met that neither earlier view did is counted apart, as judge noise or the synthesizer writing from its own knowledge. A change that works should move points out of a named stage. Watching that stage varies less than the total score.
+
+The same step reads only stored grades for four checks of the score itself:
+- how often the two judges disagree about the same reports, and on which points;
+- missed URL points where the report gives an address on the same site, which is judge literalness;
+- points that no stored grade of a case has met in any view, which may be out of reach until a person confirms them;
+- for a two-arm study, the smallest difference in mean score its replicates can detect at 80% power.
+
+A stored grade by the same judge, judge version, and rubric version is reused, so a run is only paid for once, and `--free` makes no calls at all. A study spec with `diagnose = true` diagnoses each run after its grade and audit, then appends the whole study's diagnosis to its summary. Dry and cheap studies use their fake and cheap models for it. The step was built after the audit of 28 September 2026 found, by hand, that drb2-task8's missed points were mostly seen by the synthesizer but never claimed (study log).
+
 ### What a rubric score misses
 
 `study_cases.jsonl` contains three short-answer cases, a false-premise case, a fixed table of facts, and two broad research questions. The two broad cases, st06 and st07, are retired as selection cases. The current `research grade` command handles only rubric cases. Its judge decides whether each listed point appears in the report and produces the fraction met. It reads the answer, key statements, caveats, and source names, but no source passages. That makes it a coverage check for predefined facts, not an assessment of whether the conclusion is useful or the cited material supports it.

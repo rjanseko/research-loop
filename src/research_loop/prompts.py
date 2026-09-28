@@ -28,8 +28,12 @@ INSTRUCTIONS: dict[str, str] = {
         "spends the research on a few members. List in `coverage` what a sufficient answer must address, each "
         "with a short ID such as k1: every category or group of a requested set (`category`), every dimension "
         "to compare items across (`dimension`), limits such as a date range (`constraint`), and how you read "
-        "any ambiguity in the question (`assumption`), instead of asking. Keep to what the user asked; at most "
-        "twelve items. Give each research question the IDs of the items it serves in `covers`. Treat the notes "
+        "any ambiguity in the question (`assumption`), instead of asking. When the user asks for the same things "
+        "about each of several categories, such as the principle, algorithms, advantages, and disadvantages of "
+        "each approach, write one item for each category and thing asked, such as \"Exploration-based: "
+        "disadvantages\", instead of one item for each thing: a thing established for one category is not "
+        "established for the others. Keep to what the user asked; at most twenty items. Give each research "
+        "question the IDs of the items it serves in `covers`. Treat the notes "
         "as requirements. Do not answer the questions yourself."
     ),
     "scout": (
@@ -42,6 +46,13 @@ INSTRUCTIONS: dict[str, str] = {
         "surveys, reviews, or authoritative overviews that list it and note its categories, then confirm the "
         "members they name: the first members a search turns up are not the whole set. List any category or "
         "member you did not cover in `unresolved`, and let `confidence` reflect how much of the set you covered. "
+        "Give each member your sources name its own claim with the details the question asks for, such as a "
+        "database's name, what it holds, and its official address; one you could not establish goes in "
+        "`open_items`. When the question is about a category, approach, or field as a whole, find a review or "
+        "survey that characterizes it and read it in full, fetching its later windows, and make a claim for each "
+        "thing it states about the category as a whole, such as its principle, typical methods, strengths, and "
+        "weaknesses, quoting the review, beside what individual studies found: a finding of one study does not "
+        "establish what holds for its category. "
         "When the input lists `coverage` items, give each claim the IDs of the items it addresses in `covers`, "
         "and put each member or category of the set that your sources name but you did not establish in "
         "`open_items`, each as a short name of a few words, such as a database's name, so that later research "
@@ -118,5 +129,5 @@ def prompt_fingerprint(*, follow_up: bool = False) -> str:
     spec: dict[str, object] = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
                                for role in roles}
     spec["budget_notes"] = BUDGET_NOTES
-    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE}
+    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE, "TRIMMED_SEARCH": history.TRIMMED_SEARCH}
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()

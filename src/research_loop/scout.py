@@ -76,6 +76,7 @@ from .agents import (
 )
 from .budget_notes import LoopBudget
 from .config import ScoutLimits, Settings, split_model
+from .evals import case_blocked_titles
 from .evidence import (
     EvidenceLedger,
     Support,
@@ -121,7 +122,19 @@ from .study_budget import (
 )
 from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
-from .web import WebAcquisition, WebSearch, exa_engine
+from .web import (
+    SearchChain,
+    WebAcquisition,
+    WebSearch,
+    brave_engine,
+    exa_engine,
+    serper_engine,
+)
+
+
+def _paid_search(name: str) -> Any:
+    """The paid web search engine a setting names (Settings.search_engine), looked up when a run starts."""
+    return {"exa": exa_engine, "serper": serper_engine, "brave": brave_engine}[name]
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
 # partial set as a gap.
@@ -146,9 +159,15 @@ from .web import WebAcquisition, WebSearch, exa_engine
 # v10: a fetched page's text leaves a scout's view two responses after it was read (history.py), and
 # re-reading it to quote uses no loop budget; followup-v11 also lets a deep run give every other scout and
 # deep dive a second scout model (ScoutModels.scout_alt), with $3.00 for the follow-up envelope.
-WORKFLOW_VERSION = "scout-v10"
-FOLLOWUP_VERSION = "scout-followup-v11"
-RESCOUT_VERSION = "scout-research-v10"
+# v11: old search snippets leave a scout's view past 16,000 characters, as old pages do (history.py).
+# v12: a frozen case's blocked titles reach its scouts and gap analyzer beside its blocked addresses, and a
+# scout's evidence citing a blocked work by its title is refused.
+# v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
+# review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
+# study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
+WORKFLOW_VERSION = "scout-v13"
+FOLLOWUP_VERSION = "scout-followup-v14"
+RESCOUT_VERSION = "scout-research-v13"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -305,7 +324,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
-        "read_fallback": list(settings.read_fallback),
+        "read_fallback": list(settings.readers()),
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -365,7 +384,8 @@ class _Run:
     def __init__(self, question: str, settings: Settings, store: RunStore, notes: Sequence[str],
                  blocked_urls: Sequence[str], parent_run_id: UUID | None, study: StudyLabels | None,
                  follow_up: bool = False, budget: StudyBudget | None = None,
-                 case_identity: dict[str, Any] | None = None, depth: Depth | None = None) -> None:
+                 case_identity: dict[str, Any] | None = None, depth: Depth | None = None,
+                 blocked_titles: Sequence[str] = ()) -> None:
         self.question, self.settings, self.store, self.study = question, settings, store, study
         # The standard limits until a plan sets the depth (`_set_depth`).
         self.limits: ScoutLimits = settings.limits
@@ -377,7 +397,8 @@ class _Run:
         self.cost = Decimal(0)
         self.unpriced = False
         self.notes: list[str] = []
-        self.policy = SourcePolicy(tuple(blocked_urls))
+        self.blocked_titles = list(blocked_titles)
+        self.policy = SourcePolicy(tuple(blocked_urls), titles=tuple(blocked_titles))
         self.models: dict[tuple[Role, str], Model] = {}
         self.caches: list[AcquisitionCache] = []
         # Set when the research deadline, not a cancelled run, stopped the scouts still running.
@@ -521,6 +542,8 @@ class _Run:
         settings = self.settings.model_copy(update={"limits": self.limits})
         config = run_config(settings, self.notes_in, self.blocked_urls, follow_up=self.follow_up)
         config["follow_up"], config["depth"] = self.follow_up, self.depth
+        if self.blocked_titles:
+            config["blocked_titles"] = self.blocked_titles
         if (alt := self.settings.models.scout_alt) and self.depth == "deep":
             # Even-numbered scouts and deep dives (`_scout_spec`).
             config["models"]["scout_alt"] = {"model": split_model(alt)[0], "thinking": split_model(alt)[1],
@@ -551,7 +574,8 @@ class _Run:
         budget = LoopBudget(requests, productive, misses, time_left=time_left,
                             return_within=limits.request_timeout_seconds)
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
-                                       "blocked_urls": self.blocked_urls}
+                                       "blocked_urls": self.blocked_urls,
+                                       **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {})}
         if coverage:
             prompt_data["coverage"] = [item.model_dump(mode="json") for item in coverage]
         if deep:
@@ -622,6 +646,7 @@ class _Run:
 
     async def _analyze_gap(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> GapAnalysis | None:
         prompt = json.dumps({"question": self.question, "notes": self.notes_in, "blocked_urls": self.blocked_urls,
+                             **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {}),
                              "plan": plan.model_dump(mode="json"), "research": ledger.prompt_view(),
                              "not_established": _not_established(plan, ledger),
                              "coverage": _coverage_view(plan, ledger),
@@ -783,7 +808,7 @@ class _Run:
                  firecrawl_key: str | None) -> list[Any]:
         """The reading fallback the settings name, in order (reading.py)."""
         readers: list[Any] = []
-        for name in self.settings.read_fallback:
+        for name in self.settings.readers():
             if name == "oa":
                 readers.append(OpenAccessReader(client, extract))
             elif name == "exa" and exa_key:
@@ -812,13 +837,18 @@ class _Run:
 
             world = World(settings.offline_world, settings.offline_fault_rate)
             world.install(stack, self.policy)
-            if settings.search_engine == "exa":
-                # The world answers Exa's API too, so the paid search path runs with its faults and costs.
-                exa_client = await stack.enter_async_context(world.client())
-                search = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.external_spend, self.budget),
-                                   name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
-            else:
-                search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy)
+            # The world answers the paid engines' APIs too, so their paths run with their faults and costs.
+            engines: list[WebSearch] = []
+            paid_client: httpx.AsyncClient | None = None
+            for name in settings.search_engines():
+                if name == "duckduckgo":
+                    engines.append(WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy))
+                    continue
+                paid_client = paid_client or await stack.enter_async_context(world.client())
+                engines.append(WebSearch(engine=_paid_search(name)(paid_client, f"dry-{name}-key", self.external_spend,
+                                                                  self.budget),
+                                         name=name, retry_delays=(0.0, 0.0), policy=self.policy))
+            search = engines[0] if len(engines) == 1 else SearchChain(engines)
             pages_client = await stack.enter_async_context(world.client())
             pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
                                    policy=self.policy)
@@ -833,17 +863,21 @@ class _Run:
         metadata_client = await stack.enter_async_context(
             trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))
         search_cache = AcquisitionCache(cache / "search", settings.cache_mode)
-        if settings.search_engine == "exa" and settings.exa_api_key is not None:
-            exa_client = await stack.enter_async_context(
-                trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
-            search = WebSearch(cache=search_cache, name="exa", policy=self.policy,
-                               engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
-                                                 self.external_spend, self.budget))
-        else:
-            search = WebSearch(cache=search_cache, policy=self.policy)
+        engines = []
+        paid_client = None
+        for name in settings.search_engines():
+            if name == "duckduckgo":
+                engines.append(WebSearch(cache=search_cache, policy=self.policy))
+            elif (key := settings.search_key(name)) is not None:
+                paid_client = paid_client or await stack.enter_async_context(
+                    trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
+                engines.append(WebSearch(cache=search_cache, name=name, policy=self.policy,
+                                         engine=_paid_search(name)(paid_client, key, self.external_spend, self.budget)))
+        search = engines[0] if len(engines) == 1 else SearchChain(engines or [WebSearch(cache=search_cache,
+                                                                                        policy=self.policy)])
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
-        if settings.read_fallback:
+        if settings.readers():
             reader_client = await stack.enter_async_context(
                 trace_http(httpx.AsyncClient(follow_redirects=True, timeout=60), settings))
             pages.fallbacks = self._readers(
@@ -853,7 +887,8 @@ class _Run:
         scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", settings.cache_mode), client=metadata_client,
                                 api_key=settings.openalex_api_key.get_secret_value() if settings.openalex_api_key else None,
                                 contact_email=settings.crossref_mailto)
-        self.caches = [cache for cache in (search.cache, pages.cache, scholar.cache) if cache is not None]
+        search_caches = search.caches if isinstance(search, SearchChain) else [search.cache]
+        self.caches = [cache for cache in (*search_caches, pages.cache, scholar.cache) if cache is not None]
         return TimedToolset(research_toolset(search, pages, scholar))
 
 
@@ -975,11 +1010,13 @@ async def scout(question: str, *, settings: Settings | None = None, store: RunSt
                 notes: Sequence[str] = (), blocked_urls: Sequence[str] = (),
                 parent_run_id: UUID | None = None, study: StudyLabels | None = None,
                 follow_up: bool = False, budget: StudyBudget | None = None,
-                case_identity: dict[str, Any] | None = None, depth: Depth | None = None) -> ScoutRun:
+                case_identity: dict[str, Any] | None = None, depth: Depth | None = None,
+                blocked_titles: Sequence[str] = ()) -> ScoutRun:
     """Research `question` and return a cited answer within the configured limits.
 
     `notes` are requirements every role follows, such as "prefer peer-reviewed sources". `blocked_urls` are
-    sources no tool may fetch and no evidence may cite. Without a `store`, the run is kept in memory.
+    sources no tool may fetch and no evidence may cite, and `blocked_titles` the titles of blocked works, so a
+    copy at another address is blocked too. Without a `store`, the run is kept in memory.
     `study` labels the run as one arm and repetition of a study, so its records can be paired.
     `follow_up` adds one material-gap analysis and up to `max_gaps` targeted research passes in parallel.
     `depth` (quick, standard, or deep) fixes how much research the run gets; without it the planner chooses,
@@ -990,7 +1027,8 @@ async def scout(question: str, *, settings: Settings | None = None, store: RunSt
     settings = settings or Settings()
     check_config(settings)
     run = _Run(question.strip(), settings, store or MemoryStore(), notes, blocked_urls, parent_run_id, study,
-               follow_up=follow_up, budget=budget, case_identity=case_identity, depth=depth)
+               follow_up=follow_up, budget=budget, case_identity=case_identity, depth=depth,
+               blocked_titles=blocked_titles)
     return await run.execute()
 
 
@@ -1002,7 +1040,8 @@ def _rerun(source: dict[str, Any], settings: Settings, store: RunStore, study: S
     source_config = source.get("config") or {}
     runner = _Run(source["question"], settings, store, source_config.get("notes") or [],
                   source_config.get("blocked_urls") or [], UUID(str(source["id"])), study, budget=budget,
-                  case_identity=source_config.get("case"))
+                  case_identity=source_config.get("case"),
+                  blocked_titles=source_config.get("blocked_titles") or case_blocked_titles(source_config.get("case")))
     runner.plan = plan = ResearchPlan.model_validate(source["plan"])
     runner.depth, runner.limits = plan.depth, settings.limits.for_depth(plan.depth)
     runner.workflow_version = workflow_version

@@ -250,6 +250,50 @@ async def save_grade(pool: Any, row: dict[str, Any]) -> None:
                            f"values ({', '.join(['%s'] * len(_GRADE_COLUMNS))})", values)
 
 
+_STAGE_GRADE_COLUMNS = (*_GRADE_COLUMNS, "view", "diagnose_version")
+
+
+async def save_stage_grade(pool: Any, row: dict[str, Any]) -> None:
+    """Insert one `stage_grades` row, as diagnose.stage_grade_row builds it, a failed grade too."""
+    values = [_json(row[name]) if name in _GRADE_JSON else row[name] for name in _STAGE_GRADE_COLUMNS]
+    async with pool.connection() as conn:
+        await conn.execute(f"insert into stage_grades ({', '.join(_STAGE_GRADE_COLUMNS)}) "
+                           f"values ({', '.join(['%s'] * len(_STAGE_GRADE_COLUMNS))})", values)
+
+
+_GRADE_READ = ("id, run_id, case_id, judge_model, judge_thinking, judge_version, rubric_version, status, score, "
+               "points, cost_usd, created_at")
+
+
+async def load_grades(pool: Any, run_ids: list[UUID]) -> list[dict[str, Any]]:
+    """The report grades of `run_ids`, oldest first, without their messages."""
+    from psycopg.rows import dict_row
+
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+        await cursor.execute(f"select {_GRADE_READ} from grades where run_id = any(%s) order by created_at", (run_ids,))
+        return await cursor.fetchall()
+
+
+async def load_stage_grades(pool: Any, run_ids: list[UUID]) -> list[dict[str, Any]]:
+    """The stage grades of `run_ids`, oldest first, without their messages."""
+    from psycopg.rows import dict_row
+
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+        await cursor.execute(f"select {_GRADE_READ}, view, diagnose_version from stage_grades where run_id = any(%s) "
+                             "order by created_at", (run_ids,))
+        return await cursor.fetchall()
+
+
+async def load_case_verdicts(pool: Any, case_id: str, rubric_version: str) -> list[list[dict[str, Any]]]:
+    """The points of every succeeded grade of `case_id` at `rubric_version`, report and stage grades alike."""
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(
+            "select points from grades where case_id = %s and rubric_version = %s and status = 'succeeded' "
+            "union all select points from stage_grades where case_id = %s and rubric_version = %s "
+            "and status = 'succeeded'", (case_id, rubric_version, case_id, rubric_version))).fetchall()
+    return [row[0] for row in rows if row[0]]
+
+
 _QUALITY_COLUMNS = ("id", "run_id", "case_id", "packet_version", "packet_sha256", "evaluator_version",
                     "judge_model", "judge_thinking", "status", "judgment", "usage", "cost_usd", "messages", "error", "budget_cap_usd",
                     "reserved_usd", "budget_policy")

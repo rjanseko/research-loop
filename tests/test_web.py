@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 
-from research_loop.acquisition import AcquisitionCache, FetchMemo
+from research_loop.acquisition import MAX_FETCH_CHARS, AcquisitionCache, FetchMemo
 from research_loop.web import (
+    EXA_HIGHLIGHT_CHARS,
     NO_RESULTS_HINT,
     WebAcquisition,
     WebSearch,
@@ -41,7 +43,7 @@ async def test_web_fetch_rejects_local_url(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_web_replay_skips_dns_check(go_offline, tmp_path) -> None:
-    AcquisitionCache(tmp_path, "record").put("web", "https://example.org/paper|max_chars=12000",
+    AcquisitionCache(tmp_path, "record").put("web", f"https://example.org/paper|max_chars={MAX_FETCH_CHARS}",
                                              {"url": "https://example.org/paper", "text": "cached"})
     go_offline()
     fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="replay")
@@ -79,6 +81,38 @@ async def test_search_failures_become_results_the_model_can_act_on() -> None:
     empty = WebSearch(engine=_engine(calls, failures=1, message="No results found."), retry_delays=(0, 0))
     assert await empty.search('"too narrow"') == {"results": [], "hint": NO_RESULTS_HINT}
     assert len(calls) == 1  # no retry
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_asks_exa_only_when_duckduckgo_has_nothing() -> None:
+    from research_loop.web import SearchChain
+
+    exa_calls: list[str] = []
+
+    async def exa(query: str) -> list[dict[str, str]]:
+        exa_calls.append(query)
+        return [{"title": "Exa result", "href": "https://exa.example/r", "body": "highlight"}]
+
+    def hybrid(primary) -> SearchChain:
+        return SearchChain([WebSearch(engine=primary, retry_delays=(0,)),
+                            WebSearch(engine=exa, name="exa", retry_delays=(0,))])
+
+    ddg: list[str] = []
+    found = await hybrid(_engine(ddg)).search("SWE-bench")
+    assert found["results"][0]["title"] == "Result for SWE-bench" and exa_calls == []  # DuckDuckGo answered
+    # DuckDuckGo finding nothing, or failing on every try, sends the query to Exa.
+    nothing = await hybrid(_engine([], failures=1, message="No results found.")).search("materials databases")
+    down = await hybrid(_engine([], failures=5)).search("OQMD website")
+    assert nothing["results"][0]["url"] == down["results"][0]["url"] == "https://exa.example/r"
+    assert exa_calls == ["materials databases", "OQMD website"]
+
+    async def exa_down(query: str) -> list[dict[str, str]]:
+        raise RuntimeError("exa is down")
+
+    # When Exa fails too, the scout gets DuckDuckGo's answer, with its hint to broaden the query.
+    both = SearchChain([WebSearch(engine=_engine([], failures=1, message="No results found."), retry_delays=(0,)),
+                        WebSearch(engine=exa_down, name="exa", retry_delays=(0,))])
+    assert await both.search("nothing anywhere") == {"results": [], "hint": NO_RESULTS_HINT}
 
 
 @pytest.mark.asyncio
@@ -335,7 +369,7 @@ async def test_web_fetch_reuse_goes_live_on_a_miss_and_keeps_old_windows(public_
         return httpx.Response(200, headers={"content-type": "text/html"},
                               text="<html><body><article><p>Fresh evidence page.</p></article></body></html>")
 
-    AcquisitionCache(tmp_path, "record").put("web", "https://example.org/paper|max_chars=12000",
+    AcquisitionCache(tmp_path, "record").put("web", f"https://example.org/paper|max_chars={MAX_FETCH_CHARS}",
                                              {"url": "https://example.org/paper", "text": "recorded"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         fetcher = WebAcquisition(cache_root=tmp_path, cache_mode="reuse", client=http)
@@ -525,8 +559,9 @@ async def test_exa_sends_the_recommended_request_and_counts_what_it_cost() -> No
         result = await search.search("Is SWE-bench Verified trustworthy?")
     (request,) = sent
     assert request["url"] == "https://api.exa.ai/search" and request["key"] == "k"
+    # Highlights are capped: uncapped, Exa scouts sent 2 to 5 times the tokens under Luna's rate limit.
     assert request["body"] == {"query": "Is SWE-bench Verified trustworthy?", "type": "auto",
-                               "contents": {"highlights": True}}
+                               "contents": {"highlights": {"maxCharacters": EXA_HIGHLIGHT_CHARS}}}
     # The blocked expert report's highlight never reaches the scout.
     assert result == {"results": [{"title": "SWE-bench Verified",
                                    "url": "https://openai.com/index/introducing-swe-bench-verified/",
@@ -574,3 +609,85 @@ def test_exa_search_needs_its_key(monkeypatch) -> None:
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     problems = Settings(search_engine="exa", _env_file=None).route_problems()
     assert "web search: exa needs EXA_API_KEY" in problems
+
+
+@pytest.mark.asyncio
+async def test_serper_and_brave_send_their_requests_and_count_their_list_prices() -> None:
+    from decimal import Decimal
+
+    from research_loop.acquisition import SourcePolicy
+    from research_loop.reading import ExternalSpend
+    from research_loop.study_budget import StudyBudget
+    from research_loop.web import (
+        BRAVE_SEARCH_USD,
+        SERPER_SEARCH_USD,
+        brave_engine,
+        serper_engine,
+    )
+
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if request.url.host == "google.serper.dev":
+            return httpx.Response(200, json={"organic": [
+                {"title": "SWE-bench Verified", "link": "https://openai.com/swe", "snippet": "500 samples"},
+                {"title": "The report", "link": "https://blocked.example/report", "snippet": "blocked text"}]})
+        return httpx.Response(200, json={"web": {"results": [
+            {"title": "<strong>SWE-bench</strong> Verified", "url": "https://openai.com/swe",
+             "description": "<strong>500</strong> samples"}]}})
+
+    spend, budget = ExternalSpend(), StudyBudget(Decimal("1.00"))
+    policy = SourcePolicy(("https://blocked.example/report",))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        google = await WebSearch(engine=serper_engine(client, "s-key", spend, budget), name="serper",
+                                 policy=policy).search("SWE-bench Verified")
+        brave = await WebSearch(engine=brave_engine(client, "b-key", spend, budget), name="brave",
+                                policy=policy).search("SWE-bench Verified")
+    serper_request, brave_request = sent
+    assert serper_request.headers["X-API-KEY"] == "s-key"
+    assert json.loads(serper_request.content) == {"q": "SWE-bench Verified", "num": 10}
+    assert brave_request.headers["X-Subscription-Token"] == "b-key"
+    assert (brave_request.url.params["q"], brave_request.url.params["count"]) == ("SWE-bench Verified", "10")
+    # Blocked sources are left out, and Brave's highlighting tags are removed.
+    assert google == {"results": [{"title": "SWE-bench Verified", "url": "https://openai.com/swe",
+                                   "snippet": "500 samples"}]}
+    assert brave == {"results": [{"title": "SWE-bench Verified", "url": "https://openai.com/swe",
+                                  "snippet": "500 samples"}]}
+    assert (spend.usd, spend.searches) == (SERPER_SEARCH_USD + BRAVE_SEARCH_USD, 2)
+    assert budget.reserved_usd == SERPER_SEARCH_USD + BRAVE_SEARCH_USD
+
+
+@pytest.mark.asyncio
+async def test_a_search_chain_tries_each_engine_until_one_finds_something() -> None:
+    from research_loop.web import SearchChain
+
+    asked: list[str] = []
+
+    def engine(name: str, found: bool):
+        async def search(query: str) -> list[dict[str, str]]:
+            asked.append(name)
+            if not found:
+                raise RuntimeError("No results found.")
+            return [{"title": name, "href": f"https://{name}.example/r", "body": "s"}]
+        return search
+
+    chain = SearchChain([WebSearch(engine=engine("duckduckgo", False), retry_delays=(0,)),
+                         WebSearch(engine=engine("serper", False), name="serper", retry_delays=(0,)),
+                         WebSearch(engine=engine("exa", True), name="exa", retry_delays=(0,))])
+    assert (await chain.search("q"))["results"][0]["title"] == "exa" and asked == ["duckduckgo", "serper", "exa"]
+
+
+def test_the_search_engine_setting_is_an_ordered_chain_whose_paid_engines_need_keys(monkeypatch) -> None:
+    from research_loop.config import Settings
+
+    for name in ("EXA_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert Settings(_env_file=None, search_engine=" Serper, EXA ").search_engines() == ("serper", "exa")
+    assert Settings(_env_file=None, search_engine="hybrid").search_engines() == ("duckduckgo", "exa")
+    assert Settings(_env_file=None, search_engine="serper,hybrid").search_engines() == ("serper", "duckduckgo", "exa")
+    problems = [p for p in Settings(_env_file=None, search_engine="serper,brave").route_problems()
+                if p.startswith("web search")]
+    assert problems == ["web search: serper needs SERPER_API_KEY", "web search: brave needs BRAVE_API_KEY"]
+    with pytest.raises(ValueError, match="unknown search engines: google"):
+        Settings(_env_file=None, search_engine="google")

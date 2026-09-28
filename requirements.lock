@@ -116,6 +116,7 @@ httpx==0.28.1
     #   google-genai
 httpx2==2.13.1
     # via
+    #   research-loop (pyproject.toml)
     #   anthropic
     #   fastmcp-slim
     #   genai-prices

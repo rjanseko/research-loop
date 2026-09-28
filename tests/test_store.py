@@ -85,7 +85,16 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         pending_migrations,
         reconcile,
     )
-    from research_loop.store import load_calls, load_run, save_grade, save_support_audit
+    from research_loop.store import (
+        load_calls,
+        load_case_verdicts,
+        load_grades,
+        load_run,
+        load_stage_grades,
+        save_grade,
+        save_stage_grade,
+        save_support_audit,
+    )
 
     names = [migration.name for migration in migration_files()]
     assert names[0] == "001_scout.sql" and pending_migrations(dsn) == names
@@ -124,8 +133,22 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
                                         "counts": {"partial": 1}, "usage": {"requests": 1}, "cost_usd": Decimal("0.01"),
                                         "messages": None, "error": None, "budget_cap_usd": Decimal("0.50"),
                                         "reserved_usd": Decimal("0.02"), "budget_policy": "usage-anchor-v4"})
+        await save_stage_grade(pool, {"id": uuid4(), "run_id": run_id, "case_id": "st05-scaling-table",
+                                      "judge_model": "zai:glm-5.3", "judge_thinking": "high", "judge_version": 2,
+                                      "rubric_version": "1", "status": "succeeded", "score": 0.0,
+                                      "points": [{"category": "analysis", "point": 2, "met": True}],
+                                      "usage": {"requests": 1}, "cost_usd": Decimal("0.03"), "messages": None,
+                                      "error": None, "budget_cap_usd": Decimal("0.50"), "reserved_usd": Decimal("0.2"),
+                                      "budget_policy": "usage-anchor-v6", "view": "research", "diagnose_version": 1})
+        (grade,) = await load_grades(pool, [run_id])
+        (stage,) = await load_stage_grades(pool, [run_id])
+        history = await load_case_verdicts(pool, "st05-scaling-table", "1")
         row = await load_run(pool, run_id)
         (call,) = await load_calls(pool, run_id)
+    # Report grades and stage grades are kept apart, and a case's history holds both.
+    assert (grade["judge_model"], grade["points"]) == ("openai:gpt-6-sol", [{"category": "analysis", "point": 1, "met": True}])
+    assert (stage["view"], stage["diagnose_version"], stage["cost_usd"]) == ("research", 1, Decimal("0.03"))
+    assert sorted(p[0]["point"] for p in history) == [1, 2]
     assert (row["status"], row["question"], row["parent_run_id"], row["report"], row["cost_usd"]) == (
         "partial", "Q?", parent, {"title": "T"}, Decimal("0.0123"))
     assert (row["study_id"], row["arm"], row["replicate"], row["cache"]["mode"]) == ("s1", "high", 2, "reuse")
@@ -142,3 +165,77 @@ async def test_postgres_store_round_trips_a_run_after_migrating(dsn: str) -> Non
         assert conn.execute("select case_id, score from grades").fetchone() == ("st05-scaling-table", Decimal("0.5"))
         assert conn.execute("select judge_model, counts, verdicts->0->>'verdict' from support_audits").fetchone() == (
             "zai:glm-5.3", {"partial": 1}, "partial")
+
+
+@pytest.mark.postgres
+def test_diagnose_grades_each_view_once_and_then_reuses_the_stored_grades(dsn: str, monkeypatch, capsys) -> None:
+    import asyncio
+    import json
+
+    import psycopg
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from research_loop.cli import main
+    from research_loop.db import apply_migrations, migration_files, open_migrated_pool
+    from research_loop.evals import case_identity, find_case
+    from research_loop.evidence import EvidenceLedger
+    from research_loop.schemas import (
+        Claim,
+        Evidence,
+        FinalReport,
+        ReportClaim,
+        ResearchResult,
+        SourceRef,
+    )
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        apply_migrations(conn, migration_files())
+    case = find_case("drb2-task8")
+    ledger = EvidenceLedger()
+    ledger.add(ResearchResult(question_id="q1", question="Databases?", conclusion="c", confidence=0.9, claims=[
+        Claim(id="c1", statement="Materials Project holds computed data", confidence=0.9, evidence=[
+            Evidence(source=SourceRef(url="https://materialsproject.org/", title="MP"), excerpt="e", confidence=0.9)])]))
+    report = FinalReport(title="t", executive_summary="s", answer="Materials Project: https://materialsproject.org/ [s1]",
+                         claims=[ReportClaim(statement="MP holds computed data", claim_ids=["q1/c1"])], caveats=[])
+    run_id = uuid4()
+
+    async def record() -> None:
+        async with AsyncExitStack() as stack:
+            store = PostgresStore(await open_migrated_pool(stack, dsn))
+            await store.start_run(run_id, mode="scout", workflow_version="scout-v10", question=case.objective,
+                                  config={"notes": [], "blocked_urls": case.blocked_urls, "case": case_identity(case)},
+                                  study_id="s", arm="deep", replicate=1)
+            await store.finish_run(run_id, status="complete", report=report.model_dump(mode="json"),
+                                   ledger=ledger.to_json())
+
+    asyncio.run(record())
+
+    seen: list[str] = []
+
+    def respond(messages, info) -> ModelResponse:
+        text = json.loads(messages[0].parts[-1].content)["report"]
+        view = "research" if text.startswith("{") else "claims" if text.startswith("## q1") else "report"
+        seen.append(view)
+        met = {"report": {1}, "claims": {1, 2}, "research": {1, 2, 3}}[view]
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"verdicts": [
+            {"category": category, "point": p["point"], "met": category == "info_recall" and p["point"] in met}
+            for category, points in json.loads(messages[0].parts[-1].content)["rubric"].items() for p in points]})])
+
+    monkeypatch.setattr("research_loop.evals.build_model", lambda *args, **kwargs: FunctionModel(respond))
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.setenv("ZAI_API_KEY", "test-key")
+    with pytest.raises(SystemExit) as done:
+        main(["diagnose", str(run_id), "--model", "zai:glm-5.3@high", "--max-usd", "1.00"])
+    out = capsys.readouterr().out
+    assert done.value.code == 0 and seen == ["report", "claims", "research"]
+    assert "3 new grade(s) and 0 reused" in out
+    # One point reported, one lost at synthesis, one seen but never claimed, 49 never found; and the missed
+    # Materials Project URL point is flagged, since the report gives the same site.
+    assert f"| {str(run_id)[:8]} | deep | 1 | 1 | 1 | 49 | 0 | 1 |" in out
+
+    # Diagnosed again, with no budget at all, it reuses the report grade and both stage grades.
+    with pytest.raises(SystemExit) as again:
+        main(["diagnose", str(run_id), "--model", "zai:glm-5.3@high", "--free"])
+    out = capsys.readouterr().out
+    assert again.value.code == 0 and len(seen) == 3 and "0 new grade(s) and 3 reused" in out

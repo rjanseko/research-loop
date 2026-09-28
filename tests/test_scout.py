@@ -538,7 +538,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     model = trimming.wrapped
     assert isinstance(model, ScoutRateLimitModel)
     assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
-    assert model.pacer is not None and model.pacer.tokens_per_minute == 200_000  # gpt-6-luna's configured limit
+    assert model.pacer is not None and model.pacer.tokens_per_minute == 2_000_000  # gpt-6-luna's configured limit
     with pytest.raises(StudyBudgetRefusal):
         await runner._call(role="planner", agent=planner_agent, prompt='{"question":"Q?"}',
                            deps=PlanLimits(1), limits=UsageLimits(request_limit=2, cost_limit=Decimal(1)))
@@ -929,3 +929,22 @@ async def test_a_run_on_exa_records_its_engine_and_adds_its_searches_to_its_cost
     assert run.config["search_engine"] == "exa" and run.checks.external_usd == Decimal("0.014")
     model_cost = sum(Decimal(str(call["cost_usd"])) for call in store.calls.values() if call.get("cost_usd") is not None)
     assert run.cost_usd == model_cost + Decimal("0.014")
+
+
+async def test_a_run_records_its_blocked_titles_and_shows_them_to_its_scouts(settings, pages) -> None:
+    prompts: list[dict[str, Any]] = []
+    inner = researcher()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompts.append(_prompt(messages))
+        return inner.function(messages, info)
+
+    store = MemoryStore()
+    title = "Machine Learning-Based Methods for Materials Inverse Design: A Review"
+    run = await _run(settings, store, research=FunctionModel(respond), blocked_titles=[title])
+    assert store.runs[run.run_id]["config"]["blocked_titles"] == [title]
+    assert all(prompt["blocked_titles"] == [title] for prompt in prompts)
+    # A run with no blocked titles sends its scouts no such field, as before.
+    prompts.clear()
+    plain = await _run(settings, store, research=FunctionModel(respond))
+    assert "blocked_titles" not in store.runs[plain.run_id]["config"] and all("blocked_titles" not in p for p in prompts)
