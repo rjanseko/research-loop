@@ -27,7 +27,7 @@ from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 from .evidence import ToolText, identity_keys, printed_dois
 from .schemas import UnreachedSource
 from .scholar import ScholarClient, ScholarWork
-from .web import WebAcquisition, WebSearch
+from .web import HybridSearch, WebAcquisition, WebSearch
 
 WEB_SEARCH, FETCH, SCHOLAR_SEARCH, SCHOLAR_GET = "web_search", "fetch", "scholar_search", "scholar_get"
 RESEARCH_TOOLS = frozenset({WEB_SEARCH, FETCH, SCHOLAR_SEARCH, SCHOLAR_GET})
@@ -58,7 +58,7 @@ def valid_unicode(value: Any) -> Any:
     return value
 
 
-def research_toolset(search: WebSearch, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
+def research_toolset(search: WebSearch | HybridSearch, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
     """The four research tools. The task's blocked sources (the fetcher's policy) apply to all of them: search
     results and scholarly records from a blocked source are left out, and a fetch or lookup of one is refused."""
     policy = pages.policy
@@ -203,6 +203,13 @@ def source_records(messages: Iterable[ModelMessage]) -> list[tuple[frozenset[str
                 records.append((keys, record))
     return [(keys, {name: value for name, value in record.items() if value not in (None, "", [], "unknown")})
             for keys, record in records]
+
+
+def searched_snippets(content: Any) -> dict[str, Any] | None:
+    """A web search return whose results carry snippets, as a mapping; None for anything else."""
+    data = _data(content)
+    results = data.get("results") if isinstance(data, dict) else None
+    return data if isinstance(results, list) and any(isinstance(r, dict) and r.get("snippet") for r in results) else None
 
 
 def fetched_text(content: Any) -> dict[str, Any] | None:

@@ -71,8 +71,8 @@ Settings come from `.env` or the environment, and exported variables override th
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
-| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free) or `exa` (paid per search, needs the key). See [Web search](#web-search). |
-| `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Off by default. See [Reading fallback](#reading-fallback). |
+| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free), `hybrid` (DuckDuckGo, then Exa when it finds nothing), or `exa`. The last two need the key. See [Web search](#web-search). |
+| `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Unset, every reader that can run: `oa` always, `exa` and `firecrawl` when their keys are set. Empty turns it off. See [Reading fallback](#reading-fallback). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
 
@@ -231,7 +231,7 @@ A scout returns claims. Each claim carries evidence: a source, a summary of what
 
 Each scout is told on every request how much of its budget is left. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A request that fails on a transient network fault is sent once more. A scout that fails or is still running at the deadline leaves its question unanswered, but keeps the searches it made and the pages it read.
 
-Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
+Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. Search results are treated the same way past 16,000 characters of snippets, keeping each result's title and address. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
@@ -304,14 +304,14 @@ These are all the outside services the code calls, what it sends them, and what 
 | Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
-| Exa | Web search (`/search`, with highlights) | `RESEARCH_SEARCH_ENGINE=exa` | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
+| Exa | Web search (`/search`, with highlights capped at 600 characters a result) | `RESEARCH_SEARCH_ENGINE=exa`, or `hybrid` for the searches DuckDuckGo cannot answer | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
 | OpenAlex | Scholarly search and records, with abstracts and open-access links | Default | `OPENALEX_API_KEY` (optional) | Free | Search terms and identifiers |
 | arXiv | Preprint search and records | Default | None | Free | Search terms and IDs |
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
 | The public web | Reading pages and PDFs | Default | None | Free | Requests to public HTTPS addresses only |
-| Europe PMC | Open-access full text of a paper our fetch could not read | `RESEARCH_READ_FALLBACK` includes `oa` | None | Free | DOIs |
-| Exa | Reading a page from Exa's crawl (`/contents`) | `RESEARCH_READ_FALLBACK` includes `exa` | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
-| Firecrawl | Scraping a page our fetch could not read, with basic proxies only | `RESEARCH_READ_FALLBACK` includes `firecrawl` | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
+| Europe PMC | Open-access full text of a paper our fetch could not read | The reading fallback's `oa`, on by default | None | Free | DOIs |
+| Exa | Reading a page from Exa's crawl (`/contents`) | The reading fallback's `exa`, on by default when `EXA_API_KEY` is set | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
+| Firecrawl | Scraping a page our fetch could not read, with basic proxies only | The reading fallback's `firecrawl`, on by default when `FIRECRAWL_API_KEY` is set | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
 | Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` | Your Logfire plan | Prompts, tool results, and timings |
 | Postgres | Run records, grades, assessments, and audits | Local | `DATABASE_URL` | Free | Everything a run records |
 
@@ -396,23 +396,25 @@ A scout's request that fails on a connection fault that is not a timeout, such a
 
 ### Web search
 
-The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE=exa`. Exa is sent the request its documentation recommends: the query, with `auto` search and highlights. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full.
+The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
+
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results. A copy of a blocked work that carries neither its address nor its DOI can still reach a scout as a snippet, and Exa finds such copies more often.
 
 Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 > [!NOTE]
-> Exa's uncapped highlights carry about 20 times the text of a DuckDuckGo search, which slows scouts under the rate limit. DuckDuckGo stays the default until a comparison with capped highlights decides otherwise; see [docs/study-log.md](docs/study-log.md).
+> Uncapped, Exa's highlights carried about 20 times the text of a DuckDuckGo search, which slowed scouts under the rate limit. Capped, ten results come to about 6,000 characters, three times a DuckDuckGo search, and old search snippets leave a scout's view like old pages (see [Scouts](#how-a-run-works)). DuckDuckGo stays the default until a comparison decides otherwise; see [docs/study-log.md](docs/study-log.md).
 
 ### Reading fallback
 
-About 38% of the pages scouts tried to read in production runs failed, mostly with 403s, challenge pages, and JavaScript-only pages from the publishers research needs. With `RESEARCH_READ_FALLBACK=oa,exa,firecrawl`, a page our fetch cannot read is tried with each reader in turn:
+About 20% of the pages scouts tried to read in production runs failed, mostly with 403s from publishers behind bot protection: MDPI, RSC, ACS, OUP, AIP, and ScienceDirect were read 2 to 9% of the time. A page our fetch cannot read is tried with each reader of the reading fallback in turn. Unset, `RESEARCH_READ_FALLBACK` is every reader that can run: `oa`, which is free, always, then `exa` and `firecrawl` when their keys are set. An empty value turns the fallback off, and a list such as `oa,exa` names the readers and their order.
 - `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID), through Europe PMC's full text or OpenAlex's best open-access location, and reads it with our own fetcher;
 - `exa` reads the page from Exa's crawl;
 - `firecrawl` scrapes it with Firecrawl, using basic proxies only, never stealth or residential proxies.
 
 The fallback runs after a 401, 403, 429, 451, or server error, a timeout or dropped connection, an empty extraction, or a page over the size limit, but not after a 404, which is usually a guessed address. A blocked URL is refused before any reader sees it. Text that is short or looks like a challenge page counts as not found, and the next reader is tried. When one succeeds, the result says `via` which one read it, quotes are checked against its text as usual, and the run counts pages by reader in `pages_read_via`. When every reader fails, the scout is told what was tried. Paid reads are recorded in `external_usd` and reserved under `--max-usd` like paid searches. Pages the fallback read are cached apart from our own, so a study arm without the fallback never gets a page only the fallback could read.
 
-On the 160 pages our fetcher failed on, this chain read 139 and recovered 68 of the 79 quotes scouts had cited from them. It stays off by default until a comparison of whole runs shows it improves reports.
+On the 160 pages our fetcher failed on, this chain read 139 and recovered 68 of the 79 quotes scouts had cited from them. It has been on by default since fetch version 14, at about $0.02 a run in paid reads; a comparison of whole runs has not yet measured its effect on reports.
 
 ### The research cache
 

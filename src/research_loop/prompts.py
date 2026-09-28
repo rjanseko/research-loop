@@ -118,5 +118,5 @@ def prompt_fingerprint(*, follow_up: bool = False) -> str:
     spec: dict[str, object] = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
                                for role in roles}
     spec["budget_notes"] = BUDGET_NOTES
-    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE}
+    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE, "TRIMMED_SEARCH": history.TRIMMED_SEARCH}
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()

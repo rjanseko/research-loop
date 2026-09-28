@@ -7,6 +7,7 @@ import pytest
 
 from research_loop.acquisition import AcquisitionCache, FetchMemo
 from research_loop.web import (
+    EXA_HIGHLIGHT_CHARS,
     NO_RESULTS_HINT,
     WebAcquisition,
     WebSearch,
@@ -79,6 +80,38 @@ async def test_search_failures_become_results_the_model_can_act_on() -> None:
     empty = WebSearch(engine=_engine(calls, failures=1, message="No results found."), retry_delays=(0, 0))
     assert await empty.search('"too narrow"') == {"results": [], "hint": NO_RESULTS_HINT}
     assert len(calls) == 1  # no retry
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_asks_exa_only_when_duckduckgo_has_nothing() -> None:
+    from research_loop.web import HybridSearch
+
+    exa_calls: list[str] = []
+
+    async def exa(query: str) -> list[dict[str, str]]:
+        exa_calls.append(query)
+        return [{"title": "Exa result", "href": "https://exa.example/r", "body": "highlight"}]
+
+    def hybrid(primary) -> HybridSearch:
+        return HybridSearch(WebSearch(engine=primary, retry_delays=(0,)),
+                            WebSearch(engine=exa, name="exa", retry_delays=(0,)))
+
+    ddg: list[str] = []
+    found = await hybrid(_engine(ddg)).search("SWE-bench")
+    assert found["results"][0]["title"] == "Result for SWE-bench" and exa_calls == []  # DuckDuckGo answered
+    # DuckDuckGo finding nothing, or failing on every try, sends the query to Exa.
+    nothing = await hybrid(_engine([], failures=1, message="No results found.")).search("materials databases")
+    down = await hybrid(_engine([], failures=5)).search("OQMD website")
+    assert nothing["results"][0]["url"] == down["results"][0]["url"] == "https://exa.example/r"
+    assert exa_calls == ["materials databases", "OQMD website"]
+
+    async def exa_down(query: str) -> list[dict[str, str]]:
+        raise RuntimeError("exa is down")
+
+    # When Exa fails too, the scout gets DuckDuckGo's answer, with its hint to broaden the query.
+    both = HybridSearch(WebSearch(engine=_engine([], failures=1, message="No results found."), retry_delays=(0,)),
+                        WebSearch(engine=exa_down, name="exa", retry_delays=(0,)))
+    assert await both.search("nothing anywhere") == {"results": [], "hint": NO_RESULTS_HINT}
 
 
 @pytest.mark.asyncio
@@ -525,8 +558,9 @@ async def test_exa_sends_the_recommended_request_and_counts_what_it_cost() -> No
         result = await search.search("Is SWE-bench Verified trustworthy?")
     (request,) = sent
     assert request["url"] == "https://api.exa.ai/search" and request["key"] == "k"
+    # Highlights are capped: uncapped, Exa scouts sent 2 to 5 times the tokens under Luna's rate limit.
     assert request["body"] == {"query": "Is SWE-bench Verified trustworthy?", "type": "auto",
-                               "contents": {"highlights": True}}
+                               "contents": {"highlights": {"maxCharacters": EXA_HIGHLIGHT_CHARS}}}
     # The blocked expert report's highlight never reaches the scout.
     assert result == {"results": [{"title": "SWE-bench Verified",
                                    "url": "https://openai.com/index/introducing-swe-bench-verified/",

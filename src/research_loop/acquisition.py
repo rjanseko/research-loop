@@ -54,7 +54,9 @@ CACHE_VERSION = 1
 #     (docs/architectural-audit-2026-09-27.md, F06).
 # 13: web_fetch reads JSON, laid out one value a line, and plain text: the first deep example run's three
 #     ClinicalTrials.gov API queries were refused as an unsupported content type.
-FETCH_VERSION = 13
+# 14: web search can be "hybrid", DuckDuckGo then Exa when DuckDuckGo finds nothing or fails; Exa's highlights
+#     are capped at 600 characters a result; and an unset reading fallback is every reader that can run.
+FETCH_VERSION = 14
 
 
 def is_pdf(media: str, content: bytes) -> bool:

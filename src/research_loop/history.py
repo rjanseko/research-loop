@@ -1,4 +1,5 @@
-"""What a scout's model is sent of its own history: once a loop has read a lot, its oldest pages leave view.
+"""What a scout's model is sent of its own history: once a loop has read a lot, its oldest pages and search
+snippets leave view.
 
 Each request of a tool loop resends the loop's whole history. In the first two deep example runs
 (d8c8198e and 2c66e8bd), fetched page text was 63% of the scouts' tool results, and the scouts
@@ -7,6 +8,9 @@ nine requests. Now a request keeps the newest `KEEP_CHARS` of page text, and alw
 latest `TRIM_AFTER` responses; older pages are replaced by `TRIMMED_PAGE`, which tells the scout to
 fetch the page again before quoting it. The run's fetch memo serves the re-read without a download, and
 the loop budget does not count it (budget_notes.py).
+
+Search results are trimmed the same way past `SEARCH_KEEP_CHARS` of snippets, keeping each result's title
+and address: Exa's highlights, even capped, are several times DuckDuckGo's snippets.
 
 A short loop is never trimmed. Trimming every page two responses after it was read cost quotes: in the
 cheap check 6d29289d, 46 of 66 quotes verified against 54 of 55 without trimming, and the scouts that
@@ -35,10 +39,14 @@ from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
-from .tools import FETCH, fetched_text
+from .tools import FETCH, WEB_SEARCH, fetched_text, searched_snippets
 
 # Page text a request keeps, newest first: four full fetch windows.
 KEEP_CHARS = 48_000
+# Search-result snippets a request keeps, newest first: about seven DuckDuckGo searches, or three Exa
+# searches with their highlights capped (web.EXA_HIGHLIGHT_CHARS). Older results keep their titles and
+# addresses, so a scout can still fetch them.
+SEARCH_KEEP_CHARS = 16_000
 # Responses a page's text is always sent with: the one that reads it and the next, so a scout can compare
 # pages from one batch before deciding what to quote.
 TRIM_AFTER = 2
@@ -46,13 +54,16 @@ TRIMMED_PAGE = (
     "This page's text has left your view to save space. To quote it, fetch this url again with the same "
     "start first: the re-read is instant and does not use your budget. Quote only text you can see."
 )
+TRIMMED_SEARCH = "These results' snippets have left your view to save space; fetch a result to read it."
 
 
 def trimmed(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """`messages` with the text of every fetched page past the newest `KEEP_CHARS` replaced, except pages
-    from the latest `TRIM_AFTER` responses. Once one page is trimmed, every older page is too."""
-    after = kept = 0
-    cut = False
+    """`messages` with old tool text replaced, newest kept first: the text of every fetched page past the
+    newest `KEEP_CHARS`, and the snippets of every search past the newest `SEARCH_KEEP_CHARS`, except what
+    the latest `TRIM_AFTER` responses returned. Once one of a kind is trimmed, every older one is too."""
+    after = 0
+    kept = {FETCH: 0, WEB_SEARCH: 0}
+    cut = {FETCH: False, WEB_SEARCH: False}
     out: list[ModelMessage] = []
     for message in reversed(messages):
         if isinstance(message, ModelResponse):
@@ -60,17 +71,17 @@ def trimmed(messages: list[ModelMessage]) -> list[ModelMessage]:
         elif isinstance(message, ModelRequest):
             parts = []
             for part in reversed(message.parts):
-                if not isinstance(part, ToolReturnPart) or part.tool_name != FETCH or (
-                        page := fetched_text(part.content)) is None:
+                found = _trimmable(part)
+                if found is None:
                     parts.append(part)
                     continue
-                size = len(page["text"])
-                if after < TRIM_AFTER or (not cut and kept + size <= KEEP_CHARS):
-                    kept += size
+                tool, data, size = found
+                if after < TRIM_AFTER or (not cut[tool] and kept[tool] + size <= _LIMITS[tool]):
+                    kept[tool] += size
                     parts.append(part)
                 else:
-                    cut = True
-                    parts.append(_stub(part, page))
+                    cut[tool] = True
+                    parts.append(replace(part, content=_STUBS[tool](data)))
             parts.reverse()
             if any(new is not old for new, old in zip(parts, message.parts, strict=True)):
                 message = replace(message, parts=parts)
@@ -79,9 +90,29 @@ def trimmed(messages: list[ModelMessage]) -> list[ModelMessage]:
     return out
 
 
-def _stub(part: ToolReturnPart, page: dict[str, Any]) -> ToolReturnPart:
+def _trimmable(part: Any) -> tuple[str, dict[str, Any], int] | None:
+    """A fetched page or a search with snippets, its data, and how much of its text trimming would remove."""
+    if not isinstance(part, ToolReturnPart):
+        return None
+    if part.tool_name == FETCH and (page := fetched_text(part.content)) is not None:
+        return FETCH, page, len(page["text"])
+    if part.tool_name == WEB_SEARCH and (found := searched_snippets(part.content)) is not None:
+        return WEB_SEARCH, found, sum(len(r.get("snippet") or "") for r in found["results"] if isinstance(r, dict))
+    return None
+
+
+def _stub_page(page: dict[str, Any]) -> dict[str, Any]:
     kept = {key: value for key, value in page.items() if key not in ("text", "content_sha256")}
-    return replace(part, content={**kept, "text_removed": TRIMMED_PAGE})
+    return {**kept, "text_removed": TRIMMED_PAGE}
+
+
+def _stub_search(found: dict[str, Any]) -> dict[str, Any]:
+    results = [{key: r[key] for key in ("title", "url") if key in r} for r in found["results"] if isinstance(r, dict)]
+    return {**found, "results": results, "snippets_removed": TRIMMED_SEARCH}
+
+
+_LIMITS = {FETCH: KEEP_CHARS, WEB_SEARCH: SEARCH_KEEP_CHARS}
+_STUBS = {FETCH: _stub_page, WEB_SEARCH: _stub_search}
 
 
 class TrimmedHistoryModel(WrapperModel):

@@ -69,6 +69,11 @@ def _duckduckgo() -> Callable[[str], Awaitable[list[dict[str, str]]]]:
 
 
 EXA_SEARCH_URL = "https://api.exa.ai/search"
+# The most highlight text Exa returns a result. Uncapped, the median result carried 3,900 to 6,400
+# characters against DuckDuckGo's 210 to 230, and scouts resend every result on each later request, so
+# Exa scouts sent 2 to 5 times the tokens under Luna's rate limit (study log, 27 September 2026). Exa
+# advises against caps under about 400.
+EXA_HIGHLIGHT_CHARS = 600
 # Exa lists $7 per 1,000 searches of up to 10 results (https://exa.ai/pricing, 27 September 2026). A
 # search reserves this much under a hard cap and settles to the `costDollars` Exa reports.
 EXA_SEARCH_RESERVE_USD = Decimal("0.010")
@@ -82,7 +87,8 @@ def exa_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
     async def search(query: str) -> list[dict[str, str]]:
         charge = await budget.reserve_fixed(EXA_SEARCH_RESERVE_USD, "Exa search") if budget else None
         response = await client.post(EXA_SEARCH_URL, headers={"x-api-key": api_key}, timeout=30,
-                                     json={"query": query, "type": "auto", "contents": {"highlights": True}})
+                                     json={"query": query, "type": "auto",
+                                           "contents": {"highlights": {"maxCharacters": EXA_HIGHLIGHT_CHARS}}})
         if response.status_code == 429 and budget and charge is not None:
             budget.release(charge)  # rejected, not processed
         response.raise_for_status()
@@ -157,6 +163,23 @@ class WebSearch:
         return {"error": f"SearchUnavailable ({error})",
                 "hint": f"Web search failed {len(self.retry_delays) + 1} times; continue with scholar_search "
                         "or try again later with a different query."}
+
+
+class HybridSearch:
+    """DuckDuckGo first, then Exa when DuckDuckGo finds nothing or fails. Each keeps its own cache, rate
+    slot, and retries; only a query DuckDuckGo could not answer costs an Exa search."""
+
+    def __init__(self, primary: WebSearch, fallback: WebSearch) -> None:
+        self.primary, self.fallback = primary, fallback
+        # One cache may hold both engines' entries under their own names; it is counted once.
+        self.caches = list({id(cache): cache for cache in (primary.cache, fallback.cache) if cache is not None}.values())
+
+    async def search(self, query: str) -> dict[str, Any]:
+        first = await self.primary.search(query)
+        if first.get("results"):
+            return first
+        second = await self.fallback.search(query)
+        return second if second.get("results") or "error" not in second else first
 
 
 # Failures another reader may get past: refusals, rate limits, server errors, challenge or JavaScript-only

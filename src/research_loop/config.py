@@ -278,13 +278,18 @@ class Settings(BaseSettings):
     # Where a study's runs keep their lookups (`for_study`).
     study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
-    # The web search engine behind the scouts' `web_search` tool. DuckDuckGo stays the default until a
-    # paired study shows Exa is better; Exa is paid per search and needs EXA_API_KEY (web.exa_engine).
-    search_engine: Literal["duckduckgo", "exa"] = "duckduckgo"
+    # The web search engine behind the scouts' `web_search` tool. DuckDuckGo, through the `ddgs` scraping
+    # library, stays the default until a paired study shows another is better; it returned nothing for 34%
+    # of 2,636 production searches, and 4 of 6 such queries tried again later found results. "hybrid" asks
+    # DuckDuckGo and then Exa when DuckDuckGo finds nothing or fails (web.HybridSearch); Exa is paid per
+    # search and needs EXA_API_KEY (web.exa_engine).
+    search_engine: Literal["duckduckgo", "exa", "hybrid"] = "duckduckgo"
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
-    # Off until a paired study shows it helps; exa needs EXA_API_KEY and firecrawl FIRECRAWL_API_KEY.
-    read_fallback: Annotated[tuple[str, ...], NoDecode] = ()
+    # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
+    # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in
+    # the fetch bake-off this chain read 139 of 160 pages our fetch could not. An empty value turns it off.
+    read_fallback: Annotated[tuple[str, ...] | None, NoDecode] = None
     firecrawl_api_key: SecretStr | None = Field(None, validation_alias="FIRECRAWL_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
@@ -297,11 +302,19 @@ class Settings(BaseSettings):
     def _readers(cls, value: object) -> object:
         from .reading import READERS
 
+        if value is None:
+            return None
         if isinstance(value, str):
             value = tuple(part.strip().lower() for part in value.split(",") if part.strip())
         if unknown := sorted(set(value or ()) - set(READERS)):  # type: ignore[arg-type]
             raise ValueError(f"unknown readers: {', '.join(unknown)}; choose from {', '.join(READERS)}")
         return value
+
+    def readers(self) -> tuple[str, ...]:
+        """The reading fallback a run uses: `read_fallback` when set, else every reader that can run."""
+        if self.read_fallback is not None:
+            return self.read_fallback
+        return ("oa", *(("exa",) if self.exa_api_key else ()), *(("firecrawl",) if self.firecrawl_api_key else ()))
 
     @field_validator("enabled_providers", mode="before")
     @classmethod
@@ -345,12 +358,12 @@ class Settings(BaseSettings):
             roles["fallback"] = self.models.fallback
         if self.models.scout_alt:
             roles["scout_alt"] = self.models.scout_alt
-        if self.search_engine == "exa" and self.exa_api_key is None and self.offline_world is None:
-            problems.append("web search: exa needs EXA_API_KEY")
+        if self.search_engine in ("exa", "hybrid") and self.exa_api_key is None and self.offline_world is None:
+            problems.append(f"web search: {self.search_engine} needs EXA_API_KEY")
         if self.offline_world is None:
-            if "exa" in self.read_fallback and self.exa_api_key is None:
+            if "exa" in self.readers() and self.exa_api_key is None:
                 problems.append("reading fallback: exa needs EXA_API_KEY")
-            if "firecrawl" in self.read_fallback and self.firecrawl_api_key is None:
+            if "firecrawl" in self.readers() and self.firecrawl_api_key is None:
                 problems.append("reading fallback: firecrawl needs FIRECRAWL_API_KEY")
         fake = {role for role, spec in roles.items() if spec.startswith(f"{FAKE_PROVIDER}:")}
         if fake and self.offline_world is None:

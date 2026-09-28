@@ -112,3 +112,25 @@ def test_reading_a_page_again_uses_no_budget() -> None:
     before, after = tool_yield(history), tool_yield([*history, *again])
     # The same window is free; the next window of the same page is a new read.
     assert (after.productive, after.misses) == (before.productive + 1, before.misses)
+
+
+def test_old_search_snippets_leave_view_but_their_titles_and_addresses_stay() -> None:
+    from research_loop.history import SEARCH_KEEP_CHARS, TRIMMED_SEARCH
+
+    def search_turn(n: int) -> list:
+        results = [{"title": f"T{n}.{i}", "url": f"https://s.test/{n}/{i}", "snippet": "s" * 1_000} for i in range(6)]
+        return [ModelResponse(parts=[ToolCallPart("web_search", {"query": f"q{n}"}, tool_call_id=f"w{n}")]),
+                ModelRequest(parts=[ToolReturnPart("web_search", {"access": "snippet", "results": results},
+                                                   tool_call_id=f"w{n}")])]
+
+    history = [ModelRequest(parts=[UserPromptPart("research")]), *[m for n in range(5) for m in search_turn(n)]]
+    sent = trimmed(history)
+    searches = [p.content for m in sent if isinstance(m, ModelRequest) for p in m.parts
+                if isinstance(p, ToolReturnPart)]
+    # 6,000 characters a search: the newest two fit in SEARCH_KEEP_CHARS, and a third would not.
+    assert 2 * 6_000 <= SEARCH_KEEP_CHARS < 3 * 6_000
+    assert [bool(s["results"][0].get("snippet")) for s in searches] == [False, False, False, True, True]
+    assert searches[0]["results"][0] == {"title": "T0.0", "url": "https://s.test/0/0"}
+    assert searches[0]["snippets_removed"] == TRIMMED_SEARCH and len(searches[0]["results"]) == 6
+    # Pages and searches have their own limits: a page's budget is not spent on snippets.
+    assert trimmed([*history, *_turn(9)])[-1].parts[0].content["text"][:6] == "Page 9"

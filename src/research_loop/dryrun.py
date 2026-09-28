@@ -925,8 +925,8 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
         "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake,
                               scout_alt=rng.choice([None, "fake:fuzz-alt@high"])),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
-        # Both engines, so the paid search path, its budget reservations, and its costs are fuzzed too.
-        "search_engine": rng.choice(["duckduckgo", "exa"]),
+        # Every engine, so the paid search path, its budget reservations, and its costs are fuzzed too.
+        "search_engine": rng.choice(["duckduckgo", "exa", "hybrid"]),
         # The reading fallback in several orders, off in some runs, so its money and results are fuzzed too.
         "read_fallback": rng.choice([(), ("oa", "exa", "firecrawl"), ("exa",), ("firecrawl", "exa")]),
         "tokens_per_minute": {}, "logfire": False,

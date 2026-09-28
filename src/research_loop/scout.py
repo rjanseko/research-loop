@@ -121,7 +121,7 @@ from .study_budget import (
 )
 from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
-from .web import WebAcquisition, WebSearch, exa_engine
+from .web import HybridSearch, WebAcquisition, WebSearch, exa_engine
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
 # partial set as a gap.
@@ -146,9 +146,10 @@ from .web import WebAcquisition, WebSearch, exa_engine
 # v10: a fetched page's text leaves a scout's view two responses after it was read (history.py), and
 # re-reading it to quote uses no loop budget; followup-v11 also lets a deep run give every other scout and
 # deep dive a second scout model (ScoutModels.scout_alt), with $3.00 for the follow-up envelope.
-WORKFLOW_VERSION = "scout-v10"
-FOLLOWUP_VERSION = "scout-followup-v11"
-RESCOUT_VERSION = "scout-research-v10"
+# v11: old search snippets leave a scout's view past 16,000 characters, as old pages do (history.py).
+WORKFLOW_VERSION = "scout-v11"
+FOLLOWUP_VERSION = "scout-followup-v12"
+RESCOUT_VERSION = "scout-research-v11"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -305,7 +306,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
-        "read_fallback": list(settings.read_fallback),
+        "read_fallback": list(settings.readers()),
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -783,7 +784,7 @@ class _Run:
                  firecrawl_key: str | None) -> list[Any]:
         """The reading fallback the settings name, in order (reading.py)."""
         readers: list[Any] = []
-        for name in self.settings.read_fallback:
+        for name in self.settings.readers():
             if name == "oa":
                 readers.append(OpenAccessReader(client, extract))
             elif name == "exa" and exa_key:
@@ -812,13 +813,14 @@ class _Run:
 
             world = World(settings.offline_world, settings.offline_fault_rate)
             world.install(stack, self.policy)
-            if settings.search_engine == "exa":
+            search: WebSearch | HybridSearch = WebSearch(engine=world.search, retry_delays=(0.0, 0.0),
+                                                         policy=self.policy)
+            if settings.search_engine in ("exa", "hybrid"):
                 # The world answers Exa's API too, so the paid search path runs with its faults and costs.
                 exa_client = await stack.enter_async_context(world.client())
-                search = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.external_spend, self.budget),
-                                   name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
-            else:
-                search = WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy)
+                exa = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.external_spend, self.budget),
+                                name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
+                search = exa if settings.search_engine == "exa" else HybridSearch(search, exa)
             pages_client = await stack.enter_async_context(world.client())
             pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
                                    policy=self.policy)
@@ -833,17 +835,17 @@ class _Run:
         metadata_client = await stack.enter_async_context(
             trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))
         search_cache = AcquisitionCache(cache / "search", settings.cache_mode)
-        if settings.search_engine == "exa" and settings.exa_api_key is not None:
+        search = WebSearch(cache=search_cache, policy=self.policy)
+        if settings.search_engine in ("exa", "hybrid") and settings.exa_api_key is not None:
             exa_client = await stack.enter_async_context(
                 trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
-            search = WebSearch(cache=search_cache, name="exa", policy=self.policy,
-                               engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
-                                                 self.external_spend, self.budget))
-        else:
-            search = WebSearch(cache=search_cache, policy=self.policy)
+            exa = WebSearch(cache=search_cache, name="exa", policy=self.policy,
+                            engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
+                                              self.external_spend, self.budget))
+            search = exa if settings.search_engine == "exa" else HybridSearch(search, exa)
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
-        if settings.read_fallback:
+        if settings.readers():
             reader_client = await stack.enter_async_context(
                 trace_http(httpx.AsyncClient(follow_redirects=True, timeout=60), settings))
             pages.fallbacks = self._readers(
@@ -853,7 +855,8 @@ class _Run:
         scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", settings.cache_mode), client=metadata_client,
                                 api_key=settings.openalex_api_key.get_secret_value() if settings.openalex_api_key else None,
                                 contact_email=settings.crossref_mailto)
-        self.caches = [cache for cache in (search.cache, pages.cache, scholar.cache) if cache is not None]
+        search_caches = search.caches if isinstance(search, HybridSearch) else [search.cache]
+        self.caches = [cache for cache in (*search_caches, pages.cache, scholar.cache) if cache is not None]
         return TimedToolset(research_toolset(search, pages, scholar))
 
 

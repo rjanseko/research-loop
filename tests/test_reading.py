@@ -134,6 +134,25 @@ def test_the_fallback_needs_the_keys_of_its_paid_readers(monkeypatch) -> None:
         Settings(read_fallback="oa,jina", _env_file=None)
 
 
+def test_unset_the_fallback_is_every_reader_that_can_run(monkeypatch) -> None:
+    from research_loop.config import Settings
+
+    for name in ("EXA_API_KEY", "FIRECRAWL_API_KEY", "RESEARCH_READ_FALLBACK"):
+        monkeypatch.delenv(name, raising=False)
+    # The free open-access reader always, and a paid reader only once its key is set.
+    assert Settings(_env_file=None).readers() == ("oa",)
+    monkeypatch.setenv("EXA_API_KEY", "k")
+    assert Settings(_env_file=None).readers() == ("oa", "exa")
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "k")
+    assert Settings(_env_file=None).readers() == ("oa", "exa", "firecrawl")
+    assert not [p for p in Settings(_env_file=None).route_problems() if p.startswith("reading fallback")]
+    # An empty value turns it off, and a named list is used as given.
+    monkeypatch.setenv("RESEARCH_READ_FALLBACK", "")
+    assert Settings(_env_file=None).readers() == ()
+    monkeypatch.setenv("RESEARCH_READ_FALLBACK", "firecrawl,oa")
+    assert Settings(_env_file=None).readers() == ("firecrawl", "oa")
+
+
 def test_a_scouts_outcomes_say_which_reader_read_a_page() -> None:
     from pydantic_ai.messages import (
         ModelRequest,
