@@ -50,12 +50,6 @@ For every point, decide whether the report meets it:
 
 Return one verdict for every point, identified by its category and number, and no others.
 """
-JUDGE_MODEL = "openai:gpt-6-sol"
-# At low effort it missed points reports stated plainly (the settings study).
-JUDGE_THINKING = "high"
-# Longer than a model request in a run: the judge's reply is not streamed.
-_JUDGE_TIMEOUT_SECONDS = 600
-_GUARDED_JUDGE_MAX_OUTPUT_TOKENS = 16_000
 
 
 class StudyCase(BaseModel):
@@ -190,8 +184,8 @@ class GradeRecord:
     budget_cap_usd: Decimal | None = None
     reserved_usd: Decimal | None = None
     id: UUID = field(default_factory=uuid4)
-    judge_model: str = JUDGE_MODEL
-    judge_thinking: str = JUDGE_THINKING
+    judge_model: str = field(kw_only=True)
+    judge_thinking: str = field(kw_only=True)
 
     @property
     def cost_usd(self) -> Decimal | None:
@@ -234,9 +228,9 @@ async def judge(report_text: str, case: StudyCase, run_id: UUID, settings: Setti
     chosen = model or build_model(settings.models.judge, "scout", settings, sdk_retries=0 if budget else None)
     if budget is not None:
         chosen = StudyBudgetModel(chosen, judge_model, budget)
-    model_settings = {"thinking": judge_thinking, "timeout": _JUDGE_TIMEOUT_SECONDS}
+    model_settings = {"thinking": judge_thinking, "timeout": settings.model_calls.rubric_timeout_seconds}
     if budget is not None:
-        model_settings["max_tokens"] = _GUARDED_JUDGE_MAX_OUTPUT_TOKENS
+        model_settings["max_tokens"] = settings.model_calls.rubric_max_output_tokens
     try:
         with capture_run_messages() as messages:
             result = await agent.run(prompt, model=chosen, usage=usage, model_settings=model_settings)

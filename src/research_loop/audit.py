@@ -57,8 +57,6 @@ verdict for every statement ID, and no others.
 Verdict = Literal["supported", "partial", "unsupported"]
 # Not a judgment: code found no verified quote behind the statement, so it was not sent.
 NO_QUOTE = "no_quote"
-_TIMEOUT_SECONDS = 600
-_GUARDED_MAX_OUTPUT_TOKENS = 16_000
 
 
 class StatementVerdict(BaseModel):
@@ -162,9 +160,9 @@ async def audit(report: FinalReport, ledger: EvidenceLedger, question: str, run_
         chosen = model or build_model(settings.models.judge, "scout", settings, sdk_retries=0 if budget else None)
         if budget is not None:
             chosen = StudyBudgetModel(chosen, judge_model, budget)
-        model_settings: dict[str, Any] = {"thinking": judge_thinking, "timeout": _TIMEOUT_SECONDS}
+        model_settings: dict[str, Any] = {"thinking": judge_thinking, "timeout": settings.model_calls.audit_timeout_seconds}
         if budget is not None:
-            model_settings["max_tokens"] = _GUARDED_MAX_OUTPUT_TOKENS
+            model_settings["max_tokens"] = settings.model_calls.audit_max_output_tokens
         usage = RunUsage()
         messages: list[ModelMessage] = []
         try:

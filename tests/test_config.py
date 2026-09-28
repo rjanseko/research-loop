@@ -49,6 +49,8 @@ def test_keys_are_secret_and_never_exported(monkeypatch: pytest.MonkeyPatch, tmp
 @pytest.mark.parametrize(("name", "value", "message"), [
     ("RESEARCH_MODELS__SCOUT", "glm-5.3-flash", "not provider:model"),
     ("RESEARCH_MODELS__PLANNER", "openrouter:vendor/model", "not provider:model"),
+    ("RESEARCH_MODELS__AUDIT", "", "not provider:model"),
+    ("RESEARCH_MODELS__DRY", "openai:gpt-6-luna@low", "must use the fake: provider"),
     ("RESEARCH_ENABLED_PROVIDERS", "openai,xai", "unknown providers: xai"),
     ("RESEARCH_LIMITS__SYNTHESIS_USD", "0.9", "must leave part of cost_usd"),
     ("RESEARCH_CACHE_MODE", "sometimes", "cache_mode"),

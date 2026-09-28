@@ -124,6 +124,7 @@ def test_the_rendered_diagnosis_counts_stages_by_arm_and_says_what_the_score_can
 
 
 def test_a_stage_grade_row_is_a_grade_row_with_its_view() -> None:
-    grade = GradeRecord(uuid4(), find_case("drb2-task8"), "succeeded", points=[], score=0.5)
+    grade = GradeRecord(uuid4(), find_case("drb2-task8"), "succeeded", points=[], score=0.5,
+                        judge_model="zai:glm-5.3", judge_thinking="high")
     row = stage_grade_row(grade, "claims")
     assert (row["view"], row["diagnose_version"], row["case_id"]) == ("claims", 1, "drb2-task8")

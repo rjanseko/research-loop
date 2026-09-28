@@ -320,7 +320,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
                                       for role in ("planner", "synthesizer")}}
     return {
         "models": roles,
-        "limits": settings.limits.model_dump(),
+        "limits": settings.limits.model_dump(), "model_calls": settings.model_calls.model_dump(),
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
@@ -470,8 +470,9 @@ class _Run:
             with capture_run_messages() as messages:
                 if attempt is not None:
                     attempt.messages = messages
-                output_cap = (16_000 if role == "planner" else self.limits.guarded_scout_max_output_tokens
-                              if role == "scout" else self.limits.synthesis_max_output_tokens)
+                output_cap = (self.settings.model_calls.planner_max_output_tokens if role == "planner"
+                              else self.limits.guarded_scout_max_output_tokens if role == "scout"
+                              else self.limits.synthesis_max_output_tokens)
                 result = await agent.run(prompt, model=self._model(role, spec), deps=deps, usage_limits=limits, usage=usage,
                                          model_settings={"max_tokens": output_cap} if self.budget else None,
                                          capabilities=capabilities, toolsets=toolsets, metadata=metadata,
@@ -519,7 +520,8 @@ class _Run:
             async with asyncio.timeout_at(deadline):
                 plan: ResearchPlan = await self._call(
                     role="planner", agent=planner_agent, prompt=prompt, deps=PlanLimits(caps, asked),
-                    limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
+                    limits=UsageLimits(request_limit=self.settings.model_calls.planner_requests,
+                                       total_tokens_limit=self.settings.model_calls.planner_tokens,
                                        cost_limit=Decimal(str(self.limits.planner_usd))),
                     cancelled=lambda: timed_out)
         except _CALL_FAILURES as exc:
@@ -657,7 +659,8 @@ class _Run:
                     role="planner", call_role="gap_analyzer", agent=gap_agent, prompt=prompt,
                     deps=GapRefs(frozenset(q.id for q in plan.questions), self.limits.max_gaps,
                                  frozenset(state.id for state in coverage_states(plan, ledger))),
-                    limits=UsageLimits(request_limit=2, total_tokens_limit=100_000,
+                    limits=UsageLimits(request_limit=self.settings.model_calls.planner_requests,
+                                       total_tokens_limit=self.settings.model_calls.planner_tokens,
                                        cost_limit=Decimal(str(self.limits.gap_usd))),
                     cancelled=lambda: "the gap-analysis deadline passed")
         except _CALL_FAILURES as exc:
@@ -705,7 +708,8 @@ class _Run:
                 return await self._call(
                     role="synthesizer", agent=synthesizer_agent, prompt=prompt, stream=True,
                     deps=LedgerRefs(frozenset(ledger.claim_ids()), ledger.claim_source_ids()),
-                    limits=UsageLimits(request_limit=2, total_tokens_limit=limits.synthesis_tokens,
+                    limits=UsageLimits(request_limit=self.settings.model_calls.synthesizer_requests,
+                                       total_tokens_limit=limits.synthesis_tokens,
                                        cost_limit=Decimal(str(limits.synthesis_usd))),
                     cancelled=lambda: "the run deadline passed")
         except _CALL_FAILURES as exc:

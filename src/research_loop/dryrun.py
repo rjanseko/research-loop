@@ -48,8 +48,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RequestUsage
 
-# Fake calls are priced as this model (prices.price_per_million maps `fake:` to it).
-PRICED_AS = ("openai", "gpt-6-luna")
+from .config import FAKE_PRICE_MODEL_ID
+
+# Fake calls report this model's usage so the offline budget guard exercises real price calculations.
+PRICED_AS = tuple(FAKE_PRICE_MODEL_ID.split(":", 1))
 
 _WORDS = ["materials", "database", "inverse", "design", "crystal", "structure", "alloy", "electrolyte", "survey", "method", "neural", "network", "genetic", "algorithm", "bayesian", "optimization", "scaling", "cloud", "workload", "threshold", "queue", "reinforcement", "fuzzy", "forecast", "benchmark", "dataset", "repository", "catalog", "property", "phase", "diagram", "review", "overview", "official", "portal", "archive", "computed", "experimental", "measured"]
 _ODD_TEXT = ("", " ", "ÄÖÜ ß ﬁ ẞ", "𝐹 math italic", "emoji 🧪🔬", "a" * 3000, "line\nbreaks\n\n", "[s1] [s99]",
@@ -943,11 +945,13 @@ class FuzzFinding:
 
 
 def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
-    from .config import ScoutModels, Settings
+    from .config import ScoutModels, Settings, split_model
 
     base = base or Settings()
     rng = random.Random(_stable("settings", seed))
-    fake = "fake:fuzz@high"
+    fake = base.models.dry
+    fake_id, effort = split_model(fake)
+    alternate = f"{fake_id}-alt@{effort}"
     # Validated like any configuration, so the harness only explores limits Scout accepts. Deadlines are
     # upper bounds and fake calls are fast, so the 90 seconds kept for synthesis cost no time.
     times = {"research_seconds": rng.choice([3.0, 20.0, 20.0]), "deadline_seconds": 60.0,
@@ -961,7 +965,7 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
         # A second scout model in some runs, so a deep run's scouts and dives split between two models' pacers,
         # prices, and budget reservations.
         "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake,
-                              scout_alt=rng.choice([None, "fake:fuzz-alt@high"])),
+                              scout_alt=rng.choice([None, alternate])),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
         # Every engine, so the paid search path, its budget reservations, and its costs are fuzzed too.
         "search_engine": rng.choice(["duckduckgo", "exa", "hybrid", "serper", "brave", "serper,exa",

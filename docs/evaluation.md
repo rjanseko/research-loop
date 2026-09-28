@@ -84,7 +84,7 @@ These checks establish traceability, not truth. A verified quote shows the sourc
 
 ## The support audit
 
-`research audit` gives a model from a vendor the run did not use each report statement with the verified quotes behind it, and the record the research tools returned for each quoted source: its address, and for a scholarly record its title, authors, date, and venue. It answers `supported`, `partial` when the statement adds something the quotes do not state, or `unsupported`; a statement with no verified quote is marked `no_quote` without a call. Nothing a model wrote about a source is sent (audit version 2). A study spec with `audit = true` audits every run, and its summary shows the counts.
+`research audit` gives the configured auditor model each report statement with the verified quotes behind it, and the record the research tools returned for each quoted source: its address, and for a scholarly record its title, authors, date, and venue. It answers `supported`, `partial` when the statement adds something the quotes do not state, or `unsupported`; a statement with no verified quote is marked `no_quote` without a call. Nothing a model wrote about a source is sent (audit version 2). A study spec with `audit = true` audits every run, and its summary shows the counts.
 
 The first audit of all stored reports found that about one in five quoted statements says more than its quotes, usually because the scout's claim already went beyond its quote, and that claims that a source leaves something out recur and can never be established by a quote. A model's verdicts are not ground truth: check a sample by hand before relying on them.
 
@@ -157,6 +157,8 @@ These are versions of the repository's existing st01, st03, st05, st07, st06, an
 ## How to compare configurations
 
 Pair runs by the same frozen question and evaluation context. Change one configuration variable at a time; for synthesis comparisons, use the same stored ledger, and for scout-effort comparisons, use the same stored plan. Score the report and the research outcome. A failed run remains in the denominator and has no report-quality score, rather than disappearing from the sample.
+
+The study runner snapshots model IDs, efforts, and model-call limits before its first arm. An arm’s environment and explicit `audit_model` or `diagnose_model` setting can then change its model. Check the saved run configuration and recorded judge identity before comparing grades across arms; use the same judge unless the judge itself is the variable under study.
 
 Show results case by case and by question type: paired preference, dimension judgments, factual defects, completion, cost, and elapsed time. Do not average fact-case scores and broad-case scores into one quality number. Repeat a close or inconsistent pair before adoption. Treat a single run as screening. A configuration is promising when it preserves factual reliability and citation integrity, improves or ties on reader utility across the tested types, and offers a meaningful cost, latency, or completion benefit. Otherwise mark the comparison undecided. Set exact adoption margins after calibrating the new evaluator on saved reports, before paid comparison runs.
 

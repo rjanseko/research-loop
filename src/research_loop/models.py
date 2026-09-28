@@ -34,7 +34,7 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
         result["max_tokens"] = limits.synthesis_max_output_tokens
     elif role == "planner":
         # Anthropic defaults max_tokens to 4,096, shared by thinking and output.
-        result["max_tokens"] = 16_000
+        result["max_tokens"] = settings.model_calls.planner_max_output_tokens
     provider = model_provider(model_id)
     # Ask for the growing prompt prefix of a tool loop to be cached. OpenAI caches on its own, and a
     # stable key raises the hit rate; Anthropic caches only when asked; Z.ai caches on its own.
@@ -88,8 +88,10 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
 
         # PydanticAI's default client and timeouts, recording the tokens-per-minute limit OpenAI reports with
         # each response, which the pacer uses.
-        http_client = httpx2.AsyncClient(timeout=httpx2.Timeout(timeout=DEFAULT_HTTP_TIMEOUT, connect=5),
-                                         event_hooks={"response": [rate_limit_hook("openai")]})
+        http_client = httpx2.AsyncClient(
+            timeout=httpx2.Timeout(timeout=DEFAULT_HTTP_TIMEOUT,
+                                   connect=settings.model_calls.connect_timeout_seconds),
+            event_hooks={"response": [rate_limit_hook("openai")]})
         model: Model = OpenAIResponsesModel(name, provider=OpenAIProvider(api_key=key, http_client=http_client),
                                             settings=own)
     elif provider == "anthropic":

@@ -50,6 +50,18 @@ def test_grading_requires_a_positive_hard_cap(monkeypatch, capsys) -> None:
     assert "positive" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(("command", "setting"), [
+    ("audit", "RESEARCH_MODELS__AUDIT"),
+    ("diagnose", "RESEARCH_MODELS__DIAGNOSE"),
+])
+def test_evaluation_commands_use_their_configured_model_without_a_flag(command, setting, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/none")
+    monkeypatch.setenv(setting, "openai:gpt-6-luna@low")
+    run_id = "00000000-0000-0000-0000-000000000000"
+    assert _exit([command, run_id, "--max-usd", "0.10"]) == 2
+    assert "judge: openai:gpt-6-luna needs OPENAI_API_KEY" in capsys.readouterr().err
+
+
 def test_invalid_configuration_is_reported_before_anything_runs(monkeypatch, capsys) -> None:
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "glm-5.3-flash")
     assert _exit(["doctor"]) == 2

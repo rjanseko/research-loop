@@ -6,7 +6,7 @@ For an actual run, its saved `config` in `run.json` or `research show RUN_ID --f
 
 ## Models and general settings
 
-Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`, or `xhigh`. The provider may be `openai`, `anthropic`, `zai`, `google`, or `deepseek`. Verify model IDs with `research doctor --smoke` before a paid run because IDs can become stale.
+Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`, or `xhigh`. A live provider may be `openai`, `anthropic`, `zai`, `google`, or `deepseek`; the offline dry model uses `fake`. Verify model IDs with `research doctor --smoke` before a paid run because IDs can become stale.
 
 | Setting | Committed default | Effect |
 |---|---|---|
@@ -16,7 +16,11 @@ Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`
 | `RESEARCH_MODELS__SCOUT_ALT` | unset | When set, every other scout and deep dive in a **deep** run uses it. |
 | `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. |
 | `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner or synthesizer fallback on refusal or provider error; scouts have no fallback. |
-| `RESEARCH_MODELS__JUDGE` | `openai:gpt-6-sol@high` | Rubric and quality judges. The audit command requires its own `--model`. |
+| `RESEARCH_MODELS__JUDGE` | `openai:gpt-6-sol@high` | Rubric and quality judges; audit and diagnosis use their own configured defaults. |
+| `RESEARCH_MODELS__AUDIT` | `zai:glm-5.3@high` | Support auditor for standalone commands and studies with `audit = true`; `--model` or a study `audit_model` overrides it. |
+| `RESEARCH_MODELS__DIAGNOSE` | `zai:glm-5.3@high` | Diagnosis judge for standalone commands and studies with `diagnose = true`; `--model` or a study `diagnose_model` overrides it. |
+| `RESEARCH_MODELS__CHEAP` | `openai:gpt-6-luna@low` | Replaces every model in a `study run --cheap` check, including audit and diagnosis models. |
+| `RESEARCH_MODELS__DRY` | `fake:fuzz@high` | Replaces every model in a `study run --dry` check; only the offline `fake:` provider is accepted. |
 | `RESEARCH_ENABLED_PROVIDERS` | empty | Empty means every provider with a key is enabled; otherwise a comma-separated allowlist. |
 | `RESEARCH_TOKENS_PER_MINUTE` | `{"openai:gpt-6-luna": 2000000}` | Initial per-model scout pacing limit. An OpenAI response can replace an unset default with the reported limit; setting this variable fixes the value. `{}` disables pacing. |
 | `DATABASE_URL` or `RESEARCH_DATABASE_URL` | unset | Postgres persistence. `.env.example` supplies a local URL if copied to `.env`. |
@@ -68,7 +72,29 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 
 The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.075** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap.
 
-The planner and gap analyzer each have a fixed **2-request, 100,000-total-token** limit and a **16,000-token output** cap per request. The synthesizer has a fixed **2-request** limit in addition to `synthesis_tokens`. A scout's framework tool-call limit is `productive + misses + 12 batch slack + 16 re-read slack`: **76** for an ordinary quick/standard scout, **92** for a deep scout, **52** for a quick/standard deep dive, and **76** for a deep-run dive. Re-reading a memoized page does not spend the productive/miss loop budget. A scout result keeps at most **5 open-item names of 60 characters each**; longer or sentence-like items are dropped. Source: [`scout.py`](../src/research_loop/scout.py), [`budget_notes.py`](../src/research_loop/budget_notes.py), [`agents.py`](../src/research_loop/agents.py), [`models.py`](../src/research_loop/models.py).
+At the committed defaults, the planner and gap analyzer each have a **2-request, 100,000-total-token** limit and a **16,000-token output** cap per request. The synthesizer has a **2-request** limit in addition to `synthesis_tokens`. These values can be overridden through `RESEARCH_MODEL_CALLS__...` below. A scout's framework tool-call limit is `productive + misses + 12 batch slack + 16 re-read slack`: **76** for an ordinary quick/standard scout, **92** for a deep scout, **52** for a quick/standard deep dive, and **76** for a deep-run dive. Re-reading a memoized page does not spend the productive/miss loop budget. A scout result keeps at most **5 open-item names of 60 characters each**; longer or sentence-like items are dropped. Source: [`scout.py`](../src/research_loop/scout.py), [`budget_notes.py`](../src/research_loop/budget_notes.py), [`agents.py`](../src/research_loop/agents.py), [`models.py`](../src/research_loop/models.py).
+
+## Model call limits
+
+These defaults live in `Settings.model_calls` and can be overridden with `RESEARCH_MODEL_CALLS__<FIELD>`. A run records their effective values in `config.model_calls`; evaluation commands read the same environment-backed settings. Defaults are unchanged by making them configurable.
+
+| Field | Default | Applies to |
+|---|---:|---|
+| `planner_requests` | 2 | Planner and gap analyzer request cap. |
+| `planner_tokens` | 100,000 | Planner and gap analyzer total token cap. |
+| `planner_max_output_tokens` | 16,000 | Planner and gap analyzer output cap per request. |
+| `synthesizer_requests` | 2 | Synthesizer request cap. |
+| `rubric_timeout_seconds` | 600 | Rubric grading model request. |
+| `rubric_max_output_tokens` | 16,000 | Rubric grading request under a hard cap. |
+| `audit_timeout_seconds` | 600 | Support audit model request. |
+| `audit_max_output_tokens` | 16,000 | Support audit request under a hard cap. |
+| `quality_timeout_seconds` | 180 | Quality assessment model request. |
+| `quality_max_output_tokens` | 5,000 | Quality assessment output cap. |
+| `connect_timeout_seconds` | 5 | OpenAI model client connection. |
+| `smoke_requests` | 3 | `research doctor --smoke` requests per distinct model. |
+| `smoke_cost_usd` | $0.05 | Soft cost cap for each smoke-tested model. |
+
+Source: [`config.py`](../src/research_loop/config.py), [`scout.py`](../src/research_loop/scout.py), [`models.py`](../src/research_loop/models.py), [`evals.py`](../src/research_loop/evals.py), [`audit.py`](../src/research_loop/audit.py), [`quality.py`](../src/research_loop/quality.py), [`doctor.py`](../src/research_loop/doctor.py).
 
 ## Timeouts, waits, and retries
 
@@ -76,7 +102,7 @@ The planner and gap analyzer each have a fixed **2-request, 100,000-total-token*
 |---|---|---|
 | Planner fallback deadline | 90 seconds; on failure it makes one research question from the original question | [`scout.py`](../src/research_loop/scout.py) |
 | Failed/cancelled call recording wait | Up to 5 seconds | [`scout.py`](../src/research_loop/scout.py) |
-| `research doctor --smoke` | Up to 3 model requests and a $0.05 soft cost limit per distinct planner, scout, synthesizer, or fallback model | [`doctor.py`](../src/research_loop/doctor.py) |
+| `research doctor --smoke` | By default, up to 3 model requests and a $0.05 soft cost limit per distinct planner, scout, synthesizer, or fallback model; configurable above | [`doctor.py`](../src/research_loop/doctor.py) |
 | Database connection | 3-second connect timeout for doctor’s migration check; 5 seconds for migration preflight and `research db` commands | [`doctor.py`](../src/research_loop/doctor.py), [`cli.py`](../src/research_loop/cli.py) |
 | Scout model request timeout | `request_timeout_seconds` above; a timeout is **not retried** | [`models.py`](../src/research_loop/models.py), [`rate_limit.py`](../src/research_loop/rate_limit.py) |
 | Scout 429 retry | At most 2 retries, only when the provider gives a retry time; add 0.1 seconds after reset | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
@@ -112,7 +138,7 @@ Shared minimum intervals between starts of requests, per provider: **DuckDuckGo 
 
 Under `--max-usd`, the fixed reservations for external calls are **Exa search $0.010, Serper $0.001, Brave $0.005, Exa page $0.002, Firecrawl page $0.0054**. Exa's reported charge replaces its reservation on success. Other prices are in [`prices.toml`](../src/research_loop/prices.toml) and the bundled pricing library. The guard reserves each model request using an input upper bound and its output cap, then settles returned priced usage; failed requests keep their reservation except an unprocessed 429. Its current policy is `usage-anchor-v6`. Before a reply with recorded usage, its input reservation is twice the serialized request bytes plus 16,000 tokens; afterward it starts from the last reply’s billed input and output tokens, adds newly serialized bytes and 4,000 tokens, and refuses an input bound above 1,000,000 tokens. Source: [`web.py`](../src/research_loop/web.py), [`reading.py`](../src/research_loop/reading.py), [`study_budget.py`](../src/research_loop/study_budget.py).
 
-The four committed model-price overrides in [`prices.toml`](../src/research_loop/prices.toml) are in USD per million tokens. They are the rates the budget guard uses for these models, not a claim about live vendor prices. Other model rates come from the pinned `genai-prices` package.
+The four committed model-price overrides in [`prices.toml`](../src/research_loop/prices.toml) are in USD per million tokens. They are the rates the budget guard uses for these models, not a claim about live vendor prices. The offline fake model uses `openai:gpt-6-luna` as a fixed pricing reference for simulated usage; it makes no provider call. Other model rates come from the pinned `genai-prices` package.
 
 | Model | Input | Cached input | Output |
 |---|---:|---:|---:|
@@ -128,9 +154,9 @@ The four committed model-price overrides in [`prices.toml`](../src/research_loop
 | `research scout` | `--depth`, `--follow-up`, `--max-usd`, repeatable `--note`, `--block`, `--block-title`, `--case`, `--study`, `--arm`, `--replicate`, `--no-persist`, `--out` | Depth `auto`; follow-up off except for deep; no hard cap for an ordinary question; arm `default`; replicate `1`. Frozen `--case` requires `--max-usd` and persistence. |
 | `research rescout` / `synthesize` | Required `--model` and `--max-usd`; optional `--study`, `--arm`, `--replicate`, `--out` | Rerun one stage against a stored plan or ledger. |
 | `research grade` / `assess` | Required `--case` and `--max-usd` | Use the configured judge model. |
-| `research audit` | Required `--model` and `--max-usd` | Checks stored report statements; one or more run IDs. |
-| `research diagnose` | Required `--model`; `--max-usd` unless `--free` | `--free` uses stored grades without model calls. |
-| `research study plan/run` | TOML spec, `--dry`, `--cheap`, `--seeds`, `--out` | `plan` is free. Real `run` uses the spec; dry uses fake models; cheap uses `openai:gpt-6-luna@low` and a $0.25 ceiling. Dry `--seeds` defaults to 1. |
+| `research audit` | Required `--max-usd`; optional `--model` | Checks stored report statements with `RESEARCH_MODELS__AUDIT` unless overridden; one or more run IDs. |
+| `research diagnose` | Optional `--model`; `--max-usd` unless `--free` | Uses `RESEARCH_MODELS__DIAGNOSE` unless overridden; `--free` uses stored grades without model calls. |
+| `research study plan/run` | TOML spec, `--dry`, `--cheap`, `--seeds`, `--out` | `plan` is free. Real `run` uses the spec; dry uses `RESEARCH_MODELS__DRY` (default `fake:fuzz@high`); cheap uses `RESEARCH_MODELS__CHEAP` (default `openai:gpt-6-luna@low`) and a $0.25 ceiling. Dry `--seeds` defaults to 1. |
 | `research fuzz` | `--runs`, `--seed`, `--one`, `--fault-rate` | 100 runs from seed 0 at fault rate 0.2. |
 | `research show` / `breakdown` | `show --format md` or `show --format json` (default `md`); a stored run ID | Read-only presentation of stored runs. |
 | `research doctor` | `--smoke` | Plain doctor is free; smoke calls configured models. |
@@ -151,10 +177,10 @@ Study specs in [`study.py`](../src/research_loop/study.py) have these fields. Re
 | `replicates` | 1 | Repetitions of each arm and target. |
 | `cap_usd`, `estimate_usd`, `ceiling_usd` | required | Per-run hard cap, planning estimate, and parent study ceiling. |
 | `grade`, `grade_estimate_usd`, `grade_cap_usd` | `false`, $0.06, $1.00 | Rubric grading and its estimate/cap. |
-| `audit`, `audit_model`, `audit_estimate_usd`, `audit_cap_usd` | `false`, `zai:glm-5.3@high`, $0.04, $0.30 | Support audit and its estimate/cap. |
-| `diagnose`, `diagnose_model`, `diagnose_estimate_usd`, `diagnose_cap_usd` | `false`, `zai:glm-5.3@high`, $0.15, $0.75 | Rubric diagnosis and its estimate/cap. |
+| `audit`, `audit_model`, `audit_estimate_usd`, `audit_cap_usd` | `false`, unset, $0.04, $0.30 | Support audit and its estimate/cap; an unset model uses `RESEARCH_MODELS__AUDIT`. |
+| `diagnose`, `diagnose_model`, `diagnose_estimate_usd`, `diagnose_cap_usd` | `false`, unset, $0.15, $0.75 | Rubric diagnosis and its estimate/cap; an unset model uses `RESEARCH_MODELS__DIAGNOSE`. |
 
-A cheap study uses the first case or source per arm and one replicate, with a **$0.25** study ceiling and at most **$0.25 per run**. It sets run, grade, audit, and diagnosis cost estimates to **$0.06, $0.01, $0.01, and $0.03**, respectively. A dry study uses fake models and overrides the limits to 20 seconds of research, 60 seconds for an ordinary run, 130 seconds with follow-up, 5 seconds for gap analysis, 8 seconds per deep dive, and 1 second per model request. Quick dry runs allow **2 questions**, a **$0.30** soft envelope with **$0.12** for synthesis, 3 seconds of research, and a 30-second ordinary deadline; deep dry runs use 20 seconds of research, 60 seconds ordinary or 130 seconds with follow-up, and 8-second dives. It uses `RESEARCH_DRY_DATABASE_URL` if set; otherwise it derives a `research_dry` database from `DATABASE_URL`. PostgreSQL tests use `RESEARCH_TEST_DATABASE_URL` and require a test-named database. Evaluation calls use **600 seconds / 16,000 output tokens** for rubric grades and support audits, and **180 seconds / 5,000 output tokens** for quality assessment. Sources: [`study.py`](../src/research_loop/study.py), [`evals.py`](../src/research_loop/evals.py), [`audit.py`](../src/research_loop/audit.py), [`quality.py`](../src/research_loop/quality.py), [`tests/conftest.py`](../tests/conftest.py).
+A study snapshots model IDs, effort, and model-call limits from its parent environment once before running arms. Each arm’s `env` overrides that snapshot; dry and cheap mode then replace model IDs. For study audit and diagnosis models, an explicit spec value wins over the arm’s environment, parent environment, `.env`, and committed default. A cheap study uses the first case or source per arm and one replicate, with a **$0.25** study ceiling and at most **$0.25 per run**. It sets run, grade, audit, and diagnosis cost estimates to **$0.06, $0.01, $0.01, and $0.03**, respectively. A dry study uses fake models and overrides the limits to 20 seconds of research, 60 seconds for an ordinary run, 130 seconds with follow-up, 5 seconds for gap analysis, 8 seconds per deep dive, and 1 second per model request. Quick dry runs allow **2 questions**, a **$0.30** soft envelope with **$0.12** for synthesis, 3 seconds of research, and a 30-second ordinary deadline; deep dry runs use 20 seconds of research, 60 seconds ordinary or 130 seconds with follow-up, and 8-second dives. It uses `RESEARCH_DRY_DATABASE_URL` if set; otherwise it derives a `research_dry` database from `DATABASE_URL`. PostgreSQL tests use `RESEARCH_TEST_DATABASE_URL` and require a test-named database. Evaluation calls default to **600 seconds / 16,000 output tokens** for rubric grades and support audits, and **180 seconds / 5,000 output tokens** for quality assessment; see the model-call settings above. Sources: [`study.py`](../src/research_loop/study.py), [`evals.py`](../src/research_loop/evals.py), [`audit.py`](../src/research_loop/audit.py), [`quality.py`](../src/research_loop/quality.py), [`tests/conftest.py`](../tests/conftest.py).
 
 ## Version markers and audit procedure
 

@@ -69,6 +69,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .config import ModelCallLimits, ScoutModels, Settings
 from .coverage import EXPECTED, coverage
 
 REPO = Path(__file__).resolve().parents[2]
@@ -105,14 +106,14 @@ class StudySpec(BaseModel):
     grade_estimate_usd: float = Field(0.06, ge=0)
     grade_cap_usd: float = Field(1.00, gt=0)
     audit: bool = False
-    audit_model: str = "zai:glm-5.3@high"
+    audit_model: str | None = None
     # The costliest audit of a stored report was $0.036 (audit v1, GLM-5.3 at high effort).
     audit_estimate_usd: float = Field(0.04, ge=0)
     audit_cap_usd: float = Field(0.30, gt=0)
     # Grades a run's report, claims, and research with one judge (diagnose.py). GLM-5.3 at high effort cost
     # $0.03 to $0.05 a grade on drb2-task8 reports.
     diagnose: bool = False
-    diagnose_model: str = "zai:glm-5.3@high"
+    diagnose_model: str | None = None
     diagnose_estimate_usd: float = Field(0.15, ge=0)
     diagnose_cap_usd: float = Field(0.75, gt=0)
 
@@ -177,13 +178,21 @@ def schedule(spec: StudySpec) -> list[Planned]:
 # cheap, with every role on a cheap real model, for cents. Dry and cheap runs exist to find bugs before
 # a real study pays for them (dryrun.py); their research is never scored.
 Mode = Literal["real", "dry", "cheap"]
-FAKE_MODEL = "fake:fuzz@high"
-CHEAP_MODEL = "openai:gpt-6-luna@low"
+def configured_model(role: Literal["audit", "diagnose", "cheap", "dry"], env: dict[str, str],
+                     models: ScoutModels | None = None) -> str:
+    """A study model from the arm's environment, then the study's model snapshot."""
+    key = f"RESEARCH_MODELS__{role.upper()}"
+    return env[key] if key in env else getattr(models or Settings().models, role)
 
 
-def mode_model(model: str, mode: Mode) -> str:
-    """The model a step runs on in `mode`: its own for a real study, else the fake or cheap one."""
-    return model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+def mode_model(model: str | None, mode: Mode, role: Literal["audit", "diagnose"],
+               env: dict[str, str], models: ScoutModels | None = None) -> str:
+    """Resolve a study model after the arm environment is chosen; dry and cheap replace it."""
+    if mode == "dry":
+        return configured_model("dry", env, models)
+    if mode == "cheap":
+        return configured_model("cheap", env, models)
+    return configured_model(role, env, models) if model is None else model
 CHEAP_CEILING_USD = 0.25
 _ROLES = ("PLANNER", "SCOUT", "SYNTHESIZER", "FALLBACK", "JUDGE")
 _SCOUT_ALT = "RESEARCH_MODELS__SCOUT_ALT"
@@ -219,18 +228,17 @@ def dry_database_url(dsn: str) -> str:
     return os.environ.get("RESEARCH_DRY_DATABASE_URL") or re.sub(r"/[^/?]+(\?|$)", r"/research_dry\1", dsn, count=1)
 
 
-def mode_env(mode: Mode, run: Planned, dsn: str | None = None) -> dict[str, str]:
+def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutModels | None = None) -> dict[str, str]:
     """What a dry or cheap run's environment overrides, applied after the arm's own, so no arm reaches a
     real or expensive model in these modes."""
     if mode == "real":
         return {}
-    model = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+    models = models or Settings().models
+    model = mode_model(None, mode, "audit", run.arm.env, models)
     env = {f"RESEARCH_MODELS__{role}": model for role in _ROLES}
     # A second scout model, from the arm or the environment, is replaced like the rest; without one the check
     # keeps one scout model, as the real run does.
-    from .config import Settings
-
-    alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else Settings().models.scout_alt
+    alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else models.scout_alt
     env[_SCOUT_ALT] = model if alt else ""
     if mode == "dry":
         env |= {"RESEARCH_OFFLINE_WORLD": str(_stable_seed(run)), "RESEARCH_CACHE_MODE": "off",
@@ -245,14 +253,15 @@ def _stable_seed(run: Planned) -> int:
     return int.from_bytes(hashlib.sha256(run.label.encode()).digest()[:4], "big")
 
 
-def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: Decimal | None = None) -> list[str]:
+def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: Decimal | None = None,
+            models: ScoutModels | None = None) -> list[str]:
     """The `research` arguments for one planned run under `cap` (the spec's run cap when not given); a dry or
     cheap run's `--model` is replaced too."""
     labels = ["--study", spec.study, "--arm", run.arm.name, "--replicate", str(run.replicate),
               "--max-usd", f"{_usd(spec.cap_usd) if cap is None else cap:.2f}", "--out", str(out)]
     args = list(run.arm.args)
     if mode != "real" and "--model" in args and args.index("--model") + 1 < len(args):
-        args[args.index("--model") + 1] = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+        args[args.index("--model") + 1] = mode_model(None, mode, "audit", run.arm.env, models)
     if spec.kind == "scout":
         return ["scout", "--case", run.target, *labels, *args]
     return [spec.kind, run.target, *labels, *args]
@@ -271,6 +280,8 @@ class Outcome:
     notes: list[str] = field(default_factory=list)
     # Invariants the run broke (dryrun.check_record), and tracebacks in its output; dry and cheap runs only.
     violations: list[str] = field(default_factory=list)
+    diagnosis_model: str | None = None
+    mode: Mode = "real"
     # The caps of steps whose cost could not be read; the ceiling counts them as spent.
     unaccounted_usd: Decimal = Decimal(0)
 
@@ -384,9 +395,13 @@ def _preflight(env: dict[str, str]) -> str | None:
     return lines[-1] if lines else f"exit {done.returncode}"
 
 
-def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path]) -> dict[str, str]:
-    """The extra environment of one planned run: its arm's, then the mode's, then its git ref's code."""
-    env = dict(run.arm.env) | mode_env(mode, run, dsn)
+def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
+             models: ScoutModels, model_calls: ModelCallLimits) -> dict[str, str]:
+    """Freeze model IDs and call limits, then apply arm, mode, and git-ref overrides."""
+    env = {f"RESEARCH_MODELS__{role.upper()}": spec or "" for role, spec in models.model_dump().items()}
+    env |= {f"RESEARCH_MODEL_CALLS__{name.upper()}": str(value)
+            for name, value in model_calls.model_dump().items()}
+    env |= run.arm.env | mode_env(mode, run, dsn, models)
     if run.arm.ref:
         env["PYTHONPATH"] = str(trees[run.arm.ref] / "src")
     return env
@@ -439,12 +454,12 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     invariants (dryrun.check_record)."""
     from .dryrun import check_record
 
+    frozen_settings = Settings()
+    frozen_models, frozen_model_calls = frozen_settings.models, frozen_settings.model_calls
     grade = grade or _grade_with(_invoke_output)
     audit = audit or _audit_with(_invoke_output)
     diagnose = diagnose or _diagnose_with(_invoke_output)
     preflight = preflight or _preflight
-    audit_model = mode_model(spec.audit_model, mode)
-    diagnose_model = mode_model(spec.diagnose_model, mode)
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
@@ -455,16 +470,32 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     audit_reserve = _usd(spec.audit_estimate_usd) if spec.audit else Decimal(0)
     diagnose_reserve = _usd(spec.diagnose_estimate_usd) if spec.diagnose else Decimal(0)
     with worktrees(spec) as trees:
-        # Every arm is checked before any run, so an arm that cannot start does not find out after another spent.
+        # Every arm and enabled evaluation model is checked before any arm spends money.
+        from .config import model_spec_problem, split_model
+        from .prices import price_per_million
+
         firsts = {run.arm.name: run for run in reversed(schedule(spec))}
         refusals = []
         for name, run in sorted(firsts.items()):
-            env = _run_env(run, mode, dsn, trees)
-            args = command(spec, run, Path(tempfile.gettempdir()), mode)
+            env = _run_env(run, mode, dsn, trees, frozen_models, frozen_model_calls)
+            args = command(spec, run, Path(tempfile.gettempdir()), mode, models=frozen_models)
             if spec.kind in _ROLE_OF_MODEL and "--model" in args:
                 env[f"RESEARCH_MODELS__{_ROLE_OF_MODEL[spec.kind]}"] = args[args.index("--model") + 1]
             if problem := preflight(env):
                 refusals.append(f"arm {name}: {problem}")
+            for stage, enabled, selected in (("audit", spec.audit, spec.audit_model),
+                                             ("diagnose", spec.diagnose, spec.diagnose_model)):
+                if not enabled:
+                    continue
+                model = mode_model(selected, mode, stage, env, frozen_models)
+                if problem := model_spec_problem(model):
+                    refusals.append(f"arm {name} {stage}: {problem}")
+                    continue
+                if price_per_million(split_model(model)[0]) is None:
+                    refusals.append(f"arm {name} {stage}: {model} has no price")
+                    continue
+                if problem := preflight(env | {"RESEARCH_MODELS__JUDGE": model}):
+                    refusals.append(f"arm {name} {stage}: {problem}")
         if refusals:
             raise StudyConfigError("; ".join(refusals))
         for run in schedule(spec):
@@ -474,9 +505,11 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                 outcomes.append(Outcome(run, -1, notes=[note]))
                 continue
             out = out_root / run.label
-            env = _run_env(run, mode, dsn, trees)
-            code, stderr = invoke(command(spec, run, out, mode, run_cap), env)
-            outcome = Outcome(run, code)
+            env = _run_env(run, mode, dsn, trees, frozen_models, frozen_model_calls)
+            audit_model = mode_model(spec.audit_model, mode, "audit", env, frozen_models)
+            diagnose_model = mode_model(spec.diagnose_model, mode, "diagnose", env, frozen_models)
+            code, stderr = invoke(command(spec, run, out, mode, run_cap, frozen_models), env)
+            outcome = Outcome(run, code, diagnosis_model=diagnose_model, mode=mode)
             if (out / "run.json").exists():
                 outcome.record = json.loads((out / "run.json").read_text(encoding="utf-8"))
             if (outcome.record or {}).get("cost_usd") is None:
@@ -552,11 +585,24 @@ def study_diagnosis(spec: StudySpec, outcomes: list[Outcome], mode: Mode = "real
     if not spec.diagnose or not diagnosed:
         return ""
     invoke_output = invoke_output or _invoke_output
-    env = {name: value for name, value in mode_env(mode, diagnosed[0].run, dsn).items() if name != "PYTHONPATH"}
-    code, output = invoke_output(["diagnose", *(o.record["run_id"] for o in diagnosed),
-                                  "--model", mode_model(spec.diagnose_model, mode), "--free"], env)
-    tables = output.split("\n\n", 1)[1] if "\n\n" in output else ""
-    return tables if code == 0 or tables else f"The study's diagnosis failed (exit {code}); see the output above.\n"
+    # A model or database override may differ by arm. Reuse stored grades only with the model that made them.
+    groups: dict[tuple[str, str | None], tuple[dict[str, str], list[str]]] = {}
+    for outcome in diagnosed:
+        env = outcome.run.arm.env | mode_env(mode, outcome.run, dsn)
+        env.pop("PYTHONPATH", None)
+        model = (outcome.diagnosis_model if mode == outcome.mode else None) or mode_model(
+            spec.diagnose_model, mode, "diagnose", env)
+        key = model, env.get("DATABASE_URL", dsn)
+        if key not in groups:
+            groups[key] = env, []
+        groups[key][1].append(outcome.record["run_id"])
+    tables = []
+    for (model, _dsn), (env, run_ids) in groups.items():
+        code, output = invoke_output(["diagnose", *run_ids, "--model", model, "--free"], env)
+        table = output.split("\n\n", 1)[1] if "\n\n" in output else ""
+        tables.append(table if code == 0 or table else
+                      f"The study's diagnosis failed (exit {code}); see the output above.\n")
+    return "\n".join(table.rstrip("\n") for table in tables if table).rstrip("\n") + "\n"
 
 
 def _audit_cell(audit: dict[str, Any] | None) -> str:

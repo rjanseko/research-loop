@@ -65,6 +65,8 @@ def model_spec_problem(spec: str) -> str | None:
 # The bug-finding harness's scripted models (dryrun.py): no key, priced as Luna, and usable only with
 # the offline world, so neither can reach a real run.
 FAKE_PROVIDER = "fake"
+# Synthetic usage from the offline harness is priced against this one known model; no provider call is made.
+FAKE_PRICE_MODEL_ID = "openai:gpt-6-luna"
 
 
 def model_provider(model_id: str) -> str | None:
@@ -104,6 +106,12 @@ class ScoutModels(BaseModel):
     fallback: str | None = "openai:gpt-6-sol@high"
     # Grades rubric points and assesses quality (evals.py, quality.py); each grade records it.
     judge: str = "openai:gpt-6-sol@high"
+    # Evaluation models run after research; a study spec may override either one.
+    audit: str = "zai:glm-5.3@high"
+    diagnose: str = "zai:glm-5.3@high"
+    # The paid and offline bug-finding study modes replace every role with these models.
+    cheap: str = "openai:gpt-6-luna@low"
+    dry: str = "fake:fuzz@high"
 
     @model_validator(mode="before")
     @classmethod
@@ -113,10 +121,23 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "scout_alt", "synthesizer", "fallback", "judge")
+    @field_validator("planner", "scout", "synthesizer", "judge", "audit", "diagnose", "cheap")
     @classmethod
-    def _provider_model(cls, value: str | None) -> str | None:
+    def _required_model(cls, value: str) -> str:
+        return _model_spec(value)
+
+    @field_validator("scout_alt", "fallback")
+    @classmethod
+    def _optional_model(cls, value: str | None) -> str | None:
         return None if value is None or not value.strip() else _model_spec(value)
+
+    @field_validator("dry")
+    @classmethod
+    def _dry_model(cls, value: str) -> str:
+        spec = _model_spec(value)
+        if model_provider(split_model(spec)[0]) != FAKE_PROVIDER:
+            raise ValueError("RESEARCH_MODELS__DRY must use the fake: provider")
+        return spec
 
 
 class DepthTier(BaseModel):
@@ -252,6 +273,24 @@ class ScoutLimits(BaseModel):
         return round((self.cost_usd - self.planner_usd - self.synthesis_usd) / max(questions, 1), 4)
 
 
+class ModelCallLimits(BaseModel):
+    """Environment-backed per-call limits for model roles and capability checks."""
+
+    planner_requests: int = Field(2, ge=1)
+    planner_tokens: int = Field(100_000, ge=1)
+    planner_max_output_tokens: int = Field(16_000, ge=1)
+    synthesizer_requests: int = Field(2, ge=1)
+    rubric_timeout_seconds: float = Field(600, gt=0)
+    rubric_max_output_tokens: int = Field(16_000, ge=1)
+    audit_timeout_seconds: float = Field(600, gt=0)
+    audit_max_output_tokens: int = Field(16_000, ge=1)
+    quality_timeout_seconds: float = Field(180, gt=0)
+    quality_max_output_tokens: int = Field(5_000, ge=1)
+    connect_timeout_seconds: float = Field(5, gt=0)
+    smoke_requests: int = Field(3, ge=1)
+    smoke_cost_usd: float = Field(0.05, gt=0)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="RESEARCH_", env_file=".env", env_file_encoding="utf-8",
@@ -261,6 +300,7 @@ class Settings(BaseSettings):
     env: str = "development"
     models: ScoutModels = Field(default_factory=ScoutModels)
     limits: ScoutLimits = Field(default_factory=ScoutLimits)
+    model_calls: ModelCallLimits = Field(default_factory=ModelCallLimits)
     # Provider token rate limits per minute, by provider:model; scouts on a listed model are paced under
     # it (rate_limit.py). Unset, a run starts from this default and switches to the limit OpenAI reports
     # with its first response; set, as JSON such as RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna":

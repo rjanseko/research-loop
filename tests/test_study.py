@@ -289,28 +289,28 @@ def test_a_rescout_arm_is_checked_with_its_own_model() -> None:
 
 
 def test_the_configuration_check_reports_what_the_command_would_refuse() -> None:
-    from research_loop.study import FAKE_MODEL, mode_env
+    from research_loop.study import mode_env
 
     # A fake model outside the offline world is refused whatever keys the machine has.
-    assert "offline world" in real_preflight({"RESEARCH_MODELS__SCOUT": FAKE_MODEL})
+    assert "offline world" in real_preflight({"RESEARCH_MODELS__SCOUT": Settings().models.dry})
     run = schedule(StudySpec(study="s", cases=["c"], cap_usd=1, estimate_usd=0.1, ceiling_usd=1, arms=[{"name": "a"}]))[0]
     assert real_preflight(mode_env("dry", run)) is None
 
 
 def test_dry_and_cheap_studies_replace_a_second_scout_model_only_when_one_is_set(spec: StudySpec, monkeypatch) -> None:
-    from research_loop.study import CHEAP_MODEL, FAKE_MODEL, mode_env
+    from research_loop.study import mode_env
 
     monkeypatch.delenv("RESEARCH_MODELS__SCOUT_ALT", raising=False)
     monkeypatch.setattr("research_loop.config.Settings.model_config", {**Settings.model_config, "env_file": None})
     glm = spec.model_copy(update={"arms": [arm.model_copy(update={"env": {"RESEARCH_MODELS__SCOUT_ALT": "zai:glm-5.3@xhigh"}})
                                            for arm in spec.arms]})
     # A cheap check must never send the real GLM-5.3@xhigh scouts a study's arm names.
-    assert mode_env("cheap", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == CHEAP_MODEL
-    assert mode_env("dry", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == FAKE_MODEL
+    assert mode_env("cheap", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == Settings().models.cheap
+    assert mode_env("dry", schedule(glm)[0])["RESEARCH_MODELS__SCOUT_ALT"] == Settings().models.dry
     # Without one, the check runs one scout model like the real run; "" leaves the setting off.
     assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == ""
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT_ALT", "zai:glm-5.3@xhigh")
-    assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == CHEAP_MODEL
+    assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == Settings().models.cheap
     assert mode_env("real", schedule(glm)[0]) == {}
 
 
@@ -362,3 +362,85 @@ def test_a_diagnosed_study_diagnoses_each_run_with_the_current_code_and_sums_the
     study_diagnosis(diagnosed, outcomes, mode="cheap",
                     invoke_output=lambda args, env: (cheap_calls.append(args), (0, ""))[1])
     assert cheap_calls[0][cheap_calls[0].index("--model") + 1] == "openai:gpt-6-luna@low"
+
+
+def test_evaluation_models_follow_the_environment_and_arm_overrides(spec: StudySpec, tmp_path: Path,
+                                                                             monkeypatch) -> None:
+    from research_loop.study import command, mode_env, study_diagnosis
+
+    monkeypatch.setenv("RESEARCH_MODELS__AUDIT", "openai:gpt-6-sol@medium")
+    monkeypatch.setenv("RESEARCH_MODELS__DIAGNOSE", "openai:gpt-6-sol@low")
+    monkeypatch.setenv("RESEARCH_MODELS__CHEAP", "openai:gpt-6-sol@low")
+    arms = [spec.arms[0], spec.arms[1].model_copy(update={"env": {
+        **spec.arms[1].env, "RESEARCH_MODELS__AUDIT": "zai:glm-5.3@xhigh",
+        "RESEARCH_MODELS__DIAGNOSE": "zai:glm-5.3@high"}})]
+    configured = spec.model_copy(update={"arms": arms, "replicates": 1, "grade": False, "audit": True,
+                                         "diagnose": True, "ceiling_usd": 3.0})
+    audits: list[str] = []
+    diagnoses: list[str] = []
+    checked: list[dict[str, str]] = []
+    count = 0
+
+    def invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        nonlocal count
+        count += 1
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record(f"{count:08d}-run", 0.20)))
+        return 0, ""
+
+    outcomes = run_study(configured, tmp_path, invoke=invoke, worktrees=_no_worktrees,
+                         preflight=lambda env: checked.append(env) or None,
+                         audit=lambda run_id, model, env, cap: audits.append(model) or {"cost_usd": 0.01},
+                         diagnose=lambda run_id, model, env, cap: diagnoses.append(model) or {"cost_usd": 0.01})
+    assert audits == ["openai:gpt-6-sol@medium", "zai:glm-5.3@xhigh"]
+    assert diagnoses == ["openai:gpt-6-sol@low", "zai:glm-5.3@high"]
+    assert {env["RESEARCH_MODELS__JUDGE"] for env in checked} >= set(audits + diagnoses)
+    free_calls: list[list[str]] = []
+    study_diagnosis(configured, outcomes, invoke_output=lambda args, env: (free_calls.append(args) or 0, ""))
+    assert [args[args.index("--model") + 1] for args in free_calls] == diagnoses
+    assert mode_env("cheap", schedule(configured)[0])["RESEARCH_MODELS__SCOUT"] == "openai:gpt-6-sol@low"
+    rerun = configured.model_copy(update={"kind": "rescout", "cases": [], "sources": ["source"]})
+    rerun = rerun.model_copy(update={"arms": [arm.model_copy(update={"args": ["--model", "zai:glm-5.3@high"]})
+                                                   for arm in rerun.arms]})
+    args = command(rerun, schedule(rerun)[0], tmp_path, mode="cheap")
+    assert args[args.index("--model") + 1] == "openai:gpt-6-sol@low"
+
+
+def test_configured_audit_model_is_preflighted_before_any_paid_run(spec: StudySpec, tmp_path: Path,
+                                                                     monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ZAI_API_KEY", "")
+    audited = spec.model_copy(update={"audit": True, "replicates": 1, "ceiling_usd": 3.0})
+    calls: list[list[str]] = []
+    with pytest.raises(ValueError, match="audit: judge: zai:glm-5.3 needs ZAI_API_KEY"):
+        run_study(audited, tmp_path, invoke=lambda args, env: (calls.append(args) or 0, ""),
+                  preflight=real_preflight, worktrees=_no_worktrees)
+    assert not calls
+
+
+def test_study_freezes_model_settings_before_running_arms(spec: StudySpec, tmp_path: Path, monkeypatch) -> None:
+    frozen = spec.model_copy(update={"arms": spec.arms[:1], "grade": False, "audit": True,
+                                     "ceiling_usd": 3.0})
+    monkeypatch.setenv("RESEARCH_MODELS__AUDIT", "zai:glm-5.3@high")
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS", "240")
+    seen: list[dict[str, str]] = []
+    audited: list[str] = []
+
+    def invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        seen.append(env)
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record(f"{len(seen):08d}-run", 0.10)))
+        if len(seen) == 1:
+            monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-sol@medium")
+            monkeypatch.setenv("RESEARCH_MODELS__AUDIT", "openai:gpt-6-sol@medium")
+            monkeypatch.setenv("RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS", "360")
+        return 0, ""
+
+    run_study(frozen, tmp_path, invoke=invoke, worktrees=_no_worktrees, preflight=lambda env: None,
+              audit=lambda run_id, model, env, cap: audited.append(model) or {"cost_usd": 0.01})
+    assert [env["RESEARCH_MODELS__SCOUT"] for env in seen] == ["openai:gpt-6-luna@high"] * 2
+    assert audited == ["zai:glm-5.3@high"] * 2
+    assert [env["RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS"] for env in seen] == ["240.0"] * 2

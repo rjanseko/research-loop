@@ -6,7 +6,7 @@ Research Loop answers a research question with a short report in which every sta
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Research Loop splits a question into a few research questions and researches them in parallel. Each research agent searches the web, reads pages and PDFs, and searches scholarly indexes. A final model then writes the report from the evidence they found. Before the report is written, code checks that evidence. A quote counts as verified only if the tools actually returned those words from the source it cites. Each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report says which statements rest on thin evidence and which questions it could not answer. An optional audit then asks a model from another vendor whether the quotes behind each statement really support it.
+Research Loop splits a question into a few research questions and researches them in parallel. Each research agent searches the web, reads pages and PDFs, and searches scholarly indexes. A final model then writes the report from the evidence they found. Before the report is written, code checks that evidence. A quote counts as verified only if the tools actually returned those words from the source it cites. Each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report says which statements rest on thin evidence and which questions it could not answer. An optional audit then asks the configured auditor model whether the quotes behind each statement really support it.
 
 The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.dev), stores every run in Postgres, and traces runs in [Logfire](https://logfire.pydantic.dev).
 
@@ -70,7 +70,9 @@ Settings come from `.env` or the environment, and exported variables override th
 | `LOGFIRE_TOKEN` | Send traces to Logfire; an authenticated Logfire project can also enable export. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
 | `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK`, `__JUDGE` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
+| `RESEARCH_MODELS__AUDIT`, `__DIAGNOSE`, `__CHEAP`, `__DRY` | Audit and diagnosis defaults, plus the paid cheap and offline fake check models. See [Models](#models). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
+| `RESEARCH_MODEL_CALLS__...` | Planner, synthesizer, evaluation, and smoke-test model request caps and timeouts. See [the configuration inventory](docs/configuration.md#model-call-limits). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
 | `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY` | The scouts' web search: `duckduckgo` (default), `serper`, `brave`, `exa`, or an ordered comma-separated chain. `hybrid` means DuckDuckGo then Exa. Paid engines need their keys. See [Web search](#web-search). |
 | `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Unset, every reader that can run: `oa` always, `exa` and `firecrawl` when their keys are set. Empty turns it off. See [Reading fallback](#reading-fallback). |
@@ -217,7 +219,7 @@ flowchart TD
     synthesize --> report(["Report"])
 ```
 
-`research rescout` reruns the scouts on a stored plan, and `research synthesize` rewrites the report from a stored ledger. `research audit` checks a finished report's statements with another vendor's model.
+`research rescout` reruns the scouts on a stored plan, and `research synthesize` rewrites the report from a stored ledger. `research audit` checks a finished report's statements with the configured auditor model.
 
 A run has three steps, and each one is bounded in money and time.
 
@@ -376,7 +378,7 @@ Both time limits count from the start of the run. Planning counts against the re
 The upper bound on a request's input starts from the last reply in its history: that reply's billed input and output tokens, plus one token per byte of everything added since, plus 4,000 tokens of framing. A first request, with no reply to start from, is bounded by twice its size in bytes plus 16,000 tokens.
 
 The output bound is the call's output cap:
-- 16,000 tokens for the planner and the grading judge;
+- `RESEARCH_MODEL_CALLS__PLANNER_MAX_OUTPUT_TOKENS` (16,000) for the planner, and `RESEARCH_MODEL_CALLS__RUBRIC_MAX_OUTPUT_TOKENS` / `__AUDIT_MAX_OUTPUT_TOKENS` (16,000 each) for grading and support audit;
 - `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` (24,000) for scouts;
 - `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS` (32,000) for synthesis.
 
@@ -448,12 +450,18 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
 | Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
+| Study support auditor | `zai:glm-5.3@high` | `RESEARCH_MODELS__AUDIT` |
+| Study diagnosis judge | `zai:glm-5.3@high` | `RESEARCH_MODELS__DIAGNOSE` |
+| Cheap study check, every role | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Dry study check, every role | `fake:fuzz@high` | `RESEARCH_MODELS__DRY` |
 
-A model is named with the reasoning effort it runs at, as `provider:model@effort`. The provider is `openai`, `anthropic`, `zai`, `google`, or `deepseek`, and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
+Standalone `research audit` and `research diagnose` use their configured defaults unless `--model` selects another model. A study spec's `audit_model` or `diagnose_model` overrides its configured default.
 
-Each run records the model and effort every role was sent. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+A model is named with the reasoning effort it runs at, as `provider:model@effort`. A live provider is `openai`, `anthropic`, `zai`, `google`, or `deepseek`; the offline dry model uses `fake`. The effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
 
-A model is refused at startup if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
+Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+
+A model selected for a paid command is refused before calls if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
 
 ## Studies and evaluation
 
@@ -485,7 +493,7 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 - each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
 - when the spec says so, each run is graded (`grade = true`), audited (`audit = true`), and diagnosed (`diagnose = true`).
 
-It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It checks each arm with that arm's environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
+It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It snapshots model IDs, effort, and model-call limits from the parent configuration once at the start, then applies each arm's overrides and the dry or cheap mode. It checks each arm with that effective environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far. A spec’s `audit_model` or `diagnose_model` overrides the corresponding model from the arm’s environment; when omitted, the study uses the configured defaults above.
 
 Every run records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent. A run labeled with `--study` keeps its searches, pages, and scholarly records in `.cache/studies/NAME` in `reuse` mode. A lookup any run of the study has made returns the same answer to every later run, on any day, which removes changes in the web from a comparison. The models themselves cannot be made deterministic, so arms still need repeated runs.
 
@@ -500,7 +508,7 @@ The study cases are in `src/research_loop/study_cases.jsonl`:
 The judges and the audit:
 - **`research grade`** scores a stored report against a case's rubric, one verdict per point. Grade close decisions with both judges: the choice of judge alone has moved a long case's score by up to 8 points.
 - **`research assess`** judges overall quality and specific facts against independently reviewed source summaries.
-- **`research audit`** asks a model from another vendor whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
+- **`research audit`** asks the configured auditor model whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
 - **`research synthesize` and `research rescout`** repeat the synthesis of a stored ledger, or the research of a stored plan, with another model, so that one step can be compared alone.
 
 ### Finding bugs before paying
@@ -511,8 +519,8 @@ The harness in `src/research_loop/dryrun.py` finds bugs in the workflow's plumbi
   - The model returns edge cases and injects rate limits, server errors, refusals, one-time TLS faults, and oversized costs.
   - The world serves copies of the same work, 403s, redirects to blocked addresses, timeouts, broken bodies, and a PDF whose text holds lone surrogates.
   - After each run, `check_record` checks the invariants, and each problem is printed with the command that reproduces it. `make fuzz` runs 200.
-- **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the fake models, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
-- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on `openai:gpt-6-luna@low`, against the real web. Each run and the whole check are capped at $0.25.
+- **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the configured `RESEARCH_MODELS__DRY` fake model, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
+- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), against the real web. Each run and the whole check are capped at $0.25.
 - **Hypothesis property tests** in `tests/test_properties.py` check the pure functions, and a fixed fuzz sweep runs with the test suite.
 
 When a paid run finds a bug, it first gets the narrowest test that would have caught it: a unit test for a local bug, and fuzz or invariant behavior only when the bug comes from how a run's parts interact. `fake:` models and the offline world only run together, so neither can reach a real run.

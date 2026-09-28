@@ -70,6 +70,19 @@ def test_each_model_carries_its_own_settings(keyed: Settings) -> None:
     assert build_model("zai:glm-5.3-flash@xhigh", "scout", keyed).settings["thinking"] == "xhigh"
 
 
+def test_model_call_limits_come_from_the_environment(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scout import run_config
+
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__PLANNER_MAX_OUTPUT_TOKENS", "12000")
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__QUALITY_MAX_OUTPUT_TOKENS", "4000")
+    settings = Settings()
+    assert model_settings(settings.models.planner, "planner", settings)["max_tokens"] == 12_000
+    assert settings.model_calls.rubric_timeout_seconds == 240
+    assert settings.model_calls.quality_max_output_tokens == 4_000
+    assert run_config(settings, [], [])["model_calls"]["planner_max_output_tokens"] == 12_000
+
+
 def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Settings) -> None:
     synthesizer = role_model("synthesizer", keyed)
     assert isinstance(synthesizer, FallbackModel)
