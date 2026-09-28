@@ -18,6 +18,8 @@ dependencies = [
   # instead of logging each one.
   "httpx>=0.27",
   "httpcore>=1",
+  # The OpenAI client's HTTP library: its response hook reads the rate limit OpenAI reports (models.py).
+  "httpx2>=2.13",
   "trafilatura>=2,<3",
   "beautifulsoup4>=4.12",
   "pypdf>=5",

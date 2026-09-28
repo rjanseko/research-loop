@@ -18,7 +18,7 @@ from pydantic_ai.settings import ModelSettings
 
 from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
 from .history import TrimmedHistoryModel
-from .rate_limit import ScoutRateLimitModel, TokenPacer
+from .rate_limit import ScoutRateLimitModel, TokenPacer, rate_limit_hook
 
 Role = Literal["planner", "scout", "synthesizer"]
 
@@ -75,9 +75,17 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
         raise ValueError(f"{model_id} needs {PROVIDER_KEYS[provider]}")
     own = model_settings(spec, role, settings)
     if provider == "openai":
+        import httpx2
+        from pydantic_ai.models import DEFAULT_HTTP_TIMEOUT
         from pydantic_ai.models.openai import OpenAIResponsesModel
         from pydantic_ai.providers.openai import OpenAIProvider
-        model: Model = OpenAIResponsesModel(name, provider=OpenAIProvider(api_key=key), settings=own)
+
+        # PydanticAI's default client and timeouts, recording the tokens-per-minute limit OpenAI reports with
+        # each response, which the pacer uses.
+        http_client = httpx2.AsyncClient(timeout=httpx2.Timeout(timeout=DEFAULT_HTTP_TIMEOUT, connect=5),
+                                         event_hooks={"response": [rate_limit_hook("openai")]})
+        model: Model = OpenAIResponsesModel(name, provider=OpenAIProvider(api_key=key, http_client=http_client),
+                                            settings=own)
     elif provider == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -99,9 +107,11 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
 
 
 def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
-    """A pacer for one run's requests to `model_id`, when its token rate limit is configured."""
+    """A pacer for one run's requests to `model_id`, when its token rate limit is configured. The limit the
+    provider reports replaces the configured one, unless RESEARCH_TOKENS_PER_MINUTE was set explicitly."""
     limit = settings.tokens_per_minute.get(model_id)
-    return TokenPacer(limit) if limit else None
+    fixed = "tokens_per_minute" in settings.model_fields_set
+    return TokenPacer(limit, model_id, fixed=fixed) if limit else None
 
 
 def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:

@@ -280,3 +280,55 @@ async def test_a_stream_is_sent_again_after_a_network_fault_only_before_it_opens
             [], None, ModelRequestParameters()):
         pass
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_the_pacer_adopts_the_limit_the_provider_reports_unless_one_was_set(monkeypatch) -> None:
+    # The configured 200,000 held scouts to a tenth of the account's real 2,000,000 gpt-6-luna tokens a
+    # minute, which OpenAI reports in x-ratelimit-limit-tokens (study log, 28 September 2026).
+    import json
+
+    import httpx2
+
+    from research_loop import rate_limit
+    from research_loop.config import Settings
+    from research_loop.models import token_pacer
+    from research_loop.rate_limit import (
+        TokenPacer,
+        rate_limit_hook,
+        reported_tokens_per_minute,
+    )
+
+    monkeypatch.setattr(rate_limit, "_REPORTED_TOKENS_PER_MINUTE", {})
+    hook = rate_limit_hook("openai")
+
+    def response(limit: str, body: object) -> httpx2.Response:
+        request = httpx2.Request("POST", "https://api.openai.com/v1/responses", content=json.dumps(body))
+        return httpx2.Response(200, headers={"x-ratelimit-limit-tokens": limit}, request=request)
+
+    for ignored in (response("", {"model": "gpt-6-luna"}), response("unknown", {"model": "gpt-6-luna"}),
+                    response("2000000", ["not", "a", "mapping"]), response("2000000", {"input": "no model"})):
+        await hook(ignored)
+    assert reported_tokens_per_minute("openai:gpt-6-luna") is None
+    await hook(response("2000000", {"model": "gpt-6-luna", "input": "hi"}))
+    assert reported_tokens_per_minute("openai:gpt-6-luna") == 2_000_000
+
+    adopting = TokenPacer(200_000, "openai:gpt-6-luna", fixed=False)
+    assert adopting.limit == 2_000_000 and TokenPacer(200_000, "openai:gpt-6-luna").limit == 200_000
+    assert TokenPacer(200_000, "openai:gpt-6-sol", fixed=False).limit == 200_000  # nothing reported for Sol
+
+    # The default setting adopts the reported limit; one set explicitly, here by the environment, stands.
+    monkeypatch.delenv("RESEARCH_TOKENS_PER_MINUTE", raising=False)
+    assert token_pacer("openai:gpt-6-luna", Settings(_env_file=None)).limit == 2_000_000
+    monkeypatch.setenv("RESEARCH_TOKENS_PER_MINUTE", '{"openai:gpt-6-luna": 300000}')
+    assert token_pacer("openai:gpt-6-luna", Settings(_env_file=None)).limit == 300_000
+
+
+def test_openai_models_record_the_rate_limit_their_responses_report(monkeypatch) -> None:
+    from research_loop.config import Settings
+    from research_loop.models import build_model
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    model = build_model("openai:gpt-6-luna@high", "scout", Settings(_env_file=None))
+    hooks = model.client._client.event_hooks["response"]
+    assert [hook.__qualname__ for hook in hooks] == ["rate_limit_hook.<locals>.record"]

@@ -6,23 +6,29 @@ rate limits that say when to retry, and connection faults that are not timeouts,
 more. One wrapper instance is shared by the run's scouts, so a 429 pauses new requests from all of
 them. Provider errors with no retry time, including exhausted balances, fail, and so does a timeout.
 
-Retrying alone does not hold under a tight limit: OpenAI allows this account 200,000 gpt-6-luna tokens
-a minute, four scouts send about 550,000 in two minutes, and paused scouts resume together into the
-same limit. So when a model's tokens-per-minute limit is configured, the wrapper also holds each
-request until the tokens sent in the last minute plus the request fit under most of that limit.
+Retrying alone does not hold under a tight limit: when OpenAI allowed this account 200,000 gpt-6-luna
+tokens a minute, four scouts sent about 550,000 in two minutes, and paused scouts resumed together into
+the same limit. So when a model's tokens-per-minute limit is known, the wrapper also holds each request
+until the tokens sent in the last minute plus the request fit under most of that limit.
+
+The limit is the one the provider reports: OpenAI sends `x-ratelimit-limit-tokens` with every response,
+and `rate_limit_hook` records it, so a pacer uses the account's current tier from its first response on.
+A configured `RESEARCH_TOKENS_PER_MINUTE` is only the starting point, unless it was set explicitly. The
+configured 200,000 had held scouts to a tenth of the real limit after the tier rose to 2,000,000.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+import httpx2
 import logfire
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse
@@ -32,8 +38,29 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
 # v2 adds pacing under a configured tokens-per-minute limit. v3 sends a request once more after a
-# transient network fault.
-RATE_LIMIT_POLICY_VERSION = "scout-429-v3"
+# transient network fault. v4 paces under the limit the provider reports, unless one was set explicitly.
+RATE_LIMIT_POLICY_VERSION = "scout-429-v4"
+
+# Each model's tokens-per-minute limit as its provider last reported it, by `provider:model`.
+_REPORTED_TOKENS_PER_MINUTE: dict[str, int] = {}
+
+
+def reported_tokens_per_minute(model_id: str) -> int | None:
+    """The tokens-per-minute limit the provider last reported for `model_id`, if any."""
+    return _REPORTED_TOKENS_PER_MINUTE.get(model_id)
+
+
+def rate_limit_hook(provider: str) -> Callable[[httpx2.Response], Awaitable[None]]:
+    """An HTTP response hook that records the tokens-per-minute limit a response reports for its model."""
+    async def record(response: httpx2.Response) -> None:
+        limit = response.headers.get("x-ratelimit-limit-tokens", "")
+        if not limit.isdigit() or int(limit) <= 0:
+            return
+        with suppress(ValueError, AttributeError, httpx2.RequestNotRead):
+            model = json.loads(response.request.content or b"{}").get("model")
+            if isinstance(model, str) and model:
+                _REPORTED_TOKENS_PER_MINUTE[f"{provider}:{model}"] = int(limit)
+    return record
 
 # A repeated 429 may name a later reset. The research deadline still bounds the total wait.
 _MAX_RETRIES = 2
@@ -130,12 +157,20 @@ class TokenPacer:
     finds the window empty, goes at once; any other waits for the oldest request to leave the window.
     """
 
-    def __init__(self, tokens_per_minute: int) -> None:
+    def __init__(self, tokens_per_minute: int, model_id: str | None = None, *, fixed: bool = True) -> None:
         if tokens_per_minute <= 0:
             raise ValueError("tokens_per_minute must be positive")
         self.tokens_per_minute = tokens_per_minute
+        # Unless `fixed`, the limit the provider reports for `model_id` replaces `tokens_per_minute`.
+        self.model_id, self.fixed = model_id, fixed
         self._sent: list[list[float]] = []  # [time sent, tokens], oldest first
         self._lock = asyncio.Lock()
+
+    @property
+    def limit(self) -> int:
+        """The limit paced under: the provider's reported one unless this pacer's was set explicitly."""
+        reported = None if self.fixed or not self.model_id else reported_tokens_per_minute(self.model_id)
+        return reported or self.tokens_per_minute
 
     def _in_window(self, now: float) -> float:
         self._sent = [entry for entry in self._sent if entry[0] > now - _WINDOW_SECONDS]
@@ -149,14 +184,14 @@ class TokenPacer:
             while True:
                 now = loop.time()
                 used = self._in_window(now)
-                if not self._sent or used + tokens <= self.tokens_per_minute * _PACE_SHARE:
+                if not self._sent or used + tokens <= self.limit * _PACE_SHARE:
                     break
                 delay = self._sent[0][0] + _WINDOW_SECONDS - now
                 waited += delay
                 await asyncio.sleep(delay)
             if waited:
                 logfire.info("Scout paced {waited_seconds}s under {tokens_per_minute} tokens a minute",
-                             waited_seconds=round(waited, 1), tokens_per_minute=self.tokens_per_minute)
+                             waited_seconds=round(waited, 1), tokens_per_minute=self.limit)
             entry = [now, float(tokens)]
             self._sent.append(entry)
             return entry
