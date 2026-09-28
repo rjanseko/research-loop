@@ -163,3 +163,23 @@ async def test_a_rate_limited_request_releases_its_reservation() -> None:
     with pytest.raises(ModelHTTPError):
         await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 100})
     assert budget.reserved_usd == 0
+
+
+@pytest.mark.parametrize("model_id", ["openai:gpt-6-luna", "openai:gpt-6-sol", "google:gemini-2.5-pro"])
+@pytest.mark.parametrize("input_tokens", [100_000, 271_999, 272_001, 300_000])
+async def test_the_reservation_covers_the_long_context_output_tier(model_id: str, input_tokens: int) -> None:
+    # The addendum's case (docs/architectural-audit-addendum-2026-09-27.md, C01): 300,000 input tokens and a
+    # 24,000-token output cap reserved $1.0002 on Gemini 2.5 Pro and settled at $1.11, over a $1.05 cap.
+    from genai_prices import calc_price
+
+    from research_loop.study_budget import upper_input_tokens
+
+    provider, name = model_id.split(":")
+    history = [ModelResponse(parts=[TextPart("prior result")], usage=RequestUsage(input_tokens=input_tokens, output_tokens=1))]
+    settings = {"max_tokens": 24_000}
+    budget = StudyBudget(Decimal(100))
+    charge = await budget.reserve(model_id, history, settings, ModelRequestParameters())
+    bound = upper_input_tokens(history, ModelRequestParameters(), settings)
+    for used in (input_tokens, bound):
+        actual = calc_price(RequestUsage(input_tokens=used, output_tokens=24_000), name, provider_id=provider).total_price
+        assert charge >= actual

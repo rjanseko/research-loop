@@ -36,7 +36,10 @@ from .prices import install_price_overrides
 # two tokens per byte reserved about eleven times their input and falsely refused four Luna scouts
 # at a $0.50 cap (docs/study-log.md).
 # v5 also reserves a fixed charge before each paid web search and settles it to the reported cost.
-BUDGET_POLICY_VERSION = "usage-anchor-v5"
+# v6 also prices the input bound and output cap together, so the output's long-context tier is reserved: v5
+# priced output as if the input were short, and GPT-6 Luna and Sol, like Gemini Pro, charge 1.5 times as much
+# for output once the input passes 272,000 tokens (docs/architectural-audit-addendum-2026-09-27.md, C01).
+BUDGET_POLICY_VERSION = "usage-anchor-v6"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 # Framing for the messages, tool definitions, and settings added since the anchoring reply.
@@ -92,12 +95,15 @@ class StudyBudget:
                            * Decimal(1_000_000) / n for n in (100_000, 1_000_000)]
             output_rate = calc_price(RequestUsage(output_tokens=100_000), name,
                                      provider_id=provider).total_price * 10
+            upper = upper_input_tokens(messages, parameters, settings)
+            if upper > 1_000_000:
+                raise StudyBudgetRefusal("input exceeds the priced one-million-token reservation range")
+            # Prices rise with input length, so the request's price at both bounds covers any usage within them.
+            joint = calc_price(RequestUsage(input_tokens=upper, output_tokens=max_output), name,
+                               provider_id=provider).total_price
         except LookupError as exc:
             raise StudyBudgetRefusal(f"no price for {model_id}") from exc
-        upper = upper_input_tokens(messages, parameters, settings)
-        if upper > 1_000_000:
-            raise StudyBudgetRefusal("input exceeds the priced one-million-token reservation range")
-        charge = (max(input_rates) * upper + output_rate * max_output) / 1_000_000
+        charge = max((max(input_rates) * upper + output_rate * max_output) / 1_000_000, joint)
         async with self._lock:
             if self.reserved_usd + charge > self.cap_usd:
                 raise StudyBudgetRefusal(

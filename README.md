@@ -374,7 +374,9 @@ The output bound is the call's output cap:
 - `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` (24,000) for scouts;
 - `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS` (32,000) for synthesis.
 
-Guarded runs disable the provider SDK's retries and the fallback model, so that nothing is sent without a reservation. The reservation policy is recorded with the run as `usage-anchor-v5`; earlier versions are described in `src/research_loop/study_budget.py`.
+The reservation prices the input bound at the model's highest input rate and the output bound at its output rate. It is never less than the price of one request that uses both bounds, so a long-context tier is covered. GPT-6 Luna and Sol, for example, charge 1.5 times as much for output once the input passes 272,000 tokens.
+
+Guarded runs disable the provider SDK's retries and the fallback model, so that nothing is sent without a reservation. The reservation policy is recorded with the run as `usage-anchor-v6`; earlier versions are described in `src/research_loop/study_budget.py`.
 
 `--max-usd` is required for frozen study cases and for `grade`, `assess`, `audit`, `synthesize`, and `rescout`. It is optional for ordinary runs.
 
