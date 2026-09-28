@@ -79,6 +79,8 @@ Settings come from `.env` or the environment, and exported variables override th
 
 Nested settings use a double underscore, so the scout model is `RESEARCH_MODELS__SCOUT` and the cost limit is `RESEARCH_LIMITS__COST_USD`.
 
+Codex conversations signed in with a ChatGPT plan use that plan’s [Codex allowance](https://learn.chatgpt.com/docs/pricing). Running Scout is separate: `research scout`, grading, audits, and `research doctor --smoke` call model or paid search APIs with the keys configured for this project. Those calls can incur provider API charges; a ChatGPT subscription does not cover them. The dollar limits below describe Scout spending controls, not Codex chat usage.
+
 > [!CAUTION]
 > Never commit `.env` or an API key. `.env` is ignored by git, and traces never carry request headers, so keys sent in headers stay out of Logfire.
 
@@ -462,7 +464,7 @@ Research Loop includes the tools used to choose its own configuration:
 - a support audit;
 - commands that repeat one part of a stored run with a different model.
 
-How quality is measured, and how a comparison is designed so that it can decide, is in [docs/evaluation.md](docs/evaluation.md). Every study so far, with its run IDs, costs, and outcome, is in [docs/study-log.md](docs/study-log.md).
+How quality is measured, and how a comparison is designed so that it can decide, is in [docs/evaluation.md](docs/evaluation.md). Every study so far is indexed in [docs/study-log.md](docs/study-log.md), with older entries linked to a dated archive; the entries preserve run IDs, costs, and outcomes.
 
 ```bash
 research study plan studies/SPEC.toml                   # the planned runs and their worst-case cost, without running anything
@@ -645,10 +647,10 @@ The last three make no model calls.
 
 | In `docs/` | What it holds |
 |---|---|
-| [study-log.md](docs/study-log.md) | Every study, paid run, and offline re-scoring in date order, with run IDs, costs, and outcomes |
+| [study-log.md](docs/study-log.md) | Index of every study, paid run, and offline re-scoring, linking to archived detail where needed |
 | [evaluation.md](docs/evaluation.md) | How quality is measured and how a comparison is set up so that it can decide |
 | [lessons.md](docs/lessons.md) | What the first design and Scout's first days taught |
-| [archive/](docs/archive/) | Superseded plans: the first Scout study's briefing and design |
+| [archive/](docs/archive/) | Superseded plans and dated historical study-log entries |
 
 `.agents/skills/` holds agent skills used as API references, such as Exa's `build-with-exa`. The first design of this project, a six-role graph with benchmark adapters and long-horizon studies, is kept at the git tag `archive/pre-scout-2026-09`.
 

@@ -1,6 +1,6 @@
 # Configuration inventory
 
-This is the audit sheet for Scout's **committed defaults as of 28 September 2026**. It covers the settings accepted by [`config.py`](../src/research_loop/config.py), the CLI overrides, and the fixed limits that materially affect a run. Values here are code defaults, **not a copy of a developer's `.env` or provider account limits**. No credential value belongs in this file.
+This is the audit sheet for Scout's **committed defaults as of 28 September 2026**. It covers the settings accepted by [`config.py`](../src/research_loop/config.py), the CLI overrides, and the fixed limits that materially affect a run. Values here are code defaults, **not a copy of a developer's `.env` or provider account limits**. The token and dollar limits below apply to Scout when it calls provider APIs using this project’s keys; they do not describe a Codex desktop session’s ChatGPT plan allowance. No credential value belongs in this file.
 
 For an actual run, its saved `config` in `run.json` or `research show RUN_ID --format json` is the effective snapshot, including the chosen depth and model settings. `research doctor` checks the current environment without making a model call; `research doctor --smoke` makes paid calls. Explicit `Settings(...)` arguments override exported environment variables, which override `.env` in the working directory, which override the defaults below. Nested variables use `__`, for example `RESEARCH_LIMITS__SCOUT_REQUESTS=24`. A CLI option such as `--depth` or `--max-usd` then applies to that run.
 

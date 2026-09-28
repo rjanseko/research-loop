@@ -1,6 +1,6 @@
 # How Scout's quality is measured
 
-This page describes how Scout's reports are evaluated and how a change to Scout is decided on. The results of every study are in [study-log.md](study-log.md), and what the first design learned is in [lessons.md](lessons.md).
+This page describes how Scout's reports are evaluated and how a change to Scout is decided on. The results of every study are indexed in [study-log.md](study-log.md), which links to archived entries, and what the first design learned is in [lessons.md](lessons.md).
 
 A run is judged in three separate ways, and none of them stands in for another. Whether it did its work is its status. Whether its statements trace to evidence the research actually read is decided by code. Whether the report is correct, complete, and useful is decided by model judges and, for anything that decides a change, by a person.
 
