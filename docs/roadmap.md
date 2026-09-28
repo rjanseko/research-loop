@@ -4,6 +4,10 @@ This is the working plan as of 28 September 2026. A session that resumes the wor
 
 Every paid step follows AGENTS.md: a spec with its decision rule, a clean dry check, a cheap check only when an arm uses something without a real run on the current code, and the user's approval with an estimate and a hard ceiling. Steps 1 to 3 are already approved. Steps 4 onward each need approval before they spend anything.
 
+## Status on 28 September, evening
+
+The trimming study finished and turned trimming off. The first search study was stopped after request timeouts, and scout-v14 raised the scout request timeout to 600 seconds and the time, call, and request limits (study log, "Trimming off, and limits as safety nets"). The search study is rerunning as `search-rescout-task8-v14`: check its first plan's four rescouts for failures before letting the rest run. The DeepSeek study follows it on scout-v14, with its dry check rerun first.
+
 ## 1. Finish the two running studies
 
 The trimming study (`studies/trim-history-rescout-task8.toml`, $3.00 ceiling) and the search-engine study (`studies/search-rescout-task8.toml`, $9.50 ceiling) were started detached on 28 September. Check them with `pgrep -af "study run"`, then read `runs/<study>/run.log` and `runs/<study>/summary.md`.

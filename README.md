@@ -237,7 +237,7 @@ A scout returns claims. Each claim carries evidence: a source, a summary of what
 
 Each scout is told on every request how much of its budget is left. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A request that fails on a transient network fault is sent once more. A scout that fails or is still running at the deadline leaves its question unanswered, but keeps the searches it made and the pages it read.
 
-Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. Search results are treated the same way past 16,000 characters of snippets, keeping each result's title and address. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
+Every request resends a scout's whole history, and page text is most of it. By default the history is sent whole, which keeps the provider's cached prompt prefix intact: in a paired study, scouts with their whole history finished more often, read more of their input from the cache, and cost less. With `RESEARCH_TRIM_HISTORY=true`, once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. Search results are treated the same way past 16,000 characters of snippets, keeping each result's title and address. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
@@ -263,7 +263,7 @@ The gap analysis chooses its deep dives from open items first, and a deep dive m
 
 The planner also decides how much research the question warrants, and the run takes the limits of that depth:
 - **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.30 budget, and six minutes;
-- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $0.75, and twelve minutes;
+- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $1.25, and 22 minutes;
 - **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $3.00 budget and up to 32 minutes. Its scouts get 20 minutes of research and 48 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
 
 `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used.
@@ -337,28 +337,29 @@ What leaves your machine:
 
 ## Limits and budgets
 
-Every run has a fixed budget. The money is divided before the run starts. The planner and synthesizer get their shares, and the scouts split the rest evenly, so four scouts get $0.075 each on a standard run. Each call stops before a request that would take it past its share, which means the total can exceed the limit by at most one request per call. These are soft limits; for a hard ceiling, use `--max-usd`.
+Every run has a fixed budget. The money is divided before the run starts. The planner and synthesizer get their shares, and the scouts split the rest evenly, so four scouts get $0.20 each on a standard run. Each call stops before a request that would take it past its share, which means the total can exceed the limit by at most one request per call. These are soft limits; for a hard ceiling, use `--max-usd`.
 
 <details>
 <summary>All limits and their settings (defaults for a standard question)</summary>
 
 | Limit | Default | Setting |
 |---|---|---|
-| Total cost | $0.75 | `RESEARCH_LIMITS__COST_USD` |
+| Total cost | $1.25 | `RESEARCH_LIMITS__COST_USD` |
 | Planner's share | $0.05 | `RESEARCH_LIMITS__PLANNER_USD` |
 | Synthesizer's share | $0.40 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
-| Whole run | 12 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
-| Research phase | 8 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
-| One model request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
+| Whole run | 22 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
+| Research phase | 15 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
+| One planner, gap, or synthesis request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
+| One scout or deep-dive request | 600 seconds | `RESEARCH_LIMITS__SCOUT_REQUEST_TIMEOUT_SECONDS` |
 | Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
 | Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
-| Deep depth | 8 questions and the gap follow-up; $3.00, which leaves eight scouts about $0.21 each; 20 minutes of research and 32 in all; 48 useful tool calls a scout; deep dives of 8 minutes with 20 requests, 32 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
-| Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
+| Deep depth | 8 questions and the gap follow-up; $3.00, which leaves eight scouts about $0.21 each; 30 minutes of research and 42 in all; 64 useful tool calls a scout; deep dives of 8 minutes with 30 requests, 48 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
+| Per scout | 30 requests, 48 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 | Follow-up total cost | $2.00 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
 | Gaps followed up | at most 3 | `RESEARCH_LIMITS__MAX_GAPS` |
-| Follow-up whole run | 15 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
+| Follow-up whole run | 25 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
 | Follow-up gap analysis and deep dive windows | 45 and 240 seconds | `RESEARCH_LIMITS__GAP_SECONDS`, `RESEARCH_LIMITS__DEEP_DIVE_SECONDS` |
 | Each deep dive | 12 requests, 16 useful tool calls, 8 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 

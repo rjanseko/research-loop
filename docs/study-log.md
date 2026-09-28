@@ -37,7 +37,8 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Search replay, DeepSeek smoke, and the screens' cheap checks](#2026-09-28-search-replay-deepseek-smoke-and-the-screens-cheap-checks) | $0.29 | On 40 replayed scout queries DuckDuckGo found nothing for 18, Serper and Brave for 4 each; both DeepSeek scouts call tools after the Flash profile fix |
 | 09-28 | [What scouts see and skip, and MDPI's bot wall (fetch version 17)](#2026-09-28-what-scouts-see-and-skip-and-mdpis-bot-wall-fetch-version-17) | free | Scouts fetched 1 of 545 scholarly works shown and mostly the top web results; 29% of fetches failed. MDPI challenges our fetcher, so its articles now find their DOI and a free copy first: 3 of 11 recovered |
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
-| 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | free so far | Four engines on three drb2-task8 plans with Luna@xhigh and trimming off; dry checks clean, cheap check skipped; study running |
+| 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
+| 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -234,4 +235,39 @@ At the same request, every arm of `deepseek-rescout-task8.toml` now runs at xhig
 
 **Cheap check skipped.** The first cheap attempt was refused before any spend, because four arms plan to $0.32 against the fixed $0.25 cheap ceiling. With the user's agreement, it was skipped: each arm's path had already had a real run on the current code. Serper and Brave ran in `887f7cc0` and `18e3adc3`, Exa in the hybrid-search cheap check, and untrimmed DuckDuckGo with Luna in the trimming spec's cheap check after scout-429-v5 and fetch version 18. The rule in AGENTS.md, the README, and evaluation.md now asks for a cheap check only when an arm uses something without a real run on the current code. Cheap and smoke checks had cost about $0.85 that day, mostly repeated confirmations.
 
-The study was started detached alongside the trimming study, two Luna processes as AGENTS.md allows. Its results will follow here.
+The study was started detached alongside the trimming study, two Luna processes as AGENTS.md allows.
+
+**Stopped after 6 of 12 rescouts, $2.32** ($1.80 of rescouts and $0.52 of diagnoses). Five of the six ended partial, in every arm but DuckDuckGo's single run, because scout requests hit the 120-second request timeout ("Request timed out"). Without trimming, Luna@xhigh requests carried 200,000 to 365,000 input tokens, and the requests that wrote a result took longest. Runs: DuckDuckGo `710c5d4e` (complete, $0.127); Serper `0a85fb23` and `721c4455`, Brave `7b254786` and `357910a3`, Exa `7bdcebca` (all partial); Exa `6e1d421b` was cancelled when the study was stopped. The partials say nothing about the engines, and the study is not scored. One Exa rescout spent $0.45 on searching and reading (63 searches) against $0.08 on its scouts. The study was rerun under scout-v14 as `search-rescout-task8-v14`.
+
+## 2026-09-28 Trimming off, and limits as safety nets (scout-v14)
+
+**The trimming study.** `studies/trim-history-rescout-task8.toml` rescouted three drb2-task8 plans with Luna@high scouts, trimmed and untrimmed, and diagnosed each with GLM. It cost $1.49 of its $3.00 ceiling ($0.82 of rescouts and $0.67 of diagnoses).
+
+| Plan | Trimmed | Untrimmed |
+|---|---|---|
+| `aea52be0` | `38687e43` partial (a scout passed its $0.075 share), $0.344, 23 points claimed | `513bdff1` complete, $0.223, 23 |
+| `8f753940` | `644101a7` partial (a request timed out), $0.200, 17 | `1bb386d1` complete, $0.212, 31 |
+| `27701a2f` | `02ae1629` complete, $0.268, 33 | `b1151f7b` complete, $0.240, 30 |
+
+Costs include the diagnosis. Scout input read from the prompt cache was 35.5% trimmed and 59.0% untrimmed (`run_calls` usage). Verified quotes were 165 of 184 (89.7%) trimmed and 200 of 228 (87.7%) untrimmed. Mean points claimed were 24.3 and 28.0.
+
+**Decision: trimming off.** Untrimmed met every condition of the rule. It had no failed, partial, or limit-stopped rescout that trimmed did not; a larger cache share; a lower median cost ($0.223 against $0.268); a verified-quote share 2.0 points lower, within 5; and more points claimed. Three plans per arm cannot show the difference in points is real, and the rule did not ask it to.
+
+**The limits.** Of 107 real-run scouts from 27 to 28 September:
+- 65 returned on their own;
+- 17 stopped on their 32 productive calls;
+- 11 stopped at or near the research deadline, and 10 on a request timeout, the last two losing their claims;
+- 1 stopped on its dollar share.
+
+The slowest tenth of standard scouts took 340 seconds of 480 and spent $0.037 of a $0.075 share. The slowest tenth of deep scouts took 1,174 of 1,200 seconds. One standard scout used 19 of its 20 requests. At the user's request, the limits became safety nets that a normal run should not reach (scout-v14, followup-v15, research-v14):
+
+| Limit | Before | Now |
+|---|---|---|
+| Scout request timeout | 120 s | 600 s (`scout_request_timeout_seconds`) |
+| Standard research window and run deadline | 480 s and 720 s | 900 s and 1,320 s |
+| Deep research window and deadlines | 1,200 s and 1,920 s | 1,800 s and 2,520 s |
+| Scout requests | 20 | 30 |
+| Productive calls, standard and deep | 32 and 48 | 48 and 64 |
+| Standard envelope | $0.75 ($0.075 a scout) | $1.25 ($0.20 a scout) |
+
+A timed-out request is still not sent again: at 600 seconds a second attempt would rarely fit, and the research deadline bounds time. Tests, lint, and 200 fuzz runs are clean. The user asked that the first case of the rerun search study be checked for failures before the rest runs.

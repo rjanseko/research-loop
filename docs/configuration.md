@@ -30,7 +30,7 @@ Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`
 | `RESEARCH_STUDY_CACHE_ROOT` | `.cache/studies` | A named study normally uses `reuse` under this root. Explicit cache settings still win. |
 | `RESEARCH_SEARCH_ENGINE` | `duckduckgo` | Comma-separated chain of `duckduckgo`, `serper`, `brave`, `exa`; the next engine runs only after an empty result or failure. `hybrid` expands to `duckduckgo,exa`. |
 | `RESEARCH_READ_FALLBACK` | unset | Unset means `oa`, then `exa` and `firecrawl` if their keys exist. Empty disables fallback; a comma-separated value sets the exact order. |
-| `RESEARCH_TRIM_HISTORY` | `true` | Whether scouts' requests leave out their oldest pages and search snippets (`history.py`). Off keeps the cached prompt prefix whole; under study (`studies/trim-history-rescout-task8.toml`). |
+| `RESEARCH_TRIM_HISTORY` | `false` | Whether scouts' requests leave out their oldest pages and search snippets (`history.py`). Off since scout-v14, after `studies/trim-history-rescout-task8.toml`: untrimmed scouts completed more rescouts, read more input from the prompt cache, and cost less. |
 | `RESEARCH_OFFLINE_WORLD` | unset | Seed for the fake-model/offline-world harness; not a live-run setting. |
 | `RESEARCH_OFFLINE_FAULT_RATE` | `0.2` | Fault frequency in that harness. |
 
@@ -44,34 +44,35 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 |---|---:|---:|---:|
 | `max_questions` count | 2 | 4 | 8 |
 | `parallel_scouts` count | 8 | 8 | 8 |
-| `cost_usd` ordinary-run soft envelope | $0.30 | $0.75 | $0.75* |
+| `cost_usd` ordinary-run soft envelope | $0.30 | $1.25 | $1.25* |
 | `planner_usd` | $0.05 | $0.05 | $0.05 |
 | `synthesis_usd` | $0.12 | $0.40 | $0.40 |
-| `deadline_seconds` ordinary-run deadline | 360 | 720 | 1,920* |
-| `research_seconds` scout deadline | 240 | 480 | 1,200 |
-| `request_timeout_seconds` per model request | 120 | 120 | 120 |
-| `scout_requests` model requests | 20 | 20 | 20 |
-| `scout_productive_calls` | 32 | 32 | 48 |
+| `deadline_seconds` ordinary-run deadline | 360 | 1,320 | 2,520* |
+| `research_seconds` scout deadline | 240 | 900 | 1,800 |
+| `request_timeout_seconds` per planner, gap, or synthesis request | 120 | 120 | 120 |
+| `scout_request_timeout_seconds` per scout or deep-dive request | 600 | 600 | 600 |
+| `scout_requests` model requests | 30 | 30 | 30 |
+| `scout_productive_calls` | 48 | 48 | 64 |
 | `scout_misses` | 16 | 16 | 16 |
 | `scout_tokens` total token limit | 2,000,000 | 2,000,000 | 2,000,000 |
 | `guarded_scout_max_output_tokens` per request | 24,000 | 24,000 | 24,000 |
 | `synthesis_tokens` total token limit | 200,000 | 200,000 | 200,000 |
 | `synthesis_max_output_tokens` per request | 32,000 | 32,000 | 32,000 |
 | `followup_cost_usd` follow-up soft envelope | $2.00 | $2.00 | $3.00 |
-| `followup_deadline_seconds` | 900 | 900 | 1,920 |
+| `followup_deadline_seconds` | 1,500 | 1,500 | 2,520 |
 | `gap_usd` | $0.10 | $0.10 | $0.10 |
 | `gap_seconds` | 45 | 45 | 45 |
 | `max_gaps` count | 3 | 3 | 3 |
 | `deep_dive_usd` per dive | $0.25 | $0.25 | $0.25 |
 | `deep_dive_seconds` per dive | 240 | 240 | 480 |
-| `deep_dive_requests` model requests | 12 | 12 | 20 |
-| `deep_dive_productive_calls` | 16 | 16 | 32 |
+| `deep_dive_requests` model requests | 12 | 12 | 30 |
+| `deep_dive_productive_calls` | 16 | 16 | 48 |
 | `deep_dive_misses` | 8 | 8 | 16 |
 | `quick.follow_up` / `deep.follow_up` | `false` | `false` | `true` |
 
-*Deep automatically uses follow-up, so its active envelope is **$3.00** and its active whole-run deadline is **1,920 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
+*Deep automatically uses follow-up, so its active envelope is **$3.00** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
 
-The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.075** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap.
+The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.20** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap.
 
 At the committed defaults, the planner and gap analyzer each have a **2-request, 100,000-total-token** limit and a **16,000-token output** cap per request. The synthesizer has a **2-request** limit in addition to `synthesis_tokens`. These values can be overridden through `RESEARCH_MODEL_CALLS__...` below. A scout's framework tool-call limit is `productive + misses + 12 batch slack + 16 re-read slack`: **76** for an ordinary quick/standard scout, **92** for a deep scout, **52** for a quick/standard deep dive, and **76** for a deep-run dive. Re-reading a memoized page does not spend the productive/miss loop budget. A scout result keeps at most **5 open-item names of 60 characters each**; longer or sentence-like items are dropped. Source: [`scout.py`](../src/research_loop/scout.py), [`budget_notes.py`](../src/research_loop/budget_notes.py), [`agents.py`](../src/research_loop/agents.py), [`models.py`](../src/research_loop/models.py).
 
@@ -105,7 +106,7 @@ Source: [`config.py`](../src/research_loop/config.py), [`scout.py`](../src/resea
 | Failed/cancelled call recording wait | Up to 5 seconds | [`scout.py`](../src/research_loop/scout.py) |
 | `research doctor --smoke` | By default, up to 3 model requests and a $0.05 soft cost limit per distinct planner, scout, synthesizer, or fallback model; configurable above | [`doctor.py`](../src/research_loop/doctor.py) |
 | Database connection | 3-second connect timeout for doctor’s migration check; 5 seconds for migration preflight and `research db` commands | [`doctor.py`](../src/research_loop/doctor.py), [`cli.py`](../src/research_loop/cli.py) |
-| Scout model request timeout | `request_timeout_seconds` above; a timeout is **not retried** | [`models.py`](../src/research_loop/models.py), [`rate_limit.py`](../src/research_loop/rate_limit.py) |
+| Scout model request timeout | `scout_request_timeout_seconds` above (600 seconds); a timeout is **not retried** | [`models.py`](../src/research_loop/models.py), [`rate_limit.py`](../src/research_loop/rate_limit.py) |
 | Scout 429 retry | At most 2 retries, only when the provider gives a retry time; add 0.1 seconds after reset | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
 | Scout transient connection retry | 1 retry after 1 second; no timeout retry | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
 | Provider SDK retry | 0 for scouts; guarded model requests also disable SDK retries and fallback. OpenAI-compatible and Anthropic clients otherwise use their default 2 retries | [`models.py`](../src/research_loop/models.py), [`scout.py`](../src/research_loop/scout.py) |

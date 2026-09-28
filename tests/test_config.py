@@ -14,9 +14,9 @@ def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
     assert (settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback) == (
         "openai:gpt-6-sol@high", "openai:gpt-6-luna@high", "anthropic:claude-opus-5-5@medium", "openai:gpt-6-sol@high")
     limits = settings.limits
-    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 720, 4)
-    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (20, 32, 16)
-    assert limits.scout_usd(4) == 0.075 and limits.scout_usd(1) == 0.3
+    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (1.25, 1320, 4)
+    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (30, 48, 16)
+    assert limits.scout_usd(4) == 0.2 and limits.scout_usd(1) == 0.8
     assert settings.logfire is True and settings.cache_mode == "live"
 
 
@@ -52,7 +52,7 @@ def test_keys_are_secret_and_never_exported(monkeypatch: pytest.MonkeyPatch, tmp
     ("RESEARCH_MODELS__AUDIT", "", "not provider:model"),
     ("RESEARCH_MODELS__DRY", "openai:gpt-6-luna@low", "must use the fake: provider"),
     ("RESEARCH_ENABLED_PROVIDERS", "openai,xai", "unknown providers: xai"),
-    ("RESEARCH_LIMITS__SYNTHESIS_USD", "0.9", "must leave part of cost_usd"),
+    ("RESEARCH_LIMITS__SYNTHESIS_USD", "1.3", "must leave part of cost_usd"),
     ("RESEARCH_CACHE_MODE", "sometimes", "cache_mode"),
 ])
 def test_bad_values_fail_at_startup(monkeypatch: pytest.MonkeyPatch, name: str, value: str, message: str) -> None:

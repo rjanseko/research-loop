@@ -8,6 +8,9 @@
 # and its study label gives it its own search and page cache. A rescout writes no report, so each
 # run's claims and research are graded by one judge (diagnose).
 #
+# Relabelled -v14 for scout-v14 (a 600-second scout request timeout and larger limits): the first attempt
+# under scout-v13 lost 5 of 6 rescouts to 120-second request timeouts and was stopped (study log).
+#
 # Decision rule, fixed before any paid run:
 # - An engine is disqualified by a failed or partial rescout that DuckDuckGo did not have on the same
 #   plan, by a blocked source reaching a scout, or by a verified-quote share more than 5 points below
@@ -21,7 +24,7 @@
 #   detectable difference but availability and cost do not settle it. No default changes on this screen.
 # Reported per plan: status, points claimed and seen, verified quotes, coverage, scout and search cost,
 # time, searches found/empty/failed, pages read/failed, 429s. Arm order rotates by plan.
-study = "search-rescout-task8"
+study = "search-rescout-task8-v14"
 kind = "rescout"
 sources = ["aea52be0-2e67-4a9b-8400-ca2b907fe12b", "8f753940-34f6-4a5b-a677-238157672d54",
            "27701a2f-b052-457d-8d59-ed3ada12189f"]

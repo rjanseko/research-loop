@@ -22,7 +22,8 @@ Dollars are allocated once the plan sets the depth: the planner's share, the syn
 split evenly across the scouts. Each call's share is its PydanticAI `cost_limit`, checked before every
 request, so a call can pass its share by at most the one request that crossed it. Time is bounded by
 `research_seconds` for the scouts and `deadline_seconds` for the whole run, and each model request by
-`request_timeout_seconds`. A scout's provider client does not retry a request that hits that timeout.
+`request_timeout_seconds`, or a scout's by `scout_request_timeout_seconds`. A scout's provider client does
+not retry a request that hits its timeout.
 
 Every call is recorded in the run store with its usage, cost, output, and messages, and the whole run is
 one Logfire trace carrying the run ID. `rescout_stored` and `synthesize_stored` repeat one step of a stored
@@ -165,9 +166,13 @@ def _paid_search(name: str) -> Any:
 # v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
 # review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
 # study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
-WORKFLOW_VERSION = "scout-v13"
-FOLLOWUP_VERSION = "scout-followup-v14"
-RESCOUT_VERSION = "scout-research-v13"
+# v14: scouts keep their whole history (trimming off by default); a scout request may take 600 seconds rather
+# than 120 (`scout_request_timeout_seconds`); and the limits became safety nets: a standard run gets $1.25,
+# 900 seconds of research, and 30 requests and 48 productive calls a scout, and a deep run 1,800 seconds and
+# 64 calls (config.py). followup-v15 and research-v14 carry the same change.
+WORKFLOW_VERSION = "scout-v14"
+FOLLOWUP_VERSION = "scout-followup-v15"
+RESCOUT_VERSION = "scout-research-v14"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"

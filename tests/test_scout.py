@@ -532,6 +532,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     monkeypatch.setattr("research_loop.scout.build_model", lambda *_args, **_kwargs: FunctionModel(respond))
     budget = StudyBudget(Decimal("0.0001"))
     store = MemoryStore()
+    settings.trim_history = True  # the outermost wrapper when trimming is on
     runner = _Run("Q?", settings, store, [], [], None, None, budget=budget)
     trimming = runner._model("scout", settings.models.scout)
     assert isinstance(trimming, TrimmedHistoryModel)

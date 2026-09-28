@@ -110,8 +110,8 @@ class LoopBudget:
     max_productive: int
     max_misses: int
     # Seconds left until the research deadline, and how many must remain for another tool-using request.
-    # The scout sets `return_within` to its request timeout: a request started with less than that left
-    # would be cut off, and a cutoff keeps no claims.
+    # The scout sets `return_within` to `request_timeout_seconds`, about as long as a result-writing request
+    # takes: a request started with less than that left would be cut off, and a cutoff keeps no claims.
     time_left: Callable[[], float] | None = None
     return_within: float = 0
 
