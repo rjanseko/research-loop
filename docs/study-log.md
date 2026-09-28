@@ -28,6 +28,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | $0.16 | Clean on the new code once the keys were in `.env`; the runner now checks every arm first. Ceilings raised |
 | 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
 | 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
+| 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -527,3 +528,34 @@ Deep was ahead under both judges in every pairing but one: GLM's fdd47ad4 at 26 
 **Against v6.** Judged the same way, the v6 smoke runs scored 22 (Sol) and 27 (GLM) for standard, and 31 and 33 for deep. Standard's are inside today's ranges. The single v6 deep run is above all three deep runs under Sol, and inside the range under GLM. One run per arm cannot show whether v7 to v11 changed scores.
 
 The GLP-1 example waits on this. With deep neither adopted nor rejected, the next step is either more replicates or a held-out case, with a rule written first.
+
+## 2026-09-28 Where drb2-task8's rubric points are lost
+
+This was a free audit of the six study runs above: 12 grades, each run graded by both judges. It uses the stored grades, ledgers, plans, and reports, with no model calls. Its aim was to find what would raise rubric scores before designing the next test.
+
+**Which points fail.** Of 52 points, 17 were met in 9 or more of the 12 grades, 10 in 5 to 8, 14 in 1 to 4, and 11 in none. The failing points fall into three groups:
+- **Category-level method statements, about 14 points.** Examples: RL, MCTS, and PSO as exploration-based algorithms; each category's advantages and disadvantages, such as "high computational cost, slow convergence"; and what GANs, RL, and topology optimization each do.
+- **Database members that sources named but that were never established, about 4 points.** CSD, and NOMAD's URL.
+- **Items probably found only in the blocked expert report, about 6 points.** The Dynamic Database of Solid-State Electrolytes, OQMD's "1.2 million structures", and ASM's description and URL. No ledger mentioned the first two. These are a ceiling.
+
+**What the audit ruled out.**
+- *The judge's view.* `evals.reader_text` gives the judge the whole answer, key statements, caveats, and cited sources, leaving out only the executive summary, with no truncation.
+- *Synthesis dropping claims.* The reports cite 90 to 100% of their ledgers' claims.
+- *The plan.* Every run split the task into its natural four questions: one per method category, and one for databases. Its coverage items name the categories and dimensions, such as algorithms, advantages, and disadvantages for each category.
+
+**Where the points go.** They are lost before synthesis, in what scouts turn into claims.
+- "Computational cost" appears in five of six ledgers, but mostly only in a quote's evidence text: the claim built on it is narrower than its source.
+- CSD appears in open items and `unresolved`. Sources named it, and no claim established it.
+- For the exploration-based question, each run's claims cite only 2 to 6 sources. Most are single-method papers, such as "Deep Reinforcement Learning for Inverse Inorganic Materials Design". At most two are reviews, and some reviews were read only as abstracts. The scout prompt already asks for surveys first.
+- Coverage treats a dimension such as "main disadvantages of each strategy" as one item, met by any claim. So it can read as covered while two of the three categories have no disadvantage at all.
+
+**The judges.** They disagreed on 45 of 312 verdicts (14%), and GLM gave the credit in 41 of them. The disputes cluster on database descriptions and URLs. Reports gave `https://oqmd.org/`, `https://materialsproject.org/`, and `https://nomad-lab.eu/nomad-lab/index.html`, while the rubric lists `https://www.oqmd.org/`, `https://next-gen.materialsproject.org/`, and `https://nomad-lab.eu/nomad`. Sol does not credit equivalent addresses. That is measurement noise, not research quality. Any change to it would need a new judge version.
+
+**Another case.** drb2-task68-plus, cloud auto-scaling, has only two graded runs, both scout-v1. On it, 31 of 54 points were met in at most a third of grades. They have the same shape: techniques under each category ("under proactive methods, identify reinforcement learning"), category-level explanations, and about 13 points that require citing specific papers, which is largely a ceiling there.
+
+**What follows.** Three changes should reach the failing points without reaching into the blocked source:
+- coverage items that cross each category with each requested dimension;
+- scouts that read at least one review in full for a category question, and state its category-level characterizations as quoted claims;
+- scouts that give every set member a source names its own claim, or mark it not established.
+
+They should be tested on more than one development case at standard depth, with the decision rule written first. If they work, earlier model comparisons judged under the old claim behavior should be looked at again.
