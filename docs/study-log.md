@@ -39,7 +39,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
 | 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
-| 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens |
+| 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -281,3 +281,26 @@ A scout's dollar share bounded only its model requests. Paid searches and page r
 - **Wider caps.** Productive calls became a guard against loops rather than a budget: 128 a scout and a deep dive, 192 a deep scout. A scout's reply under a hard cap may be 48,000 tokens, up from 24,000; the largest had used 22,313.
 
 Smoke calls with a 48,000-token cap were answered by `openai:gpt-6-luna@xhigh`, `deepseek:deepseek-flash@xhigh`, and `deepseek:deepseek-v4-pro@xhigh`, for under $0.001 in all. Tests (369, with the Postgres tests), lint, and 200 fuzz runs are clean, with new tests for spend attributed across two concurrent scout calls and for the money note. The change was built in a separate worktree while `search-rescout-task8-v14` ran on scout-v14, and it is merged after that study, so the study runs on one version.
+
+**Where budgets bind.** `scripts/budget_bottlenecks.py` reads the stored runs, makes no model calls, and reports what stopped each call and how much of each limit it used. Over the 35 real runs and 188 calls since 27 September:
+- **Scout dollar shares did not bind.** Scouts used a median of 15 to 28% of their share, and at most 52% at the 90th percentile. One scout of about 140 reached its share. Deep dives used 6 to 15%.
+- **The synthesizer's share nearly bound on deep runs.** It used 88 to 93% of its $0.40 on scout-followup-v11, and a synthesis cut off by its share writes no report.
+- **Paid searching is a scout's largest cost with a paid engine.** On the first v14 plan, search and reading were $0.26 of Brave's $0.36 run and $0.40 of Exa's $0.58, or $0.06 and $0.10 a scout. Under scout-v15 this counts against a $0.20 share, beside $0.02 to $0.05 of model.
+- **What bound was calls, time, and output checks.**
+  - Productive calls stopped 17 to 25% of standard scouts on every version.
+  - The research deadline cut off most scouts of the v9 and v10 deep runs.
+  - Request timeouts cut off 9 of 52 v13 rescout scouts.
+  - On v14, one Luna@xhigh scout left out a required field twice and lost its question (`43e5c141`, Serper).
+- **No real run reached a hard cap.** The study-budget refusals since 27 September were all in cheap checks.
+
+So scout-v15 also loosened the budgets that are close, or that paid searching will make close:
+
+| Budget | Before | Now |
+|---|---|---|
+| Standard envelope (scout share at four questions) | $1.25 ($0.20) | $1.75 ($0.275) |
+| Synthesizer's share | $0.40 | $0.60 |
+| Follow-up envelope, standard and deep | $2.00 and $3.00 | $2.50 and $4.00 (deep scouts $0.275 each) |
+| Deep dive share | $0.25 | $0.35 |
+| Scout output retries | 1 | 2 |
+
+These are soft shares, and a run pays only for what it uses. The envelopes change what a run may spend, not what it typically spends: v14 standard rescouts used a median of 21% of theirs. A new test checks that a scout whose result fails its checks twice gets a third try; it fails with one retry.

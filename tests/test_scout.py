@@ -295,7 +295,7 @@ async def test_a_synthesis_that_fails_returns_the_claims_found(settings, pages) 
 
     run = await _run(settings, write=streamed(always_wrong))
     assert run.status == "partial" and run.report is None
-    assert run.notes == ["the synthesis did not finish (the model's output failed its checks twice)"]
+    assert run.notes == ["the synthesis did not finish (the model's output failed its checks on every attempt)"]
     markdown = render_markdown(run.to_record())
     assert "## Claims found" in markdown and "- Finding for q1 [s1] (q1/c1)" in markdown
 
@@ -457,7 +457,7 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
-    assert run.config["limits"]["followup_cost_usd"] == 2.0
+    assert run.config["limits"]["followup_cost_usd"] == 2.5
 
 
 async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -> None:
@@ -963,3 +963,21 @@ def test_rescout_and_resynthesis_accept_every_earlier_scout_version_as_a_source(
     for current in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION):
         stem, _, number = current.rpartition("v")
         assert {f"{stem}v{n}" for n in range(1, int(number) + 1)} <= set(_SOURCE_VERSIONS)
+
+
+async def test_a_scout_result_that_fails_its_checks_twice_gets_a_third_try(settings, pages) -> None:
+    # A Luna@xhigh scout left out a required field twice and lost its question (run 43e5c141).
+    base = researcher().function
+    bad = {"q1": 0}
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        response = base(messages, info)
+        question = _prompt(messages)["question"]["id"]
+        if question == "q1" and response.parts[0].tool_name == info.output_tools[0].name and bad["q1"] < 2:
+            bad["q1"] += 1
+            return _output(info, {"question_id": "q1"})  # missing every other field
+        return response
+
+    run = await _run(settings, research=FunctionModel(respond))
+    assert bad["q1"] == 2
+    assert run.status == "complete"

@@ -170,7 +170,7 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research
 # $0.21 each, room for a GLM-5.3 second scout model (ScoutModels.scout_alt), which costs about seven times Luna.
 # Since scout-v14 the slowest tenth of deep scouts, which had reached the 1,200-second window (1,174 s), get
 # 1,800 seconds, and a deep dive keeps a full standard scout's loop budget.
-_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 3.00, "research_seconds": 1800,
+_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 4.00, "research_seconds": 1800,
          "deadline_seconds": 2520,
          "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 192,
          "deep_dive_requests": 30, "deep_dive_productive_calls": 128, "deep_dive_misses": 16}
@@ -183,16 +183,21 @@ class ScoutLimits(BaseModel):
     # 2026, a third ended on a limit: 17 on productive calls, 11 at the research deadline, and 10 on a request
     # timeout, the last two losing their claims; one on its dollar share, while the slowest tenth spent $0.037
     # of a $0.075 share. scout-v14 raised the time, call, and request limits and this envelope to match.
-    cost_usd: float = Field(1.25, gt=0, description="Total cap for the run")
+    # scout-v15 counts a scout's paid searches and page reads in its share: on the first search-rescout plan
+    # they cost Brave and Exa scouts $0.06 and $0.10 each, beside $0.02 to $0.05 of model, so the envelopes
+    # grew to leave each scout about $0.275 on a standard run and on a deep one
+    # (scripts/budget_bottlenecks.py, study log 28 September 2026).
+    cost_usd: float = Field(1.75, gt=0, description="Total cap for the run")
     planner_usd: float = Field(0.05, gt=0)
-    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25; this leaves room for one validation retry.
-    synthesis_usd: float = Field(0.40, gt=0)
+    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25, and a deep run's larger ledger for up to $0.37 of
+    # $0.40 (93%); a synthesis cut off by its share writes no report, so it gets room for one validation retry.
+    synthesis_usd: float = Field(0.60, gt=0)
     # Opt-in gap analysis and up to `max_gaps` parallel deep dives use a separate envelope, keeping the plain
     # Scout envelope unchanged. Each deep dive gets `deep_dive_usd`.
-    followup_cost_usd: float = Field(2.00, gt=0)
+    followup_cost_usd: float = Field(2.50, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     max_gaps: int = Field(3, ge=1, le=6)
-    deep_dive_usd: float = Field(0.25, gt=0)
+    deep_dive_usd: float = Field(0.35, gt=0)
     followup_deadline_seconds: float = Field(1500, gt=0)
     gap_seconds: float = Field(45, gt=0)
     deep_dive_seconds: float = Field(240, gt=0)

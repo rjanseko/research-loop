@@ -172,7 +172,9 @@ def _paid_search(name: str) -> Any:
 # 64 calls (config.py). followup-v15 and research-v14 carry the same change.
 # v15: a scout's dollar share also counts its paid searches and page reads, and its tools are withdrawn with a
 # note once the share would not cover two more requests; productive calls become a loop guard at 128 (192 for a
-# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. followup-v16 and research-v15 carry it.
+# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. Budgets grew to match: a standard run
+# $1.75 with $0.60 for synthesis, a follow-up $2.50 ($4.00 deep), a deep dive $0.35; and a scout's output gets two
+# retries. followup-v16 and research-v15 carry it.
 WORKFLOW_VERSION = "scout-v15"
 FOLLOWUP_VERSION = "scout-followup-v16"
 RESCOUT_VERSION = "scout-research-v15"
@@ -190,7 +192,7 @@ _SOURCE_VERSIONS = tuple(
 Status = Literal["complete", "partial", "failed", "cancelled"]
 AnswerSupport = Literal["supported", "weak", "unsupported"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
-# not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
+# not clear, a refusal, output that failed its checks on every attempt, a deadline, or a network error the SDK let through.
 # The OpenAI client raised a TLS `SSLError` (an OSError) from one scout's request unwrapped, which failed a
 # run whose other three scouts had finished.
 _CALL_FAILURES = (UsageLimitExceeded, ModelAPIError, ContentFilterError, UnexpectedModelBehavior,
@@ -366,7 +368,7 @@ def _reason(exc: BaseException) -> str:
     if isinstance(exc, ContentFilterError):
         return "the model refused"
     if isinstance(exc, UnexpectedModelBehavior):
-        return "the model's output failed its checks twice"
+        return "the model's output failed its checks on every attempt"
     if isinstance(exc, TimeoutError | asyncio.CancelledError):
         return "the research deadline passed"
     if isinstance(exc, OSError):
