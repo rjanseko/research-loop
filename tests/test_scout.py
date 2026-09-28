@@ -948,3 +948,17 @@ async def test_a_run_records_its_blocked_titles_and_shows_them_to_its_scouts(set
     prompts.clear()
     plain = await _run(settings, store, research=FunctionModel(respond))
     assert "blocked_titles" not in store.runs[plain.run_id]["config"] and all("blocked_titles" not in p for p in prompts)
+
+
+def test_rescout_and_resynthesis_accept_every_earlier_scout_version_as_a_source() -> None:
+    from research_loop.scout import (
+        _SOURCE_VERSIONS,
+        FOLLOWUP_VERSION,
+        RESCOUT_VERSION,
+        WORKFLOW_VERSION,
+    )
+
+    # A fixed list stopped at v8, so each version bump since v9 silently refused the version before it.
+    for current in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION):
+        stem, _, number = current.rpartition("v")
+        assert {f"{stem}v{n}" for n in range(1, int(number) + 1)} <= set(_SOURCE_VERSIONS)

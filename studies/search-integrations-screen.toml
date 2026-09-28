@@ -1,0 +1,35 @@
+# Screening study, not a default-selection result. See docs/evaluation.md, "Serper, Brave, and
+# DeepSeek integration study". One run per arm and case cannot separate small rubric differences.
+#
+# Decision rule fixed before paid calls: advance a paid engine to a repeated confirmation only if
+# it has no blocked-source or run-invariant defect, completes at least as many cases as DuckDuckGo,
+# and improves search availability (a lower empty/error search share) or full-page evidence on at least
+# two of the four cases. Report grades, support audits, cost, and time even if it fails this screen.
+# No default changes on screen results. The confirmation rule is in docs/evaluation.md.
+study = "search-integrations-screen"
+kind = "scout"
+cases = ["st04-ilsvrc-captioning", "st05-scaling-table", "st07-swebench-trust", "drb2-task8"]
+replicates = 1
+cap_usd = 3.00
+estimate_usd = 0.60   # prior standard task8 max $0.368; allows paid search and variation
+ceiling_usd = 9.00    # 12 x ($0.60 run + $0.06 grade + $0.04 audit) = $8.40, plus room
+grade = true
+grade_estimate_usd = 0.06
+audit = true
+audit_model = "zai:glm-5.3@high"
+audit_estimate_usd = 0.04
+
+[[arms]]
+name = "duckduckgo"
+args = ["--depth", "standard"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT = "openai:gpt-6-luna@high", RESEARCH_MODELS__SCOUT_ALT = "" }
+
+[[arms]]
+name = "serper"
+args = ["--depth", "standard"]
+env = { RESEARCH_SEARCH_ENGINE = "serper", RESEARCH_MODELS__SCOUT = "openai:gpt-6-luna@high", RESEARCH_MODELS__SCOUT_ALT = "" }
+
+[[arms]]
+name = "brave"
+args = ["--depth", "standard"]
+env = { RESEARCH_SEARCH_ENGINE = "brave", RESEARCH_MODELS__SCOUT = "openai:gpt-6-luna@high", RESEARCH_MODELS__SCOUT_ALT = "" }

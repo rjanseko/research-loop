@@ -6,7 +6,7 @@ Research Loop answers a research question with a short report in which every sta
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Research Loop splits a question into a few research questions and researches them in parallel. Each research agent searches the web, reads pages and PDFs, and searches scholarly indexes. A final model then writes the report from the evidence they found. Before the report is written, code checks that evidence. A quote counts as verified only if the tools actually returned those words from the source it cites. Each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report says which statements rest on thin evidence and which questions it could not answer. An optional audit then asks a model from another vendor whether the quotes behind each statement really support it.
+Research Loop splits a question into a few research questions and researches them in parallel. Each research agent searches the web, reads pages and PDFs, and searches scholarly indexes. A final model then writes the report from the evidence they found. Before the report is written, code checks that evidence. A quote counts as verified only if the tools actually returned those words from the source it cites. Each source records whether the research read it in full, read its abstract, or only saw it in a search result. The report says which statements rest on thin evidence and which questions it could not answer. An optional audit then asks the configured auditor model whether the quotes behind each statement really support it.
 
 The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.dev), stores every run in Postgres, and traces runs in [Logfire](https://logfire.pydantic.dev).
 
@@ -30,6 +30,7 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 - [How a run works](#how-a-run-works)
 - [External services and APIs](#external-services-and-apis)
 - [Limits and budgets](#limits-and-budgets)
+- [Configuration inventory](docs/configuration.md)
 - [Models](#models)
 - [Studies and evaluation](#studies-and-evaluation)
 - [Using it from Python](#using-it-from-python)
@@ -44,8 +45,8 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 
 - Python 3.12 or later.
 - Docker, for the local Postgres database. Research Loop runs without a database, but then nothing is stored and the study commands are unavailable.
-- An API key for each model provider you use. The default models need an OpenAI key and an Anthropic key. Z.ai and Google keys are optional; the support audit and the second rubric judge use Z.ai.
-- A Logfire token, if you want traces. Without one, tracing stays in the process.
+- An API key for each model provider you use. The default models need an OpenAI key and an Anthropic key. Z.ai, Google, and DeepSeek keys are optional; the support audit and the second rubric judge use Z.ai.
+- A Logfire token or a project configured through `logfire auth`, if you want to export traces. Without either, tracing stays in the process.
 
 ### Install
 
@@ -59,24 +60,28 @@ make postgres-up migrate
 
 ### Configure
 
-Settings come from `.env` or the environment, and exported variables override the file. `.env.example` lists every setting with a comment. The ones most people set are these:
+Settings come from `.env` or the environment, and exported variables override the file. [The configuration inventory](docs/configuration.md) lists every setting and the fixed limits that affect a run, with their current code defaults. `.env.example` shows common settings. The ones most people set are these:
 
 | Setting | What it does |
 |---|---|
 | `DATABASE_URL` | The Postgres database runs are stored in. The value in `.env.example` matches `make postgres-up`. |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY` | Provider keys. A provider is enabled when its key is set. |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY` | Provider keys. A provider is enabled when its key is set. |
 | `RESEARCH_ENABLED_PROVIDERS` | Allow only these providers, comma-separated, even if other keys are set. |
-| `LOGFIRE_TOKEN` | Send traces to Logfire. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
+| `LOGFIRE_TOKEN` | Send traces to Logfire; an authenticated Logfire project can also enable export. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
 | `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK`, `__JUDGE` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
+| `RESEARCH_MODELS__AUDIT`, `__DIAGNOSE`, `__CHEAP`, `__DRY` | Audit and diagnosis defaults, plus the paid cheap and offline fake check models. See [Models](#models). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
+| `RESEARCH_MODEL_CALLS__...` | Planner, synthesizer, evaluation, and smoke-test model request caps and timeouts. See [the configuration inventory](docs/configuration.md#model-call-limits). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
-| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free), `hybrid` (DuckDuckGo, then Exa when it finds nothing), or `exa`. The last two need the key. See [Web search](#web-search). |
+| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY` | The scouts' web search: `duckduckgo` (default), `serper`, `brave`, `exa`, or an ordered comma-separated chain. `hybrid` means DuckDuckGo then Exa. Paid engines need their keys. See [Web search](#web-search). |
 | `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Unset, every reader that can run: `oa` always, `exa` and `firecrawl` when their keys are set. Empty turns it off. See [Reading fallback](#reading-fallback). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
 
 Nested settings use a double underscore, so the scout model is `RESEARCH_MODELS__SCOUT` and the cost limit is `RESEARCH_LIMITS__COST_USD`.
+
+Codex conversations signed in with a ChatGPT plan use that plan’s [Codex allowance](https://learn.chatgpt.com/docs/pricing). Running Scout is separate: `research scout`, grading, audits, and `research doctor --smoke` call model or paid search APIs with the keys configured for this project. Those calls can incur provider API charges; a ChatGPT subscription does not cover them. The dollar limits below describe Scout spending controls, not Codex chat usage.
 
 > [!CAUTION]
 > Never commit `.env` or an API key. `.env` is ignored by git, and traces never carry request headers, so keys sent in headers stay out of Logfire.
@@ -116,7 +121,7 @@ flowchart TD
 flowchart TD
     change["Change and bump the version"] --> tests["Tests, lint, fuzz"]
     tests --> spec["Study spec with a decision rule"]
-    spec --> checks["Dry run, then cheap run"]
+    spec --> checks["Dry run, and a cheap run if anything is new"]
     checks --> approve{"Approved?"}
     approve -- "yes" --> paid["Paid study, both judges"]
     paid --> decide{"Rule met?"}
@@ -127,9 +132,9 @@ flowchart TD
 1. Make the change, and bump the version the change affects: the workflow version when prompts or scout behavior change, the evidence, fetch, budget, or rate-limit version when those rules change. Runs record every version, so results are only compared within one.
 2. Run the narrowest tests first, then `pytest -q`, `make lint`, and `make fuzz`.
 3. Write a study spec in `studies/`. Put the decision rule in its header before anything is paid for: what must not regress, what must improve, and by how much, and what added cost is acceptable. [docs/evaluation.md](docs/evaluation.md) explains how to make a comparison able to decide.
-4. Run `research study run SPEC --dry`, which is free, then `--cheap`, which costs cents. Both must report no invariant violations.
+4. Run `research study run SPEC --dry`, which is free and must report no invariant violations. Run `--cheap`, which costs cents, only when an arm uses something that has not had a real run on the current code, such as a new engine, reader, model, or provider, or changed scout, fetch, or study code.
 5. Estimate the paid study from the most expensive comparable run, set a hard cap per run and a ceiling for the study, and get approval.
-6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, one Luna study at a time. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
+6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, at most two Luna studies at once. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
 7. Check the judges' disagreements and any points the diagnosis marks as never met by hand.
 8. Record the runs, costs, and outcome in [docs/study-log.md](docs/study-log.md), and change the default only if the rule was met.
 
@@ -214,7 +219,7 @@ flowchart TD
     synthesize --> report(["Report"])
 ```
 
-`research rescout` reruns the scouts on a stored plan, and `research synthesize` rewrites the report from a stored ledger. `research audit` checks a finished report's statements with another vendor's model.
+`research rescout` reruns the scouts on a stored plan, and `research synthesize` rewrites the report from a stored ledger. `research audit` checks a finished report's statements with the configured auditor model.
 
 A run has three steps, and each one is bounded in money and time.
 
@@ -304,16 +309,20 @@ These are all the outside services the code calls, what it sends them, and what 
 | Anthropic | `claude-opus-5-5@medium`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
 | Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
+| DeepSeek | Any role on request | Optional | `DEEPSEEK_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
 | Exa | Web search (`/search`, with highlights capped at 600 characters a result) | `RESEARCH_SEARCH_ENGINE=exa`, or `hybrid` for the searches DuckDuckGo cannot answer | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
+| Serper | Google organic web results | Optional search engine or chain member | `SERPER_API_KEY` | Configured at $0.001 per search | Search queries |
+| Brave | Web search | Optional search engine or chain member | `BRAVE_API_KEY` | Configured at $0.005 per search | Search queries |
 | OpenAlex | Scholarly search and records, with abstracts and open-access links | Default | `OPENALEX_API_KEY` (optional) | Free | Search terms and identifiers |
 | arXiv | Preprint search and records | Default | None | Free | Search terms and IDs |
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
 | The public web | Reading pages and PDFs | Default | None | Free | Requests to public HTTPS addresses only |
 | Europe PMC | Open-access full text of a paper our fetch could not read | The reading fallback's `oa`, on by default | None | Free | DOIs |
+| CORE | Repository full text of a paper, when Europe PMC and OpenAlex have no readable copy | The reading fallback's `oa`, on by default | `CORE_API_KEY` (optional) | Free: 100 requests a day without a key, 1,000 with one | DOIs |
 | Exa | Reading a page from Exa's crawl (`/contents`) | The reading fallback's `exa`, on by default when `EXA_API_KEY` is set | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
 | Firecrawl | Scraping a page our fetch could not read, with basic proxies only | The reading fallback's `firecrawl`, on by default when `FIRECRAWL_API_KEY` is set | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
-| Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` | Your Logfire plan | Prompts, tool results, and timings |
+| Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` or `logfire auth` | Your Logfire plan | Prompts, tool results, and timings |
 | Postgres | Run records, grades, assessments, and audits | Local | `DATABASE_URL` | Free | Everything a run records |
 
 Two more services, Jina Reader and Tavily Extract (`TAVILY_API_KEY`), are used only by `scripts/fetch_bakeoff.py`, which measured which readers best read the pages our fetcher cannot; the bake-off chose the fallback above (see [docs/study-log.md](docs/study-log.md)).
@@ -370,7 +379,7 @@ Both time limits count from the start of the run. Planning counts against the re
 The upper bound on a request's input starts from the last reply in its history: that reply's billed input and output tokens, plus one token per byte of everything added since, plus 4,000 tokens of framing. A first request, with no reply to start from, is bounded by twice its size in bytes plus 16,000 tokens.
 
 The output bound is the call's output cap:
-- 16,000 tokens for the planner and the grading judge;
+- `RESEARCH_MODEL_CALLS__PLANNER_MAX_OUTPUT_TOKENS` (16,000) for the planner, and `RESEARCH_MODEL_CALLS__RUBRIC_MAX_OUTPUT_TOKENS` / `__AUDIT_MAX_OUTPUT_TOKENS` (16,000 each) for grading and support audit;
 - `RESEARCH_LIMITS__GUARDED_SCOUT_MAX_OUTPUT_TOKENS` (24,000) for scouts;
 - `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS` (32,000) for synthesis.
 
@@ -388,22 +397,22 @@ Retrying is not enough when parallel scouts regularly send more than the limit a
 
 The limit paced under is the one OpenAI reports. Every OpenAI response carries `x-ratelimit-limit-tokens`, and from a run's first response on, its pacer uses that value for the model. So a change of tier is picked up without a setting. Until then it uses the configured default, `{"openai:gpt-6-luna": 2000000}`, this project's OpenAI tier; on a lower tier, the first response brings the limit down. Setting `RESEARCH_TOKENS_PER_MINUTE` explicitly fixes the limit instead, and `'{}'` turns pacing off.
 
-The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v4`.
+The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v5`.
 
 A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $3.00.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
 
-A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. The retry policy is part of `scout-429-v4`.
+A scout's request that fails on a connection fault that is not a timeout, such as a TLS error or a dropped connection, is sent once more after a one-second pause, under a new reservation when a hard cap is set. A second fault ends the call, and a timeout is never sent again. A server error (HTTP 500, 502, 503, or 504) is sent again twice, after pauses of 2 and 8 seconds; before this, one provider 500 ended a scout's research question. The retry policy is part of `scout-429-v5`.
 
 ### Web search
 
 The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
 
-`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. The setting also accepts `serper`, `brave`, `exa`, or a comma-separated chain such as `duckduckgo,brave,exa`; a later engine runs only when earlier ones found nothing or failed. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. Its API default controls the result count; the returned highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
 
-Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
+Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare engines with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 > [!NOTE]
 > Uncapped, Exa's highlights carried about 20 times the text of a DuckDuckGo search, which slowed scouts under the rate limit. Capped, ten results come to about 6,000 characters, three times a DuckDuckGo search, and old search snippets leave a scout's view like old pages (see [Scouts](#how-a-run-works)). DuckDuckGo stays the default until a comparison decides otherwise; see [docs/study-log.md](docs/study-log.md).
@@ -411,7 +420,7 @@ Each Exa search's reported cost is added to the run's cost, and shown as `extern
 ### Reading fallback
 
 About 20% of the pages scouts tried to read in production runs failed, mostly with 403s from publishers behind bot protection: MDPI, RSC, ACS, OUP, AIP, and ScienceDirect were read 2 to 9% of the time. A page our fetch cannot read is tried with each reader of the reading fallback in turn. Unset, `RESEARCH_READ_FALLBACK` is every reader that can run: `oa`, which is free, always, then `exa` and `firecrawl` when their keys are set. An empty value turns the fallback off, and a list such as `oa,exa` names the readers and their order.
-- `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID), through Europe PMC's full text or OpenAlex's best open-access location, and reads it with our own fetcher;
+- `oa` finds the paper's open-access copy from an identifier in its address (a DOI, an RSC article ID, or an arXiv ID; for an MDPI address, the DOI OpenAlex records for its journal, volume, issue, and article number), through Europe PMC's full text, OpenAlex's best open-access location, or a PDF at up to three of OpenAlex's other locations, such as a repository's copy, and reads it with our own fetcher; last, it asks CORE for its full text of the DOI, spacing requests 6.5 seconds apart and stopping until CORE's reset time after a 429 or once CORE reports none left (100 requests a day without `CORE_API_KEY`, 1,000 with a free key);
 - `exa` reads the page from Exa's crawl;
 - `firecrawl` scrapes it with Firecrawl, using basic proxies only, never stealth or residential proxies.
 
@@ -442,12 +451,20 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
 | Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
+| Study support auditor | `zai:glm-5.3@high` | `RESEARCH_MODELS__AUDIT` |
+| Study diagnosis judge | `zai:glm-5.3@high` | `RESEARCH_MODELS__DIAGNOSE` |
+| Cheap study check, every role | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Dry study check, every role | `fake:fuzz@high` | `RESEARCH_MODELS__DRY` |
 
-A model is named with the reasoning effort it runs at, as `provider:model@effort`. The provider is `openai`, `anthropic`, `zai`, or `google`, and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
+Standalone `research audit` and `research diagnose` use their configured defaults unless `--model` selects another model. A study spec's `audit_model` or `diagnose_model` overrides its configured default.
 
-Each run records the model and effort every role was sent. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+A model is named with the reasoning effort it runs at, as `provider:model@effort`. A live provider is `openai`, `anthropic`, `zai`, `google`, or `deepseek`; the offline dry model uses `fake`. The effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
 
-A model is refused at startup if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
+DeepSeek Flash uses automatic tool choice in thinking mode. DeepSeek rejects a forced tool choice in that mode; `research doctor --smoke` checks that the configured model can call a tool before a study.
+
+Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+
+A model selected for a paid command is refused before calls if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
 
 ## Studies and evaluation
 
@@ -458,7 +475,7 @@ Research Loop includes the tools used to choose its own configuration:
 - a support audit;
 - commands that repeat one part of a stored run with a different model.
 
-How quality is measured, and how a comparison is designed so that it can decide, is in [docs/evaluation.md](docs/evaluation.md). Every study so far, with its run IDs, costs, and outcome, is in [docs/study-log.md](docs/study-log.md).
+How quality is measured, and how a comparison is designed so that it can decide, is in [docs/evaluation.md](docs/evaluation.md). Every study so far is indexed in [docs/study-log.md](docs/study-log.md), with older entries linked to a dated archive; the entries preserve run IDs, costs, and outcomes.
 
 ```bash
 research study plan studies/SPEC.toml                   # the planned runs and their worst-case cost, without running anything
@@ -475,11 +492,13 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 
 `research study run SPEC.toml` runs a whole study from a spec, in this way:
 - every arm, case or stored run, and replicate runs one at a time;
-- each arm goes first on alternate replicates;
+- the arm order rotates by one place on each replicate and target, so each arm goes first equally often against the study's shared cache (two arms alternate);
 - each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
 - when the spec says so, each run is graded (`grade = true`), audited (`audit = true`), and diagnosed (`diagnose = true`).
 
-It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It checks each arm with that arm's environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
+A rescout writes no report, so a rescout study cannot be graded or audited. Its `diagnose = true` grades each rescout's claims and research instead, and the summary compares arms on the rubric points their claims met (`research diagnose` accepts a rescout's run ID the same way). This compares scout models on one fixed plan with no planner or synthesizer in between. `--dry` copies a rescout or synthesis study's source runs from the main database into the dry one first.
+
+It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It snapshots model IDs, effort, and model-call limits from the parent configuration once at the start, then applies each arm's overrides and the dry or cheap mode. It checks each arm with that effective environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far. A spec’s `audit_model` or `diagnose_model` overrides the corresponding model from the arm’s environment; when omitted, the study uses the configured defaults above.
 
 Every run records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent. A run labeled with `--study` keeps its searches, pages, and scholarly records in `.cache/studies/NAME` in `reuse` mode. A lookup any run of the study has made returns the same answer to every later run, on any day, which removes changes in the web from a comparison. The models themselves cannot be made deterministic, so arms still need repeated runs.
 
@@ -494,7 +513,7 @@ The study cases are in `src/research_loop/study_cases.jsonl`:
 The judges and the audit:
 - **`research grade`** scores a stored report against a case's rubric, one verdict per point. Grade close decisions with both judges: the choice of judge alone has moved a long case's score by up to 8 points.
 - **`research assess`** judges overall quality and specific facts against independently reviewed source summaries.
-- **`research audit`** asks a model from another vendor whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
+- **`research audit`** asks the configured auditor model whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
 - **`research synthesize` and `research rescout`** repeat the synthesis of a stored ledger, or the research of a stored plan, with another model, so that one step can be compared alone.
 
 ### Finding bugs before paying
@@ -505,8 +524,8 @@ The harness in `src/research_loop/dryrun.py` finds bugs in the workflow's plumbi
   - The model returns edge cases and injects rate limits, server errors, refusals, one-time TLS faults, and oversized costs.
   - The world serves copies of the same work, 403s, redirects to blocked addresses, timeouts, broken bodies, and a PDF whose text holds lone surrogates.
   - After each run, `check_record` checks the invariants, and each problem is printed with the command that reproduces it. `make fuzz` runs 200.
-- **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the fake models, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
-- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on `openai:gpt-6-luna@low`, against the real web. Each run and the whole check are capped at $0.25.
+- **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the configured `RESEARCH_MODELS__DRY` fake model, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
+- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), against the real web. Each run and the whole check are capped at $0.25.
 - **Hypothesis property tests** in `tests/test_properties.py` check the pure functions, and a fixed fuzz sweep runs with the test suite.
 
 When a paid run finds a bug, it first gets the narrowest test that would have caught it: a unit test for a local bug, and fuzz or invariant behavior only when the bug comes from how a run's parts interact. `fake:` models and the offline world only run together, so neither can reach a real run.
@@ -535,7 +554,7 @@ run.to_record() # the run as JSON, the same record `--out` writes to run.json
 
 Postgres keeps each run: its question, configuration, plan, report, evidence ledger, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
 
-Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent only when `LOGFIRE_TOKEN` is set.
+Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent when a Logfire token or authenticated project is available.
 
 ## Troubleshooting
 
@@ -641,10 +660,11 @@ The last three make no model calls.
 
 | In `docs/` | What it holds |
 |---|---|
-| [study-log.md](docs/study-log.md) | Every study, paid run, and offline re-scoring in date order, with run IDs, costs, and outcomes |
+| [study-log.md](docs/study-log.md) | Index of every study, paid run, and offline re-scoring, linking to archived detail where needed |
 | [evaluation.md](docs/evaluation.md) | How quality is measured and how a comparison is set up so that it can decide |
 | [lessons.md](docs/lessons.md) | What the first design and Scout's first days taught |
-| [archive/](docs/archive/) | Superseded plans: the first Scout study's briefing and design |
+| [notes.md](docs/notes.md) | Ideas with some evidence but no decision yet: cache warming and a source ranker |
+| [archive/](docs/archive/) | Superseded plans and dated historical study-log entries |
 
 `.agents/skills/` holds agent skills used as API references, such as Exa's `build-with-exa`. The first design of this project, a six-role graph with benchmark adapters and long-horizon studies, is kept at the git tag `archive/pre-scout-2026-09`.
 

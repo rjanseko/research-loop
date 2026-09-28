@@ -66,9 +66,9 @@ async def test_a_refused_page_is_read_by_the_first_reader_that_can(public_urls, 
                            ExaContentsReader(services, "k", spend, budget),
                            FirecrawlReader(services, "k", spend, budget)]
         result = await pages.fetch(PAGE)
-    # No identifier in an MDPI address, Exa has no text, so Firecrawl reads it.
+    # OpenAlex knows no DOI for this MDPI address, Exa has no text, so Firecrawl reads it.
     assert result["via"] == "firecrawl" and result["text"].startswith("Inverse design")
-    assert sent == ["api.exa.ai/contents", "api.firecrawl.dev/v2/scrape"]
+    assert sent == ["api.openalex.org/works", "api.exa.ai/contents", "api.firecrawl.dev/v2/scrape"]
     assert spend.pages == 2 and spend.usd == Decimal("0.001") + Decimal("0.0054")
     assert budget.reserved_usd == spend.usd  # reservations settled to what each read cost
 
@@ -122,6 +122,52 @@ async def test_the_open_access_copy_comes_from_europe_pmc(public_urls, tmp_path:
     assert result["via"] == "oa:europepmc" and "<p>" not in result["text"]
 
 
+@pytest.mark.asyncio
+async def test_an_mdpi_address_finds_its_doi_and_its_europe_pmc_copy(public_urls, tmp_path: Path) -> None:
+    # MDPI answers our fetcher with a bot challenge, and 10 of 11 MDPI articles scouts failed to read had DOIs
+    # in OpenAlex; without one, every MDPI page went to a paid reader.
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/works":
+            queries.append(request.url.params["filter"])
+            return httpx.Response(200, json={"results": [{"doi": "https://doi.org/10.3390/ma15051811"}]})
+        if request.url.path.endswith("/search"):
+            assert request.url.params["query"] == 'DOI:"10.3390/ma15051811"'
+            return httpx.Response(200, json={"resultList": {"result": [{"pmcid": "PMC8911677"}]}})
+        if request.url.path.endswith("/fullTextXML"):
+            return httpx.Response(200, text=f"<article><body><p>{ARTICLE}</p></body></article>")
+        return httpx.Response(404)
+
+    async with _blocked_fetch() as own, httpx.AsyncClient(transport=httpx.MockTransport(handler)) as services:
+        pages = WebAcquisition(cache_root=tmp_path, cache_mode="off", client=own)
+        pages.fallbacks = [OpenAccessReader(services, pages._extract)]
+        result = await pages.fetch(PAGE + "/htm")
+    assert result["via"] == "oa:europepmc"
+    assert queries == ["primary_location.source.issn:1996-1944,biblio.volume:15,biblio.issue:5,biblio.first_page:1811"]
+
+
+@pytest.mark.asyncio
+async def test_a_repository_copy_is_read_when_the_best_location_refuses(serve, tmp_path: Path) -> None:
+    base = "https://papers.example"
+    serve(lambda url: httpx.Response(200, headers={"content-type": "text/html"},
+                                     text=f"<html><body><p>{ARTICLE}</p></body></html>")
+          if url.endswith("/eprints/paper.html") else httpx.Response(403))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.openalex.org":
+            return httpx.Response(200, json={
+                "best_oa_location": {"pdf_url": f"{base}/publisher.pdf"},
+                "locations": [{"pdf_url": f"{base}/publisher.pdf"}, {"landing_page_url": "https://doaj.org/article/x"},
+                              {"pdf_url": f"{base}/eprints/paper.html"}]})
+        return httpx.Response(200, json={"resultList": {"result": []}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as services:
+        pages = WebAcquisition(cache_root=tmp_path, cache_mode="off")
+        document = await OpenAccessReader(services, pages._extract).read("https://doi.org/10.3390/app9071417")
+    assert document is not None and document["via"] == "oa:openalex" and "Inverse design" in document["text"]
+
+
 def test_the_fallback_needs_the_keys_of_its_paid_readers(monkeypatch) -> None:
     from research_loop.config import Settings
 
@@ -168,3 +214,55 @@ def test_a_scouts_outcomes_say_which_reader_read_a_page() -> None:
                 ModelRequest(parts=[ToolReturnPart("fetch", content, tool_call_id="x")])]
     outcomes = tool_outcomes(messages)
     assert outcomes.pages_read == [PAGE] and outcomes.read_via == {PAGE: "firecrawl"}
+
+
+@pytest.fixture
+def core_unpaced(monkeypatch):
+    from research_loop import acquisition, reading
+
+    monkeypatch.setitem(acquisition._RATE_INTERVAL, "core", 0)
+    monkeypatch.setattr(reading, "_core_resume_at", 0.0)
+    return reading
+
+
+@pytest.mark.asyncio
+async def test_core_full_text_is_read_last_and_only_for_the_same_doi(public_urls, core_unpaced) -> None:
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.core.ac.uk":
+            asked.append(request.headers.get("authorization", ""))
+            doi = request.url.params["q"].removeprefix('doi:"').removesuffix('"')
+            found = "10.3390/other" if doi == "10.3390/mismatch" else doi
+            return httpx.Response(200, json={"results": [{"doi": found, "fullText": ARTICLE}]})
+        return httpx.Response(404)  # no Europe PMC copy, no OpenAlex record
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as services:
+        reader = OpenAccessReader(services, _never_extract, core_key="k")
+        document = await reader.read("https://doi.org/10.3390/app9071417")
+        assert document is not None and document["via"] == "oa:core"
+        assert await reader.read("https://doi.org/10.3390/mismatch") is None
+    assert asked == ["Bearer k", "Bearer k"]
+
+
+@pytest.mark.asyncio
+async def test_core_is_not_asked_again_until_its_limit_resets(public_urls, core_unpaced) -> None:
+    asked = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal asked
+        if request.url.host != "api.core.ac.uk":
+            return httpx.Response(404)
+        asked += 1
+        return httpx.Response(429, headers={"x-ratelimit-remaining": "0",
+                                            "x-ratelimit-retry-after": "2999-01-01T00:00:00+0000"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as services:
+        reader = OpenAccessReader(services, _never_extract)
+        assert await reader.read("https://doi.org/10.3390/app9071417") is None
+        assert await reader.read("https://doi.org/10.3390/app11093835") is None
+    assert asked == 1 and core_unpaced._core_resume_at > 1e10
+
+
+async def _never_extract(url: str) -> dict:
+    raise ValueError("no page")

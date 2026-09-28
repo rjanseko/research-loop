@@ -53,7 +53,8 @@ async def _smoke(model_id: str, role: str, settings: Settings) -> str:
         return "pong"
 
     result = await agent.run("Call ping once, then return ok=true.",
-                             usage_limits=UsageLimits(request_limit=3, cost_limit=0.05))
+                             usage_limits=UsageLimits(request_limit=settings.model_calls.smoke_requests,
+                                                      cost_limit=settings.model_calls.smoke_cost_usd))
     if not (result.output.ok and called):
         raise RuntimeError("the model did not call the tool and return the output")
     return f"answered with a tool call for ${result.usage.cost or 0:.4f}"

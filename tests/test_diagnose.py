@@ -124,6 +124,39 @@ def test_the_rendered_diagnosis_counts_stages_by_arm_and_says_what_the_score_can
 
 
 def test_a_stage_grade_row_is_a_grade_row_with_its_view() -> None:
-    grade = GradeRecord(uuid4(), find_case("drb2-task8"), "succeeded", points=[], score=0.5)
+    grade = GradeRecord(uuid4(), find_case("drb2-task8"), "succeeded", points=[], score=0.5,
+                        judge_model="zai:glm-5.3", judge_thinking="high")
     row = stage_grade_row(grade, "claims")
     assert (row["view"], row["diagnose_version"], row["case_id"]) == ("claims", 1, "drb2-task8")
+
+
+def test_a_rescout_is_diagnosed_on_its_claims_and_arms_are_compared_on_points_claimed() -> None:
+    # A fixed-plan rescout writes no report, so scout models are compared on what their claims met.
+    case = find_case("drb2-task8")
+    points = [("info_recall", n) for n in range(1, 5)]
+    runs = []
+    for arm, met in (("luna", 2), ("luna", 3), ("flash", 1), ("flash", 2)):
+        claims = {point: n < met for n, point in enumerate(points)}
+        research = {point: n < met + 1 for n, point in enumerate(points)}
+        runs.append(RunDiagnosis(uuid4(), case, "", None, claims=claims, research=research, arm=arm))
+    first = runs[0]
+    assert first.score() == 2 and first.beyond_research() == [] and first.equivalent_urls() == []
+    assert first.stages() == {points[0]: "claimed", points[1]: "claimed", points[2]: "seen", points[3]: "not_found"}
+    text = render(runs, "zai:glm-5.3@high", [], {})
+    assert "| no report | 2 | 1 | 1 |" in text
+    assert "luna 2.5 over 2 rescouts (2, 3); flash 1.5 over 2 rescouts (1, 2)" in text
+    assert "flash against luna: arms that differ by less than about" in text
+    assert "| mean of 2 | luna | no report | 2.5 |" in text
+    # A rescout whose research grade failed is left out of the comparison, as it is of the stage table.
+    runs.append(RunDiagnosis(uuid4(), case, "", None, claims=dict.fromkeys(points, True), arm="flash"))
+    assert "flash 1.5 over 2 rescouts" in render(runs, "zai:glm-5.3@high", [], {})
+
+
+def test_a_rescout_study_takes_no_grade_or_audit() -> None:
+    from research_loop.study import StudySpec
+
+    spec = {"study": "s", "kind": "rescout", "sources": ["x"], "cap_usd": 1, "estimate_usd": 1, "ceiling_usd": 2,
+            "arms": [{"name": "luna", "args": ["--model", "openai:gpt-6-luna@high"]}]}
+    with pytest.raises(ValueError, match="use `diagnose`"):
+        StudySpec(**spec, grade=True)
+    assert StudySpec(**spec, diagnose=True).diagnose

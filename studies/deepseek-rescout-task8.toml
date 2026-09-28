@@ -1,0 +1,47 @@
+# Screening study, not a model-selection result. Replaces the scout-model part of
+# deepseek-integrations-screen.toml (docs/evaluation.md, "Serper, Brave, and DeepSeek integration
+# study"). Each arm rescouts the same three stored drb2-task8 plans (scout-v10, gpt-6-sol@high
+# planner, standard depth) on the current code, so only the scout model changes: no planning and
+# no synthesis. Luna is rescouted too, as the baseline; the source runs' own research is older code.
+# A rescout writes no report, so each run's claims and research are graded by one judge
+# (diagnose), and arms are compared on the rubric points their claims met.
+#
+# Decision rule, fixed before any paid run:
+# - A DeepSeek arm is disqualified by a failed or partial rescout that Luna did not have on the same
+#   plan, or a verified-quote share more than 5 points below Luna's.
+# - It advances to a confirmation on more cases if its mean points claimed is at least Luna's minus 2
+#   and it cuts Luna's median scout cost by 25% or its median time by 20%; or if its mean points
+#   claimed is at least Luna's plus 8 (the detectable difference of three runs per arm) at no more
+#   than $0.50 a rescout more.
+# - Otherwise the arm is recorded as not advancing, or undecided when the scores are within the
+#   detectable difference but cost and time do not settle it. No default changes on this screen.
+# Every scout runs at xhigh, the highest effort (DeepSeek receives it as max), at the user's request.
+# Reported per plan: status, points claimed and seen, verified quotes, coverage, scout cost and
+# tokens, time, searches found/empty/failed, pages read/failed, 429s. Arm order rotates by plan.
+study = "deepseek-rescout-task8"
+kind = "rescout"
+sources = ["aea52be0-2e67-4a9b-8400-ca2b907fe12b", "8f753940-34f6-4a5b-a677-238157672d54",
+           "27701a2f-b052-457d-8d59-ed3ada12189f"]
+replicates = 1
+cap_usd = 2.50          # each rescout's hard cap; DeepSeek V4 Pro at peak prices with no cache hits is about $1.30 at high
+estimate_usd = 0.90     # source scouts used about 800k input and 50k output tokens; V4 Pro half cached, v13's windows, xhigh reasoning
+ceiling_usd = 10.50     # nine rescouts and diagnoses at their estimates come to $9.45
+diagnose = true
+diagnose_model = "zai:glm-5.3@high"
+diagnose_estimate_usd = 0.15
+diagnose_cap_usd = 0.75
+
+[[arms]]
+name = "luna"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+
+[[arms]]
+name = "deepseek-flash"
+args = ["--model", "deepseek:deepseek-flash@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+
+[[arms]]
+name = "deepseek-v4-pro"
+args = ["--model", "deepseek:deepseek-v4-pro@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }

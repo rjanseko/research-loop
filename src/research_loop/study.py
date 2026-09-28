@@ -4,7 +4,7 @@
 
 A study compares arms, such as two depths, two scout models, or two commits, on the same frozen cases
 or stored runs. The runner does what the screens did by hand. It runs each planned run through the
-`research` command, one at a time, reversing the arm order on every other replicate so that neither arm
+`research` command, one at a time, rotating the arm order on every replicate and target so that no arm
 always goes first against the study's shared cache (ABBA). It labels every run with the study, arm, and
 replicate. An arm at another git ref runs from a temporary worktree of that ref, so it uses that
 commit's code. Before starting, it refuses a spec whose worst case by the estimates exceeds the study's
@@ -33,7 +33,8 @@ A spec is TOML:
     audit_model = "zai:glm-5.3@high"
     audit_estimate_usd = 0.04
     audit_cap_usd = 0.30            # each audit's hard cap, lowered the same way
-    diagnose = true                 # grade each run's claims and research too, to find where points were lost
+    diagnose = true                 # grade each run's claims and research too, to find where points were lost;
+                                    # a rescout study's only grade, since a rescout writes no report
     diagnose_model = "zai:glm-5.3@high"
     diagnose_estimate_usd = 0.15
     diagnose_cap_usd = 0.75         # each diagnosis's hard cap, lowered the same way
@@ -69,6 +70,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .config import ModelCallLimits, ScoutModels, Settings
 from .coverage import EXPECTED, coverage
 
 REPO = Path(__file__).resolve().parents[2]
@@ -105,14 +107,14 @@ class StudySpec(BaseModel):
     grade_estimate_usd: float = Field(0.06, ge=0)
     grade_cap_usd: float = Field(1.00, gt=0)
     audit: bool = False
-    audit_model: str = "zai:glm-5.3@high"
+    audit_model: str | None = None
     # The costliest audit of a stored report was $0.036 (audit v1, GLM-5.3 at high effort).
     audit_estimate_usd: float = Field(0.04, ge=0)
     audit_cap_usd: float = Field(0.30, gt=0)
     # Grades a run's report, claims, and research with one judge (diagnose.py). GLM-5.3 at high effort cost
     # $0.03 to $0.05 a grade on drb2-task8 reports.
     diagnose: bool = False
-    diagnose_model: str = "zai:glm-5.3@high"
+    diagnose_model: str | None = None
     diagnose_estimate_usd: float = Field(0.15, ge=0)
     diagnose_cap_usd: float = Field(0.75, gt=0)
 
@@ -124,6 +126,8 @@ class StudySpec(BaseModel):
             raise ValueError(f"a {self.kind} study lists `sources` (stored run IDs) and no `cases`")
         if self.kind != "scout" and any("--model" not in arm.args for arm in self.arms):
             raise ValueError(f"every arm of a {self.kind} study gives --model in its args")
+        if self.kind == "rescout" and (self.grade or self.audit):
+            raise ValueError("a rescout writes no report to grade or audit; use `diagnose` to grade its claims")
         if len({arm.name for arm in self.arms}) != len(self.arms):
             raise ValueError("arm names must be unique")
         return self
@@ -163,13 +167,14 @@ def _slug(text: str) -> str:
 
 
 def schedule(spec: StudySpec) -> list[Planned]:
-    """Every run in order: for each target and replicate, the arms forward, then reversed on the next
-    replicate, so that over a pair of replicates each arm goes first once (ABBA)."""
+    """Every run in order: for each target and replicate, the arms rotated one place further than the last,
+    so that each arm goes first equally often against the study's shared cache. Two arms alternate (ABBA);
+    three arms on three stored plans each go first once."""
     planned = []
-    for target in spec.targets:
+    for index, target in enumerate(spec.targets):
         for replicate in range(1, spec.replicates + 1):
-            arms = spec.arms if replicate % 2 else list(reversed(spec.arms))
-            planned += [Planned(target, arm, replicate) for arm in arms]
+            turn = (index * spec.replicates + replicate - 1) % len(spec.arms)
+            planned += [Planned(target, arm, replicate) for arm in spec.arms[turn:] + spec.arms[:turn]]
     return planned
 
 
@@ -177,13 +182,21 @@ def schedule(spec: StudySpec) -> list[Planned]:
 # cheap, with every role on a cheap real model, for cents. Dry and cheap runs exist to find bugs before
 # a real study pays for them (dryrun.py); their research is never scored.
 Mode = Literal["real", "dry", "cheap"]
-FAKE_MODEL = "fake:fuzz@high"
-CHEAP_MODEL = "openai:gpt-6-luna@low"
+def configured_model(role: Literal["audit", "diagnose", "cheap", "dry"], env: dict[str, str],
+                     models: ScoutModels | None = None) -> str:
+    """A study model from the arm's environment, then the study's model snapshot."""
+    key = f"RESEARCH_MODELS__{role.upper()}"
+    return env[key] if key in env else getattr(models or Settings().models, role)
 
 
-def mode_model(model: str, mode: Mode) -> str:
-    """The model a step runs on in `mode`: its own for a real study, else the fake or cheap one."""
-    return model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+def mode_model(model: str | None, mode: Mode, role: Literal["audit", "diagnose"],
+               env: dict[str, str], models: ScoutModels | None = None) -> str:
+    """Resolve a study model after the arm environment is chosen; dry and cheap replace it."""
+    if mode == "dry":
+        return configured_model("dry", env, models)
+    if mode == "cheap":
+        return configured_model("cheap", env, models)
+    return configured_model(role, env, models) if model is None else model
 CHEAP_CEILING_USD = 0.25
 _ROLES = ("PLANNER", "SCOUT", "SYNTHESIZER", "FALLBACK", "JUDGE")
 _SCOUT_ALT = "RESEARCH_MODELS__SCOUT_ALT"
@@ -204,11 +217,12 @@ def for_mode(spec: StudySpec, mode: Mode, seeds: int = 1) -> StudySpec:
         return spec.model_copy(update={"study": f"{spec.study}-dry", "replicates": seeds,
                                        "ceiling_usd": spec.ceiling_usd * max(1.0, seeds / spec.replicates)})
     if mode == "cheap":
+        # Cheap runs have cost $0.003 to $0.03; $0.05 lets three arms and their diagnoses plan under the ceiling.
         # Each run's hard cap is the cheap ceiling too: cheap models cost cents, but paid web searches do not,
         # and a cheap drb2-task8 run on Exa could make a hundred of them under the spec's own cap.
         return spec.model_copy(update={"study": f"{spec.study}-cheap", "replicates": 1, "cases": spec.cases[:1],
                                        "cap_usd": min(spec.cap_usd, CHEAP_CEILING_USD),
-                                       "sources": spec.sources[:1], "estimate_usd": 0.06, "grade_estimate_usd": 0.01,
+                                       "sources": spec.sources[:1], "estimate_usd": 0.05, "grade_estimate_usd": 0.01,
                                        "audit_estimate_usd": 0.01, "diagnose_estimate_usd": 0.03,
                                        "ceiling_usd": min(spec.ceiling_usd, CHEAP_CEILING_USD)})
     return spec
@@ -219,18 +233,35 @@ def dry_database_url(dsn: str) -> str:
     return os.environ.get("RESEARCH_DRY_DATABASE_URL") or re.sub(r"/[^/?]+(\?|$)", r"/research_dry\1", dsn, count=1)
 
 
-def mode_env(mode: Mode, run: Planned, dsn: str | None = None) -> dict[str, str]:
+def copy_sources_to_dry(dsn: str, sources: list[str]) -> list[str]:
+    """Copy each source run's record from the main database into the dry one, so a dry rescout or synthesis
+    study has the plans and ledgers it reruns; returns the sources the main database does not hold. Only the
+    `runs` row is copied, without its parent link, and a source already there is left as it is."""
+    import psycopg
+
+    missing = []
+    with psycopg.connect(dsn) as main, psycopg.connect(dry_database_url(dsn)) as dry:
+        for source in sources:
+            row = main.execute("select row_to_json(runs) from runs where id::text = %s", (source,)).fetchone()
+            if row is None:
+                missing.append(source)
+                continue
+            dry.execute("insert into runs select * from json_populate_record(null::runs, %s::json) "
+                        "on conflict (id) do nothing", (json.dumps(row[0] | {"parent_run_id": None}),))
+    return missing
+
+
+def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutModels | None = None) -> dict[str, str]:
     """What a dry or cheap run's environment overrides, applied after the arm's own, so no arm reaches a
     real or expensive model in these modes."""
     if mode == "real":
         return {}
-    model = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+    models = models or Settings().models
+    model = mode_model(None, mode, "audit", run.arm.env, models)
     env = {f"RESEARCH_MODELS__{role}": model for role in _ROLES}
     # A second scout model, from the arm or the environment, is replaced like the rest; without one the check
     # keeps one scout model, as the real run does.
-    from .config import Settings
-
-    alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else Settings().models.scout_alt
+    alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else models.scout_alt
     env[_SCOUT_ALT] = model if alt else ""
     if mode == "dry":
         env |= {"RESEARCH_OFFLINE_WORLD": str(_stable_seed(run)), "RESEARCH_CACHE_MODE": "off",
@@ -245,14 +276,15 @@ def _stable_seed(run: Planned) -> int:
     return int.from_bytes(hashlib.sha256(run.label.encode()).digest()[:4], "big")
 
 
-def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: Decimal | None = None) -> list[str]:
+def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: Decimal | None = None,
+            models: ScoutModels | None = None) -> list[str]:
     """The `research` arguments for one planned run under `cap` (the spec's run cap when not given); a dry or
     cheap run's `--model` is replaced too."""
     labels = ["--study", spec.study, "--arm", run.arm.name, "--replicate", str(run.replicate),
               "--max-usd", f"{_usd(spec.cap_usd) if cap is None else cap:.2f}", "--out", str(out)]
     args = list(run.arm.args)
     if mode != "real" and "--model" in args and args.index("--model") + 1 < len(args):
-        args[args.index("--model") + 1] = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+        args[args.index("--model") + 1] = mode_model(None, mode, "audit", run.arm.env, models)
     if spec.kind == "scout":
         return ["scout", "--case", run.target, *labels, *args]
     return [spec.kind, run.target, *labels, *args]
@@ -271,6 +303,10 @@ class Outcome:
     notes: list[str] = field(default_factory=list)
     # Invariants the run broke (dryrun.check_record), and tracebacks in its output; dry and cheap runs only.
     violations: list[str] = field(default_factory=list)
+    # What the run's web searches and page reads returned (tool_counts), when its calls could be read.
+    tools: dict[str, int] | None = None
+    diagnosis_model: str | None = None
+    mode: Mode = "real"
     # The caps of steps whose cost could not be read; the ceiling counts them as spent.
     unaccounted_usd: Decimal = Decimal(0)
 
@@ -384,9 +420,13 @@ def _preflight(env: dict[str, str]) -> str | None:
     return lines[-1] if lines else f"exit {done.returncode}"
 
 
-def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path]) -> dict[str, str]:
-    """The extra environment of one planned run: its arm's, then the mode's, then its git ref's code."""
-    env = dict(run.arm.env) | mode_env(mode, run, dsn)
+def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
+             models: ScoutModels, model_calls: ModelCallLimits) -> dict[str, str]:
+    """Freeze model IDs and call limits, then apply arm, mode, and git-ref overrides."""
+    env = {f"RESEARCH_MODELS__{role.upper()}": spec or "" for role, spec in models.model_dump().items()}
+    env |= {f"RESEARCH_MODEL_CALLS__{name.upper()}": str(value)
+            for name, value in model_calls.model_dump().items()}
+    env |= run.arm.env | mode_env(mode, run, dsn, models)
     if run.arm.ref:
         env["PYTHONPATH"] = str(trees[run.arm.ref] / "src")
     return env
@@ -439,12 +479,12 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     invariants (dryrun.check_record)."""
     from .dryrun import check_record
 
+    frozen_settings = Settings()
+    frozen_models, frozen_model_calls = frozen_settings.models, frozen_settings.model_calls
     grade = grade or _grade_with(_invoke_output)
     audit = audit or _audit_with(_invoke_output)
     diagnose = diagnose or _diagnose_with(_invoke_output)
     preflight = preflight or _preflight
-    audit_model = mode_model(spec.audit_model, mode)
-    diagnose_model = mode_model(spec.diagnose_model, mode)
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
@@ -455,16 +495,32 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     audit_reserve = _usd(spec.audit_estimate_usd) if spec.audit else Decimal(0)
     diagnose_reserve = _usd(spec.diagnose_estimate_usd) if spec.diagnose else Decimal(0)
     with worktrees(spec) as trees:
-        # Every arm is checked before any run, so an arm that cannot start does not find out after another spent.
+        # Every arm and enabled evaluation model is checked before any arm spends money.
+        from .config import model_spec_problem, split_model
+        from .prices import price_per_million
+
         firsts = {run.arm.name: run for run in reversed(schedule(spec))}
         refusals = []
         for name, run in sorted(firsts.items()):
-            env = _run_env(run, mode, dsn, trees)
-            args = command(spec, run, Path(tempfile.gettempdir()), mode)
+            env = _run_env(run, mode, dsn, trees, frozen_models, frozen_model_calls)
+            args = command(spec, run, Path(tempfile.gettempdir()), mode, models=frozen_models)
             if spec.kind in _ROLE_OF_MODEL and "--model" in args:
                 env[f"RESEARCH_MODELS__{_ROLE_OF_MODEL[spec.kind]}"] = args[args.index("--model") + 1]
             if problem := preflight(env):
                 refusals.append(f"arm {name}: {problem}")
+            for stage, enabled, selected in (("audit", spec.audit, spec.audit_model),
+                                             ("diagnose", spec.diagnose, spec.diagnose_model)):
+                if not enabled:
+                    continue
+                model = mode_model(selected, mode, stage, env, frozen_models)
+                if problem := model_spec_problem(model):
+                    refusals.append(f"arm {name} {stage}: {problem}")
+                    continue
+                if price_per_million(split_model(model)[0]) is None:
+                    refusals.append(f"arm {name} {stage}: {model} has no price")
+                    continue
+                if problem := preflight(env | {"RESEARCH_MODELS__JUDGE": model}):
+                    refusals.append(f"arm {name} {stage}: {problem}")
         if refusals:
             raise StudyConfigError("; ".join(refusals))
         for run in schedule(spec):
@@ -474,23 +530,28 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                 outcomes.append(Outcome(run, -1, notes=[note]))
                 continue
             out = out_root / run.label
-            env = _run_env(run, mode, dsn, trees)
-            code, stderr = invoke(command(spec, run, out, mode, run_cap), env)
-            outcome = Outcome(run, code)
+            env = _run_env(run, mode, dsn, trees, frozen_models, frozen_model_calls)
+            audit_model = mode_model(spec.audit_model, mode, "audit", env, frozen_models)
+            diagnose_model = mode_model(spec.diagnose_model, mode, "diagnose", env, frozen_models)
+            code, stderr = invoke(command(spec, run, out, mode, run_cap, frozen_models), env)
+            outcome = Outcome(run, code, diagnosis_model=diagnose_model, mode=mode)
             if (out / "run.json").exists():
                 outcome.record = json.loads((out / "run.json").read_text(encoding="utf-8"))
             if (outcome.record or {}).get("cost_usd") is None:
                 outcome.unaccounted_usd += run_cap
                 outcome.notes.append(f"the run's cost is unknown, so its ${run_cap:.2f} cap counts against the ceiling")
+            stored = (calls(env.get("DATABASE_URL", dsn), outcome.record["run_id"])
+                      if dsn and outcome.record else None)
+            if stored is not None:
+                outcome.tools = tool_counts(stored)
             if mode != "real":
                 if "Traceback (most recent call last)" in stderr:
                     outcome.violations.append("a traceback in the command's output: "
                                               + stderr.strip().splitlines()[-1][:200])
                 if outcome.record is None:
                     outcome.violations.append(f"no run record was written (exit {code})")
-                elif dsn:
-                    run_dsn = env.get("DATABASE_URL", dsn)
-                    outcome.violations += check_record(outcome.record, calls(run_dsn, outcome.record["run_id"]))
+                elif stored is not None:
+                    outcome.violations += check_record(outcome.record, stored)
             case_id = _case_id(outcome.record)
             if spec.grade and outcome.record and outcome.record.get("report") and case_id:
                 grade_cap = _cap(spec.grade_cap_usd,
@@ -521,7 +582,8 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                         outcome.audit = None
                     if outcome.audit is None:
                         outcome.unaccounted_usd += audit_cap
-            if spec.diagnose and outcome.record and outcome.record.get("report") and case_id:
+            # A rescout has no report; its diagnosis grades its claims and research alone.
+            if spec.diagnose and outcome.record and (outcome.record.get("report") or spec.kind == "rescout") and case_id:
                 diagnose_cap = _cap(spec.diagnose_cap_usd, ceiling - spent - outcome.charged_usd)
                 if diagnose_cap <= 0:
                     outcome.notes.append("not diagnosed: the ceiling leaves no room")
@@ -552,11 +614,54 @@ def study_diagnosis(spec: StudySpec, outcomes: list[Outcome], mode: Mode = "real
     if not spec.diagnose or not diagnosed:
         return ""
     invoke_output = invoke_output or _invoke_output
-    env = {name: value for name, value in mode_env(mode, diagnosed[0].run, dsn).items() if name != "PYTHONPATH"}
-    code, output = invoke_output(["diagnose", *(o.record["run_id"] for o in diagnosed),
-                                  "--model", mode_model(spec.diagnose_model, mode), "--free"], env)
-    tables = output.split("\n\n", 1)[1] if "\n\n" in output else ""
-    return tables if code == 0 or tables else f"The study's diagnosis failed (exit {code}); see the output above.\n"
+    # A model or database override may differ by arm. Reuse stored grades only with the model that made them.
+    groups: dict[tuple[str, str | None], tuple[dict[str, str], list[str]]] = {}
+    for outcome in diagnosed:
+        env = outcome.run.arm.env | mode_env(mode, outcome.run, dsn)
+        env.pop("PYTHONPATH", None)
+        model = (outcome.diagnosis_model if mode == outcome.mode else None) or mode_model(
+            spec.diagnose_model, mode, "diagnose", env)
+        key = model, env.get("DATABASE_URL", dsn)
+        if key not in groups:
+            groups[key] = env, []
+        groups[key][1].append(outcome.record["run_id"])
+    tables = []
+    for (model, _dsn), (env, run_ids) in groups.items():
+        code, output = invoke_output(["diagnose", *run_ids, "--model", model, "--free"], env)
+        table = output.split("\n\n", 1)[1] if "\n\n" in output else ""
+        tables.append(table if code == 0 or table else
+                      f"The study's diagnosis failed (exit {code}); see the output above.\n")
+    return "\n".join(table.rstrip("\n") for table in tables if table).rstrip("\n") + "\n"
+
+
+def tool_counts(calls: list[dict[str, Any]]) -> dict[str, int]:
+    """How a run's web searches and page reads came back, from its stored calls: searches that found results,
+    found nothing, or failed; distinct pages read in full or in part; and page reads that failed, blocked
+    sources included. A search chain counts once, by what its last engine returned."""
+    counts = dict.fromkeys(("searches_found", "searches_empty", "searches_failed", "pages_failed"), 0)
+    read: set[str] = set()
+    for call in calls:
+        for message in call.get("messages") or []:
+            for part in message.get("parts") or []:
+                content = part.get("content")
+                if part.get("part_kind") != "tool-return" or not isinstance(content, dict):
+                    continue
+                if part.get("tool_name") == "web_search":
+                    outcome = "found" if content.get("results") else "failed" if content.get("error") else "empty"
+                    counts[f"searches_{outcome}"] += 1
+                elif part.get("tool_name") == "fetch":
+                    if content.get("text"):
+                        read.add(str(content.get("url") or ""))
+                    elif content.get("error"):
+                        counts["pages_failed"] += 1
+    return counts | {"pages_read": len(read)}
+
+
+def _tools_cell(tools: dict[str, int] | None) -> str:
+    if tools is None:
+        return ""
+    return (f"{tools['searches_found']} / {tools['searches_empty']} / {tools['searches_failed']} · "
+            f"{tools['pages_read']} / {tools['pages_failed']}")
 
 
 def _audit_cell(audit: dict[str, Any] | None) -> str:
@@ -572,10 +677,10 @@ def _case_id(record: dict[str, Any] | None) -> str | None:
 
 def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
     """A Markdown table of every planned run, the ones not run included."""
-    header = ("| Target | Arm | Rep | Run | Status | Answer | Cost | Time | Quotes verified / misattributed / not found "
-              "(short) | Statements quoted / summary only / thin | Audit supported / partial / unsupported / no quote "
-              "| Coverage found (named) | Grade |")
-    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    header = ("| Target | Arm | Rep | Run | Status | Answer | Cost | Time | Searches found / empty / failed · pages "
+              "read / failed | Quotes verified / misattributed / not found (short) | Statements quoted / summary only "
+              "/ thin | Audit supported / partial / unsupported / no quote | Coverage found (named) | Grade |")
+    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for outcome in outcomes:
         record, run = outcome.record or {}, outcome.run
         checks = record.get("checks") or {}
@@ -595,6 +700,7 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
                  str(checks.get("answer_support") or ""),
                  f"${outcome.cost_usd:.3f}" if record else "",
                  f"{float(record['seconds']):.0f} s" if record.get("seconds") is not None else "",
+                 _tools_cell(outcome.tools),
                  f"{verified} / {wrong} / {quotes - verified - wrong}{short}" if quotes else "",
                  statements, _audit_cell(outcome.audit), cover, f"{grade['met']}/{grade['points']}" if grade else ""]
         lines.append("| " + " | ".join(cells) + " |")

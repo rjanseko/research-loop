@@ -44,6 +44,18 @@ def test_deepseek_runs_at_the_effort_named_even_where_pydantic_ai_would_drop_it(
                                                                      "reasoning_effort": effort}
 
 
+def test_deepseek_flash_thinking_does_not_force_a_tool_choice(keyed: Settings) -> None:
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.tools import ToolDefinition
+
+    # A structured-output agent requires a tool call. Flash's thinking mode rejects the literal
+    # tool_choice=required with HTTP 400; PydanticAI should send auto as it does for V4 Pro.
+    params = ModelRequestParameters(function_tools=[ToolDefinition(name="ping")], allow_text_output=False)
+    for spec in ("deepseek:deepseek-flash@high", "deepseek:deepseek-v4-pro@high"):
+        model = build_model(spec, "scout", keyed)
+        assert model._get_tool_choice(model.settings, params)[1] == "auto"
+
+
 def test_settings_refuse_a_model_without_its_effort(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT", "openai:gpt-6-luna")
     with pytest.raises(ValueError, match="must name its effort"):
@@ -68,6 +80,19 @@ def test_each_model_carries_its_own_settings(keyed: Settings) -> None:
     assert planner["thinking"] == "high" and planner["openai_prompt_cache_key"] == "research-loop:openai:gpt-6-sol"
     assert "max_tokens" not in model_settings("zai:glm-5.3-flash@high", "scout", keyed)
     assert build_model("zai:glm-5.3-flash@xhigh", "scout", keyed).settings["thinking"] == "xhigh"
+
+
+def test_model_call_limits_come_from_the_environment(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scout import run_config
+
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__PLANNER_MAX_OUTPUT_TOKENS", "12000")
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__RUBRIC_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("RESEARCH_MODEL_CALLS__QUALITY_MAX_OUTPUT_TOKENS", "4000")
+    settings = Settings()
+    assert model_settings(settings.models.planner, "planner", settings)["max_tokens"] == 12_000
+    assert settings.model_calls.rubric_timeout_seconds == 240
+    assert settings.model_calls.quality_max_output_tokens == 4_000
+    assert run_config(settings, [], [])["model_calls"]["planner_max_output_tokens"] == 12_000
 
 
 def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Settings) -> None:
@@ -148,3 +173,16 @@ async def test_glm_reaches_zai_with_reasoning_effort_max(keyed: Settings, monkey
     result = await Agent(model).run("hello")
     assert result.output == "ok"
     assert sent[0]["reasoning_effort"] == "max"
+
+
+def test_a_scout_model_trims_its_history_unless_turned_off() -> None:
+    from pydantic_ai.models.test import TestModel
+
+    from research_loop.config import Settings
+    from research_loop.history import TrimmedHistoryModel
+    from research_loop.models import scout_model
+
+    on = Settings(_env_file=None)
+    assert isinstance(scout_model(TestModel(), "openai:gpt-6-luna", on), TrimmedHistoryModel)
+    off = Settings(trim_history=False, _env_file=None)
+    assert not isinstance(scout_model(TestModel(), "openai:gpt-6-luna", off), TrimmedHistoryModel)

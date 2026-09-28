@@ -1,0 +1,55 @@
+# Screening study, not an engine-selection result. Replaces search-integrations-screen.toml's full runs
+# with rescouts, and adds Exa (docs/evaluation.md, "Serper, Brave, and DeepSeek integration study").
+# Each arm rescouts the same three stored drb2-task8 plans (scout-v10, gpt-6-sol@high planner,
+# standard depth) on the current code with Luna@xhigh scouts, the highest effort, at the user's
+# request. Only RESEARCH_SEARCH_ENGINE changes, and each engine is used alone, not in a chain.
+# DuckDuckGo is rescouted too, as the baseline. Trimming is pinned off in every arm (the user's choice,
+# on the assumption it hurts more than it helps), so this study does not wait on the trimming study,
+# and its study label gives it its own search and page cache. A rescout writes no report, so each
+# run's claims and research are graded by one judge (diagnose).
+#
+# Decision rule, fixed before any paid run:
+# - An engine is disqualified by a failed or partial rescout that DuckDuckGo did not have on the same
+#   plan, by a blocked source reaching a scout, or by a verified-quote share more than 5 points below
+#   DuckDuckGo's.
+# - It advances to a confirmation on more cases if its empty-or-failed search share is at most half of
+#   DuckDuckGo's, its mean points claimed is at least DuckDuckGo's minus 2, and its median rescout cost,
+#   search charges included, is at most $0.15 above DuckDuckGo's; or if its mean points claimed is at
+#   least DuckDuckGo's plus 8 (the detectable difference of three runs per arm) at no more than $0.25
+#   a rescout more.
+# - Otherwise the engine is recorded as not advancing, or undecided when the scores are within the
+#   detectable difference but availability and cost do not settle it. No default changes on this screen.
+# Reported per plan: status, points claimed and seen, verified quotes, coverage, scout and search cost,
+# time, searches found/empty/failed, pages read/failed, 429s. Arm order rotates by plan.
+study = "search-rescout-task8"
+kind = "rescout"
+sources = ["aea52be0-2e67-4a9b-8400-ca2b907fe12b", "8f753940-34f6-4a5b-a677-238157672d54",
+           "27701a2f-b052-457d-8d59-ed3ada12189f"]
+replicates = 1
+cap_usd = 1.50          # each rescout's hard cap
+estimate_usd = 0.55     # the trimming study's $0.25 Luna@high estimate, doubled for xhigh's reasoning, plus up to 60 Exa searches
+ceiling_usd = 9.50      # twelve rescouts and diagnoses at their estimates come to $8.40
+diagnose = true
+diagnose_model = "zai:glm-5.3@high"
+diagnose_estimate_usd = 0.15
+diagnose_cap_usd = 0.75
+
+[[arms]]
+name = "duckduckgo"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+
+[[arms]]
+name = "serper"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "serper", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+
+[[arms]]
+name = "brave"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "brave", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+
+[[arms]]
+name = "exa"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "exa", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }

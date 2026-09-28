@@ -30,8 +30,6 @@ from .store import error_record, transcript, usage_record
 from .study_budget import BUDGET_POLICY_VERSION, StudyBudget, StudyBudgetModel
 
 QUALITY_VERSION = 1
-QUALITY_MODEL = "openai:gpt-6-sol"
-QUALITY_THINKING = "high"
 DIMENSIONS = ("direct_answer", "coverage", "evidence_use", "calibration", "reader_utility")
 INSTRUCTIONS = """Evaluate a research report for the reader and decision in the packet.
 Give each quality dimension an anchored level: 0 absent or misleading, 1 major gaps,
@@ -149,8 +147,8 @@ class QualityRecord:
     id: UUID = field(default_factory=uuid4)
     budget_cap_usd: Decimal | None = None
     reserved_usd: Decimal | None = None
-    judge_model: str = QUALITY_MODEL
-    judge_thinking: str = QUALITY_THINKING
+    judge_model: str = field(kw_only=True)
+    judge_thinking: str = field(kw_only=True)
 
     @property
     def cost_usd(self) -> Decimal | None:
@@ -211,8 +209,9 @@ async def judge_quality(report: FinalReport, ledger: EvidenceLedger, packet: Qua
         with capture_run_messages() as messages:
             result = await agent.run(assessment_input(report, ledger, packet, checks),
                                      model=chosen, usage=usage,
-                                     model_settings={"thinking": judge_thinking, "timeout": 180,
-                                                     "max_tokens": 5000})
+                                     model_settings={"thinking": judge_thinking,
+                                                     "timeout": settings.model_calls.quality_timeout_seconds,
+                                                     "max_tokens": settings.model_calls.quality_max_output_tokens})
     except Exception as exc:  # noqa: BLE001 - retain the judge's partial usage and failure
         return QualityRecord(run_id, packet, "failed", usage=usage, messages=list(messages), error=exc,
                              budget_cap_usd=budget.cap_usd if budget else None,

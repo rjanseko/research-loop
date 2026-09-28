@@ -65,6 +65,8 @@ def model_spec_problem(spec: str) -> str | None:
 # The bug-finding harness's scripted models (dryrun.py): no key, priced as Luna, and usable only with
 # the offline world, so neither can reach a real run.
 FAKE_PROVIDER = "fake"
+# Synthetic usage from the offline harness is priced against this one known model; no provider call is made.
+FAKE_PRICE_MODEL_ID = "openai:gpt-6-luna"
 
 
 def model_provider(model_id: str) -> str | None:
@@ -104,6 +106,12 @@ class ScoutModels(BaseModel):
     fallback: str | None = "openai:gpt-6-sol@high"
     # Grades rubric points and assesses quality (evals.py, quality.py); each grade records it.
     judge: str = "openai:gpt-6-sol@high"
+    # Evaluation models run after research; a study spec may override either one.
+    audit: str = "zai:glm-5.3@high"
+    diagnose: str = "zai:glm-5.3@high"
+    # The paid and offline bug-finding study modes replace every role with these models.
+    cheap: str = "openai:gpt-6-luna@low"
+    dry: str = "fake:fuzz@high"
 
     @model_validator(mode="before")
     @classmethod
@@ -113,10 +121,23 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "scout_alt", "synthesizer", "fallback", "judge")
+    @field_validator("planner", "scout", "synthesizer", "judge", "audit", "diagnose", "cheap")
     @classmethod
-    def _provider_model(cls, value: str | None) -> str | None:
+    def _required_model(cls, value: str) -> str:
+        return _model_spec(value)
+
+    @field_validator("scout_alt", "fallback")
+    @classmethod
+    def _optional_model(cls, value: str | None) -> str | None:
         return None if value is None or not value.strip() else _model_spec(value)
+
+    @field_validator("dry")
+    @classmethod
+    def _dry_model(cls, value: str) -> str:
+        spec = _model_spec(value)
+        if model_provider(split_model(spec)[0]) != FAKE_PROVIDER:
+            raise ValueError("RESEARCH_MODELS__DRY must use the fake: provider")
+        return spec
 
 
 class DepthTier(BaseModel):
@@ -252,6 +273,24 @@ class ScoutLimits(BaseModel):
         return round((self.cost_usd - self.planner_usd - self.synthesis_usd) / max(questions, 1), 4)
 
 
+class ModelCallLimits(BaseModel):
+    """Environment-backed per-call limits for model roles and capability checks."""
+
+    planner_requests: int = Field(2, ge=1)
+    planner_tokens: int = Field(100_000, ge=1)
+    planner_max_output_tokens: int = Field(16_000, ge=1)
+    synthesizer_requests: int = Field(2, ge=1)
+    rubric_timeout_seconds: float = Field(600, gt=0)
+    rubric_max_output_tokens: int = Field(16_000, ge=1)
+    audit_timeout_seconds: float = Field(600, gt=0)
+    audit_max_output_tokens: int = Field(16_000, ge=1)
+    quality_timeout_seconds: float = Field(180, gt=0)
+    quality_max_output_tokens: int = Field(5_000, ge=1)
+    connect_timeout_seconds: float = Field(5, gt=0)
+    smoke_requests: int = Field(3, ge=1)
+    smoke_cost_usd: float = Field(0.05, gt=0)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="RESEARCH_", env_file=".env", env_file_encoding="utf-8",
@@ -261,6 +300,7 @@ class Settings(BaseSettings):
     env: str = "development"
     models: ScoutModels = Field(default_factory=ScoutModels)
     limits: ScoutLimits = Field(default_factory=ScoutLimits)
+    model_calls: ModelCallLimits = Field(default_factory=ModelCallLimits)
     # Provider token rate limits per minute, by provider:model; scouts on a listed model are paced under
     # it (rate_limit.py). Unset, a run starts from this default and switches to the limit OpenAI reports
     # with its first response; set, as JSON such as RESEARCH_TOKENS_PER_MINUTE='{"openai:gpt-6-luna":
@@ -297,12 +337,19 @@ class Settings(BaseSettings):
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
     serper_api_key: SecretStr | None = Field(None, validation_alias="SERPER_API_KEY")
     brave_api_key: SecretStr | None = Field(None, validation_alias="BRAVE_API_KEY")
+    # Whether a scout's requests leave out its oldest pages and search snippets (history.py). Trimming was
+    # added for throughput under a 200,000 tokens-a-minute pacer that was ten times too low, and it breaks
+    # the cached prompt prefix: Luna scouts read 67-74% of input from the cache untrimmed (v6, v9) and
+    # 43-49% trimmed (v10). On until a paired study decides (docs/notes.md).
+    trim_history: bool = True
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
     # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
     # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in
     # the fetch bake-off this chain read 139 of 160 pages our fetch could not. An empty value turns it off.
     read_fallback: Annotated[tuple[str, ...] | None, NoDecode] = None
     firecrawl_api_key: SecretStr | None = Field(None, validation_alias="FIRECRAWL_API_KEY")
+    # Optional: raises CORE's limit for the open-access reader from 100 requests a day to 1,000 (reading.py).
+    core_api_key: SecretStr | None = Field(None, validation_alias="CORE_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
     offline_world: int | None = None

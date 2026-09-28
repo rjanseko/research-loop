@@ -209,6 +209,7 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
         REPO,
         StudyCeilingError,
         StudyConfigError,
+        copy_sources_to_dry,
         dry_database_url,
         for_mode,
         load_spec,
@@ -237,6 +238,11 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
             print(f"{run.label}: {run.target} {run.arm.name} replicate {run.replicate}"
                   + (f" at {run.arm.ref}" if run.arm.ref else ""))
         return 0 if spec.worst_case_usd() <= spec.ceiling_usd else 2
+    # A dry rescout or synthesis study needs its source runs in the dry database.
+    if (mode == "dry" and spec.kind != "scout" and settings.database_dsn
+            and (missing := copy_sources_to_dry(settings.database_dsn, spec.sources))):
+        print(f"Cannot run: no stored run {', '.join(missing)}", file=sys.stderr)
+        return 2
     out = args.out or REPO / "runs" / spec.study
     try:
         outcomes = run_study(spec, out, mode=mode, dsn=settings.database_dsn)
@@ -352,21 +358,22 @@ async def _audit(args: argparse.Namespace, settings: Settings) -> int:
     from .study_budget import StudyBudget
     from .tools import source_records
 
+    model_spec = settings.models.audit if args.model is None else args.model
     try:
         settings = settings.model_copy(update={"models": ScoutModels.model_validate(
-            settings.models.model_dump() | {"judge": args.model})})
+            settings.models.model_dump() | {"judge": model_spec})})
     except ValidationError as exc:
         print(f"Cannot run: {exc.errors()[0]['msg']}", file=sys.stderr)
         return 2
     problems = [problem for problem in settings.route_problems() if problem.startswith("judge:")]
-    if price_per_million(split_model(args.model)[0]) is None:
-        problems.append(f"{args.model} has no price, so its cost cannot be capped")
+    if price_per_million(split_model(model_spec)[0]) is None:
+        problems.append(f"{model_spec} has no price, so its cost cannot be capped")
     if problems:
         print(f"Cannot run: {'; '.join(problems)}", file=sys.stderr)
         return 2
     # One cap across every run audited, so a batch cannot pass it.
     budget = StudyBudget(args.max_usd)
-    print(f"Auditing {len(args.run_ids)} run(s) with {args.model}, audit v{AUDIT_VERSION}, "
+    print(f"Auditing {len(args.run_ids)} run(s) with {model_spec}, audit v{AUDIT_VERSION}, "
           f"${budget.cap_usd:.2f} pre-dispatch cap across them; this makes paid calls.", file=sys.stderr)
     code = 0
     async with AsyncExitStack() as stack:
@@ -429,23 +436,24 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
     )
     from .study_budget import StudyBudget
 
+    model_spec = settings.models.diagnose if args.model is None else args.model
     try:
         settings = settings.model_copy(update={"models": ScoutModels.model_validate(
-            settings.models.model_dump() | {"judge": args.model})})
+            settings.models.model_dump() | {"judge": model_spec})})
     except ValidationError as exc:
         print(f"Cannot run: {exc.errors()[0]['msg']}", file=sys.stderr)
         return 2
-    model_id, thinking = split_model(args.model)
+    model_id, thinking = split_model(model_spec)
     if not args.free:
         problems = [problem for problem in settings.route_problems() if problem.startswith("judge:")]
         if price_per_million(model_id) is None:
-            problems.append(f"{args.model} has no price, so its cost cannot be capped")
+            problems.append(f"{model_spec} has no price, so its cost cannot be capped")
         if problems:
             print(f"Cannot run: {'; '.join(problems)}", file=sys.stderr)
             return 2
     # One cap across every run, so a batch cannot pass it.
     budget = None if args.free else StudyBudget(args.max_usd)
-    print(f"Diagnosing {len(args.run_ids)} run(s) with {args.model}, diagnose v{DIAGNOSE_VERSION}, "
+    print(f"Diagnosing {len(args.run_ids)} run(s) with {model_spec}, diagnose v{DIAGNOSE_VERSION}, "
           + ("stored grades only." if budget is None else
              f"${budget.cap_usd:.2f} pre-dispatch cap across them; this makes paid calls."), file=sys.stderr)
 
@@ -465,7 +473,9 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
         stage_grades = list(await load_stage_grades(pool, args.run_ids))
         for run_id in args.run_ids:
             row = await load_run(pool, run_id)
-            if row is None or not row.get("report"):
+            # A fixed-plan rescout writes no report; its claims and research are graded alone.
+            rescout = row is not None and row.get("mode") == "fixed-plan"
+            if row is None or not (row.get("report") or rescout):
                 print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
                 code = 1
                 continue
@@ -480,10 +490,10 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
                 code = 1
                 continue
             ledger = EvidenceLedger.from_json(row["ledger"] or {})
-            text = reader_text(FinalReport.model_validate(row["report"]), ledger)
+            text = reader_text(FinalReport.model_validate(row["report"]), ledger) if row.get("report") else ""
             spent, new, reused, failed = Decimal(0), 0, 0, []
             found: dict[str, list[dict[str, Any]]] = {}
-            views = {"report": text, **{view: make(ledger) for view, make in VIEW_TEXT.items()}}
+            views = {**({"report": text} if text else {}), **{view: make(ledger) for view, make in VIEW_TEXT.items()}}
             for view, view_text in views.items():
                 prior = stored(report_grades if view == "report" else stage_grades, run_id, case.rubric_version,
                                None if view == "report" else view)
@@ -504,20 +514,20 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
                     found[view] = grade.points
                 else:
                     failed.append(f"{view} ({type(grade.error).__name__})")
-            if "report" in found:
-                diagnoses.append(RunDiagnosis(run_id, case, text, verdicts(found["report"]),
+            if "report" in found or (not text and "claims" in found):
+                diagnoses.append(RunDiagnosis(run_id, case, text, verdicts(found["report"]) if text else None,
                                               claims=verdicts(found["claims"]) if "claims" in found else None,
                                               research=verdicts(found["research"]) if "research" in found else None,
                                               arm=row.get("arm")))
             if failed:
                 code = 1
                 print(f"{run_id}: the diagnosis is incomplete; these grades failed: {', '.join(failed)}.", file=sys.stderr)
-            print(f"{run_id}: diagnosed with {args.model}, {new} new grade(s) and {reused} reused; ${spent:.4f}."
+            print(f"{run_id}: diagnosed with {model_spec}, {new} new grade(s) and {reused} reused; ${spent:.4f}."
                   + (f" Failed: {', '.join(failed)}." if failed else ""))
         history = {d.case.id: await load_case_verdicts(pool, d.case.id, d.case.rubric_version) for d in diagnoses}
     if diagnoses:
         print()
-        print(render(diagnoses, args.model, report_grades, history))
+        print(render(diagnoses, model_spec, report_grades, history))
     return code
 
 
@@ -668,14 +678,13 @@ def main(argv: list[str] | None = None) -> None:
     check = commands.add_parser("audit", help="Judge whether the verified quotes behind stored reports' statements "
                                 "say what the statements say (paid)")
     check.add_argument("run_ids", type=UUID, nargs="+", metavar="run_id")
-    check.add_argument("--model", required=True, help="The auditor, provider:model@effort, such as zai:glm-5.3@high")
+    check.add_argument("--model", help="Override RESEARCH_MODELS__AUDIT with provider:model@effort")
     check.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap across all the runs")
 
     diag = commands.add_parser("diagnose", help="Find where stored runs lost their rubric points, and whether their "
                                "scores can show a change (paid unless --free)")
     diag.add_argument("run_ids", type=UUID, nargs="+", metavar="run_id")
-    diag.add_argument("--model", required=True,
-                      help="The judge for every view, provider:model@effort, such as zai:glm-5.3@high")
+    diag.add_argument("--model", help="Override RESEARCH_MODELS__DIAGNOSE with provider:model@effort")
     diag.add_argument("--max-usd", type=Decimal, help="Pre-dispatch dollar cap across all the runs; needed unless --free")
     diag.add_argument("--free", action="store_true", help="Use only stored grades and make no model calls")
 

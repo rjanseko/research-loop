@@ -67,8 +67,13 @@ def upper_input_tokens(messages: list[ModelMessage], parameters: ModelRequestPar
 def _priced(model_id: str) -> tuple[str, str]:
     """The provider and model a call is priced as. The harness's `fake:` models are priced as Luna
     (dryrun.PRICED_AS), as `prices.price_per_million` prices them, so a dry run's guard really reserves."""
+    from .config import FAKE_PRICE_MODEL_ID
+
     provider, _, name = model_id.partition(":")
-    return ("openai", "gpt-6-luna") if provider == "fake" else (provider, name)
+    if provider == "fake":
+        fake_provider, _, fake_name = FAKE_PRICE_MODEL_ID.partition(":")
+        return fake_provider, fake_name
+    return provider, name
 
 
 class StudyBudgetRefusal(RuntimeError):
