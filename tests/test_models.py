@@ -175,19 +175,6 @@ async def test_glm_reaches_zai_with_reasoning_effort_max(keyed: Settings, monkey
     assert sent[0]["reasoning_effort"] == "max"
 
 
-def test_a_scout_model_keeps_its_history_unless_trimming_is_turned_on() -> None:
-    from pydantic_ai.models.test import TestModel
-
-    from research_loop.config import Settings
-    from research_loop.history import TrimmedHistoryModel
-    from research_loop.models import scout_model
-
-    off = Settings(_env_file=None)
-    assert not isinstance(scout_model(TestModel(), "openai:gpt-6-luna", off), TrimmedHistoryModel)
-    on = Settings(trim_history=True, _env_file=None)
-    assert isinstance(scout_model(TestModel(), "openai:gpt-6-luna", on), TrimmedHistoryModel)
-
-
 def test_a_scout_request_gets_longer_than_other_roles(keyed: Settings) -> None:
     # At 120 seconds, Luna@xhigh scouts timed out in 5 of 6 rescouts of search-rescout-task8.
     limits = keyed.limits

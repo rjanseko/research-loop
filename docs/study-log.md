@@ -335,3 +335,5 @@ Each cell gives the run, its status, and the rubric points its claims met, of 52
 - Two fetches of a blocked source were refused, and no blocked source reached a scout.
 
 Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).
+
+**Trimming removed.** At the user's request, the history-trimming code (`history.py`, `RESEARCH_TRIM_HISTORY`) was removed, after the trimming study turned it off by default. Runs at the defaults send the same requests as before, so no workflow version changes. The prompt fingerprint changes, because it no longer includes the trimming notes. Re-reading a page window a scout has already read still uses no loop budget, and its test moved to the budget-notes tests. The trimming spec is kept as the record, marked historical, and the other specs no longer set the removed variable.

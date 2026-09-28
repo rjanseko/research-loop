@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from . import budget_notes, history
+from . import budget_notes
 from .schemas import FinalReport, GapAnalysis, ResearchPlan, ResearchResult
 
 UNTRUSTED = (
@@ -124,10 +124,9 @@ BUDGET_NOTES = {name: getattr(budget_notes, name) for name in (
 
 
 def prompt_fingerprint(*, follow_up: bool = False) -> str:
-    """SHA-256 of the instructions, output schemas, and scout budget and history notes used by this mode."""
+    """SHA-256 of the instructions, output schemas, and scout budget notes used by this mode."""
     roles = [role for role in INSTRUCTIONS if follow_up or role != "gap_analyzer"]
     spec: dict[str, object] = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
                                for role in roles}
     spec["budget_notes"] = BUDGET_NOTES
-    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE, "TRIMMED_SEARCH": history.TRIMMED_SEARCH}
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()

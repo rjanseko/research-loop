@@ -17,7 +17,6 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
-from .history import TrimmedHistoryModel
 from .rate_limit import ScoutRateLimitModel, TokenPacer, rate_limit_hook
 
 Role = Literal["planner", "scout", "synthesizer"]
@@ -137,10 +136,9 @@ def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
 
 def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
     """A scout's model: `inner` behind a run-shared wrapper that retries only timed rate limits and paces
-    `model_id` under its token rate, and with old page text trimmed from each request (history.py) unless
-    `trim_history` is off."""
-    model = ScoutRateLimitModel(inner, token_pacer(model_id, settings))
-    return TrimmedHistoryModel(model) if settings.trim_history else model
+    `model_id` under its token rate. Every request carries the scout's whole history, which keeps the cached
+    prompt prefix whole; trimming old pages from it was removed after trim-history-rescout-task8."""
+    return ScoutRateLimitModel(inner, token_pacer(model_id, settings))
 
 
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:

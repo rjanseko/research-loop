@@ -40,19 +40,19 @@ diagnose_cap_usd = 0.75
 [[arms]]
 name = "duckduckgo"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "" }
 
 [[arms]]
 name = "serper"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "serper", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+env = { RESEARCH_SEARCH_ENGINE = "serper", RESEARCH_MODELS__SCOUT_ALT = "" }
 
 [[arms]]
 name = "brave"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "brave", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+env = { RESEARCH_SEARCH_ENGINE = "brave", RESEARCH_MODELS__SCOUT_ALT = "" }
 
 [[arms]]
 name = "exa"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "exa", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+env = { RESEARCH_SEARCH_ENGINE = "exa", RESEARCH_MODELS__SCOUT_ALT = "" }

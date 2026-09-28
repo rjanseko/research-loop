@@ -30,7 +30,6 @@ Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`
 | `RESEARCH_STUDY_CACHE_ROOT` | `.cache/studies` | A named study normally uses `reuse` under this root. Explicit cache settings still win. |
 | `RESEARCH_SEARCH_ENGINE` | `duckduckgo` | Comma-separated chain of `duckduckgo`, `serper`, `brave`, `exa`; the next engine runs only after an empty result or failure. `hybrid` expands to `duckduckgo,exa`. |
 | `RESEARCH_READ_FALLBACK` | unset | Unset means `oa`, then `exa` and `firecrawl` if their keys exist. Empty disables fallback; a comma-separated value sets the exact order. |
-| `RESEARCH_TRIM_HISTORY` | `false` | Whether scouts' requests leave out their oldest pages and search snippets (`history.py`). Off since scout-v14, after `studies/trim-history-rescout-task8.toml`: untrimmed scouts completed more rescouts, read more input from the prompt cache, and cost less. |
 | `RESEARCH_OFFLINE_WORLD` | unset | Seed for the fake-model/offline-world harness; not a live-run setting. |
 | `RESEARCH_OFFLINE_FAULT_RATE` | `0.2` | Fault frequency in that harness. |
 
@@ -131,7 +130,7 @@ Shared minimum intervals between starts of requests, per provider: **DuckDuckGo 
 | PDF and fetch window | First 30 PDF pages; up to 40,000 extracted characters per tool call, with `start` to page through; requested window clamped to at least 1,000 characters | [`web.py`](../src/research_loop/web.py), [`acquisition.py`](../src/research_loop/acquisition.py) |
 | Scholarly search | Default `limit=5`, clamped to 1–25 for OpenAlex; up to 5 arXiv results additionally; 15-second HTTP timeout and 2,000,000-byte response cap | [`scholar.py`](../src/research_loop/scholar.py), [`tools.py`](../src/research_loop/tools.py) |
 | Scholarly text | Query truncated to 300 characters for OpenAlex and 120 for arXiv; abstracts capped at 1,500 characters | [`scholar.py`](../src/research_loop/scholar.py) |
-| Scout prompt history | Keep newest 120,000 characters of fetched page text and 16,000 of search snippets; always retain text returned in latest 2 model responses | [`history.py`](../src/research_loop/history.py) |
+| Scout prompt history | Every request carries the scout's whole history; trimming old pages was removed in scout-v15 | [`models.py`](../src/research_loop/models.py) |
 | Reading fallback | Try `oa`, Exa, Firecrawl in configured order when fetch fails for 401/403/429/451/500/502/503/504, transport error, empty/oversized/unsupported page; not for 404 | [`reading.py`](../src/research_loop/reading.py), [`web.py`](../src/research_loop/web.py) |
 | Fallback page acceptance | At least 500 characters and not a short challenge page | [`reading.py`](../src/research_loop/reading.py) |
 | Fallback paid HTTP timeout | Exa 30 seconds; Firecrawl HTTP 60 seconds with a requested 45-second scrape timeout | [`reading.py`](../src/research_loop/reading.py) |

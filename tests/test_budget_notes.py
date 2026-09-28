@@ -226,3 +226,20 @@ def test_nearing_the_token_limit_counts_as_a_spent_budget() -> None:
     assert not budget.out_of_money(RunUsage(requests=7, input_tokens=450_000))
     assert budget.note(18, tool_yield([]), RunUsage(requests=18, input_tokens=1_700_000)).startswith(
         NOTE_PREFIX + "Your research budget is spent")
+
+
+def test_reading_a_page_window_again_uses_no_budget() -> None:
+    def page(n: int, start: int = 0) -> dict:
+        return {"access": "full_text", "url": f"https://a.test/{n}", "text": f"Page {n}", "start": start}
+
+    def turn(n: int) -> list:
+        return [ModelResponse(parts=[ToolCallPart("fetch", {"url": f"https://a.test/{n}"}, tool_call_id=f"f{n}")]),
+                ModelRequest(parts=[ToolReturnPart("fetch", page(n), tool_call_id=f"f{n}")])]
+
+    history = [ModelRequest(parts=[UserPromptPart("research")]), *turn(0), *turn(1)]
+    again = [ModelResponse(parts=[ToolCallPart("fetch", {"url": "https://a.test/0"}, tool_call_id="r0")]),
+             ModelRequest(parts=[ToolReturnPart("fetch", page(0), tool_call_id="r0"),
+                                 ToolReturnPart("fetch", page(0, start=12000), tool_call_id="r1")])]
+    before, after = tool_yield(history), tool_yield([*history, *again])
+    # The same window is free; the next window of the same page is a new read.
+    assert (after.productive, after.misses) == (before.productive + 1, before.misses)

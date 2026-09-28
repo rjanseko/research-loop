@@ -166,7 +166,7 @@ def _paid_search(name: str) -> Any:
 # v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
 # review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
 # study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
-# v14: scouts keep their whole history (trimming off by default); a scout request may take 600 seconds rather
+# v14: scouts keep their whole history (trimming off by default, and its code removed in v15); a scout request may take 600 seconds rather
 # than 120 (`scout_request_timeout_seconds`); and the limits became safety nets: a standard run gets $1.25,
 # 900 seconds of research, and 30 requests and 48 productive calls a scout, and a deep run 1,800 seconds and
 # 64 calls (config.py). followup-v15 and research-v14 carry the same change.
@@ -338,7 +338,7 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
-        "read_fallback": list(settings.readers()), "trim_history": settings.trim_history,
+        "read_fallback": list(settings.readers()),
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }

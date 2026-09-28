@@ -13,6 +13,8 @@ way.
 
 ### The provider's prompt cache
 
+**Resolved 28 September 2026.** History trimming was turned off by default after `trim-history-rescout-task8` (untrimmed scouts read 59% of input from the cache against 36%), and its code was removed in scout-v15. The notes below are kept as they were written.
+
 On 28 September 2026 the scouts of the three standard drb2-task8 runs `aea52be0`, `8f753940`, and
 `27701a2f` (scout-v10) read only 41%, 56%, and 49% of their input tokens from OpenAI's prompt cache. A tool
 loop resends its whole history on every request, so nearly all of it could be a cached prefix. The likely
