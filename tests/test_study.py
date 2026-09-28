@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -97,7 +98,8 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     first_args, first_env = calls[0]
     assert first_args[:3] == ["scout", "--case", "drb2-task8"]
     assert first_args[first_args.index("--study") + 1] == "deep-vs-standard"
-    assert first_args[first_args.index("--max-usd") + 1] == "3.00" and first_args[-2:] == ["--depth", "standard"]
+    # The spec's $3 run cap is lowered to the $2 ceiling, less the room kept for the run's $0.05 grade.
+    assert first_args[first_args.index("--max-usd") + 1] == "1.95" and first_args[-2:] == ["--depth", "standard"]
     deep_env = calls[1][1]
     assert deep_env["PYTHONPATH"] == "/tmp/tree/src" and deep_env["RESEARCH_MODELS__SCOUT"].endswith("@high")
     assert "PYTHONPATH" not in first_env
@@ -146,7 +148,8 @@ def test_the_ceiling_stops_runs_once_actual_spend_nears_it(spec: StudySpec, tmp_
         (out / "run.json").write_text(json.dumps(_record("run", 0.90)))  # far above the $0.40 estimate
         return 0, ""
 
-    outcomes = run_study(spec, tmp_path, invoke=expensive, grade=lambda *a: None, worktrees=_no_worktrees)
+    graded = {"met": 0, "points": 1, "score": 0.0, "cost_usd": 0.0}
+    outcomes = run_study(spec, tmp_path, invoke=expensive, grade=lambda *a: graded, worktrees=_no_worktrees)
     assert [o.exit_code for o in outcomes] == [0, 0, -1, -1]
     assert "another run could pass the $2.00 ceiling" in summary(spec, outcomes)
 
@@ -180,3 +183,66 @@ def test_a_cheap_study_caps_each_run_at_the_cheap_ceiling(spec: StudySpec) -> No
     cheap = for_mode(spec, "cheap")
     # Paid searches are not cheap; the spec's $3 run cap would let one cheap Exa run spend dollars.
     assert cheap.cap_usd == CHEAP_CEILING_USD == cheap.ceiling_usd
+
+
+def _costing(costs: list[float | None], seen: list[str]):
+    """A fake `research` that spends what the next of `costs` says, up to the cap it was given, as the
+    budget guard would; None writes no record, as a crashed run does."""
+    def invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        cap = args[args.index("--max-usd") + 1]
+        seen.append(cap)
+        cost = costs[len(seen) - 1]
+        if cost is None:
+            return 1, "killed"
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record(f"run-{len(seen)}", min(cost, float(cap)))))
+        return 0, ""
+    return invoke
+
+
+def test_low_estimates_cannot_carry_a_study_past_its_ceiling(tmp_path: Path) -> None:
+    # The audit's case (docs/architectural-audit-2026-09-27.md, F05): two runs that each cost $0.75 under
+    # their own $1 caps, admitted by $0.10 estimates, spent $1.50 of a $1 ceiling.
+    spec = StudySpec(study="s", cases=["c"], arms=[{"name": "a"}], replicates=2, cap_usd=1, estimate_usd=0.1,
+                     ceiling_usd=1)
+    seen: list[str] = []
+    outcomes = run_study(spec, tmp_path, invoke=_costing([0.745, 0.745], seen), worktrees=_no_worktrees)
+    # $0.255 remains after the first run; the cap passed is rounded down, never up to $0.26.
+    assert seen == ["1.00", "0.25"]
+    assert sum(o.charged_usd for o in outcomes) <= 1
+
+
+def test_a_step_whose_cost_is_unknown_counts_its_whole_cap(tmp_path: Path) -> None:
+    spec = StudySpec(study="s", cases=["drb2-task8"], arms=[{"name": "a"}], replicates=3, cap_usd=0.5,
+                     estimate_usd=0.2, ceiling_usd=1.2, grade=True, grade_estimate_usd=0.05, grade_cap_usd=0.1)
+    seen: list[str] = []
+    outcomes = run_study(spec, tmp_path, invoke=_costing([None, 0.30, 0.30], seen), grade=lambda *a: None,
+                         worktrees=_no_worktrees)
+    # The crashed run may have spent its $0.50 cap, and the second run's failed grade its $0.10 cap, so the
+    # third run gets $1.20 - $0.50 - $0.30 - $0.10, less $0.05 kept for its grade, and not $0.50.
+    assert seen == ["0.50", "0.50", "0.25"]
+    assert outcomes[0].charged_usd == Decimal("0.50") and outcomes[1].charged_usd == Decimal("0.40")
+    # The third run's grade fails too, under the $0.05 that is left.
+    assert "plus up to $0.65 from steps whose cost could not be read" in summary(spec, outcomes)
+
+
+def test_a_grade_and_audit_are_capped_by_what_the_ceiling_leaves(tmp_path: Path) -> None:
+    spec = StudySpec(study="s", cases=["drb2-task8"], arms=[{"name": "a"}], cap_usd=1, estimate_usd=0.5,
+                     ceiling_usd=1, grade=True, grade_estimate_usd=0.1, grade_cap_usd=1, audit=True,
+                     audit_estimate_usd=0.1, audit_cap_usd=1)
+    caps: dict[str, float] = {}
+
+    def grade(run_id: str, case: str, env: dict[str, str], cap: float) -> dict:
+        caps["grade"] = cap
+        return {"met": 1, "points": 2, "score": 0.5, "cost_usd": 0.12}
+
+    def audit(run_id: str, model: str, env: dict[str, str], cap: float) -> dict:
+        caps["audit"] = cap
+        return {"counts": {}, "cost_usd": 0.05}
+
+    seen: list[str] = []
+    run_study(spec, tmp_path, invoke=_costing([0.70], seen), grade=grade, audit=audit, worktrees=_no_worktrees)
+    # The run keeps $0.20 for its grade and audit; after it spends $0.70 the grade may use $0.30 less the
+    # audit's $0.10, and the audit what the grade left.
+    assert seen == ["0.80"] and caps == {"grade": 0.2, "audit": 0.18}

@@ -858,7 +858,7 @@ def test_open_items_are_short_names_not_caveats() -> None:
 async def test_a_run_on_exa_records_its_engine_and_adds_its_searches_to_its_cost(settings, pages, monkeypatch) -> None:
     from decimal import Decimal
 
-    from research_loop.web import SearchSpend
+    from research_loop.reading import ExternalSpend as SearchSpend
 
     engines: list[str] = []
 
@@ -892,6 +892,6 @@ async def test_a_run_on_exa_records_its_engine_and_adds_its_searches_to_its_cost
     store = MemoryStore()
     run = await _run(exa, store, research=FunctionModel(respond))
     assert engines == ["exa-key"] and run.status == "complete"
-    assert run.config["search_engine"] == "exa" and run.checks.search_usd == Decimal("0.014")
+    assert run.config["search_engine"] == "exa" and run.checks.external_usd == Decimal("0.014")
     model_cost = sum(Decimal(str(call["cost_usd"])) for call in store.calls.values() if call.get("cost_usd") is not None)
     assert run.cost_usd == model_cost + Decimal("0.014")

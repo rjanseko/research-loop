@@ -6,7 +6,6 @@ import hashlib
 import io
 import unicodedata
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from .acquisition import (
     public_url,
     wait_rate_slot,
 )
+from .reading import ExternalSpend, read_elsewhere
 from .study_budget import StudyBudget, StudyBudgetRefusal
 
 # Decoded bytes read per page; some leaderboard pages embed a few MB of data.
@@ -73,15 +73,7 @@ EXA_SEARCH_URL = "https://api.exa.ai/search"
 EXA_SEARCH_RESERVE_USD = Decimal("0.010")
 
 
-@dataclass
-class SearchSpend:
-    """What a run's paid searches cost, as the engine reported it; a run adds it to its model calls' cost."""
-
-    usd: Decimal = Decimal(0)
-    searches: int = 0
-
-
-def exa_engine(client: httpx.AsyncClient, api_key: str, spend: SearchSpend,
+def exa_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
                budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
     """Exa search in the shape WebSearch reads (title, href, body). The request is the one Exa recommends:
     the query, `auto` search, and highlights, which become the snippet. Its results are search results,
@@ -166,16 +158,36 @@ class WebSearch:
                         "or try again later with a different query."}
 
 
+# Failures another reader may get past: refusals, rate limits, server errors, challenge or JavaScript-only
+# pages, oversized or unread types, and dropped connections. A 404 is usually a guessed address.
+_FALLBACK_STATUSES = frozenset({401, 403, 429, 451, 500, 502, 503, 504})
+_FALLBACK_DETAILS = frozenset({"empty extraction", "response exceeded size limit", "unsupported content type"})
+
+
+def _worth_reading_elsewhere(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _FALLBACK_STATUSES
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return type(exc) is ValueError and str(exc) in _FALLBACK_DETAILS
+
+
 class WebAcquisition:
-    """Fetch a public HTTPS page or PDF and return a window of its extracted text."""
+    """Fetch a public HTTPS page or PDF and return a window of its extracted text.
+
+    With `fallbacks` (reading.py), a page our fetch could not read is tried with each in order, and the
+    result says `via` which one read it. Those results are cached apart from our own (namespace `read`),
+    so a study arm without the fallback never gets a page only the fallback could read.
+    """
 
     def __init__(self, *, cache_root: Path, cache_mode: CacheMode = "live",
                  client: httpx.AsyncClient | None = None, memo: FetchMemo | None = None,
-                 policy: SourcePolicy | None = None) -> None:
+                 policy: SourcePolicy | None = None, fallbacks: list[Any] | None = None) -> None:
         self.cache = AcquisitionCache(cache_root, cache_mode, ttl_seconds=86400)
         self.client = client
         self.memo = memo or FetchMemo()
         self.policy = policy or SourcePolicy()
+        self.fallbacks = fallbacks or []
 
     async def fetch(self, url: str, max_chars: int = MAX_FETCH_CHARS, start: int = 0) -> dict[str, Any]:
         max_chars = max(1000, min(max_chars, MAX_FETCH_CHARS))
@@ -185,8 +197,12 @@ class WebAcquisition:
             return {"url": url, "error": "BlockedSource", "blocked": entry}
         # Cache next so replay works offline; entries exist only for URLs that passed the check.
         cache_key = fetch_cache_key(url, max_chars, start)
-        cached = self.cache.get("web", cache_key)
+        cached = self._cached(cache_key)
         if cached is not None:
+            # The cache may predate a block by content; a later window is judged by the document's first one.
+            opening = cached if not start else self._cached(fetch_cache_key(url, max_chars, 0)) or {}
+            if entry := self.policy.blocks_document(str(opening.get("text") or "")):
+                return {"url": url, "error": "BlockedSource", "blocked": entry}
             return cached
         if self.cache.mode == "replay":
             return {"url": url, "error": "CacheMiss"}
@@ -203,7 +219,13 @@ class WebAcquisition:
             except BlockedSource as exc:  # redirected to a blocked source
                 return {"url": url, "error": "BlockedSource", "blocked": exc.entry}
             except (httpx.HTTPError, ValueError, ImportError, TypeError) as exc:
+                document, notes = (await read_elsewhere(url, self.fallbacks)
+                                   if self.fallbacks and _worth_reading_elsewhere(exc) else (None, []))
+                if document is not None:
+                    return self._window(url, document, max_chars, start, cache_key)
                 failure: dict[str, Any] = {"url": url, "error": type(exc).__name__}
+                if notes:
+                    failure["also_tried"] = "; ".join(notes)
                 if isinstance(exc, httpx.HTTPStatusError):
                     failure["status"] = exc.response.status_code
                     if exc.response.status_code in (404, 410):
@@ -215,12 +237,28 @@ class WebAcquisition:
                     failure["detail"] = str(exc)  # this module's own messages, e.g. "unsupported content type"
                 return failure
             self.memo.put("web", url, document)
+        return self._window(url, document, max_chars, start, cache_key)
+
+    def _cached(self, cache_key: str) -> dict[str, Any] | None:
+        cached = self.cache.get("web", cache_key)
+        if cached is None and self.fallbacks:
+            cached = self.cache.get("read", cache_key)
+        return cached
+
+    def _window(self, url: str, document: dict[str, Any], max_chars: int, start: int, cache_key: str) -> dict[str, Any]:
+        """The requested window of a document, cached under our own namespace or the fallback's; nothing of a
+        document whose first page prints a blocked DOI."""
+        if entry := self.policy.blocks_document(document["text"]):
+            return {"url": url, "error": "BlockedSource", "blocked": entry}
+        self.memo.put("web", url, document)
         window = fetch_window(document["text"], start, max_chars)
         if window is None:
             return {"url": url, "error": "StartBeyondEnd", "total_chars": len(document["text"])}
         result = {"url": url, **window, "extraction": document["extraction"],
                   "content_sha256": document["content_sha256"]}
-        self.cache.put("web", cache_key, result)
+        if document.get("via"):
+            result["via"] = document["via"]
+        self.cache.put("read" if document.get("via") else "web", cache_key, result)
         return result
 
     async def _extract(self, url: str) -> dict[str, Any]:

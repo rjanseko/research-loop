@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.request
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -26,6 +27,8 @@ from uuid import uuid4
 
 import httpcore
 import httpx
+
+from .evidence import identity_keys, printed_dois
 
 # Part of every cache key; bump it to invalidate recorded entries.
 CACHE_VERSION = 1
@@ -42,7 +45,14 @@ CACHE_VERSION = 1
 # 9: a PDF may be 25 MB rather than the 5 MB of a page: 21 papers the scouts wanted, 5.8 to 19.9 MB, were refused.
 # 10: web search can run on Exa (RESEARCH_SEARCH_ENGINE), each engine with its own cache and rate slot, and
 #     search results from blocked sources are left out.
-FETCH_VERSION = 10
+# 11: a page our fetch cannot read may be read by the reading fallback (RESEARCH_READ_FALLBACK), whose
+#     results say `via` which reader read them and are cached apart from our own.
+# 12: blocked sources are matched by the DOI or arXiv ID an address carries as well as by the address, so a
+#     copy of a blocked paper elsewhere is blocked too; a fetched document whose first page prints a blocked
+#     DOI is refused, even from the cache; scholarly tools refuse a blocked work and leave blocked records out;
+#     and a scout's evidence citing a blocked work by DOI or arXiv ID alone is refused
+#     (docs/architectural-audit-2026-09-27.md, F06).
+FETCH_VERSION = 12
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -190,19 +200,48 @@ class SourcePolicy:
     trailing slash, it has the entry's host and the entry's path or a path beneath it. An entry
     with a query also needs that query, and an entry without a path blocks its whole host. An
     arXiv entry matches every form of the paper (abs, pdf, html, any version), and doi.org
-    matches dx.doi.org. Matching errs toward blocking.
+    matches dx.doi.org. A work also matches by identifier: when an entry names a DOI or arXiv ID
+    (a doi.org address, a publisher path holding the DOI), any address carrying that identifier,
+    such as a mirror at another host, and any record or citation giving it are blocked. Matching
+    errs toward blocking.
     """
 
     blocked: tuple[str, ...] = ()
 
     def blocks(self, url: str) -> str | None:
-        """The blocked entry that `url` matches, if any."""
+        """The blocked entry that `url` matches, if any, by its address or the identifier it carries."""
         target = _location(url)
         if target is None:
             return None
         for entry in self.blocked:
             rule = _location(entry)
             if rule and _covers(rule, target):
+                return entry
+        return self._blocked_identifier(identity_keys(url=url))
+
+    def blocks_work(self, urls: Iterable[str | None] = (), doi: str | None = None,
+                    arxiv_id: str | None = None) -> str | None:
+        """The blocked entry that a work matches by any of its addresses, its DOI, or its arXiv ID."""
+        for url in urls:
+            if url and (entry := self.blocks(url)):
+                return entry
+        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id))
+
+    def blocks_document(self, opening: str) -> str | None:
+        """The blocked entry whose DOI the opening of a fetched document prints as its own, if any: a copy of a
+        blocked paper at an address that names neither, such as a publisher's CDN, is known by its first page."""
+        return self._blocked_identifier(printed_dois(opening)) if self._identifiers else None
+
+    @functools.cached_property
+    def _identifiers(self) -> tuple[tuple[str, frozenset[str]], ...]:
+        """Each blocked entry with the DOI and arXiv keys it names."""
+        pairs = ((entry, frozenset(key for key in identity_keys(url=entry) if key.startswith(("doi:", "arxiv:"))))
+                 for entry in self.blocked)
+        return tuple((entry, keys) for entry, keys in pairs if keys)
+
+    def _blocked_identifier(self, keys: frozenset[str]) -> str | None:
+        for entry, blocked in self._identifiers:
+            if any(_same_identifier(key, rule) for key in keys for rule in blocked):
                 return entry
         return None
 
@@ -218,6 +257,15 @@ def _covers(rule: tuple[str, str, str, str | None], target: tuple[str, str, str,
     return (host == target[0]
             and (not path or target[1] == path or target[1].startswith(path + "/"))
             and (not query or query == target[2]))
+
+
+def _same_identifier(key: str, rule: str) -> bool:
+    """Whether two identity keys name one work. A DOI taken from a path can carry the rest of the path
+    (frontiersin.org/articles/10.3389/fphys.2021.667000/full gives 10.3389/fphys.2021.667000/full), so a DOI
+    also matches one that extends it past a slash."""
+    if key == rule:
+        return True
+    return key.startswith("doi:") and rule.startswith("doi:") and (key.startswith(rule + "/") or rule.startswith(key + "/"))
 
 
 # Sites such as Wikimedia reject the default library User-Agent; identify the fetcher instead.

@@ -1,11 +1,14 @@
-"""Blocked sources: one matching rule, enforced in the fetch tool before the cache, DNS, or any request."""
+"""Blocked sources: one matching rule, enforced in every research tool and on a scout's evidence; the fetch
+tool refuses before the cache, DNS, or any request."""
 from __future__ import annotations
 
 import httpx
 import pytest
 
 from research_loop.acquisition import AcquisitionCache, SourcePolicy
-from research_loop.web import WebAcquisition
+from research_loop.scholar import ScholarResponse, ScholarWork
+from research_loop.tools import research_toolset
+from research_loop.web import WebAcquisition, WebSearch
 
 REPORT = "https://www.example.org/reports/2024/"
 SITE = "https://blocked.example"
@@ -23,6 +26,8 @@ POLICY = SourcePolicy((REPORT, SITE, PAPER, DOI, QUERY))
     ("https://export.arxiv.org/abs/2310.06770", PAPER),
     ("https://dx.doi.org/10.1234/x", DOI),
     ("https://example.org/page?id=7", QUERY),
+    ("https://mirror.example/article/10.1234/x", DOI),               # a copy elsewhere, named by the blocked DOI
+    ("https://publisher.example/doi/pdf/10.1234/X/", DOI),
 ])
 def test_blocked_entries_match_every_form_of_the_source(url: str, entry: str) -> None:
     assert POLICY.blocks(url) == entry
@@ -34,6 +39,7 @@ def test_blocked_entries_match_every_form_of_the_source(url: str, entry: str) ->
     "https://notblocked.example/",
     "https://example.org/page?id=8",
     "https://arxiv.org/abs/2310.06771",
+    "https://mirror.example/article/10.1234/xy",  # another DOI that begins with the blocked one
     "not a url",
 ])
 def test_other_sources_are_not_blocked(url: str) -> None:
@@ -84,3 +90,107 @@ async def test_every_form_of_a_blocked_paper_is_refused_directly_and_after_redir
     assert (direct["error"], direct["blocked"]) == ("BlockedSource", PAPER)
     assert (redirected["error"], redirected["blocked"]) == ("BlockedSource", DOI)
     assert requested == ["https://mirror.example/paper.pdf"]
+
+
+@pytest.mark.parametrize(("work", "entry"), [
+    ({"doi": "10.1234/X"}, DOI),                                              # a DOI alone, as a citation may give it
+    ({"doi": "https://doi.org/10.1234/x"}, DOI),
+    ({"arxiv_id": "2310.06770v3"}, PAPER),
+    ({"urls": ("https://doi.org/10.9999/other", "https://example.org/reports/2024/full.pdf")}, REPORT),
+    ({"doi": "10.1234/x/full"}, DOI),                                         # a DOI taken from a path with the rest of it
+])
+def test_a_work_is_blocked_by_any_of_its_identifiers(work: dict, entry: str) -> None:
+    assert POLICY.blocks_work(**work) == entry
+
+
+def test_a_blocked_doi_taken_from_a_path_still_matches_the_bare_doi() -> None:
+    # drb2-task59 blocks frontiersin.org/journals/physiology/articles/10.3389/fphys.2021.667000/full, whose path
+    # gives the DOI with "/full" on the end; a scholarly record gives the DOI alone.
+    policy = SourcePolicy(("https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2021.667000/full",))
+    assert policy.blocks_work(doi="10.3389/fphys.2021.667000")
+    assert policy.blocks_work(doi="10.3389/fphys.2021.66700") is None
+    assert SourcePolicy().blocks_work(doi="10.1234/x") is None
+
+
+class _Scholar:
+    """A scholarly client that returns a blocked work beside an allowed one, and records what it was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    async def _works(self) -> ScholarResponse:
+        return ScholarResponse(works=[
+            ScholarWork(provider="stub", title="The blocked review", doi="10.1234/x", abstract="Blocked text"),
+            ScholarWork(provider="stub", title="Its copy", url="https://example.org/reports/2024/copy.pdf"),
+            ScholarWork(provider="stub", title="Another paper", doi="10.5555/ok", abstract="Allowed text")])
+
+    async def search(self, query, year_from=None, year_to=None, limit=5) -> ScholarResponse:
+        self.asked.append(query)
+        return await self._works()
+
+    async def get(self, identifier: str) -> ScholarResponse:
+        self.asked.append(identifier)
+        return await self._works()
+
+
+async def test_scholarly_tools_leave_out_and_refuse_blocked_works(tmp_path) -> None:
+    # The audit's case (docs/architectural-audit-2026-09-27.md, F06): scholar_get returned a blocked DOI's abstract.
+    scholar = _Scholar()
+    tools = research_toolset(WebSearch(engine=None, retry_delays=()),
+                             WebAcquisition(cache_root=tmp_path, cache_mode="off", policy=POLICY), scholar).tools
+    found = await tools["scholar_search"].function("materials inverse design")
+    assert [work["title"] for work in found["works"]] == ["Another paper"]
+    refused = await tools["scholar_get"].function("10.1234/X")
+    assert refused["error"] == "BlockedSource" and refused["blocked"] == DOI and scholar.asked == ["materials inverse design"]
+    looked_up = await tools["scholar_get"].function("W123")
+    assert [work["title"] for work in looked_up["works"]] == ["Another paper"]
+
+
+def test_a_scouts_evidence_citing_a_blocked_work_by_doi_alone_is_refused() -> None:
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelRetry
+
+    from research_loop.agents import Assignment, _result_fits_assignment
+    from research_loop.schemas import (
+        Claim,
+        Evidence,
+        ResearchQuestion,
+        ResearchResult,
+        SourceRef,
+    )
+
+    def result(source: SourceRef) -> ResearchResult:
+        evidence = Evidence(source=source, excerpt="e", quote="Blocked text", confidence=1)
+        return ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=1,
+                              claims=[Claim(id="c1", statement="s", evidence=[evidence], confidence=1)])
+
+    ctx = SimpleNamespace(deps=Assignment(ResearchQuestion(id="q1", question="Q?"), POLICY))
+    for source in (SourceRef(doi="10.1234/x", title="Review"), SourceRef(arxiv_id="2310.06770", title="Paper"),
+                   SourceRef(url="https://mirror.example/10.1234/x", title="Copy")):
+        with pytest.raises(ModelRetry, match="blocked for this task"):
+            _result_fits_assignment(ctx, result(source))
+    assert _result_fits_assignment(ctx, result(SourceRef(doi="10.5555/ok", title="Other"))).claims
+
+
+@pytest.mark.asyncio
+async def test_a_copy_that_prints_a_blocked_doi_is_refused_even_from_the_cache(public_urls, tmp_path) -> None:
+    # drb2-task8's blocked review was read in full five times from cdn.techscience.cn, an address that names
+    # neither a blocked entry nor the DOI; its first page prints the DOI (docs/study-log.md, 27 September 2026).
+    body = "<html><body><article><p>Review. doi:10.1234/x</p><p>" + "Inverse design text. " * 200 + "</p></article></body></html>"
+    copy = "https://cdn.example/files/review.pdf"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, headers={"content-type": "text/html"}, text=body))) as http:
+        # Recorded in a study cache before this rule existed.
+        unblocked = WebAcquisition(cache_root=tmp_path, cache_mode="reuse", client=http)
+        assert "text" in await unblocked.fetch(copy, max_chars=1000)
+        assert "text" in await unblocked.fetch(copy, max_chars=1000, start=1000)
+        fresh = await WebAcquisition(cache_root=tmp_path / "fresh", cache_mode="off", client=http,
+                                     policy=POLICY).fetch(copy)
+        blocked = WebAcquisition(cache_root=tmp_path, cache_mode="reuse", client=http, policy=POLICY)
+        first, later = await blocked.fetch(copy, max_chars=1000), await blocked.fetch(copy, max_chars=1000, start=1000)
+    for result in (fresh, first, later):
+        assert (result["error"], result["blocked"]) == ("BlockedSource", DOI)
+    assert "text" in await WebAcquisition(cache_root=tmp_path, cache_mode="reuse", policy=SourcePolicy(
+        ("https://doi.org/10.9999/other",))).fetch(copy, max_chars=1000)

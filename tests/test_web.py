@@ -486,8 +486,9 @@ async def test_exa_sends_the_recommended_request_and_counts_what_it_cost() -> No
     from decimal import Decimal
 
     from research_loop.acquisition import SourcePolicy
+    from research_loop.reading import ExternalSpend as SearchSpend
     from research_loop.study_budget import StudyBudget
-    from research_loop.web import SearchSpend, exa_engine
+    from research_loop.web import exa_engine
 
     sent: list[dict] = []
     spend, budget = SearchSpend(), StudyBudget(Decimal("1.00"))
@@ -511,8 +512,9 @@ async def test_exa_sends_the_recommended_request_and_counts_what_it_cost() -> No
 async def test_a_paid_search_the_cap_cannot_cover_is_refused_once_and_a_429_is_released() -> None:
     from decimal import Decimal
 
+    from research_loop.reading import ExternalSpend as SearchSpend
     from research_loop.study_budget import StudyBudget
-    from research_loop.web import SearchSpend, exa_engine
+    from research_loop.web import exa_engine
 
     sent: list[dict] = []
     tight = StudyBudget(Decimal("0.005"))  # below one search's reservation

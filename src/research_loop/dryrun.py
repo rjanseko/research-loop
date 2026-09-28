@@ -156,7 +156,9 @@ class World:
         if host in _SCHOLAR_HOSTS:
             return self._scholarly(request)
         if host == "api.exa.ai":
-            return self._exa(request)
+            return self._exa_contents(request) if request.url.path == "/contents" else self._exa(request)
+        if host == "api.firecrawl.dev":
+            return self._firecrawl(request)
         url = str(request.url)
         if host == "doi.org":
             doi = request.url.path.lstrip("/")
@@ -201,6 +203,47 @@ class World:
             return httpx.Response(200, headers={"content-type": "application/pdf"}, content=body)
         html = f"<html><head><title>{page.title}</title></head><body><article><p>{page.text}</p></article></body></html>"
         return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, content=html.encode())
+
+    def _reader_fault(self, rng: random.Random) -> httpx.Response | None:
+        """A reading service's fault (reading.py): a rate limit, a server error, a broken body."""
+        roll = rng.random()
+        if roll < self.fault_rate * 0.2:
+            return httpx.Response(429, json={"error": "rate limit"})
+        if roll < self.fault_rate * 0.3:
+            return httpx.Response(500)
+        if roll < self.fault_rate * 0.4:
+            return httpx.Response(200, content=b"{not json")
+        return None
+
+    def _page_text(self, url: str, rng: random.Random) -> str:
+        """What a reading service returns for a page: its text, nothing, or a challenge page."""
+        page = self.pages.get(url)
+        roll = rng.random()
+        if page is None or roll < 0.15:
+            return ""
+        if roll < 0.25:
+            return "Just a moment... Please enable JavaScript and cookies to continue."
+        return (page.text + " ") * 8  # long enough to count as the page
+
+    def _exa_contents(self, request: httpx.Request) -> httpx.Response:
+        url = (json.loads(request.content or b"{}").get("urls") or [""])[0]
+        rng = random.Random(_stable(self.seed, "exa-contents", url))
+        if fault := self._reader_fault(rng):
+            return fault
+        body: dict[str, Any] = {"results": [{"url": url, "text": self._page_text(url, rng)}],
+                                "statuses": [{"id": url, "status": "success"}]}
+        if rng.random() > self.fault_rate * 0.25:
+            body["costDollars"] = {"total": 0.5 if rng.random() < self.fault_rate * 0.2 else 0.001}
+        return httpx.Response(200, json=body)
+
+    def _firecrawl(self, request: httpx.Request) -> httpx.Response:
+        url = json.loads(request.content or b"{}").get("url", "")
+        rng = random.Random(_stable(self.seed, "firecrawl", url))
+        if fault := self._reader_fault(rng):
+            return fault
+        status = 403 if rng.random() < 0.1 else 200
+        return httpx.Response(200, json={"success": True, "data": {"markdown": self._page_text(url, rng),
+                                                                  "metadata": {"statusCode": status}}})
 
     def _exa(self, request: httpx.Request) -> httpx.Response:
         """Exa's search endpoint (web.exa_engine): results with highlights and a reported cost, or a fault.
@@ -807,8 +850,8 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
     cap = Decimal(str(((record.get("config") or {}).get("study_budget") or {}).get("cap_usd") or 0))
     if calls and len(refused) == len(calls) and cap >= Decimal(1):
         problems.append(f"every call was refused by the study budget under a ${cap} cap: {refused[0].get('stop_reason')}")
-    # No search result a scout saw comes from a blocked source: an Exa highlight can carry a blocked page's
-    # text, such as a frozen case's expert report.
+    # No search result or scholarly record a scout saw comes from a blocked source: an Exa highlight can carry a
+    # blocked page's text, and an OpenAlex record a blocked paper's abstract, such as a frozen case's expert report.
     policy = SourcePolicy(tuple((record.get("config") or {}).get("blocked_urls") or []))
     for call in calls:
         for message in call.get("messages") or []:
@@ -819,12 +862,28 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
                 if blocked := [url for url in shown if url and policy.blocks(url)]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"search result: {blocked[0]}")
+                scholarly = part.get("content") if part.get("tool_name") in ("scholar_search", "scholar_get") else None
+                works = (scholarly.get("works") or []) if isinstance(scholarly, dict) else []
+                if blocked := [work.get("title") for work in works
+                               if policy.blocks_work((work.get("url"), work.get("full_text_url")), work.get("doi"),
+                                                     work.get("arxiv_id"))]:
+                    problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
+                                    f"scholarly record: {blocked[0]}")
+    # A blocked page is never read, by our fetcher or any fallback reader.
+    for call in calls:
+        for message in call.get("messages") or []:
+            for part in message.get("parts") or []:
+                content = part.get("content") if part.get("tool_name") == "fetch" else None
+                if isinstance(content, dict) and content.get("text") and policy.blocks(str(content.get("url") or "")):
+                    problems.append(f"call {call.get('role')} {call.get('question_id')} read a blocked page "
+                                    f"{content.get('url')} via {content.get('via', 'our fetcher')}")
     # Money: the run's cost is its calls' costs, plus what its paid web searches cost.
     costs = [Decimal(str(c["cost_usd"])) for c in calls if c.get("cost_usd") is not None]
-    searches = Decimal(str((record.get("checks") or {}).get("search_usd") or 0))
+    run_checks = record.get("checks") or {}
+    searches = Decimal(str(run_checks.get("external_usd", run_checks.get("search_usd")) or 0))
     if (record.get("cost_usd") is not None and costs
             and abs(Decimal(str(record["cost_usd"])) - sum(costs) - searches) > Decimal("0.000001")):
-        problems.append(f"run cost {record['cost_usd']} is not its calls' {sum(costs)} and searches' {searches}")
+        problems.append(f"run cost {record['cost_usd']} is not its calls' {sum(costs)} and external services' {searches}")
     try:
         markdown = render_markdown(record)
         status_line = next((line for line in markdown.splitlines() if line.startswith("Scout run `")), "")
@@ -864,6 +923,8 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
         # Both engines, so the paid search path, its budget reservations, and its costs are fuzzed too.
         "search_engine": rng.choice(["duckduckgo", "exa"]),
+        # The reading fallback in several orders, off in some runs, so its money and results are fuzzed too.
+        "read_fallback": rng.choice([(), ("oa", "exa", "firecrawl"), ("exa",), ("firecrawl", "exa")]),
         "tokens_per_minute": {}, "logfire": False,
     })
 

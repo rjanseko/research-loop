@@ -34,7 +34,7 @@ from .prices import install_price_overrides
 # prompt the provider already counted, plus the reply, plus what was added since, and only the
 # added part is bounded by its bytes. Scout requests run about 5.3 bytes per billed token, so v3's
 # two tokens per byte reserved about eleven times their input and falsely refused four Luna scouts
-# at a $0.50 cap (docs/high-level-study-evaluation.md).
+# at a $0.50 cap (docs/study-log.md).
 # v5 also reserves a fixed charge before each paid web search and settles it to the reported cost.
 BUDGET_POLICY_VERSION = "usage-anchor-v5"
 _BYTE_FACTOR = 2

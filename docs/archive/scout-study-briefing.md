@@ -1,5 +1,8 @@
 # Briefing for designing the first Scout study
 
+> [!NOTE]
+> Archived on 27 September 2026. This briefing was written for scout-v1, when Flash was the scout and the study tools did not exist yet, and most of it is now out of date. Current practice is in [evaluation.md](../evaluation.md), and every study's result is in [study-log.md](../study-log.md). It is kept for the measurements and reasoning behind Scout's first defaults.
+
 You are designing the first study of Research Loop's Scout workflow. The study's purpose is to let us compute what runs cost and choose configurations: models per role, reasoning effort, budgets, and depth. This file is everything we know that bears on that design, as of 25 September 2026. It covers:
 
 - the system as it is now;

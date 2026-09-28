@@ -244,11 +244,26 @@ class Settings(BaseSettings):
     # paired study shows Exa is better; Exa is paid per search and needs EXA_API_KEY (web.exa_engine).
     search_engine: Literal["duckduckgo", "exa"] = "duckduckgo"
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
+    # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
+    # Off until a paired study shows it helps; exa needs EXA_API_KEY and firecrawl FIRECRAWL_API_KEY.
+    read_fallback: Annotated[tuple[str, ...], NoDecode] = ()
+    firecrawl_api_key: SecretStr | None = Field(None, validation_alias="FIRECRAWL_API_KEY")
     # The bug-finding harness (dryrun.py): with a seed, the research tools answer from a generated
     # offline world instead of the network, failing at `offline_fault_rate`. Only `fake:` models may run.
     offline_world: int | None = None
     offline_fault_rate: float = Field(0.2, ge=0, le=1)
     crossref_mailto: str | None = Field(None, validation_alias="CROSSREF_MAILTO")
+
+    @field_validator("read_fallback", mode="before")
+    @classmethod
+    def _readers(cls, value: object) -> object:
+        from .reading import READERS
+
+        if isinstance(value, str):
+            value = tuple(part.strip().lower() for part in value.split(",") if part.strip())
+        if unknown := sorted(set(value or ()) - set(READERS)):  # type: ignore[arg-type]
+            raise ValueError(f"unknown readers: {', '.join(unknown)}; choose from {', '.join(READERS)}")
+        return value
 
     @field_validator("enabled_providers", mode="before")
     @classmethod
@@ -292,6 +307,11 @@ class Settings(BaseSettings):
             roles["fallback"] = self.models.fallback
         if self.search_engine == "exa" and self.exa_api_key is None and self.offline_world is None:
             problems.append("web search: exa needs EXA_API_KEY")
+        if self.offline_world is None:
+            if "exa" in self.read_fallback and self.exa_api_key is None:
+                problems.append("reading fallback: exa needs EXA_API_KEY")
+            if "firecrawl" in self.read_fallback and self.firecrawl_api_key is None:
+                problems.append("reading fallback: firecrawl needs FIRECRAWL_API_KEY")
         fake = {role for role, spec in roles.items() if spec.startswith(f"{FAKE_PROVIDER}:")}
         if fake and self.offline_world is None:
             problems.append(f"{', '.join(sorted(fake))}: fake models run only in the offline world (RESEARCH_OFFLINE_WORLD)")

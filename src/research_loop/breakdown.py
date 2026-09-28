@@ -58,8 +58,10 @@ def breakdown(run: dict[str, Any], calls: list[dict[str, Any]]) -> str:
                      f"  {call.get('stop_reason') or '-'}")
 
     lines += ["", "Cost by role:", *(f"  {role:<12}{_money(cost)}" for role, cost in by_role.items())]
-    if (search := ((run.get("checks") or {}).get("search_usd"))) is not None:
-        lines.append(f"  {'web search':<12}{_money(search)}")
+    checks = run.get("checks") or {}
+    # `search_usd` is the name runs used before paid page reading joined it.
+    if (external := checks.get("external_usd", checks.get("search_usd"))) is not None:
+        lines.append(f"  {'search+read':<12}{_money(external)}")
     if (total := run.get("cost_usd")) is not None:
         lines.append(f"  {'run total':<12}{_money(total)}")
 

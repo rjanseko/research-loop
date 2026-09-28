@@ -1,5 +1,8 @@
 # First Scout study design
 
+> [!NOTE]
+> Archived on 27 September 2026. This study design was written for scout-v1, when Flash was the scout and the study tools did not exist yet, and most of it is now out of date. Current practice is in [evaluation.md](../evaluation.md), and every study's result is in [study-log.md](../study-log.md). It is kept for the measurements and reasoning behind Scout's first defaults.
+
 This is a proposed study, not authorization to run it. It is based solely on the briefing in scout-study-briefing.md, dated 25 September 2026. Model prices, measurements, and implementation descriptions below are supplied by that briefing; they have not been independently verified against the repository or providers. No paid calls or implementation changes were made while preparing this design.
 
 ## What the briefing changes
