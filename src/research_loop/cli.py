@@ -206,6 +206,7 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
     from .study import (
         REPO,
         StudyCeilingError,
+        StudyConfigError,
         dry_database_url,
         for_mode,
         load_spec,
@@ -236,7 +237,7 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
     out = args.out or REPO / "runs" / spec.study
     try:
         outcomes = run_study(spec, out, mode=mode, dsn=settings.database_dsn)
-    except StudyCeilingError as exc:
+    except (StudyCeilingError, StudyConfigError) as exc:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
     table = summary(spec, outcomes)
