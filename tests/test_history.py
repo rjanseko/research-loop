@@ -22,8 +22,8 @@ from research_loop.history import (
 )
 from research_loop.tools import labeled_texts
 
-# Most of a full 12,000-character fetch window: three fit under KEEP_CHARS, and a fourth does not.
-BIG = 15_000
+# A page of which three fit under KEEP_CHARS, and a fourth does not.
+BIG = KEEP_CHARS * 5 // 16
 
 
 def _page(n: int, start: int = 0, size: int = BIG) -> dict:

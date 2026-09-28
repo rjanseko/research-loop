@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import io
 import json
+import re
 import unicodedata
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -79,30 +80,86 @@ EXA_HIGHLIGHT_CHARS = 600
 EXA_SEARCH_RESERVE_USD = Decimal("0.010")
 
 
-def exa_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
-               budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
-    """Exa search in the shape WebSearch reads (title, href, body). The request is the one Exa recommends:
-    the query, `auto` search, and highlights, which become the snippet. Its results are search results,
-    labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full."""
+SERPER_SEARCH_URL = "https://google.serper.dev/search"
+# Serper sells Google results at $1.00 to $0.30 per 1,000 searches of up to 10 results, by pack size
+# (serper.dev, 28 September 2026); a search is reserved and charged at the highest rate.
+SERPER_SEARCH_USD = Decimal("0.001")
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+# Brave's Search plan costs $5 per 1,000 requests (api-dashboard.search.brave.com, 28 September 2026).
+BRAVE_SEARCH_USD = Decimal("0.005")
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _paid_engine(name: str, reserve: Decimal, send: Callable[[str], Awaitable[httpx.Response]],
+                 results: Callable[[dict[str, Any]], list[dict[str, str]]], spend: ExternalSpend,
+                 budget: StudyBudget | None, cost: Callable[[dict[str, Any]], Decimal] | None = None,
+                 ) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
+    """A paid search API in the shape WebSearch reads (title, href, body): each search is reserved under a
+    hard cap at `reserve`, then charged what `cost` reads from the response, or `reserve` itself."""
     async def search(query: str) -> list[dict[str, str]]:
-        charge = await budget.reserve_fixed(EXA_SEARCH_RESERVE_USD, "Exa search") if budget else None
-        response = await client.post(EXA_SEARCH_URL, headers={"x-api-key": api_key}, timeout=30,
-                                     json={"query": query, "type": "auto",
-                                           "contents": {"highlights": {"maxCharacters": EXA_HIGHLIGHT_CHARS}}})
+        charge = await budget.reserve_fixed(reserve, f"{name} search") if budget else None
+        response = await send(query)
         if response.status_code == 429 and budget and charge is not None:
             budget.release(charge)  # rejected, not processed
         response.raise_for_status()
         data = response.json()
-        # A request that returned is charged what Exa reports, or the list price when it reports nothing.
-        cost = Decimal(str((data.get("costDollars") or {}).get("total", EXA_SEARCH_RESERVE_USD)))
-        spend.usd += cost
+        charged = cost(data) if cost else reserve
+        spend.usd += charged
         spend.searches += 1
         if budget and charge is not None:
-            budget.settle_fixed(charge, cost)
+            budget.settle_fixed(charge, charged)
+        return results(data)
+
+    return search
+
+
+def exa_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
+               budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
+    """Exa search. The request is the one Exa recommends: the query, `auto` search, and highlights, which
+    become the snippet, capped at EXA_HIGHLIGHT_CHARS a result. Its results are search results, labeled
+    `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full."""
+    async def send(query: str) -> httpx.Response:
+        return await client.post(EXA_SEARCH_URL, headers={"x-api-key": api_key}, timeout=30,
+                                 json={"query": query, "type": "auto",
+                                       "contents": {"highlights": {"maxCharacters": EXA_HIGHLIGHT_CHARS}}})
+
+    def results(data: dict[str, Any]) -> list[dict[str, str]]:
         return [{"title": item.get("title") or "", "href": item.get("url") or "",
                  "body": " … ".join(item.get("highlights") or [])} for item in data.get("results") or []]
 
-    return search
+    # A request that returned is charged what Exa reports, or the list price when it reports nothing.
+    return _paid_engine("Exa", EXA_SEARCH_RESERVE_USD, send, results, spend, budget,
+                        cost=lambda data: Decimal(str((data.get("costDollars") or {}).get("total",
+                                                                                          EXA_SEARCH_RESERVE_USD))))
+
+
+def serper_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
+                  budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
+    """Google's organic results through Serper: ten a search, each with Google's snippet."""
+    async def send(query: str) -> httpx.Response:
+        return await client.post(SERPER_SEARCH_URL, headers={"X-API-KEY": api_key}, timeout=30,
+                                 json={"q": query, "num": 10})
+
+    def results(data: dict[str, Any]) -> list[dict[str, str]]:
+        return [{"title": item.get("title") or "", "href": item.get("link") or "", "body": item.get("snippet") or ""}
+                for item in data.get("organic") or []]
+
+    return _paid_engine("Serper", SERPER_SEARCH_USD, send, results, spend, budget)
+
+
+def brave_engine(client: httpx.AsyncClient, api_key: str, spend: ExternalSpend,
+                 budget: StudyBudget | None = None) -> Callable[[str], Awaitable[list[dict[str, str]]]]:
+    """Brave's web results: ten a search, each with its description, whose highlighting tags are removed."""
+    async def send(query: str) -> httpx.Response:
+        return await client.get(BRAVE_SEARCH_URL, params={"q": query, "count": 10}, timeout=30,
+                                headers={"X-Subscription-Token": api_key, "Accept": "application/json"})
+
+    def results(data: dict[str, Any]) -> list[dict[str, str]]:
+        return [{"title": _TAG.sub("", item.get("title") or ""), "href": item.get("url") or "",
+                 "body": _TAG.sub("", item.get("description") or "")}
+                for item in (data.get("web") or {}).get("results") or []]
+
+    return _paid_engine("Brave", BRAVE_SEARCH_USD, send, results, spend, budget)
 
 
 class WebSearch:
@@ -167,21 +224,27 @@ class WebSearch:
                         "or try again later with a different query."}
 
 
-class HybridSearch:
-    """DuckDuckGo first, then Exa when DuckDuckGo finds nothing or fails. Each keeps its own cache, rate
-    slot, and retries; only a query DuckDuckGo could not answer costs an Exa search."""
+class SearchChain:
+    """Engines tried in order: a query goes to the next engine only when the one before it finds nothing or
+    fails. Each keeps its own cache, rate slot, and retries, so only the queries earlier engines could not
+    answer cost a later one's searches. DuckDuckGo then Exa ("hybrid") answered all 10 of a cheap run's
+    searches DuckDuckGo found nothing for (study log, 28 September 2026)."""
 
-    def __init__(self, primary: WebSearch, fallback: WebSearch) -> None:
-        self.primary, self.fallback = primary, fallback
-        # One cache may hold both engines' entries under their own names; it is counted once.
-        self.caches = list({id(cache): cache for cache in (primary.cache, fallback.cache) if cache is not None}.values())
+    def __init__(self, engines: list[WebSearch]) -> None:
+        self.engines = engines
+        # One cache may hold several engines' entries under their own names; it is counted once.
+        self.caches = list({id(e.cache): e.cache for e in engines if e.cache is not None}.values())
 
     async def search(self, query: str) -> dict[str, Any]:
-        first = await self.primary.search(query)
-        if first.get("results"):
-            return first
-        second = await self.fallback.search(query)
-        return second if second.get("results") or "error" not in second else first
+        outcomes = []
+        for engine in self.engines:
+            found = await engine.search(query)
+            if found.get("results"):
+                return found
+            outcomes.append(found)
+        # Nothing found anywhere: an engine's plain "no results", with its hint to broaden the query, else
+        # the first engine's error.
+        return next((outcome for outcome in outcomes if "error" not in outcome), outcomes[0])
 
 
 # Failures another reader may get past: refusals, rate limits, server errors, challenge or JavaScript-only

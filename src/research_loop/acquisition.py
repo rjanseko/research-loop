@@ -59,14 +59,18 @@ CACHE_VERSION = 1
 #     are capped at 600 characters a result; and an unset reading fallback is every reader that can run.
 # 15: a blocked work is also known by its title (a frozen case's `blocked_title`): search results, scholarly
 #     records, and documents whose opening prints it are left out or refused, whatever their address.
-FETCH_VERSION = 15
+# 16: a fetch returns up to 40,000 characters, not 12,000: 66% of 1,831 pages scouts read were cut at 12,000
+#     (median page 44,000), and scouts asked for a later window for only 588 of the 1,202 cut. Web search
+#     can run on Serper and Brave, and on any engines in order (web.SearchChain). A scholarly search returns
+#     up to 25 works, not 10: scouts asked for 8 to 10 in 371 of 852 searches.
+FETCH_VERSION = 16
 
 
 def is_pdf(media: str, content: bytes) -> bool:
     """A PDF by its declared type or, as servers often send one as octet-stream, by its first bytes."""
     return media == "application/pdf" or content[:5] == b"%PDF-"
-# Longest text window one fetch returns; `start` pages through the rest.
-MAX_FETCH_CHARS = 12_000
+# Longest text window one fetch returns; `start` pages through the rest. A median page is about 44,000.
+MAX_FETCH_CHARS = 40_000
 CacheMode = Literal["off", "live", "record", "replay", "reuse"]
 
 
@@ -163,7 +167,8 @@ def fetch_cache_key(url: str, max_chars: int, start: int) -> str:
 
 _rate_lock = threading.Lock()
 _next_request_at: dict[str, float] = {}
-_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2}
+_RATE_INTERVAL = {"openalex": 0.2, "crossref": 0.2, "arxiv": 3.0, "duckduckgo": 1.0, "exa": 0.2, "serper": 0.1,
+                  "brave": 0.05}
 
 
 async def wait_rate_slot(provider: str) -> None:

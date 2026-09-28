@@ -42,6 +42,12 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
         result["anthropic_cache"] = True
     elif provider == "openai":
         result["openai_prompt_cache_key"] = f"research-loop:{model_id}"
+    elif provider == "deepseek":
+        # PydanticAI's profile knows only `deepseek-v4-*` names as thinking models and drops the effort for
+        # `deepseek-flash`, which DeepSeek then runs at its default, `high`. So the effort is sent as DeepSeek
+        # documents it; it maps medium to high and xhigh to max (api-docs.deepseek.com/guides/thinking_mode).
+        del result["thinking"]
+        result["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
     return ModelSettings(**result)  # type: ignore[typeddict-item]
 
 
@@ -94,6 +100,10 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
         from pydantic_ai.models.zai import ZaiModel
         from pydantic_ai.providers.zai import ZaiProvider
         model = ZaiModel(name, provider=ZaiProvider(api_key=key), settings=own)
+    elif provider == "deepseek":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.deepseek import DeepSeekProvider
+        model = OpenAIChatModel(name, provider=DeepSeekProvider(api_key=key), settings=own)
     else:
         from google.genai.types import HttpRetryOptions
         from pydantic_ai.models.google import GoogleModel

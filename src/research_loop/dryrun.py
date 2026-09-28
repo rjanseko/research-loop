@@ -157,6 +157,10 @@ class World:
             return self._scholarly(request)
         if host == "api.exa.ai":
             return self._exa_contents(request) if request.url.path == "/contents" else self._exa(request)
+        if host == "google.serper.dev":
+            return self._search_api(request, "serper")
+        if host == "api.search.brave.com":
+            return self._search_api(request, "brave")
         if host == "api.firecrawl.dev":
             return self._firecrawl(request)
         url = str(request.url)
@@ -244,6 +248,35 @@ class World:
         status = 403 if rng.random() < 0.1 else 200
         return httpx.Response(200, json={"success": True, "data": {"markdown": self._page_text(url, rng),
                                                                   "metadata": {"statusCode": status}}})
+
+    def _search_api(self, request: httpx.Request, engine: str) -> httpx.Response:
+        """Serper's and Brave's search endpoints (web.serper_engine, web.brave_engine): results in each one's
+        shape, or a fault. Like Exa's, their results include the blocked page, which must never reach a scout."""
+        query = (json.loads(request.content or b"{}").get("q", "") if engine == "serper"
+                 else request.url.params.get("q", ""))
+        rng = random.Random(_stable(self.seed, engine, query))
+        roll = rng.random()
+        if roll < self.fault_rate * 0.2:
+            return httpx.Response(429, json={"error": "rate limit"})
+        if roll < self.fault_rate * 0.3:
+            return httpx.Response(500)
+        if roll < self.fault_rate * 0.35:
+            return httpx.Response(401, json={"error": "invalid API key"})
+        if roll < self.fault_rate * 0.4:
+            return httpx.Response(200, content=b"{not json")
+        urls = list(self.pages)
+        chosen = rng.sample(urls, min(len(urls), rng.randint(0, 10)))
+        if rng.random() < 0.3 and self.blocked not in chosen:
+            chosen.append(self.blocked)
+        found = []
+        for url in chosen:
+            page = self.pages[url]
+            sentences = [part for part in page.text.split(". ") if part]
+            found.append((page.title, url, rng.choice(sentences) if sentences else ""))
+        if engine == "serper":
+            return httpx.Response(200, json={"organic": [{"title": t, "link": u, "snippet": s} for t, u, s in found]})
+        return httpx.Response(200, json={"web": {"results": [
+            {"title": t, "url": u, "description": f"<strong>{s[:40]}</strong>{s[40:]}"} for t, u, s in found]}})
 
     def _exa(self, request: httpx.Request) -> httpx.Response:
         """Exa's search endpoint (web.exa_engine): results with highlights and a reported cost, or a fault.
@@ -931,7 +964,8 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
                               scout_alt=rng.choice([None, "fake:fuzz-alt@high"])),
         "limits": limits, "offline_world": seed, "offline_fault_rate": fault_rate, "cache_mode": "off",
         # Every engine, so the paid search path, its budget reservations, and its costs are fuzzed too.
-        "search_engine": rng.choice(["duckduckgo", "exa", "hybrid"]),
+        "search_engine": rng.choice(["duckduckgo", "exa", "hybrid", "serper", "brave", "serper,exa",
+                                     "duckduckgo,brave,exa"]),
         # The reading fallback in several orders, off in some runs, so its money and results are fuzzed too.
         "read_fallback": rng.choice([(), ("oa", "exa", "firecrawl"), ("exa",), ("firecrawl", "exa")]),
         "tokens_per_minute": {}, "logfire": False,

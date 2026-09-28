@@ -122,7 +122,19 @@ from .study_budget import (
 )
 from .telemetry import run_span, trace_http, trace_id
 from .tools import TimedToolset, labeled_texts, research_toolset, tool_outcomes
-from .web import HybridSearch, WebAcquisition, WebSearch, exa_engine
+from .web import (
+    SearchChain,
+    WebAcquisition,
+    WebSearch,
+    brave_engine,
+    exa_engine,
+    serper_engine,
+)
+
+
+def _paid_search(name: str) -> Any:
+    """The paid web search engine a setting names (Settings.search_engine), looked up when a run starts."""
+    return {"exa": exa_engine, "serper": serper_engine, "brave": brave_engine}[name]
 
 # v2: scouts list a set from an overview before confirming its members, and the gap analysis treats a
 # partial set as a gap.
@@ -150,9 +162,12 @@ from .web import HybridSearch, WebAcquisition, WebSearch, exa_engine
 # v11: old search snippets leave a scout's view past 16,000 characters, as old pages do (history.py).
 # v12: a frozen case's blocked titles reach its scouts and gap analyzer beside its blocked addresses, and a
 # scout's evidence citing a blocked work by its title is refused.
-WORKFLOW_VERSION = "scout-v12"
-FOLLOWUP_VERSION = "scout-followup-v13"
-RESCOUT_VERSION = "scout-research-v12"
+# v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
+# review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
+# study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
+WORKFLOW_VERSION = "scout-v13"
+FOLLOWUP_VERSION = "scout-followup-v14"
+RESCOUT_VERSION = "scout-research-v13"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -822,14 +837,18 @@ class _Run:
 
             world = World(settings.offline_world, settings.offline_fault_rate)
             world.install(stack, self.policy)
-            search: WebSearch | HybridSearch = WebSearch(engine=world.search, retry_delays=(0.0, 0.0),
-                                                         policy=self.policy)
-            if settings.search_engine in ("exa", "hybrid"):
-                # The world answers Exa's API too, so the paid search path runs with its faults and costs.
-                exa_client = await stack.enter_async_context(world.client())
-                exa = WebSearch(engine=exa_engine(exa_client, "dry-exa-key", self.external_spend, self.budget),
-                                name="exa", retry_delays=(0.0, 0.0), policy=self.policy)
-                search = exa if settings.search_engine == "exa" else HybridSearch(search, exa)
+            # The world answers the paid engines' APIs too, so their paths run with their faults and costs.
+            engines: list[WebSearch] = []
+            paid_client: httpx.AsyncClient | None = None
+            for name in settings.search_engines():
+                if name == "duckduckgo":
+                    engines.append(WebSearch(engine=world.search, retry_delays=(0.0, 0.0), policy=self.policy))
+                    continue
+                paid_client = paid_client or await stack.enter_async_context(world.client())
+                engines.append(WebSearch(engine=_paid_search(name)(paid_client, f"dry-{name}-key", self.external_spend,
+                                                                  self.budget),
+                                         name=name, retry_delays=(0.0, 0.0), policy=self.policy))
+            search = engines[0] if len(engines) == 1 else SearchChain(engines)
             pages_client = await stack.enter_async_context(world.client())
             pages = WebAcquisition(cache_root=cache / "web", cache_mode="off", client=pages_client, memo=memo,
                                    policy=self.policy)
@@ -844,14 +863,18 @@ class _Run:
         metadata_client = await stack.enter_async_context(
             trace_http(httpx.AsyncClient(follow_redirects=False, timeout=15), settings))
         search_cache = AcquisitionCache(cache / "search", settings.cache_mode)
-        search = WebSearch(cache=search_cache, policy=self.policy)
-        if settings.search_engine in ("exa", "hybrid") and settings.exa_api_key is not None:
-            exa_client = await stack.enter_async_context(
-                trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
-            exa = WebSearch(cache=search_cache, name="exa", policy=self.policy,
-                            engine=exa_engine(exa_client, settings.exa_api_key.get_secret_value(),
-                                              self.external_spend, self.budget))
-            search = exa if settings.search_engine == "exa" else HybridSearch(search, exa)
+        engines = []
+        paid_client = None
+        for name in settings.search_engines():
+            if name == "duckduckgo":
+                engines.append(WebSearch(cache=search_cache, policy=self.policy))
+            elif (key := settings.search_key(name)) is not None:
+                paid_client = paid_client or await stack.enter_async_context(
+                    trace_http(httpx.AsyncClient(follow_redirects=False, timeout=30), settings))
+                engines.append(WebSearch(cache=search_cache, name=name, policy=self.policy,
+                                         engine=_paid_search(name)(paid_client, key, self.external_spend, self.budget)))
+        search = engines[0] if len(engines) == 1 else SearchChain(engines or [WebSearch(cache=search_cache,
+                                                                                        policy=self.policy)])
         pages = WebAcquisition(cache_root=cache / "web", cache_mode=settings.cache_mode, client=pages_client,
                                memo=memo, policy=self.policy)
         if settings.readers():
@@ -864,7 +887,7 @@ class _Run:
         scholar = ScholarClient(cache=AcquisitionCache(cache / "scholarly", settings.cache_mode), client=metadata_client,
                                 api_key=settings.openalex_api_key.get_secret_value() if settings.openalex_api_key else None,
                                 contact_email=settings.crossref_mailto)
-        search_caches = search.caches if isinstance(search, HybridSearch) else [search.cache]
+        search_caches = search.caches if isinstance(search, SearchChain) else [search.cache]
         self.caches = [cache for cache in (*search_caches, pages.cache, scholar.cache) if cache is not None]
         return TimedToolset(research_toolset(search, pages, scholar))
 

@@ -41,8 +41,10 @@ from pydantic_ai.settings import ModelSettings
 
 from .tools import FETCH, WEB_SEARCH, fetched_text, searched_snippets
 
-# Page text a request keeps, newest first: four full fetch windows.
-KEEP_CHARS = 48_000
+# Page text a request keeps, newest first: three full fetch windows of 40,000 characters (acquisition.py),
+# about 30,000 tokens. Luna allows this account 2,000,000 tokens a minute, so the limit is set by what a
+# scout can use, not by the rate limit.
+KEEP_CHARS = 120_000
 # Search-result snippets a request keeps, newest first: about seven DuckDuckGo searches, or three Exa
 # searches with their highlights capped (web.EXA_HIGHLIGHT_CHARS). Older results keep their titles and
 # addresses, so a scout can still fetch them.

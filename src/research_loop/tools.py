@@ -27,7 +27,7 @@ from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 from .evidence import ToolText, identity_keys, printed_dois
 from .schemas import UnreachedSource
 from .scholar import ScholarClient, ScholarWork
-from .web import HybridSearch, WebAcquisition, WebSearch
+from .web import SearchChain, WebAcquisition, WebSearch
 
 WEB_SEARCH, FETCH, SCHOLAR_SEARCH, SCHOLAR_GET = "web_search", "fetch", "scholar_search", "scholar_get"
 RESEARCH_TOOLS = frozenset({WEB_SEARCH, FETCH, SCHOLAR_SEARCH, SCHOLAR_GET})
@@ -58,7 +58,7 @@ def valid_unicode(value: Any) -> Any:
     return value
 
 
-def research_toolset(search: WebSearch | HybridSearch, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
+def research_toolset(search: WebSearch | SearchChain, pages: WebAcquisition, scholar: ScholarClient) -> FunctionToolset:
     """The four research tools. The task's blocked sources (the fetcher's policy) apply to all of them: search
     results and scholarly records from a blocked source are left out, and a fetch or lookup of one is refused."""
     policy = pages.policy
@@ -73,7 +73,7 @@ def research_toolset(search: WebSearch | HybridSearch, pages: WebAcquisition, sc
         return {"access": "snippet", **result} if "results" in result else result
 
     async def fetch(url: str, start: int = 0) -> dict[str, Any]:
-        """Read a public HTTPS page or PDF: up to 12,000 characters of its text from `start` (access: full_text).
+        """Read a public HTTPS page or PDF: up to 40,000 characters of its text from `start` (access: full_text).
 
         When the result has `next_start`, call again with start=next_start to read further.
         """
@@ -82,8 +82,9 @@ def research_toolset(search: WebSearch | HybridSearch, pages: WebAcquisition, sc
 
     async def scholar_search(query: str, year_from: int | None = None, year_to: int | None = None,
                              limit: int = 5) -> dict[str, Any]:
-        """Search scholarly records (OpenAlex and arXiv). Each work says its access: `abstract` when it
-        includes one, else `metadata`. Preprint and published records are separate works."""
+        """Search scholarly records (OpenAlex and arXiv), up to `limit` works (at most 25). Each work says its
+        access: `abstract` when it includes one, else `metadata`. Preprint and published records are separate
+        works."""
         response = await scholar.search(query, year_from, year_to, limit)
         return valid_unicode({"works": allowed(response.works),
                               "provider_errors": response.provider_errors, "truncated": response.truncated})

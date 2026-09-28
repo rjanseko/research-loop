@@ -188,7 +188,8 @@ class ScholarClient:
                      limit: int = 5) -> ScholarResponse:
         """OpenAlex works, then arXiv preprints, each within the year bounds."""
         result = ScholarResponse()
-        limit = max(1, min(limit, 10))
+        # Scouts asked for 8 to 10 in 371 of 852 searches when 10 was the most allowed.
+        limit = max(1, min(limit, 25))
         if not query.strip():
             result.provider_errors.append("query is empty")
             return result

@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from research_loop.acquisition import AcquisitionCache, SourcePolicy
+from research_loop.acquisition import MAX_FETCH_CHARS, AcquisitionCache, SourcePolicy
 from research_loop.schemas import SourceRef
 from research_loop.scholar import ScholarResponse, ScholarWork
 from research_loop.tools import research_toolset
@@ -49,7 +49,7 @@ def test_other_sources_are_not_blocked(url: str) -> None:
 
 @pytest.mark.asyncio
 async def test_web_fetch_refuses_a_blocked_source_before_the_cache_dns_or_network(tmp_path) -> None:
-    AcquisitionCache(tmp_path, "record").put("web", "https://blocked.example/doc|max_chars=12000",
+    AcquisitionCache(tmp_path, "record").put("web", f"https://blocked.example/doc|max_chars={MAX_FETCH_CHARS}",
                                              {"url": "https://blocked.example/doc", "text": "cached copy"})
     requested: list[str] = []
     transport = httpx.MockTransport(lambda request: requested.append(str(request.url)) or httpx.Response(200))

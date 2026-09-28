@@ -32,7 +32,12 @@ PROVIDER_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "zai": "ZAI_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
+
+# The web search engines (web.py) and the keys of the paid ones.
+SEARCH_ENGINES = ("duckduckgo", "serper", "brave", "exa")
+SEARCH_KEYS = {"serper": "SERPER_API_KEY", "brave": "BRAVE_API_KEY", "exa": "EXA_API_KEY"}
 
 
 # Reasoning effort, named with every model as `provider:model@effort`. GLM's `xhigh` is sent as `max`.
@@ -182,8 +187,9 @@ class ScoutLimits(BaseModel):
     scout_requests: int = Field(20, ge=2)
     scout_productive_calls: int = Field(32, ge=1)
     scout_misses: int = Field(16, ge=1)
-    # Billed input across a scout's requests; each request resends the loop's history.
-    scout_tokens: int = Field(1_000_000, ge=1_000)
+    # Billed input across a scout's requests; each request resends the loop's history. The most a scout used
+    # was 660,000 with 12,000-character page windows; windows of 40,000 carry more a request.
+    scout_tokens: int = Field(2_000_000, ge=1_000)
     guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
@@ -266,6 +272,7 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = Field(None, validation_alias="ANTHROPIC_API_KEY")
     zai_api_key: SecretStr | None = Field(None, validation_alias="ZAI_API_KEY")
     google_api_key: SecretStr | None = Field(None, validation_alias="GOOGLE_API_KEY")
+    deepseek_api_key: SecretStr | None = Field(None, validation_alias="DEEPSEEK_API_KEY")
     # Comma-separated; empty means every provider with a key.
     enabled_providers: Annotated[tuple[str, ...], NoDecode] = ()
 
@@ -280,13 +287,16 @@ class Settings(BaseSettings):
     # Where a study's runs keep their lookups (`for_study`).
     study_cache_root: Path = Path(".cache/studies")
     openalex_api_key: SecretStr | None = Field(None, validation_alias="OPENALEX_API_KEY")
-    # The web search engine behind the scouts' `web_search` tool. DuckDuckGo, through the `ddgs` scraping
-    # library, stays the default until a paired study shows another is better; it returned nothing for 34%
-    # of 2,636 production searches, and 4 of 6 such queries tried again later found results. "hybrid" asks
-    # DuckDuckGo and then Exa when DuckDuckGo finds nothing or fails (web.HybridSearch); Exa is paid per
-    # search and needs EXA_API_KEY (web.exa_engine).
-    search_engine: Literal["duckduckgo", "exa", "hybrid"] = "duckduckgo"
+    # The web search engines behind the scouts' `web_search` tool, tried in order: a query goes to the next
+    # engine only when the one before it finds nothing or fails (web.SearchChain), so only those searches
+    # cost a later engine's price. "duckduckgo" (free, through the `ddgs` scraping library), "serper"
+    # (Google's results), "brave", and "exa"; "hybrid" names "duckduckgo,exa". DuckDuckGo returned nothing
+    # for 34% of 2,636 production searches, and 4 of 6 such queries found results when tried again later.
+    # It stays the default until a paired study shows another is better. The paid engines need their keys.
+    search_engine: str = "duckduckgo"
     exa_api_key: SecretStr | None = Field(None, validation_alias="EXA_API_KEY")
+    serper_api_key: SecretStr | None = Field(None, validation_alias="SERPER_API_KEY")
+    brave_api_key: SecretStr | None = Field(None, validation_alias="BRAVE_API_KEY")
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
     # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
     # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in
@@ -298,6 +308,27 @@ class Settings(BaseSettings):
     offline_world: int | None = None
     offline_fault_rate: float = Field(0.2, ge=0, le=1)
     crossref_mailto: str | None = Field(None, validation_alias="CROSSREF_MAILTO")
+
+    @field_validator("search_engine")
+    @classmethod
+    def _engines(cls, value: str) -> str:
+        names = [part.strip().lower() for part in value.split(",") if part.strip()]
+        if not names:
+            raise ValueError("name at least one search engine")
+        if unknown := sorted(set(names) - {*SEARCH_ENGINES, "hybrid"}):
+            raise ValueError(f"unknown search engines: {', '.join(unknown)}; choose from {', '.join(SEARCH_ENGINES)}")
+        return ",".join(names)
+
+    def search_engines(self) -> tuple[str, ...]:
+        """The search engines a run tries, in order; "hybrid" is DuckDuckGo then Exa."""
+        names = [name for part in self.search_engine.split(",")
+                 for name in (("duckduckgo", "exa") if part == "hybrid" else (part,))]
+        return tuple(dict.fromkeys(names))
+
+    def search_key(self, engine: str) -> str | None:
+        """The API key of a paid search engine, when it is set."""
+        key = {"exa": self.exa_api_key, "serper": self.serper_api_key, "brave": self.brave_api_key}.get(engine)
+        return key.get_secret_value() if key else None
 
     @field_validator("read_fallback", mode="before")
     @classmethod
@@ -360,9 +391,9 @@ class Settings(BaseSettings):
             roles["fallback"] = self.models.fallback
         if self.models.scout_alt:
             roles["scout_alt"] = self.models.scout_alt
-        if self.search_engine in ("exa", "hybrid") and self.exa_api_key is None and self.offline_world is None:
-            problems.append(f"web search: {self.search_engine} needs EXA_API_KEY")
         if self.offline_world is None:
+            problems += [f"web search: {engine} needs {SEARCH_KEYS[engine]}" for engine in self.search_engines()
+                         if engine in SEARCH_KEYS and self.search_key(engine) is None]
             if "exa" in self.readers() and self.exa_api_key is None:
                 problems.append("reading fallback: exa needs EXA_API_KEY")
             if "firecrawl" in self.readers() and self.firecrawl_api_key is None:

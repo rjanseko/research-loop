@@ -19,7 +19,7 @@ from research_loop.models import (
 
 @pytest.fixture
 def keyed(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "GOOGLE_API_KEY"):
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY"):
         monkeypatch.setenv(name, "test-key")
     return Settings()
 
@@ -30,6 +30,18 @@ def test_a_model_runs_at_the_effort_named_with_it(keyed: Settings) -> None:
     assert sent_settings("zai:glm-5.3-flash@xhigh", "planner", keyed)["extra_body"]["reasoning_effort"] == "max"
     with pytest.raises(ValueError, match="names no effort"):
         build_model("zai:glm-5.3-flash", "scout", keyed)
+
+
+def test_deepseek_runs_at_the_effort_named_even_where_pydantic_ai_would_drop_it(keyed: Settings) -> None:
+    # PydanticAI knows only deepseek-v4-* names as thinking models, so it dropped the effort of deepseek-flash,
+    # which DeepSeek then ran at its default, high.
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    model = build_model("deepseek:deepseek-flash@low", "scout", keyed)
+    assert isinstance(model, OpenAIChatModel) and model.base_url.startswith("https://api.deepseek.com")
+    for spec, effort in (("deepseek:deepseek-flash@low", "low"), ("deepseek:deepseek-v4-pro@xhigh", "xhigh")):
+        assert sent_settings(spec, "scout", keyed)["extra_body"] == {"thinking": {"type": "enabled"},
+                                                                     "reasoning_effort": effort}
 
 
 def test_settings_refuse_a_model_without_its_effort(keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
