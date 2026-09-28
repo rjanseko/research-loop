@@ -29,6 +29,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
 | 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
 | 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
+| 09-28 | [The first free diagnosis of the deep-vs-standard study](#2026-09-28-the-first-free-diagnosis-of-the-deep-vs-standard-study) | free | With three runs per arm the study could detect only about 8-point differences, so its 5-point rule could not decide; 7 of 52 points never met |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -559,3 +560,14 @@ This was a free audit of the six study runs above: 12 grades, each run graded by
 - scouts that give every set member a source names its own claim, or mark it not established.
 
 They should be tested on more than one development case at standard depth, with the decision rule written first. If they work, earlier model comparisons judged under the old claim behavior should be looked at again.
+
+## 2026-09-28 The first free diagnosis of the deep-vs-standard study
+
+`research diagnose` (diagnose version 1, PR #41) was first run with `--free` on the six runs of the deep-vs-standard study. With `--free` it makes no calls, so only the report grades already stored were read, and the stage columns stay ungraded until the claims and research views are graded (about $0.50 to $0.80, held for now). Its checks of the score itself reproduced the hand audit:
+- **Judges.** Sol and GLM differ on 45 of 312 verdicts (14%). GLM alone credits 41 of them, and the most disputed points are database descriptions and URLs.
+- **Equivalent URLs.** 5 missed URL points name a site the report gives at another address.
+- **Never met.** 7 of 52 points were never met in any of the 32 stored grades of drb2-task8: DDSE (3 points), ASM Alloy Center (3), and model-based design's advantages (1).
+
+**The lesson.** With three runs per arm, the smallest difference the study could detect at 80% power is about 7.8 points under Sol and 8.8 under GLM. So its 5-point rule could not have been met reliably, and the study was bound to come out undecided. It would have taken about 12 runs per arm on this one case to see 4 points.
+
+The next study should rest its decision on measures that vary less, such as the count of points seen but never claimed, and on more than one development case, with its detectable difference computed before it is paid for.
