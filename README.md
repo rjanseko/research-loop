@@ -30,6 +30,7 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 - [How a run works](#how-a-run-works)
 - [External services and APIs](#external-services-and-apis)
 - [Limits and budgets](#limits-and-budgets)
+- [Configuration inventory](docs/configuration.md)
 - [Models](#models)
 - [Studies and evaluation](#studies-and-evaluation)
 - [Using it from Python](#using-it-from-python)
@@ -44,7 +45,7 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 
 - Python 3.12 or later.
 - Docker, for the local Postgres database. Research Loop runs without a database, but then nothing is stored and the study commands are unavailable.
-- An API key for each model provider you use. The default models need an OpenAI key and an Anthropic key. Z.ai and Google keys are optional; the support audit and the second rubric judge use Z.ai.
+- An API key for each model provider you use. The default models need an OpenAI key and an Anthropic key. Z.ai, Google, and DeepSeek keys are optional; the support audit and the second rubric judge use Z.ai.
 - A Logfire token, if you want traces. Without one, tracing stays in the process.
 
 ### Install
@@ -59,19 +60,19 @@ make postgres-up migrate
 
 ### Configure
 
-Settings come from `.env` or the environment, and exported variables override the file. `.env.example` lists every setting with a comment. The ones most people set are these:
+Settings come from `.env` or the environment, and exported variables override the file. [The configuration inventory](docs/configuration.md) lists every setting and the fixed limits that affect a run, with their current code defaults. `.env.example` shows common settings. The ones most people set are these:
 
 | Setting | What it does |
 |---|---|
 | `DATABASE_URL` | The Postgres database runs are stored in. The value in `.env.example` matches `make postgres-up`. |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY` | Provider keys. A provider is enabled when its key is set. |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY` | Provider keys. A provider is enabled when its key is set. |
 | `RESEARCH_ENABLED_PROVIDERS` | Allow only these providers, comma-separated, even if other keys are set. |
 | `LOGFIRE_TOKEN` | Send traces to Logfire. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
 | `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK`, `__JUDGE` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
-| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free), `hybrid` (DuckDuckGo, then Exa when it finds nothing), or `exa`. The last two need the key. See [Web search](#web-search). |
+| `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY` | The scouts' web search: `duckduckgo` (default), `serper`, `brave`, `exa`, or an ordered comma-separated chain. `hybrid` means DuckDuckGo then Exa. Paid engines need their keys. See [Web search](#web-search). |
 | `RESEARCH_READ_FALLBACK`, `FIRECRAWL_API_KEY` | Readers to try, in order, when our fetch cannot read a page: `oa`, `exa`, `firecrawl`. Unset, every reader that can run: `oa` always, `exa` and `firecrawl` when their keys are set. Empty turns it off. See [Reading fallback](#reading-fallback). |
 | `RESEARCH_CACHE_MODE`, `RESEARCH_CACHE_DIR` | The research tools' cache. See [The research cache](#the-research-cache). |
 | `OPENALEX_API_KEY`, `CROSSREF_MAILTO` | Optional identification for the scholarly indexes. |
@@ -304,8 +305,11 @@ These are all the outside services the code calls, what it sends them, and what 
 | Anthropic | `claude-opus-5-5@medium`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
 | Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
+| DeepSeek | Any role on request | Optional | `DEEPSEEK_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
 | Exa | Web search (`/search`, with highlights capped at 600 characters a result) | `RESEARCH_SEARCH_ENGINE=exa`, or `hybrid` for the searches DuckDuckGo cannot answer | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
+| Serper | Google organic web results | Optional search engine or chain member | `SERPER_API_KEY` | Configured at $0.001 per search | Search queries |
+| Brave | Web search | Optional search engine or chain member | `BRAVE_API_KEY` | Configured at $0.005 per search | Search queries |
 | OpenAlex | Scholarly search and records, with abstracts and open-access links | Default | `OPENALEX_API_KEY` (optional) | Free | Search terms and identifiers |
 | arXiv | Preprint search and records | Default | None | Free | Search terms and IDs |
 | Crossref | Records by DOI | Default | `CROSSREF_MAILTO` (optional) | Free | DOIs |
@@ -401,9 +405,9 @@ A scout's request that fails on a connection fault that is not a timeout, such a
 
 The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
 
-`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. `exa` sends every search to Exa. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. It returns up to ten results, whose highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. The setting also accepts `serper`, `brave`, `exa`, or a comma-separated chain such as `duckduckgo,brave,exa`; a later engine runs only when earlier ones found nothing or failed. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. Its API default controls the result count; the returned highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
 
-Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare the two with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
+Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare engines with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
 > [!NOTE]
 > Uncapped, Exa's highlights carried about 20 times the text of a DuckDuckGo search, which slowed scouts under the rate limit. Capped, ten results come to about 6,000 characters, three times a DuckDuckGo search, and old search snippets leave a scout's view like old pages (see [Scouts](#how-a-run-works)). DuckDuckGo stays the default until a comparison decides otherwise; see [docs/study-log.md](docs/study-log.md).
@@ -443,7 +447,7 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
 
-A model is named with the reasoning effort it runs at, as `provider:model@effort`. The provider is `openai`, `anthropic`, `zai`, or `google`, and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
+A model is named with the reasoning effort it runs at, as `provider:model@effort`. The provider is `openai`, `anthropic`, `zai`, `google`, or `deepseek`, and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
 
 Each run records the model and effort every role was sent. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
 

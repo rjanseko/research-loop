@@ -1,0 +1,147 @@
+# Configuration inventory
+
+This is the audit sheet for Scout's **committed defaults as of 28 September 2026**. It covers the settings accepted by [`config.py`](../src/research_loop/config.py), the CLI overrides, and the fixed limits that materially affect a run. Values here are code defaults, **not a copy of a developer's `.env` or provider account limits**. No credential value belongs in this file.
+
+For an actual run, its saved `config` in `run.json` or `research show RUN_ID --format json` is the effective snapshot, including the chosen depth and model settings. `research doctor` checks the current environment without making a model call; `research doctor --smoke` makes paid calls. Explicit `Settings(...)` arguments override exported environment variables, which override `.env` in the working directory, which override the defaults below. Nested variables use `__`, for example `RESEARCH_LIMITS__SCOUT_REQUESTS=24`. A CLI option such as `--depth` or `--max-usd` then applies to that run.
+
+## Models and general settings
+
+Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`, or `xhigh`. The provider may be `openai`, `anthropic`, `zai`, `google`, or `deepseek`. Verify model IDs with `research doctor --smoke` before a paid run because IDs can become stale.
+
+| Setting | Committed default | Effect |
+|---|---|---|
+| `RESEARCH_ENV` | `development` | Environment label. |
+| `RESEARCH_MODELS__PLANNER` | `openai:gpt-6-sol@high` | Plan and gap analysis. |
+| `RESEARCH_MODELS__SCOUT` | `openai:gpt-6-luna@high` | Scouts and deep dives. |
+| `RESEARCH_MODELS__SCOUT_ALT` | unset | When set, every other scout and deep dive in a **deep** run uses it. |
+| `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. |
+| `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner or synthesizer fallback on refusal or provider error; scouts have no fallback. |
+| `RESEARCH_MODELS__JUDGE` | `openai:gpt-6-sol@high` | Rubric and quality judges. The audit command requires its own `--model`. |
+| `RESEARCH_ENABLED_PROVIDERS` | empty | Empty means every provider with a key is enabled; otherwise a comma-separated allowlist. |
+| `RESEARCH_TOKENS_PER_MINUTE` | `{"openai:gpt-6-luna": 2000000}` | Initial per-model scout pacing limit. An OpenAI response can replace an unset default with the reported limit; setting this variable fixes the value. `{}` disables pacing. |
+| `DATABASE_URL` or `RESEARCH_DATABASE_URL` | unset | Postgres persistence. `.env.example` supplies a local URL if copied to `.env`. |
+| `RESEARCH_LOGFIRE` | `true` | Tracing switch; export requires `LOGFIRE_TOKEN`. |
+| `RESEARCH_CACHE_MODE` | `live` | `off`, `live`, `record`, `replay`, or `reuse`; see [cache and acquisition](#cache-and-acquisition). |
+| `RESEARCH_CACHE_DIR` | `.cache/research-loop` | Search, page, and scholarly cache root. |
+| `RESEARCH_STUDY_CACHE_ROOT` | `.cache/studies` | A named study normally uses `reuse` under this root. Explicit cache settings still win. |
+| `RESEARCH_SEARCH_ENGINE` | `duckduckgo` | Comma-separated chain of `duckduckgo`, `serper`, `brave`, `exa`; the next engine runs only after an empty result or failure. `hybrid` expands to `duckduckgo,exa`. |
+| `RESEARCH_READ_FALLBACK` | unset | Unset means `oa`, then `exa` and `firecrawl` if their keys exist. Empty disables fallback; a comma-separated value sets the exact order. |
+| `RESEARCH_OFFLINE_WORLD` | unset | Seed for the fake-model/offline-world harness; not a live-run setting. |
+| `RESEARCH_OFFLINE_FAULT_RATE` | `0.2` | Fault frequency in that harness. |
+
+Credentials and service identification default to **unset**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `OPENALEX_API_KEY`, `LOGFIRE_TOKEN`, and `CROSSREF_MAILTO`. `CROSSREF_MAILTO` is contact identification, not a secret. A selected paid search engine or reader needs its corresponding key. An existing `.env` that explicitly sets `RESEARCH_CACHE_MODE` or `RESEARCH_CACHE_DIR` keeps that override during a named study; remove those assignments to use the study-specific `reuse` cache. Source: [`Settings`](../src/research_loop/config.py), [`models.py`](../src/research_loop/models.py).
+
+## Effective depth limits
+
+These are the values of `ScoutLimits().for_depth(depth)` with no environment overrides. Every `ScoutLimits` row is overrideable as `RESEARCH_LIMITS__<FIELD>`; quick and deep overrides use `RESEARCH_LIMITS__QUICK__<FIELD>` or `RESEARCH_LIMITS__DEEP__<FIELD>`. The final `follow_up` row is a depth-tier setting only. Only the fields declared by `DepthTier` accept a depth-specific override: `max_questions`, `cost_usd`, `synthesis_usd`, `research_seconds`, `deadline_seconds`, `followup_cost_usd`, `followup_deadline_seconds`, `deep_dive_seconds`, `scout_productive_calls`, `deep_dive_requests`, `deep_dive_productive_calls`, `deep_dive_misses`, and `follow_up`. A depth override changes only its named fields. Values are seconds, dollars, tokens, or counts as labeled. The planner chooses depth unless `research scout --depth` fixes it.
+
+| Field and unit | Quick | Standard | Deep |
+|---|---:|---:|---:|
+| `max_questions` count | 2 | 4 | 8 |
+| `parallel_scouts` count | 8 | 8 | 8 |
+| `cost_usd` ordinary-run soft envelope | $0.30 | $0.75 | $0.75* |
+| `planner_usd` | $0.05 | $0.05 | $0.05 |
+| `synthesis_usd` | $0.12 | $0.40 | $0.40 |
+| `deadline_seconds` ordinary-run deadline | 360 | 720 | 1,920* |
+| `research_seconds` scout deadline | 240 | 480 | 1,200 |
+| `request_timeout_seconds` per model request | 120 | 120 | 120 |
+| `scout_requests` model requests | 20 | 20 | 20 |
+| `scout_productive_calls` | 32 | 32 | 48 |
+| `scout_misses` | 16 | 16 | 16 |
+| `scout_tokens` total token limit | 2,000,000 | 2,000,000 | 2,000,000 |
+| `guarded_scout_max_output_tokens` per request | 24,000 | 24,000 | 24,000 |
+| `synthesis_tokens` total token limit | 200,000 | 200,000 | 200,000 |
+| `synthesis_max_output_tokens` per request | 32,000 | 32,000 | 32,000 |
+| `followup_cost_usd` follow-up soft envelope | $2.00 | $2.00 | $3.00 |
+| `followup_deadline_seconds` | 900 | 900 | 1,920 |
+| `gap_usd` | $0.10 | $0.10 | $0.10 |
+| `gap_seconds` | 45 | 45 | 45 |
+| `max_gaps` count | 3 | 3 | 3 |
+| `deep_dive_usd` per dive | $0.25 | $0.25 | $0.25 |
+| `deep_dive_seconds` per dive | 240 | 240 | 480 |
+| `deep_dive_requests` model requests | 12 | 12 | 20 |
+| `deep_dive_productive_calls` | 16 | 16 | 32 |
+| `deep_dive_misses` | 8 | 8 | 16 |
+| `quick.follow_up` / `deep.follow_up` | `false` | `false` | `true` |
+
+*Deep automatically uses follow-up, so its active envelope is **$3.00** and its active whole-run deadline is **1,920 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
+
+The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.075** standard, **$0.175** standard with follow-up, and **$0.2125** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap.
+
+The planner and gap analyzer each have a fixed **2-request, 100,000-total-token** limit and a **16,000-token output** cap per request. The synthesizer has a fixed **2-request** limit in addition to `synthesis_tokens`. A scout's framework tool-call limit is `productive + misses + 12 batch slack + 16 re-read slack`: **76** for an ordinary quick/standard scout, **92** for a deep scout, **52** for a quick/standard deep dive, and **76** for a deep-run dive. Re-reading a memoized page does not spend the productive/miss loop budget. Source: [`scout.py`](../src/research_loop/scout.py), [`budget_notes.py`](../src/research_loop/budget_notes.py), [`models.py`](../src/research_loop/models.py).
+
+## Timeouts, waits, and retries
+
+| Behavior | Current value | Source |
+|---|---|---|
+| Planner fallback deadline | 90 seconds; on failure it makes one research question from the original question | [`scout.py`](../src/research_loop/scout.py) |
+| Failed/cancelled call recording wait | Up to 5 seconds | [`scout.py`](../src/research_loop/scout.py) |
+| Scout model request timeout | `request_timeout_seconds` above; a timeout is **not retried** | [`models.py`](../src/research_loop/models.py), [`rate_limit.py`](../src/research_loop/rate_limit.py) |
+| Scout 429 retry | At most 2 retries, only when the provider gives a retry time; add 0.1 seconds after reset | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
+| Scout transient connection retry | 1 retry after 1 second; no timeout retry | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
+| Provider SDK retry | 0 for scouts; guarded model requests also disable SDK retries and fallback. OpenAI-compatible and Anthropic clients otherwise use their default 2 retries | [`models.py`](../src/research_loop/models.py), [`scout.py`](../src/research_loop/scout.py) |
+| Scout token pacing | 60-second sliding window at 90% of the configured or provider-reported limit; new text estimated at 4 bytes/token | [`rate_limit.py`](../src/research_loop/rate_limit.py) |
+| Web search failure retry | 3 attempts total, waiting 2 then 6 seconds; no retry for an empty result or a refused hard-cap reservation | [`web.py`](../src/research_loop/web.py) |
+| Scholarly metadata retry | 2 attempts for 429 or 503; `Retry-After` defaults to 1 second and is clamped to 0–3 seconds | [`scholar.py`](../src/research_loop/scholar.py) |
+| Scholarly provider concurrency | 2 requests per provider | [`scholar.py`](../src/research_loop/scholar.py) |
+| Page fetch retry | 403 gets one browser-header attempt; 2 connection failures to a host stop later fetches from that host during the run | [`web.py`](../src/research_loop/web.py), [`acquisition.py`](../src/research_loop/acquisition.py) |
+
+Shared minimum intervals between starts of requests, per provider: **DuckDuckGo 1 s, OpenAlex 0.2 s, Crossref 0.2 s, arXiv 3 s, Exa 0.2 s, Serper 0.1 s, Brave 0.05 s**. Search engines have separate retry sequences and rate slots when chained. Source: [`acquisition.py`](../src/research_loop/acquisition.py).
+
+## Search, reading, history, and cache
+
+| Behavior | Current value | Source |
+|---|---|---|
+| Search choices | DuckDuckGo default; optional ordered chain of DuckDuckGo, Serper, Brave, Exa | [`config.py`](../src/research_loop/config.py), [`web.py`](../src/research_loop/web.py) |
+| Serper / Brave result request | 10 results each | [`web.py`](../src/research_loop/web.py) |
+| Exa search | `auto` type; highlights capped at 600 characters per result; result count left to Exa's API default | [`web.py`](../src/research_loop/web.py) |
+| Web search HTTP timeout | 30 seconds for Exa, Serper, and Brave | [`web.py`](../src/research_loop/web.py) |
+| Public fetch | HTTPS only, at most 3 redirects, 15-second request timeout; 5,000,000 decoded bytes per page or 25,000,000 per PDF | [`acquisition.py`](../src/research_loop/acquisition.py), [`web.py`](../src/research_loop/web.py) |
+| PDF and fetch window | First 30 PDF pages; up to 40,000 extracted characters per tool call, with `start` to page through; requested window clamped to at least 1,000 characters | [`web.py`](../src/research_loop/web.py), [`acquisition.py`](../src/research_loop/acquisition.py) |
+| Scholarly search | Default `limit=5`, clamped to 1–25 for OpenAlex; up to 5 arXiv results additionally; 15-second HTTP timeout and 2,000,000-byte response cap | [`scholar.py`](../src/research_loop/scholar.py), [`tools.py`](../src/research_loop/tools.py) |
+| Scholarly text | Query truncated to 300 characters for OpenAlex and 120 for arXiv; abstracts capped at 1,500 characters | [`scholar.py`](../src/research_loop/scholar.py) |
+| Scout prompt history | Keep newest 120,000 characters of fetched page text and 16,000 of search snippets; always retain text returned in latest 2 model responses | [`history.py`](../src/research_loop/history.py) |
+| Reading fallback | Try `oa`, Exa, Firecrawl in configured order when fetch fails for 401/403/429/451/500/502/503/504, transport error, empty/oversized/unsupported page; not for 404 | [`reading.py`](../src/research_loop/reading.py), [`web.py`](../src/research_loop/web.py) |
+| Fallback page acceptance | At least 500 characters and not a short challenge page | [`reading.py`](../src/research_loop/reading.py) |
+| Fallback paid HTTP timeout | Exa 30 seconds; Firecrawl HTTP 60 seconds with a requested 45-second scrape timeout | [`reading.py`](../src/research_loop/reading.py) |
+| Cache | `live`: read entries up to 86,400 seconds old and write; `record`: write only; `replay`: read any age with no network on a miss; `reuse`: read any age and write misses; `off`: neither | [`acquisition.py`](../src/research_loop/acquisition.py) |
+| Cache/memo size | Cache skips entries over 128,000 encoded characters; one run memoizes up to 64 full documents | [`acquisition.py`](../src/research_loop/acquisition.py) |
+
+Under `--max-usd`, the fixed reservations for external calls are **Exa search $0.010, Serper $0.001, Brave $0.005, Exa page $0.002, Firecrawl page $0.0054**. Exa's reported charge replaces its reservation on success. Other prices are in [`prices.toml`](../src/research_loop/prices.toml) and the bundled pricing library. The guard reserves each model request using an input upper bound and its output cap, then settles returned priced usage; failed requests keep their reservation except an unprocessed 429. Its current policy is `usage-anchor-v6`. Source: [`web.py`](../src/research_loop/web.py), [`reading.py`](../src/research_loop/reading.py), [`study_budget.py`](../src/research_loop/study_budget.py).
+
+## Run and evaluation overrides
+
+| Surface | Options that change behavior | Default / rule |
+|---|---|---|
+| `research scout` | `--depth`, `--follow-up`, `--max-usd`, repeatable `--note`, `--block`, `--block-title`, `--case`, `--study`, `--arm`, `--replicate`, `--no-persist`, `--out` | Depth `auto`; follow-up off except for deep; no hard cap for an ordinary question; arm `default`; replicate `1`. Frozen `--case` requires `--max-usd` and persistence. |
+| `research rescout` / `synthesize` | Required `--model` and `--max-usd`; optional `--study`, `--arm`, `--replicate`, `--out` | Rerun one stage against a stored plan or ledger. |
+| `research grade` / `assess` | Required `--case` and `--max-usd` | Use the configured judge model. |
+| `research audit` | Required `--model` and `--max-usd` | Checks stored report statements; one or more run IDs. |
+| `research diagnose` | Required `--model`; `--max-usd` unless `--free` | `--free` uses stored grades without model calls. |
+| `research study plan/run` | TOML spec, `--dry`, `--cheap`, `--seeds`, `--out` | `plan` is free. Real `run` uses the spec; dry uses fake models; cheap uses `openai:gpt-6-luna@low` and a $0.25 ceiling. Dry `--seeds` defaults to 1. |
+| `research fuzz` | `--runs`, `--seed`, `--one`, `--fault-rate` | 100 runs from seed 0 at fault rate 0.2. |
+| `research show` / `breakdown` | `show --format md` or `show --format json` (default `md`); a stored run ID | Read-only presentation of stored runs. |
+| `research doctor` | `--smoke` | Plain doctor is free; smoke calls configured models. |
+| `research db status/migrate/reconcile` | `reconcile --older-than MINUTES`, `--apply` | `--older-than` is required for reconcile; `--apply` is required to mutate stale rows. |
+
+Study specs in [`study.py`](../src/research_loop/study.py) have these fields. Required values have no committed default:
+
+| TOML field | Default | Meaning |
+|---|---|---|
+| `study` | required | Study name. |
+| `kind` | `scout` | `scout`, `rescout`, or `synthesize`. |
+| `cases` / `sources` | empty lists | Scout studies need cases; rerun studies need stored source run IDs. |
+| `arms` | required, at least one | Each arm has required `name`, plus `args=[]`, `ref=None`, `env={}`. |
+| `replicates` | 1 | Repetitions of each arm and target. |
+| `cap_usd`, `estimate_usd`, `ceiling_usd` | required | Per-run hard cap, planning estimate, and parent study ceiling. |
+| `grade`, `grade_estimate_usd`, `grade_cap_usd` | `false`, $0.06, $1.00 | Rubric grading and its estimate/cap. |
+| `audit`, `audit_model`, `audit_estimate_usd`, `audit_cap_usd` | `false`, `zai:glm-5.3@high`, $0.04, $0.30 | Support audit and its estimate/cap. |
+| `diagnose`, `diagnose_model`, `diagnose_estimate_usd`, `diagnose_cap_usd` | `false`, `zai:glm-5.3@high`, $0.15, $0.75 | Rubric diagnosis and its estimate/cap. |
+
+A cheap study reduces the first target to one replicate under **$0.25**. A dry study uses fake models, short limits, and `RESEARCH_DRY_DATABASE_URL` if set; otherwise it derives a `research_dry` database from `DATABASE_URL`. PostgreSQL tests use `RESEARCH_TEST_DATABASE_URL` and require a test-named database. Evaluation calls use **600 seconds / 16,000 output tokens** for rubric grades and support audits, and **180 seconds / 5,000 output tokens** for quality assessment. Sources: [`study.py`](../src/research_loop/study.py), [`evals.py`](../src/research_loop/evals.py), [`audit.py`](../src/research_loop/audit.py), [`quality.py`](../src/research_loop/quality.py), [`tests/conftest.py`](../tests/conftest.py).
+
+## Version markers and audit procedure
+
+Runs record workflow, prompt, evidence, fetch, budget, and rate-limit versions so old observations are not silently compared with changed behavior. Current markers are **`scout-v13`**, **`scout-followup-v14`**, **`scout-research-v13`**, **`scout-synthesis-v4`**, **evidence 7**, **fetch 16**, **`usage-anchor-v6`**, and **`scout-429-v4`**. The external support audit is version **2** and rubric judge version **2**. Source: [`scout.py`](../src/research_loop/scout.py), [`schemas.py`](../src/research_loop/schemas.py), [`acquisition.py`](../src/research_loop/acquisition.py), [`study_budget.py`](../src/research_loop/study_budget.py), [`rate_limit.py`](../src/research_loop/rate_limit.py), [`audit.py`](../src/research_loop/audit.py), [`evals.py`](../src/research_loop/evals.py).
+
+To audit a proposed configuration change: compare this sheet with the cited code and `.env.example`; run `research doctor` for a free current-environment check; inspect a stored run's `config` and `research breakdown RUN_ID` for the values and pacing actually used. For a behavioral change, follow the versioning, offline validation, and paid-study rules in [`AGENTS.md`](../AGENTS.md) and [`evaluation.md`](evaluation.md). Update this sheet when a default or fixed limit changes.
