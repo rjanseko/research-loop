@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from . import budget_notes
+from . import budget_notes, history
 from .schemas import FinalReport, GapAnalysis, ResearchPlan, ResearchResult
 
 UNTRUSTED = (
@@ -52,7 +52,10 @@ INSTRUCTIONS: dict[str, str] = {
         "one phrase of it; this holds for descriptions and definitions as much as for figures. Quotes and cited "
         "sources are checked against the tool output, and evidence without a quote cannot be checked, so a "
         "report marks it as resting on your summary alone. Leave `quote` empty only when no returned text "
-        "states the claim, never reconstruct wording, and cite only sources a tool returned. For papers keep the DOI or arXiv ID and the "
+        "states the claim, never reconstruct wording, and cite only sources a tool returned. Once you have "
+        "read many pages, the text of the oldest is replaced by a note: before quoting a page you can no "
+        "longer see, fetch it again with the same start, which is instant and free, and copy the quote from "
+        "the text in view. For papers keep the DOI or arXiv ID and the "
         "publication status, never infer peer review from an arXiv DOI, and flag retracted records. Record "
         "contradictions, and list in `unresolved` what you could not establish. Cite the document a tool actually "
         "returned: when you read a preprint, a mirror, or another copy because the published version was blocked "
@@ -110,9 +113,10 @@ BUDGET_NOTES = {name: getattr(budget_notes, name) for name in (
 
 
 def prompt_fingerprint(*, follow_up: bool = False) -> str:
-    """SHA-256 of the instructions, output schemas, and scout budget notes used by this mode."""
+    """SHA-256 of the instructions, output schemas, and scout budget and history notes used by this mode."""
     roles = [role for role in INSTRUCTIONS if follow_up or role != "gap_analyzer"]
     spec: dict[str, object] = {role: {"instructions": INSTRUCTIONS[role], "output_schema": OUTPUTS[role].model_json_schema()}
                                for role in roles}
     spec["budget_notes"] = BUDGET_NOTES
+    spec["history_notes"] = {"TRIMMED_PAGE": history.TRIMMED_PAGE}
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()

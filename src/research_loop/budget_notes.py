@@ -31,7 +31,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import ToolDefinition
 
-from .tools import productive
+from .tools import FETCH as fetch_tool
+from .tools import fetched_text, productive
 
 NOTE_PREFIX = "[Research budget] "
 LAST_REQUEST_NOTE = NOTE_PREFIX + "This is your last model request. Do not call tools; return your result now."
@@ -61,6 +62,9 @@ NARROW = (
 # budget is spent, but a parallel batch asked for just before then still runs, instead of the whole loop
 # failing on the limit. The sixth settings-study pilot's broad scout failed that way at request 17.
 TOOL_BATCH_SLACK = 12
+# Re-reads of pages whose text has left a scout's view (history.py) are free under its loop budget, but the
+# framework counts them as tool calls.
+REREAD_SLACK = 16
 DROPPED_NOTE = (
     NOTE_PREFIX + "Only the first {kept} of the {asked} tool calls in your last turn ran; the rest were dropped "
     "because they exceeded your tool-call limit."
@@ -76,12 +80,23 @@ class ToolYield:
 
 
 def tool_yield(messages: list[ModelMessage]) -> ToolYield:
-    """Productive calls and misses so far, and how the latest batch of returns did."""
+    """Productive calls and misses so far, and how the latest batch of returns did. Reading a page window
+    again, as a scout does to quote a page whose text has left its view (history.py), counts as neither."""
     spent = ToolYield()
+    read: set[tuple[Any, Any]] = set()
     for message in messages:
         if not isinstance(message, ModelRequest):
             continue
-        batch = [productive(part.tool_name, part.content) for part in message.parts if isinstance(part, ToolReturnPart)]
+        batch = []
+        for part in message.parts:
+            if not isinstance(part, ToolReturnPart):
+                continue
+            if part.tool_name == fetch_tool and (page := fetched_text(part.content)) is not None:
+                window = (page.get("url"), page.get("start", 0))
+                if window in read:
+                    continue
+                read.add(window)
+            batch.append(productive(part.tool_name, part.content))
         batch = [kind for kind in batch if kind is not None]
         if batch:
             found = sum(batch)
@@ -102,8 +117,8 @@ class LoopBudget:
 
     @property
     def tool_call_limit(self) -> int:
-        """The framework's limit on the loop's tool calls: its budgets plus `TOOL_BATCH_SLACK`."""
-        return self.max_productive + self.max_misses + TOOL_BATCH_SLACK
+        """The framework's limit on the loop's tool calls: its budgets plus `TOOL_BATCH_SLACK` and `REREAD_SLACK`."""
+        return self.max_productive + self.max_misses + TOOL_BATCH_SLACK + REREAD_SLACK
 
     def closing(self) -> bool:
         """Whether the next request must be the result so it can finish before the research deadline."""

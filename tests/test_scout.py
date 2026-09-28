@@ -518,6 +518,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     from pydantic_ai import UsageLimits
 
     from research_loop.agents import PlanLimits
+    from research_loop.history import TrimmedHistoryModel
     from research_loop.rate_limit import ScoutRateLimitModel
     from research_loop.scout import _Run
     from research_loop.study_budget import StudyBudgetModel, StudyBudgetRefusal
@@ -532,7 +533,9 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     budget = StudyBudget(Decimal("0.0001"))
     store = MemoryStore()
     runner = _Run("Q?", settings, store, [], [], None, None, budget=budget)
-    model = runner._model("scout")
+    trimming = runner._model("scout", settings.models.scout)
+    assert isinstance(trimming, TrimmedHistoryModel)
+    model = trimming.wrapped
     assert isinstance(model, ScoutRateLimitModel)
     assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
     assert model.pacer is not None and model.pacer.tokens_per_minute == 200_000  # gpt-6-luna's configured limit
@@ -656,6 +659,37 @@ async def test_the_plan_sets_the_depth_and_its_limits(settings, pages) -> None:
         chosen = await _run(settings, store, plan=plan_at("quick"), depth="deep")
     assert seen[0]["depth"] == "deep" and seen[0]["max_questions"] == {"deep": 8}
     assert chosen.plan.depth == "deep" and store.runs[chosen.run_id]["workflow_version"] == FOLLOWUP_VERSION
+
+
+async def test_a_deep_run_gives_every_other_scout_the_second_scout_model(settings, pages) -> None:
+    # Two providers' rate limits instead of one: Luna alone let a deep run's scouts send about 115,000
+    # tokens a minute together, whatever their deadline (d8c8198e, 2c66e8bd).
+    from research_loop.agents import gap_agent
+
+    settings = settings.model_copy(update={"models": settings.models.model_copy(
+        update={"scout_alt": "zai:glm-5.3@xhigh"})})
+    three = [*QUESTIONS, {"id": "c", "question": "Who maintains SWE-bench?"}]
+    urls = {"q1": "https://example.org/verified", "q2": "https://example.org/leakage", "q3": "https://example.org/verified"}
+    gaps = {"gaps": [{"question_id": q, "reason": "matters", "follow_up_question": "More?"} for q in ("q1", "q2")]}
+
+    def plan_at(depth: str) -> FunctionModel:
+        return FunctionModel(lambda messages, info: _output(info, {"questions": three, "depth": depth}))
+
+    store = MemoryStore()
+    with gap_agent.override(model=FunctionModel(lambda messages, info: _output(info, gaps))):
+        deep = await _run(settings, store, plan=plan_at("deep"), research=researcher(urls))
+    calls = [call for call in store.calls.values() if call["run_id"] == deep.run_id]
+    assert sorted((c["question_id"], c["model"]) for c in calls if c["role"] == "scout") == [
+        ("q1", "openai:gpt-6-luna"), ("q2", "zai:glm-5.3"), ("q3", "openai:gpt-6-luna")]
+    # Deep dives alternate by gap order the same way.
+    assert [c["model"] for c in calls if c["role"] == "deep_dive"] == ["openai:gpt-6-luna", "zai:glm-5.3"]
+    assert store.runs[deep.run_id]["config"]["models"]["scout_alt"]["thinking"] == "xhigh"
+
+    # Quick and standard runs keep one scout model.
+    standard = await _run(settings, store, plan=plan_at("standard"), research=researcher(urls))
+    assert {c["model"] for c in store.calls.values() if c["run_id"] == standard.run_id and c["role"] == "scout"} == {
+        "openai:gpt-6-luna"}
+    assert "scout_alt" not in store.runs[standard.run_id]["config"]["models"]
 
 
 async def test_a_quick_plan_with_too_many_questions_is_retried(settings, pages) -> None:

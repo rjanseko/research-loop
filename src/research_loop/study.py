@@ -170,11 +170,14 @@ FAKE_MODEL = "fake:fuzz@high"
 CHEAP_MODEL = "openai:gpt-6-luna@low"
 CHEAP_CEILING_USD = 0.25
 _ROLES = ("PLANNER", "SCOUT", "SYNTHESIZER", "FALLBACK", "JUDGE")
+_SCOUT_ALT = "RESEARCH_MODELS__SCOUT_ALT"
 # Short limits for dry runs; fake calls are fast, so these only bound faults that stall.
 _DRY_LIMITS = {"RESEARCH_SECONDS": "20", "DEADLINE_SECONDS": "60", "FOLLOWUP_DEADLINE_SECONDS": "130",
                "GAP_SECONDS": "5", "DEEP_DIVE_SECONDS": "8", "REQUEST_TIMEOUT_SECONDS": "1",
                "QUICK__MAX_QUESTIONS": "2", "QUICK__COST_USD": "0.30", "QUICK__SYNTHESIS_USD": "0.12",
-               "QUICK__RESEARCH_SECONDS": "3", "QUICK__DEADLINE_SECONDS": "30"}
+               "QUICK__RESEARCH_SECONDS": "3", "QUICK__DEADLINE_SECONDS": "30",
+               "DEEP__RESEARCH_SECONDS": "20", "DEEP__DEADLINE_SECONDS": "60",
+               "DEEP__FOLLOWUP_DEADLINE_SECONDS": "130", "DEEP__DEEP_DIVE_SECONDS": "8"}
 
 
 def for_mode(spec: StudySpec, mode: Mode, seeds: int = 1) -> StudySpec:
@@ -207,6 +210,12 @@ def mode_env(mode: Mode, run: Planned, dsn: str | None = None) -> dict[str, str]
         return {}
     model = FAKE_MODEL if mode == "dry" else CHEAP_MODEL
     env = {f"RESEARCH_MODELS__{role}": model for role in _ROLES}
+    # A second scout model, from the arm or the environment, is replaced like the rest; without one the check
+    # keeps one scout model, as the real run does.
+    from .config import Settings
+
+    alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else Settings().models.scout_alt
+    env[_SCOUT_ALT] = model if alt else ""
     if mode == "dry":
         env |= {"RESEARCH_OFFLINE_WORLD": str(_stable_seed(run)), "RESEARCH_CACHE_MODE": "off",
                 "RESEARCH_TOKENS_PER_MINUTE": "{}", "RESEARCH_LOGFIRE": "false", "PYDANTIC_AI_NO_BANNER": "1"}

@@ -66,3 +66,42 @@ def test_reruns_refuse_what_cannot_run_before_opening_the_database(command, monk
     assert "must name its effort" in capsys.readouterr().err
     assert _exit([command, run_id, "--model", "openai:gpt-6-luna@high", "--max-usd", "1", "--study", "../x"]) == 2
     assert "study name" in capsys.readouterr().err
+
+
+def test_sigterm_mid_run_records_the_run_and_its_scouts_as_cancelled(tmp_path) -> None:
+    # A study check stopped with SIGTERM left its run and a scout marked running (7b7d351c). In a
+    # subprocess, since the KeyboardInterrupt the handler raises would end this test session.
+    import subprocess
+    import sys
+
+    script = """
+import asyncio, os, signal
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
+from research_loop.agents import planner_agent, scout_agent
+from research_loop.cli import _interrupt_on_sigterm
+from research_loop.config import Settings
+from research_loop.scout import scout
+from research_loop.store import MemoryStore
+
+def plan(messages, info):
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"questions": [{"id": "a", "question": "Q?"}]})])
+
+async def stall(messages, info):
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(30)
+
+store = MemoryStore()
+_interrupt_on_sigterm()
+try:
+    with planner_agent.override(model=FunctionModel(plan)), scout_agent.override(model=FunctionModel(stall)):
+        asyncio.run(scout("Q?", settings=Settings(cache_dir=os.environ["CACHE"], cache_mode="off"), store=store))
+except KeyboardInterrupt:
+    print(sorted(run["status"] for run in store.runs.values()),
+          sorted((call["role"], call["status"]) for call in store.calls.values()))
+"""
+    env = {"PATH": "/usr/bin:/bin", "CACHE": str(tmp_path), "OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k",
+           "RESEARCH_LOGFIRE": "false", "DATABASE_URL": ""}
+    done = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60,
+                          check=False)
+    assert done.stdout.strip() == "['cancelled'] [('planner', 'succeeded'), ('scout', 'cancelled')]", done.stderr

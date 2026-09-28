@@ -17,6 +17,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
+from .history import TrimmedHistoryModel
 from .rate_limit import ScoutRateLimitModel, TokenPacer
 
 Role = Literal["planner", "scout", "synthesizer"]
@@ -103,17 +104,22 @@ def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
     return TokenPacer(limit) if limit else None
 
 
-def role_model(role: Role, settings: Settings) -> Model:
-    """The model `role` runs on. The planner and synthesizer fall back to `models.fallback` when their
-    model refuses a call (ContentFilterError) or its provider fails (ModelAPIError); scouts do not, since
-    a failed scout leaves its question unanswered rather than failing the run. A scout's client makes
-    one attempt, so a request that reaches the timeout is not sent again. A run-shared wrapper retries
-    only timed rate limits from the provider."""
-    spec: str = getattr(settings.models, role)
+def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
+    """A scout's model: `inner` behind a run-shared wrapper that retries only timed rate limits and paces
+    `model_id` under its token rate, and with old page text trimmed from each request (history.py)."""
+    return TrimmedHistoryModel(ScoutRateLimitModel(inner, token_pacer(model_id, settings)))
+
+
+def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:
+    """The model `role` runs on, or `spec` in its place. The planner and synthesizer fall back to
+    `models.fallback` when their model refuses a call (ContentFilterError) or its provider fails
+    (ModelAPIError); scouts do not, since a failed scout leaves its question unanswered rather than failing
+    the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent again."""
+    spec = spec or getattr(settings.models, role)
     primary = build_model(spec, role, settings, sdk_retries=0 if role == "scout" else None)
     fallback = settings.models.fallback
     if role == "scout":
-        return ScoutRateLimitModel(primary, token_pacer(split_model(spec)[0], settings))
+        return scout_model(primary, split_model(spec)[0], settings)
     if not fallback or fallback == spec:
         return primary
     return FallbackModel(primary, build_model(fallback, role, settings),

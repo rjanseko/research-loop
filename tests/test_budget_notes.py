@@ -164,16 +164,16 @@ async def test_a_turn_past_the_tool_call_limit_loses_only_its_excess_calls() -> 
             return ModelResponse(parts=[ToolCallPart("fetch", {"url": f"https://a.test/{n}"}) for n in range(50)])
         return ModelResponse(parts=[TextPart("result")])
 
-    # Without trimming, PydanticAI refuses all 50 calls against the limit of 15 and the loop ends with nothing.
+    # Without trimming, PydanticAI refuses all 50 calls against the limit of 31 and the loop ends with nothing.
     result = await _agent().run("research", model=FunctionModel(respond), capabilities=budget.capabilities(),
                                 usage_limits=UsageLimits(request_limit=10, tool_calls_limit=budget.tool_call_limit))
-    assert result.output == "result" and result.usage.tool_calls == budget.tool_call_limit == 15
+    assert result.output == "result" and result.usage.tool_calls == budget.tool_call_limit == 31
     asked = [part for message in result.all_messages() if isinstance(message, ModelResponse)
              for part in message.parts if isinstance(part, ToolCallPart)]
-    assert len(asked) == 15
+    assert len(asked) == 31
     # The second request carries the first request's note, then the dropped calls, then its own note.
     assert len(notes[1]) == 3 and notes[1][0] == notes[0][0]
-    assert notes[1][1].startswith(NOTE_PREFIX + "Only the first 15 of the 50 tool calls in your last turn ran")
+    assert notes[1][1].startswith(NOTE_PREFIX + "Only the first 31 of the 50 tool calls in your last turn ran")
 
 
 def test_the_prompt_fingerprint_covers_every_budget_note(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -205,6 +205,12 @@ def source_records(messages: Iterable[ModelMessage]) -> list[tuple[frozenset[str
             for keys, record in records]
 
 
+def fetched_text(content: Any) -> dict[str, Any] | None:
+    """A fetch return that holds page text, as a mapping; None for an error or anything else."""
+    data = _data(content)
+    return data if isinstance(data, dict) and data.get("text") else None
+
+
 def productive(tool_name: str, content: Any) -> bool | None:
     """Whether a research tool's return found something: a search with results, a fetch with text, a
     scholarly call with works. None for other tools, such as the output tool."""

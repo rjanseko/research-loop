@@ -15,8 +15,8 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 | | |
 |---|---|
 | What you get | A Markdown report with a direct answer, inline citations, a coverage list, caveats, and a "Needs review" list of every weakness code found |
-| What a run costs | With the default models, as measured: about $0.05 for a quick question, $0.10 to $0.40 for a standard one, and about $0.50 for a deep one. Every run has a budget and a deadline. |
-| How long it takes | About a minute for a quick question, 3 to 9 minutes for a standard one, and about 11 minutes for a deep one |
+| What a run costs | With the default models, as measured: about $0.05 for a quick question, $0.10 to $0.40 for a standard one, and $0.45 to $0.60 for a deep one with Luna scouts. Every run has a budget and a deadline. |
+| How long it takes | About a minute for a quick question, 3 to 9 minutes for a standard one, and up to 32 minutes for a deep one (11 to 12 minutes under the shorter limits deep runs had before `scout-followup-v10`) |
 | The commands most people need | `research doctor` to check the setup, `research scout "question"` to run, `research breakdown <run id>` to see where the time and money went |
 
 > [!WARNING]
@@ -68,6 +68,7 @@ Settings come from `.env` or the environment, and exported variables override th
 | `RESEARCH_ENABLED_PROVIDERS` | Allow only these providers, comma-separated, even if other keys are set. |
 | `LOGFIRE_TOKEN` | Send traces to Logfire. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
 | `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK`, `__JUDGE` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
+| `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
 | `RESEARCH_TOKENS_PER_MINUTE` | Provider token rate limits that scouts are paced under, as JSON. See [Rate limits](#rate-limits). |
 | `RESEARCH_SEARCH_ENGINE`, `EXA_API_KEY` | The scouts' web search: `duckduckgo` (the default, free) or `exa` (paid per search, needs the key). See [Web search](#web-search). |
@@ -229,6 +230,8 @@ A scout returns claims. Each claim carries evidence: a source, a summary of what
 
 Each scout is told on every request how much of its budget is left. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A request that fails on a transient network fault is sent once more. A scout that fails or is still running at the deadline leaves its question unanswered, but keeps the searches it made and the pages it read.
 
+Every request resends a scout's whole history, and page text is most of it. So once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
+
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
 Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
@@ -254,7 +257,7 @@ The gap analysis chooses its deep dives from open items first, and a deep dive m
 The planner also decides how much research the question warrants, and the run takes the limits of that depth:
 - **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.30 budget, and six minutes;
 - **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $0.75, and twelve minutes;
-- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $2.00 budget and fifteen minutes.
+- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $3.00 budget and up to 32 minutes. Its scouts get 20 minutes of research and 48 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
 
 `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used.
 
@@ -295,9 +298,9 @@ These are all the outside services the code calls, what it sends them, and what 
 
 | Service | What Scout uses it for | When | Key or setting | Cost | What is sent |
 |---|---|---|---|---|---|
-| OpenAI | `gpt-6-sol`: the planner, the gap analyzer, the rubric judge, and the fallback. `gpt-6-luna`: scouts, deep dives, and `--cheap` checks | Default | `OPENAI_API_KEY` | Per token, from the bundled price data | Prompts, including tool output |
-| Anthropic | `claude-opus-5-5`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
-| Z.ai | `glm-5.3`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
+| OpenAI | `gpt-6-sol@high`: the planner, the gap analyzer, the rubric judge, and the fallback. `gpt-6-luna@high`: scouts and deep dives; `gpt-6-luna@low`: `--cheap` checks | Default | `OPENAI_API_KEY` | Per token, from the bundled price data | Prompts, including tool output |
+| Anthropic | `claude-opus-5-5@medium`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
+| Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
 | Exa | Web search (`/search`, with highlights) | `RESEARCH_SEARCH_ENGINE=exa` | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
@@ -339,7 +342,7 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 | Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
 | Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
-| Deep depth | 8 questions and the gap follow-up | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `RESEARCH_LIMITS__DEEP__FOLLOW_UP` |
+| Deep depth | 8 questions and the gap follow-up; $3.00, which leaves eight scouts about $0.21 each; 20 minutes of research and 32 in all; 48 useful tool calls a scout; deep dives of 8 minutes with 20 requests, 32 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
 | Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 | Follow-up total cost | $2.00 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
@@ -349,6 +352,8 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 | Each deep dive | 12 requests, 16 useful tool calls, 8 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 
 In follow-up mode, the gap analysis share and three deep-dive shares come off the top as well, which leaves four scouts $0.175 each.
+
+A setting for one limit of a depth, such as `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS=6`, changes only that limit; the depth keeps the rest of its own. The follow-up rows above apply to `--follow-up` on a standard run, and the deep row replaces them for a deep run.
 
 A useful tool call is a search that found something, a fetch that returned text, or a scholarly call that returned works. A failed one is an empty search, an HTTP error, or a blocked address. Counting them apart lets a scout that is only failing stop early, without cutting short one that is working. The framework's own limit on tool calls sits 12 above the sum, so that a batch of parallel calls asked for just before the budget ran out can still run. When a turn asks for more tool calls than that limit leaves, only the calls that fit run, and the next request tells the model how many were dropped.
 
@@ -380,6 +385,8 @@ When a provider rejects a scout's request with a token rate limit and says when 
 Retrying is not enough when parallel scouts regularly send more than the limit allows, so scouts on a model listed in `RESEARCH_TOKENS_PER_MINUTE` are also paced. Before each request, the run waits until the tokens its scouts sent that model in the last minute, plus an estimate for this request, fit under 90% of the limit. The estimate starts from the previous reply's billed tokens and counts four bytes a token for what was added since; the billed count replaces it when the reply returns.
 
 The default is `{"openai:gpt-6-luna": 200000}`, the OpenAI tier this project runs on, which four unpaced Luna scouts overran. Set the limit for your own account's tier, or `'{}'` to turn pacing off. Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history.
+
+A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $3.00.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
@@ -427,6 +434,7 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Scouts and deep dives | `openai:gpt-6-luna@high` | `RESEARCH_MODELS__SCOUT` |
 | Synthesizer | `anthropic:claude-opus-5-5@medium` | `RESEARCH_MODELS__SYNTHESIZER` |
 | Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
+| Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
 
 A model is named with the reasoning effort it runs at, as `provider:model@effort`. The provider is `openai`, `anthropic`, `zai`, or `google`, and the effort is `low`, `medium`, `high`, or `xhigh`. The effort is required: a setting or `--model` without one is refused before any call, so a model and its effort are always chosen together, and a run never picks an effort you did not name. PydanticAI sends `xhigh` to GLM-5.3 as its `max` level.
@@ -570,7 +578,7 @@ The scouts are probably waiting under the token rate limit. Long tool results, s
 <details>
 <summary>Runs stay <code>running</code> in the database after a process was killed</summary>
 
-Run `research db reconcile --older-than 30` to count them, and add `--apply` to mark them failed.
+A run stopped with Ctrl-C or SIGTERM, the signal `kill` and process managers send, records itself and its calls as `cancelled`. One whose process died without that, as on SIGKILL or a crash, stays `running`. Run `research db reconcile --older-than 30` to count them, and add `--apply` to mark them failed.
 
 </details>
 

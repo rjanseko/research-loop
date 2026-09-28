@@ -26,6 +26,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Reading fallback: dry and cheap checks](#2026-09-27-reading-fallback-dry-and-cheap-checks) | $0.17 | A screen: with the fallback, failed page fetches fell from 12 to 0 on st07 and from 10 to 1 on drb2-task8 |
 | 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap; a request's reservation missed long-context output prices. All three fixed |
 | 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | $0.16 | Clean on the new code once the keys were in `.env`; the runner now checks every arm first. Ceilings raised |
+| 09-27 | [Deep example runs: throughput, trimmed history, and a second scout model](#2026-09-27-deep-example-runs-throughput-trimmed-history-and-a-second-scout-model) | $1.59 | Both real deep runs were partial; Luna's token rate, not the deadline, limited them. Longer deep limits, history trimming, and a second scout model were built but not measured |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -462,3 +463,35 @@ With the keys in `.env`, the second attempt ran all three cheap checks, with eve
 
 The pattern matches the first cheap checks. The fallback arm read the pages our fetcher could not: on st07, 11 failures fell to 0; on drb2-task8, 6 fell to 2, a 404 and a site's home page. st07's fallback paid for nothing, because every page it read came from the study's reading cache (11 hits, no misses), written by the first cheap check. The paid study shares one cache between its arms in the same way.
 
+## 2026-09-27 Deep example runs: throughput, trimmed history, and a second scout model
+
+The aim was one worked example for the README: a deep run on a new question, with its report audited and checked by hand. The question was "What is the current clinical evidence that GLP-1 receptor agonists reduce alcohol consumption or alcohol use disorder, and which trials are still underway?", with the note "Keep randomized trials, observational studies, and animal work distinct, and give effect sizes and the populations studied." It is not a benchmark case and has no rubric, so no run on it is graded. Every run used `--depth deep` and the reading fallback (`oa,exa,firecrawl`). The planned budget was about $0.95, with a $2.50 hard cap on the deep run. No example was published, because neither real run finished.
+
+| Run | Kind | Version | Scouts | Status | Scouts that returned | Coverage established | Quotes verified | Scout tokens a minute | Cost | Time |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `9e5d710d` | cheap | followup-v9 | Luna@low | complete | 4 of 4 | 7 of 9 | 65 of 71 | about 158,000 | $0.114 | 7.9 min |
+| `d8c8198e` | real | followup-v9 | Luna@high | partial | 1 of 4 | 8 of 14 | 46 of 53 | about 111,000 | $0.469 | 12.1 min |
+| `39964fd5` | cheap | followup-v10 | Luna@low | complete | 4 of 4 | 7 of 8 | 54 of 55 | about 119,000 | $0.062 | 6.5 min |
+| `2c66e8bd` | real | followup-v10 | Luna@xhigh | partial | 1 of 7 | 8 of 20 | 40 of 47 | about 123,000 | $0.603 | 26.9 min |
+| `6d29289d` | cheap | followup-v11 | Luna@low and GLM-5.3-flash@low | complete | 4 of 4 | 7 of 14 | 46 of 67 | | $0.163 | 10.7 min |
+| `96037bcf` | cheap | followup-v11, size-based trimming | Luna@low and GLM-5.3-flash@low | complete | 4 of 4 | 8 of 12 | 36 of 53 | | $0.172 | 9.6 min |
+
+The real runs used the Sol@high planner and gap analyzer and the Opus 5.5@medium synthesizer. The cheap runs put every role on Luna@low. A smoke test of `openai:gpt-6-luna@xhigh` cost $0.004. In all, the day cost $1.59: $1.07 for the two real runs and $0.52 for the cheap checks and the smoke test. Scout tokens a minute are the scouts' billed input divided by the longest scout's time, so they are approximate.
+
+**The first real run (`d8c8198e`)** planned four questions. Three of its scouts were cancelled at the 480-second research deadline. They had spent $0.010 to $0.012 of their $0.175 shares, and a scout cut off at the deadline keeps no claims. So the animal-evidence question returned nothing, and the observational question had nothing until a deep dive. Opus synthesis cost $0.27 of the run's $0.47. The run also exposed two defects:
+- `web_fetch` refused JSON, so three ClinicalTrials.gov API queries failed as an unsupported content type;
+- `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS` on its own replaced the whole deep tier, which turned the gap follow-up off.
+
+Both were fixed with unit tests in `scout-followup-v10` (commit 2252ec4). That commit also gave deep runs 20 minutes of research, 32 minutes in all, 48 productive calls a scout, and deep dives of 8 minutes with a scout's full loop budget. The cheap check `39964fd5` confirmed JSON reads from ClinicalTrials.gov.
+
+**The second real run (`2c66e8bd`)** used the longer limits with Luna@xhigh scouts, at the user's request. The planner chose seven questions. At 20 minutes, five scouts were cancelled at the deadline, one failed when a single request passed the 120-second timeout, and one finished. Each scout had managed only six to nine requests. So the deadline was never the constraint. Both real runs sent about the same number of tokens a minute through Luna's limit of 200,000, whether four scouts had 8 minutes or seven had 20. Fetched page text was 2.6 of the 4.0 million characters in the scouts' tool results (63%), and every request resends it. The log's `h2 connection driver error: connection reset` lines come from `primp`, the DuckDuckGo client, and did no harm.
+
+**What changed after it** (commits 6c9043c and effea01):
+- **Trimming (`scout-v10`).** A scout's request keeps the newest 48,000 characters of page text, and always the pages of its latest two responses. Older pages become a stub asking the scout to fetch again before quoting; the re-read is free. The stored history, which the quote check reads, keeps every page.
+- **A second scout model (`scout-followup-v11`).** `RESEARCH_MODELS__SCOUT_ALT` gives every other scout and deep dive of a deep run a second model with its own pacer, and deep runs get $3.00. Dry and cheap studies now replace the second model too; before that fix, a cheap check could have reached real GLM-5.3@xhigh scouts.
+
+The first version of trimming stubbed every page two responses after it was read. In the cheap check `6d29289d`, scouts then got 11 to 18 requests each, against 4 to 9 before. But Luna's questions verified only 18 of 27 quotes: the scouts that lost most never re-read a page, and one had only four requests, where trimming saved little. With trimming based on size (`96037bcf`), Luna's questions verified 24 of 25. The GLM-5.3-flash@low questions verified 28 of 40 and then 12 of 28. That stand-in says nothing about GLM-5.3@xhigh, the second model these changes are meant for.
+
+**Other fixes.** A study check stopped with SIGTERM earlier on 27 September had left run `7b7d351c` and one of its scouts marked `running`. `research db reconcile --older-than 60 --apply` marked them failed (Abandoned). The CLI now stops on SIGTERM as it does on Ctrl-C, so a stopped run records itself as cancelled (3788d3d). A subprocess test checks this, and fails without the fix.
+
+**What it showed, and what it did not.** Deep runs on Luna are limited by the account's token rate, not by their deadline, their money, or the scouts' effort. More time or more questions spread the same throughput more thinly. The cheap checks show that trimming and the second model run end to end. They cannot show that either improves reports: they run cheap stand-in models, finish because low effort is fast, and are one run each. None of today's changes has been graded. A replicated, graded comparison on a frozen case, with its decision rule written first, should decide whether the deep changes stay. Everything is on PR #39.

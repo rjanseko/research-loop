@@ -52,7 +52,9 @@ CACHE_VERSION = 1
 #     DOI is refused, even from the cache; scholarly tools refuse a blocked work and leave blocked records out;
 #     and a scout's evidence citing a blocked work by DOI or arXiv ID alone is refused
 #     (docs/architectural-audit-2026-09-27.md, F06).
-FETCH_VERSION = 12
+# 13: web_fetch reads JSON, laid out one value a line, and plain text: the first deep example run's three
+#     ClinicalTrials.gov API queries were refused as an unsupported content type.
+FETCH_VERSION = 13
 
 
 def is_pdf(media: str, content: bytes) -> bool:

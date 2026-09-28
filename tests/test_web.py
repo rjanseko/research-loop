@@ -123,6 +123,33 @@ async def test_a_pdf_may_be_larger_than_a_page(public_urls) -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_reads_json_and_plain_text_but_not_binary(public_urls) -> None:
+    # The first deep example run's scouts asked ClinicalTrials.gov's API for recruiting trials three times,
+    # and each JSON answer was refused as an unsupported content type.
+    record = '{"protocolSection":{"statusModule":{"overallStatus":"RECRUITING"},"briefTitle":"Semaglutide \\u2013 AUD"}}'
+    bodies = {"/api/v2/studies": ("application/json; charset=utf-8", record),
+              "/data.geojson": ("application/geo+json", '{"type": "Point"}'),
+              "/notes.txt": ("text/plain", "Registry note: enrollment closed."),
+              "/logo.png": ("image/png", "\x89PNG")}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        media, text = bodies[request.url.path]
+        return httpx.Response(200, headers={"content-type": media}, text=text)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fetcher = WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http)
+        trial = await fetcher.fetch("https://clinicaltrials.gov/api/v2/studies")
+        point = await fetcher.fetch("https://example.org/data.geojson")
+        note = await fetcher.fetch("https://example.org/notes.txt")
+        image = await fetcher.fetch("https://example.org/logo.png")
+    # JSON is laid out one value a line with its escapes decoded, so a quoted value matches the text.
+    assert '"overallStatus": "RECRUITING"' in trial["text"] and "Semaglutide – AUD" in trial["text"]
+    assert trial["extraction"] == "json" and '"type": "Point"' in point["text"]
+    assert note["text"] == "Registry note: enrollment closed." and note["extraction"] == "text"
+    assert "error" in image and "text" not in image
+
+
+@pytest.mark.asyncio
 async def test_fetch_errors_tell_the_model_the_status(public_urls) -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
         result = await WebAcquisition(cache_root=Path("/nonexistent"), cache_mode="off", client=http).fetch("https://example.org/blocked")
