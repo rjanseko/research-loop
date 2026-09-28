@@ -30,6 +30,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Deep against standard on drb2-task8 (scout-v10, followup-v11)](#2026-09-28-deep-against-standard-on-drb2-task8-scout-v10-followup-v11) | $3.59 | Undecided: deep scored 5.0 points more under Sol and 4.7 under GLM, short of the 5-point rule under both; better supported, 1.75 times the cost |
 | 09-28 | [Where drb2-task8's rubric points are lost](#2026-09-28-where-drb2-task8s-rubric-points-are-lost) | free | Points are lost before synthesis: scouts claim narrow, paper-level findings from few reviews, and coverage counts a dimension met by any one claim. About 6 points are out of reach, and URL literalness explains much of the gap between the judges |
 | 09-28 | [The first free diagnosis of the deep-vs-standard study](#2026-09-28-the-first-free-diagnosis-of-the-deep-vs-standard-study) | free | With three runs per arm the study could detect only about 8-point differences, so its 5-point rule could not decide; 7 of 52 points never met |
+| 09-28 | [Hybrid search and capped Exa highlights: checks](#2026-09-28-hybrid-search-and-capped-exa-highlights-checks) | $0.12 | Capped highlights come to about 6,000 characters a search; in a cheap run Exa answered all 10 searches DuckDuckGo could not, and no blocked source reached a scout |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -571,3 +572,15 @@ They should be tested on more than one development case at standard depth, with 
 **The lesson.** With three runs per arm, the smallest difference the study could detect at 80% power is about 7.8 points under Sol and 8.8 under GLM. So its 5-point rule could not have been met reliably, and the study was bound to come out undecided. It would have taken about 12 runs per arm on this one case to see 4 points.
 
 The next study should rest its decision on measures that vary less, such as the count of points seen but never claimed, and on more than one development case, with its detectable difference computed before it is paid for.
+
+## 2026-09-28 Hybrid search and capped Exa highlights: checks
+
+A free look at the stored searches came first. DuckDuckGo is reached through `ddgs`, which scrapes whichever of several search sites it picks. Of 2,636 production searches, 34% returned nothing and 104 more timed out. Results were almost always none or about seven, and plain queries came back empty about as often as those with quotes or `site:`. Four of six queries that had come back empty returned results when tried again. So the empty searches are the scraper's failures, not the scouts' queries.
+
+Fetch version 14 adds a hybrid engine, which sends a query to Exa only when DuckDuckGo finds nothing or fails. It also caps Exa's highlights at 600 characters a result, and makes the reading fallback on by default. Scout-v11 drops old search snippets from a scout's view past 16,000 characters.
+
+**Checks, $0.12.**
+- *One Exa search*, $0.007. Ten results carried 583 to 600 characters each, 5,955 in all. Uncapped, the median had been 3,900 to 6,400 a result. Two of the top three results were copies of drb2-task8's blocked expert report. That search ran without a case, and the case's block list catches both addresses.
+- *A cheap run* on drb2-task8 at standard depth, with every role on Luna@low: `10e3fce3`, complete, $0.115, 152 s. Of 23 DuckDuckGo searches, 10 found nothing. Exa answered all 10, for $0.07 of the run's $0.088 in paid searches and reads, and the reading fallback read 4 pages through Exa. The blocked report appeared only in the scouts' block list, never in a tool result.
+
+A cheap run is a pass or fail check, not a measure of quality. Whether hybrid search raises rubric scores, and where points are lost, is left to a study with the diagnosis on.
