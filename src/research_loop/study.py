@@ -8,7 +8,8 @@ or stored runs. The runner does what the screens did by hand. It runs each plann
 always goes first against the study's shared cache (ABBA). It labels every run with the study, arm, and
 replicate. An arm at another git ref runs from a temporary worktree of that ref, so it uses that
 commit's code. Before starting, it refuses a spec whose worst case by the estimates exceeds the study's
-ceiling. The estimates only plan; the ceiling is enforced by hard caps. Each run, grade, and audit gets a
+ceiling, and one with an arm whose runs would refuse to start, such as for a missing API key, so an
+earlier arm does not spend first. The estimates only plan; the ceiling is enforced by hard caps. Each run, grade, and audit gets a
 `--max-usd` cap no larger than what remains of the ceiling, rounded down to the cent, and a run's cap
 leaves room for its grade and audit by their estimates. What a step cost comes from its record; a step
 whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole
@@ -73,6 +74,10 @@ _GRADE_LINE = re.compile(r": (\d+) of (\d+) points \((\d+\.\d+)\), \$(\d+\.\d+)"
 
 class StudyCeilingError(ValueError):
     """The planned runs could cost more than the study's ceiling."""
+
+
+class StudyConfigError(ValueError):
+    """An arm's runs would refuse to start, such as for a missing API key."""
 
 
 class Arm(BaseModel):
@@ -310,6 +315,38 @@ def _audit_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, 
     return audit
 
 
+# Why the command's configuration would refuse to run, or None; given the extra environment. Tests replace it.
+Preflight = Callable[[dict[str, str]], str | None]
+_ROLE_OF_MODEL = {"rescout": "SCOUT", "synthesize": "SYNTHESIZER"}
+# What a paid command checks before its first call (cli._checked), run with the arm's environment and code.
+_CHECK = """
+from research_loop.config import Settings
+from research_loop.scout import ConfigError, check_config
+try:
+    check_config(Settings())
+except (ConfigError, ValueError) as exc:
+    print(exc)
+    raise SystemExit(2)
+"""
+
+
+def _preflight(env: dict[str, str]) -> str | None:
+    done = subprocess.run([sys.executable, "-c", _CHECK], cwd=REPO, env={**os.environ, **env}, check=False,
+                          capture_output=True, text=True)
+    if done.returncode == 0:
+        return None
+    lines = (done.stdout.strip() or done.stderr.strip()).splitlines()
+    return lines[-1] if lines else f"exit {done.returncode}"
+
+
+def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path]) -> dict[str, str]:
+    """The extra environment of one planned run: its arm's, then the mode's, then its git ref's code."""
+    env = dict(run.arm.env) | mode_env(mode, run, dsn)
+    if run.arm.ref:
+        env["PYTHONPATH"] = str(trees[run.arm.ref] / "src")
+    return env
+
+
 def _invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
     executable = Path(sys.executable).with_name("research")
     done = subprocess.run([str(executable), *args], cwd=REPO, env={**os.environ, **env}, check=False,
@@ -349,7 +386,8 @@ def _calls(dsn: str, run_id: str) -> list[dict[str, Any]]:
 def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
               grade: Callable[..., dict | None] | None = None, audit: Callable[..., dict | None] | None = None,
               worktrees: Callable[[StudySpec], Any] = _worktrees, mode: Mode = "real",
-              dsn: str | None = None, calls: Callable[[str, str], list[dict[str, Any]]] = _calls) -> list[Outcome]:
+              dsn: str | None = None, calls: Callable[[str, str], list[dict[str, Any]]] = _calls,
+              preflight: Preflight | None = None) -> list[Outcome]:
     """Run every planned run of `spec` in order, each run, grade, and audit under a hard cap that fits in what
     remains of the ceiling (see the module docstring). Dry and cheap runs are also checked against the
     invariants (dryrun.check_record)."""
@@ -357,6 +395,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
 
     grade = grade or _grade_with(_invoke_output)
     audit = audit or _audit_with(_invoke_output)
+    preflight = preflight or _preflight
     audit_model = spec.audit_model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
@@ -367,6 +406,18 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     grade_reserve = _usd(spec.grade_estimate_usd) if spec.grade else Decimal(0)
     audit_reserve = _usd(spec.audit_estimate_usd) if spec.audit else Decimal(0)
     with worktrees(spec) as trees:
+        # Every arm is checked before any run, so an arm that cannot start does not find out after another spent.
+        firsts = {run.arm.name: run for run in reversed(schedule(spec))}
+        refusals = []
+        for name, run in sorted(firsts.items()):
+            env = _run_env(run, mode, dsn, trees)
+            args = command(spec, run, Path(tempfile.gettempdir()), mode)
+            if spec.kind in _ROLE_OF_MODEL and "--model" in args:
+                env[f"RESEARCH_MODELS__{_ROLE_OF_MODEL[spec.kind]}"] = args[args.index("--model") + 1]
+            if problem := preflight(env):
+                refusals.append(f"arm {name}: {problem}")
+        if refusals:
+            raise StudyConfigError("; ".join(refusals))
         for run in schedule(spec):
             run_cap = _cap(spec.cap_usd, ceiling - spent - grade_reserve - audit_reserve)
             if spent + _usd(spec.per_run_usd()) > ceiling or run_cap <= 0:
@@ -374,9 +425,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                 outcomes.append(Outcome(run, -1, notes=[note]))
                 continue
             out = out_root / run.label
-            env = dict(run.arm.env) | mode_env(mode, run, dsn)
-            if run.arm.ref:
-                env["PYTHONPATH"] = str(trees[run.arm.ref] / "src")
+            env = _run_env(run, mode, dsn, trees)
             code, stderr = invoke(command(spec, run, out, mode, run_cap), env)
             outcome = Outcome(run, code)
             if (out / "run.json").exists():

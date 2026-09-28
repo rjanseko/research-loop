@@ -25,6 +25,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-27 | [Fetch bake-off](#2026-09-27-fetch-bake-off-on-the-pages-our-fetcher-failed-on) | $0.10 and free-tier credits | A chain of our fetcher, open access, Exa, and Firecrawl reads 139 of 160 failed pages |
 | 09-27 | [Reading fallback: dry and cheap checks](#2026-09-27-reading-fallback-dry-and-cheap-checks) | $0.17 | A screen: with the fallback, failed page fetches fell from 12 to 0 on st07 and from 10 to 1 on drb2-task8 |
 | 09-27 | [Architectural audit: blocked sources and the study ceiling](#2026-09-27-architectural-audit-blocked-sources-and-the-study-ceiling) | free | Five early drb2-task8 ledgers cite the blocked expert report; the study ceiling was not a hard cap; a request's reservation missed long-context output prices. All three fixed |
+| 09-27 | [Reading fallback: cheap checks after the audit fixes](#2026-09-27-reading-fallback-cheap-checks-after-the-audit-fixes) | about $0.04 | The fallback arm could not start without its keys; the runner now checks every arm first. Ceilings raised |
 
 ## 2026-09-25 Scout's first live screen: Flash and Luna scouts on st04, st05, and st07
 
@@ -438,3 +439,13 @@ Replayed over the stored tool results of the 37 runs with a blocked list, the ne
 **A request's reservation missed long-context output prices (C01).** The budget guard priced a request's output as if its input were short. GPT-6 Luna and Sol, the default scout, planner, and judge, charge 1.5 times as much for output once the input passes 272,000 tokens, and so do Gemini Pro models. So a long request could settle above its reservation, and a run could pass `--max-usd`. No stored request has reached that tier; the largest had 108,723 input tokens. The reservation is now never less than the price of one request at both the input and output bounds (`usage-anchor-v6`). Below the tier it is unchanged.
 
 **Checks, all free.** 100 fuzz runs and the full offline suite passed. A two-seed dry run of `studies/reading-fallback-task8.toml` on the new code (runs 6c07eb9b, c490646f, 6fb53ecb, and 3f2e2126) had no invariant violations. One of its fake audits failed, and the summary counted that audit's whole $0.30 cap as spent. The dry check now also flags a scholarly record from a blocked source. The reading-fallback specs need their cheap checks rerun before the paid comparison, because the code they run has changed.
+
+## 2026-09-27 Reading fallback: cheap checks after the audit fixes
+
+The audit fixes changed the code the reading-fallback specs run: fetch version 12, budget policy `usage-anchor-v6`, and the study runner's hard caps. So the three specs needed new dry and cheap checks. Each passed `--dry --seeds 2` with no invariant violations. Their ceilings equalled their worst case by the estimates, which would let the runner cap the last runs at their own estimates, so they were raised by about a quarter:
+- short: $2.80 to $3.50;
+- st07: $2.20 to $2.80;
+- drb2-task8: $3.20 to $4.00.
+
+The first cheap attempt failed. Its fallback arm refused to start, because `EXA_API_KEY` and `FIRECRAWL_API_KEY` were missing from `.env`; the earlier cheap checks had them only in the shell that ran them. By then the own arm had already run on short and st07, as runs `f56754c6` and `ae40efa3` with their cheap grades and audits. The drb2-task8 check was stopped during its own arm's run, `7b7d351c`, which stays marked `running` in the database. The attempt cost about $0.04. The runner now checks every arm's configuration, with its environment and code, before the first run, and refuses the study if an arm could not start.
+

@@ -10,6 +10,9 @@ import pytest
 from pydantic import ValidationError
 
 from research_loop.study import StudySpec, load_spec, run_study, schedule, summary
+from research_loop.study import (
+    _preflight as real_preflight,  # before the autouse fixture replaces it
+)
 
 SPEC = """
 study = "deep-vs-standard"
@@ -31,6 +34,12 @@ args = ["--depth", "deep"]
 ref = "main"
 env = { RESEARCH_MODELS__SCOUT = "openai:gpt-6-luna@high" }
 """
+
+
+@pytest.fixture(autouse=True)
+def _arms_can_start(monkeypatch) -> None:
+    """The runner's configuration check runs the real one in a subprocess; these tests are about what follows."""
+    monkeypatch.setattr("research_loop.study._preflight", lambda env: None)
 
 
 @pytest.fixture
@@ -246,3 +255,42 @@ def test_a_grade_and_audit_are_capped_by_what_the_ceiling_leaves(tmp_path: Path)
     # The run keeps $0.20 for its grade and audit; after it spends $0.70 the grade may use $0.30 less the
     # audit's $0.10, and the audit what the grade left.
     assert seen == ["0.80"] and caps == {"grade": 0.2, "audit": 0.18}
+
+
+def test_an_arm_that_cannot_start_stops_the_study_before_any_run(spec: StudySpec, tmp_path: Path) -> None:
+    # The reading-fallback cheap checks (docs/study-log.md, 27 September 2026): the own arm ran and was paid for
+    # before the fallback arm refused to start without EXA_API_KEY and FIRECRAWL_API_KEY.
+    from research_loop.study import StudyConfigError
+
+    calls: list[list[str]] = []
+    checked: list[dict[str, str]] = []
+
+    def preflight(env: dict[str, str]) -> str | None:
+        checked.append(env)
+        return "reading fallback: exa needs EXA_API_KEY" if env.get("RESEARCH_MODELS__SCOUT") else None
+
+    with pytest.raises(StudyConfigError, match="arm deep: reading fallback: exa needs EXA_API_KEY"):
+        run_study(spec, tmp_path, invoke=lambda args, env: (calls.append(args) or 0, ""), worktrees=_no_worktrees,
+                  preflight=preflight)
+    assert not calls
+    # Each arm is checked once, with its own environment and its git ref's code.
+    assert len(checked) == 2 and {env.get("PYTHONPATH") for env in checked} == {None, "/tmp/tree/src"}
+
+
+def test_a_rescout_arm_is_checked_with_its_own_model() -> None:
+    spec = StudySpec(study="s", kind="rescout", sources=["r"], cap_usd=1, estimate_usd=0.1, ceiling_usd=1,
+                     arms=[{"name": "a", "args": ["--model", "openai:gpt-6-sol@high"]}])
+    checked: list[dict[str, str]] = []
+    with pytest.raises(Exception, match="stop"):
+        run_study(spec, Path("/nonexistent"), invoke=lambda *a: (0, ""), worktrees=_no_worktrees,
+            preflight=lambda env: checked.append(env) or "stop")
+    assert checked[0]["RESEARCH_MODELS__SCOUT"] == "openai:gpt-6-sol@high"
+
+
+def test_the_configuration_check_reports_what_the_command_would_refuse() -> None:
+    from research_loop.study import FAKE_MODEL, mode_env
+
+    # A fake model outside the offline world is refused whatever keys the machine has.
+    assert "offline world" in real_preflight({"RESEARCH_MODELS__SCOUT": FAKE_MODEL})
+    run = schedule(StudySpec(study="s", cases=["c"], cap_usd=1, estimate_usd=0.1, ceiling_usd=1, arms=[{"name": "a"}]))[0]
+    assert real_preflight(mode_env("dry", run)) is None
