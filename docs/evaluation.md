@@ -10,7 +10,7 @@ The frozen cases are in `src/research_loop/study_cases.jsonl`. A case is never e
 
 - **Short cases.** st01 to st05 are a direct fact, a two-hop fact, a figure from one primary source, a false premise (st04), and a table of facts from three papers (st05). They test whether Scout answers precisely and cheaply, and they catch regressions: a drop from full marks is easy to see.
 - **Broad cases.** st06 and st07 are broad research questions. st07, whether SWE-bench Verified is still a trustworthy measure, is kept as a contested-topic diagnostic and a bridge to the first design's grades; both are retired as selection cases.
-- **Development cases from DeepResearch Bench II.** `drb2-task8` and `drb2-task68-plus` are long expert tasks, used to tune changes.
+- **Development cases from DeepResearch Bench II.** `drb2-task8` and `drb2-task68-plus` are long expert tasks, used to tune changes. Four more were frozen on 27 September 2026 with `role: development`, so that tuning no longer rests on two cases: `drb2-task98-plus`, `drb2-task75`, `drb2-task15`, and `drb2-task21` (see below).
 - **Held-out cases.** `drb2-task82`, `drb2-task59`, and `drb2-task78` are run only to confirm a change before adopting it, never to tune one.
 
 ### How the DeepResearch Bench II cases were frozen
@@ -27,6 +27,23 @@ Selection was based on the official English tasks' topic and scope, before any S
 cases was read. The dataset snapshot was `imlrz/DeepResearch-Bench-II` commit
 `b38f360603db9531b102aef8c166cedb8509b6f6` (download SHA-256
 `263aaabb8c279fb16cbe7c9499afe82d657a8ab3ccfb07ace084387e367d921a`). Each case now preserves the exact `content.task`, expert rubric, blocked source URLs, license, official ID and index, and dataset revision. The case content digests are `840c63bd8195a546bbd3ee4bee15ba24aae4fee7e34f06b7461651d641ad4367` and `2ef645b6ab3c877e82eaca77463f873fceaebe3d4f274f53dc4552f5a3208500`. The Scout case command sends only the task to research agents; the rubric and blocked expert report remain out of research context. Before fetch version 12 the scholarly tools did not apply the blocked list, and five early drb2-task8 ledgers cite the blocked report by its DOI (study log, 27 September 2026, architectural audit). Blocked sources are now matched by address and by the DOI or arXiv ID a blocked address names, in every tool and in the scouts' evidence. A copy that carries neither is not recognized, and the blocked lists of drb2-task68-plus, drb2-task82, and drb2-task78 name no DOI. Grading requires the saved run to match the frozen case and has a separate enforced pre-dispatch ceiling.
+
+Four more development cases were frozen on 27 September 2026 from the same snapshot, with `scripts/import_drb2.py --role development`, before any Scout run on them. They were chosen from the English, CC BY 4.0 tasks by these criteria:
+- each tests a different kind of research, in a domain the other cases do not cover;
+- each rubric has 39 to 75 points, near the existing cases' 44 to 62;
+- each can be answered from public English sources;
+- each blocked list names the expert report's address.
+
+Tasks over 100 points, and tasks that depend on Chinese-language, company-specific, or single-author sources, were passed over.
+
+| Official ID | Domain | Expert rubric points | What it tests |
+|---|---|---:|---|
+| `task98+` (idx 130) | Sugar substitutes, before March 2019 | 75 | A categorized comparison table filled in field by field, and three mechanisms of harm. |
+| `task75` (idx 62) | Salt substitutes, trials to March 2022 | 39 | Finding every trial and extracting its numbers: baseline blood pressure, follow-up, and composition. |
+| `task15` (idx 36) | Quantum technology standards, to the end of 2022 | 59 | A complete set across five standards bodies, down to document numbers. |
+| `task21` (idx 52) | Generative AI in education, to May 2023 | 55 | A broad qualitative synthesis, anchored by dated facts. |
+
+The blocked lists of task75, task15, and task21 name the expert report's own DOI, so every copy that carries it is blocked. task98+'s list names only a CABI record's DOI, not the paper's own (10.3390/nu11030644). So a copy of that paper outside its listed addresses, such as MDPI, PubMed, and PMC, is not recognized.
 
 These are stress cases: a bounded Scout run may return partial coverage of a rubric drawn from a long
 expert report. Report task coverage, unresolved sections, cost, and deadline behavior separately from

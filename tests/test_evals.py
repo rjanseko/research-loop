@@ -56,7 +56,8 @@ def test_the_study_cases_ship_frozen_and_are_found_by_short_id() -> None:
     assert set(cases) == {*(f"st0{n}-{suffix}" for n, suffix in enumerate((
         "transformer-venue", "resnet-author", "swebv-annotators", "ilsvrc-captioning",
         "scaling-table", "cot-small-models", "swebench-trust"), 1)),
-        "drb2-task8", "drb2-task68-plus", "drb2-task82", "drb2-task59", "drb2-task78"}
+        "drb2-task8", "drb2-task68-plus", "drb2-task82", "drb2-task59", "drb2-task78",
+        "drb2-task98-plus", "drb2-task75", "drb2-task15", "drb2-task21"}
     st05 = find_case("st05")
     assert st05.rubric_version == "1" and sum(len(points) for points in st05.rubrics.values()) == 11
     with pytest.raises(KeyError):
@@ -96,7 +97,8 @@ def test_the_importer_rebuilds_the_frozen_cases_from_their_source_rows() -> None
         assert drb2_case(row, meta.get("role")).model_dump_json() == case.model_dump_json()
     roles = {case_id: case.metadata.get("role") for case_id, case in study_cases().items() if case_id.startswith("drb2-")}
     assert roles == {"drb2-task8": None, "drb2-task68-plus": None, "drb2-task82": "held-out",
-                     "drb2-task59": "held-out", "drb2-task78": "held-out"}
+                     "drb2-task59": "held-out", "drb2-task78": "held-out", "drb2-task98-plus": "development",
+                     "drb2-task75": "development", "drb2-task15": "development", "drb2-task21": "development"}
 
 
 def test_frozen_case_match_rejects_old_context_and_changed_sources() -> None:
