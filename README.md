@@ -472,7 +472,7 @@ Every run records a digest of its input, its prompt fingerprint, its git commit,
 The study cases are in `src/research_loop/study_cases.jsonl`:
 - **Short cases,** st01 to st05, catch regressions.
 - **st07,** a contested question, is a diagnostic.
-- **Development cases,** `drb2-task8` and `drb2-task68-plus`, keep the exact tasks, expert rubrics, and blocked expert-report URLs from a pinned snapshot of [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II).
+- **Development cases,** `drb2-task8`, `drb2-task68-plus`, `drb2-task98-plus`, `drb2-task75`, `drb2-task15`, and `drb2-task21`, keep the exact tasks, expert rubrics, and blocked expert-report URLs from a pinned snapshot of [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II).
 - **Held-out cases,** `drb2-task82`, `drb2-task59`, and `drb2-task78`, are run only to confirm a change before adopting it.
 
 `research scout --case` sends only the task to the research agents and blocks the expert reports as sources. It requires a database and `--max-usd`. `scripts/import_drb2.py TASK... --role held-out` freezes further tasks.
