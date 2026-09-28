@@ -129,8 +129,8 @@ flowchart TD
 3. Write a study spec in `studies/`. Put the decision rule in its header before anything is paid for: what must not regress, what must improve, and by how much, and what added cost is acceptable. [docs/evaluation.md](docs/evaluation.md) explains how to make a comparison able to decide.
 4. Run `research study run SPEC --dry`, which is free, then `--cheap`, which costs cents. Both must report no invariant violations.
 5. Estimate the paid study from the most expensive comparable run, set a hard cap per run and a ceiling for the study, and get approval.
-6. Run the study with `grade = true` and `audit = true`, one Luna study at a time.
-7. Grade the runs again with the second judge (`RESEARCH_MODELS__JUDGE=zai:glm-5.3@high research grade ...`), and check disagreements by hand.
+6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, one Luna study at a time. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
+7. Check the judges' disagreements and any points the diagnosis marks as never met by hand.
 8. Record the runs, costs, and outcome in [docs/study-log.md](docs/study-log.md), and change the default only if the rule was met.
 
 ## Run a research question
@@ -190,6 +190,7 @@ A report opens with a line giving the run's status, its answer's support, how ma
 research show <run id>              # render a stored run again as Markdown, or --format json
 research breakdown <run id>         # where the money and time went, call by call, and why each call stopped
 research audit <run id> --model zai:glm-5.3@high --max-usd 0.30   # do the quotes support each statement?
+research diagnose <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.50   # where were rubric points lost?
 research db status                  # which migrations are applied
 research db reconcile --older-than 30 --apply   # close out runs that a killed process left running
 ```
@@ -471,7 +472,7 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 - every arm, case or stored run, and replicate runs one at a time;
 - each arm goes first on alternate replicates;
 - each run, grade, and audit has a hard cap, and arms at other git refs run from temporary worktrees;
-- when the spec says so, each run is graded (`grade = true`) and audited (`audit = true`).
+- when the spec says so, each run is graded (`grade = true`), audited (`audit = true`), and diagnosed (`diagnose = true`).
 
 It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It checks each arm with that arm's environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far.
 
@@ -620,6 +621,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `render.py`, `cli.py`, `doctor.py`, `telemetry.py`, `breakdown.py` | Reports, the `research` command, setup checks, Logfire, and cost and time breakdowns |
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
 | `audit.py` | The support audit: whether the verified quotes behind each report statement say what it says |
+| `diagnose.py` | The post-run diagnosis: where a run's rubric points were lost, and whether a score can show a change |
 | `study.py`, `coverage.py` | The study runner, and the count of a development case's expected set a run found |
 | `dryrun.py` | The bug-finding harness: the fuzz model, the offline world, the invariants, and `research fuzz` |
 

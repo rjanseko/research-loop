@@ -312,3 +312,53 @@ def test_dry_and_cheap_studies_replace_a_second_scout_model_only_when_one_is_set
     monkeypatch.setenv("RESEARCH_MODELS__SCOUT_ALT", "zai:glm-5.3@xhigh")
     assert mode_env("cheap", schedule(spec)[0])["RESEARCH_MODELS__SCOUT_ALT"] == CHEAP_MODEL
     assert mode_env("real", schedule(glm)[0]) == {}
+
+
+def test_a_diagnosed_study_diagnoses_each_run_with_the_current_code_and_sums_them_up(spec: StudySpec,
+                                                                                     tmp_path: Path) -> None:
+    from research_loop.study import _diagnose_with, study_diagnosis
+
+    diagnosed = spec.model_copy(update={"diagnose": True, "replicates": 1, "ceiling_usd": 3.00})
+    assert diagnosed.worst_case_usd() == pytest.approx(2 * (0.40 + 0.05 + 0.15))
+    asked: list[tuple[str, str, dict, float]] = []
+
+    def invoke(args: list[str], env: dict[str, str]) -> int:
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "run.json").write_text(json.dumps(_record(f"{len(asked):08d}-run", 0.30)))
+        return 0, ""
+
+    def diagnose(run_id: str, model: str, env: dict[str, str], cap: float) -> dict:
+        asked.append((run_id, model, env, cap))
+        return {"cost_usd": 0.12}
+
+    outcomes = run_study(diagnosed, tmp_path, invoke=invoke, grade=lambda *a: None, diagnose=diagnose,
+                         worktrees=_no_worktrees)
+    assert [model for _, model, _, _ in asked] == ["zai:glm-5.3@high"] * 2 and asked[0][3] == 0.75
+    # The deep arm runs at git ref "main", whose code may have no diagnosis; the current code diagnoses it.
+    assert all("PYTHONPATH" not in env for _, _, env, _ in asked)
+    assert sum(o.cost_usd for o in outcomes) == pytest.approx(2 * 0.42)
+
+    # At the end, one free call over every diagnosed run gives the study's tables.
+    calls: list[list[str]] = []
+
+    def invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        calls.append(args)
+        return 0, "00000000-run: diagnosed with m, 0 new grade(s) and 3 reused; $0.0000.\n\n## drb2-task8: tables\n"
+
+    assert study_diagnosis(diagnosed, outcomes, invoke_output=invoke_output) == "## drb2-task8: tables\n"
+    assert calls == [["diagnose", "00000000-run", "00000001-run", "--model", "zai:glm-5.3@high", "--free"]]
+    assert study_diagnosis(spec, outcomes, invoke_output=invoke_output) == ""  # a spec without diagnose
+
+    # The line `research diagnose` prints, parsed back; a cheap check never reaches the real judge.
+    line = "7a7fc5b5-aaaa: diagnosed with zai:glm-5.3@high, 2 new grade(s) and 1 reused; $0.0812.\n"
+    assert _diagnose_with(lambda args, env: (0, line))("r", "m", {}, 0.5) == {"cost_usd": 0.0812}
+    assert _diagnose_with(lambda args, env: (0, "odd"))("r", "m", {}, 0.5) == {"unreadable": "odd"}
+    assert _diagnose_with(lambda args, env: (1, ""))("r", "m", {}, 0.5) is None
+    # A diagnosis with a failed grade still reports what its other grades cost.
+    failed = line.replace("$0.0812.", "$0.0812. Failed: research (UnexpectedModelBehavior).")
+    assert _diagnose_with(lambda args, env: (1, failed))("r", "m", {}, 0.5) == {"cost_usd": 0.0812, "incomplete": True}
+    cheap_calls: list[list[str]] = []
+    study_diagnosis(diagnosed, outcomes, mode="cheap",
+                    invoke_output=lambda args, env: (cheap_calls.append(args), (0, ""))[1])
+    assert cheap_calls[0][cheap_calls[0].index("--model") + 1] == "openai:gpt-6-luna@low"

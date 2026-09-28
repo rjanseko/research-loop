@@ -213,6 +213,7 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
         load_spec,
         run_study,
         schedule,
+        study_diagnosis,
         summary,
     )
 
@@ -242,6 +243,8 @@ def _study(args: argparse.Namespace, settings: Settings) -> int:
         print(f"Cannot run: {exc}", file=sys.stderr)
         return 2
     table = summary(spec, outcomes)
+    if diagnosis := study_diagnosis(spec, outcomes, mode, settings.database_dsn):
+        table += "\n" + diagnosis
     out.mkdir(parents=True, exist_ok=True)
     (out / "summary.md").write_text(table, encoding="utf-8")
     print(table)
@@ -388,6 +391,132 @@ async def _audit(args: argparse.Namespace, settings: Settings) -> int:
                 continue
             counts = ", ".join(f"{n} {verdict}" for verdict, n in sorted(record.counts.items()))
             print(f"{run_id}: {counts}; {cost}. Recorded as {record.id}.")
+    return code
+
+
+async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
+    from pydantic import ValidationError
+
+    from .config import ScoutModels, split_model
+    from .db import open_migrated_pool
+    from .diagnose import (
+        DIAGNOSE_VERSION,
+        VIEW_TEXT,
+        RunDiagnosis,
+        render,
+        stage_grade_row,
+        verdicts,
+    )
+    from .evals import (
+        JUDGE_VERSION,
+        find_case,
+        grade_row,
+        judge,
+        matches_frozen_case,
+        reader_text,
+    )
+    from .evidence import EvidenceLedger
+    from .prices import price_per_million
+    from .schemas import FinalReport
+    from .store import (
+        load_case_verdicts,
+        load_grades,
+        load_run,
+        load_stage_grades,
+        save_grade,
+        save_stage_grade,
+    )
+    from .study_budget import StudyBudget
+
+    try:
+        settings = settings.model_copy(update={"models": ScoutModels.model_validate(
+            settings.models.model_dump() | {"judge": args.model})})
+    except ValidationError as exc:
+        print(f"Cannot run: {exc.errors()[0]['msg']}", file=sys.stderr)
+        return 2
+    model_id, thinking = split_model(args.model)
+    if not args.free:
+        problems = [problem for problem in settings.route_problems() if problem.startswith("judge:")]
+        if price_per_million(model_id) is None:
+            problems.append(f"{args.model} has no price, so its cost cannot be capped")
+        if problems:
+            print(f"Cannot run: {'; '.join(problems)}", file=sys.stderr)
+            return 2
+    # One cap across every run, so a batch cannot pass it.
+    budget = None if args.free else StudyBudget(args.max_usd)
+    print(f"Diagnosing {len(args.run_ids)} run(s) with {args.model}, diagnose v{DIAGNOSE_VERSION}, "
+          + ("stored grades only." if budget is None else
+             f"${budget.cap_usd:.2f} pre-dispatch cap across them; this makes paid calls."), file=sys.stderr)
+
+    def stored(rows: list[dict[str, Any]], run_id: UUID, rubric_version: str, view: str | None = None) -> dict | None:
+        """The latest succeeded grade of `run_id` by this judge, prompt, and rubric, for `view` when given."""
+        matches = [row for row in rows if row["run_id"] == run_id and row["status"] == "succeeded"
+                   and row["judge_model"] == model_id and row["judge_thinking"] == thinking
+                   and row["judge_version"] == JUDGE_VERSION and row["rubric_version"] == rubric_version
+                   and (view is None or (row["view"] == view and row["diagnose_version"] == DIAGNOSE_VERSION))]
+        return matches[-1] if matches else None
+
+    code = 0
+    diagnoses: list[RunDiagnosis] = []
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, settings.database_dsn)
+        report_grades = list(await load_grades(pool, args.run_ids))
+        stage_grades = list(await load_stage_grades(pool, args.run_ids))
+        for run_id in args.run_ids:
+            row = await load_run(pool, run_id)
+            if row is None or not row.get("report"):
+                print(f"Run {run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
+                code = 1
+                continue
+            case_id = ((row.get("config") or {}).get("case") or {}).get("id")
+            try:
+                case = find_case(case_id) if case_id else None
+            except KeyError:
+                case = None
+            if case is None or not case.rubrics or (case.id.startswith("drb2-") and not matches_frozen_case(row, case)):
+                print(f"Run {run_id} was not recorded for a rubric case, so it has nothing to be graded against.",
+                      file=sys.stderr)
+                code = 1
+                continue
+            ledger = EvidenceLedger.from_json(row["ledger"] or {})
+            text = reader_text(FinalReport.model_validate(row["report"]), ledger)
+            spent, new, reused, failed = Decimal(0), 0, 0, []
+            found: dict[str, list[dict[str, Any]]] = {}
+            views = {"report": text, **{view: make(ledger) for view, make in VIEW_TEXT.items()}}
+            for view, view_text in views.items():
+                prior = stored(report_grades if view == "report" else stage_grades, run_id, case.rubric_version,
+                               None if view == "report" else view)
+                if prior is not None:
+                    found[view], reused = prior["points"], reused + 1
+                    continue
+                if budget is None:
+                    continue
+                grade = await judge(view_text, case, run_id, settings, budget=budget)
+                if view == "report":
+                    saved = grade_row(grade)
+                    await save_grade(pool, saved)
+                    report_grades.append(saved)
+                else:
+                    await save_stage_grade(pool, stage_grade_row(grade, view))
+                new, spent = new + 1, spent + (grade.cost_usd or Decimal(0))
+                if grade.status == "succeeded":
+                    found[view] = grade.points
+                else:
+                    failed.append(f"{view} ({type(grade.error).__name__})")
+            if "report" in found:
+                diagnoses.append(RunDiagnosis(run_id, case, text, verdicts(found["report"]),
+                                              claims=verdicts(found["claims"]) if "claims" in found else None,
+                                              research=verdicts(found["research"]) if "research" in found else None,
+                                              arm=row.get("arm")))
+            if failed:
+                code = 1
+                print(f"{run_id}: the diagnosis is incomplete; these grades failed: {', '.join(failed)}.", file=sys.stderr)
+            print(f"{run_id}: diagnosed with {args.model}, {new} new grade(s) and {reused} reused; ${spent:.4f}."
+                  + (f" Failed: {', '.join(failed)}." if failed else ""))
+        history = {d.case.id: await load_case_verdicts(pool, d.case.id, d.case.rubric_version) for d in diagnoses}
+    if diagnoses:
+        print()
+        print(render(diagnoses, args.model, report_grades, history))
     return code
 
 
@@ -539,6 +668,14 @@ def main(argv: list[str] | None = None) -> None:
     check.add_argument("--model", required=True, help="The auditor, provider:model@effort, such as zai:glm-5.3@high")
     check.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap across all the runs")
 
+    diag = commands.add_parser("diagnose", help="Find where stored runs lost their rubric points, and whether their "
+                               "scores can show a change (paid unless --free)")
+    diag.add_argument("run_ids", type=UUID, nargs="+", metavar="run_id")
+    diag.add_argument("--model", required=True,
+                      help="The judge for every view, provider:model@effort, such as zai:glm-5.3@high")
+    diag.add_argument("--max-usd", type=Decimal, help="Pre-dispatch dollar cap across all the runs; needed unless --free")
+    diag.add_argument("--free", action="store_true", help="Use only stored grades and make no model calls")
+
     study = commands.add_parser("study", help="Run a whole study from a TOML spec and summarize it (paid)")
     study.add_argument("study_command", choices=("run", "plan"),
                        help="run: execute the spec; plan: list its runs and worst case without running any")
@@ -579,11 +716,14 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("a frozen --case needs DATABASE_URL so paid results are stored")
         if args.max_usd is not None and args.max_usd <= 0:
             parser.error("--max-usd must be positive")
-    if args.command in ("show", "breakdown", "grade", "assess", "audit", "synthesize", "rescout", "db", "study") \
+    if args.command in ("show", "breakdown", "grade", "assess", "audit", "diagnose", "synthesize", "rescout", "db",
+                        "study") \
             and not settings.database_dsn:
         parser.error("this command needs DATABASE_URL; see README.md")
     if args.command in ("grade", "assess", "audit", "synthesize", "rescout") and args.max_usd <= 0:
         parser.error("--max-usd must be positive")
+    if args.command == "diagnose" and not args.free and not (args.max_usd and args.max_usd > 0):
+        parser.error("diagnose makes paid calls, so it needs a positive --max-usd, unless --free")
     if args.command == "db" and args.db_command == "reconcile" and not (args.older_than and args.older_than > 0):
         parser.error("reconcile needs --older-than MINUTES, longer than any run still in progress")
     _interrupt_on_sigterm()
@@ -604,6 +744,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(_assess(args, settings))
         elif args.command == "audit":
             code = asyncio.run(_audit(args, settings))
+        elif args.command == "diagnose":
+            code = asyncio.run(_diagnose(args, settings))
         elif args.command == "fuzz":
             code = asyncio.run(_fuzz(args))
         elif args.command == "study":

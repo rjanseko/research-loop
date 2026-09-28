@@ -33,6 +33,10 @@ A spec is TOML:
     audit_model = "zai:glm-5.3@high"
     audit_estimate_usd = 0.04
     audit_cap_usd = 0.30            # each audit's hard cap, lowered the same way
+    diagnose = true                 # grade each run's claims and research too, to find where points were lost
+    diagnose_model = "zai:glm-5.3@high"
+    diagnose_estimate_usd = 0.15
+    diagnose_cap_usd = 0.75         # each diagnosis's hard cap, lowered the same way
 
     [[arms]]
     name = "standard"
@@ -105,6 +109,12 @@ class StudySpec(BaseModel):
     # The costliest audit of a stored report was $0.036 (audit v1, GLM-5.3 at high effort).
     audit_estimate_usd: float = Field(0.04, ge=0)
     audit_cap_usd: float = Field(0.30, gt=0)
+    # Grades a run's report, claims, and research with one judge (diagnose.py). GLM-5.3 at high effort cost
+    # $0.03 to $0.05 a grade on drb2-task8 reports.
+    diagnose: bool = False
+    diagnose_model: str = "zai:glm-5.3@high"
+    diagnose_estimate_usd: float = Field(0.15, ge=0)
+    diagnose_cap_usd: float = Field(0.75, gt=0)
 
     @model_validator(mode="after")
     def _targets(self) -> StudySpec:
@@ -127,9 +137,10 @@ class StudySpec(BaseModel):
         return round(len(schedule(self)) * self.per_run_usd(), 4)
 
     def per_run_usd(self) -> float:
-        """What one planned run could cost by the estimates, its grade and audit included."""
+        """What one planned run could cost by the estimates, its grade, audit, and diagnosis included."""
         return (self.estimate_usd + (self.grade_estimate_usd if self.grade else 0)
-                + (self.audit_estimate_usd if self.audit else 0))
+                + (self.audit_estimate_usd if self.audit else 0)
+                + (self.diagnose_estimate_usd if self.diagnose else 0))
 
 
 def load_spec(path: Path) -> StudySpec:
@@ -168,6 +179,11 @@ def schedule(spec: StudySpec) -> list[Planned]:
 Mode = Literal["real", "dry", "cheap"]
 FAKE_MODEL = "fake:fuzz@high"
 CHEAP_MODEL = "openai:gpt-6-luna@low"
+
+
+def mode_model(model: str, mode: Mode) -> str:
+    """The model a step runs on in `mode`: its own for a real study, else the fake or cheap one."""
+    return model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
 CHEAP_CEILING_USD = 0.25
 _ROLES = ("PLANNER", "SCOUT", "SYNTHESIZER", "FALLBACK", "JUDGE")
 _SCOUT_ALT = "RESEARCH_MODELS__SCOUT_ALT"
@@ -193,7 +209,7 @@ def for_mode(spec: StudySpec, mode: Mode, seeds: int = 1) -> StudySpec:
         return spec.model_copy(update={"study": f"{spec.study}-cheap", "replicates": 1, "cases": spec.cases[:1],
                                        "cap_usd": min(spec.cap_usd, CHEAP_CEILING_USD),
                                        "sources": spec.sources[:1], "estimate_usd": 0.06, "grade_estimate_usd": 0.01,
-                                       "audit_estimate_usd": 0.01,
+                                       "audit_estimate_usd": 0.01, "diagnose_estimate_usd": 0.03,
                                        "ceiling_usd": min(spec.ceiling_usd, CHEAP_CEILING_USD)})
     return spec
 
@@ -250,6 +266,8 @@ class Outcome:
     grade: dict[str, Any] | None = None
     # The support audit's verdict counts and cost (audit.py).
     audit: dict[str, Any] | None = None
+    # What the diagnosis's grades cost (diagnose.py).
+    diagnosis: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
     # Invariants the run broke (dryrun.check_record), and tracebacks in its output; dry and cheap runs only.
     violations: list[str] = field(default_factory=list)
@@ -258,10 +276,10 @@ class Outcome:
 
     @property
     def cost_usd(self) -> float:
-        """What the run, its grade, and its audit reported costing."""
+        """What the run, its grade, its audit, and its diagnosis reported costing."""
         run_cost = float((self.record or {}).get("cost_usd") or 0)
         return (run_cost + float((self.grade or {}).get("cost_usd") or 0)
-                + float((self.audit or {}).get("cost_usd") or 0))
+                + float((self.audit or {}).get("cost_usd") or 0) + float((self.diagnosis or {}).get("cost_usd") or 0))
 
     @property
     def charged_usd(self) -> Decimal:
@@ -309,6 +327,24 @@ def _grade_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, 
 # `research audit` prints "<run id>: 2 partial, 5 supported; $0.0111. Recorded as ...".
 _AUDIT_LINE = re.compile(r": ([^;]*); \$(\d+(?:\.\d+)?)\. Recorded as")
 _AUDIT_COUNT = re.compile(r"(\d+) (\w+)")
+
+
+# `research diagnose` prints "<run id>: diagnosed with <model>, 2 new grade(s) and 1 reused; $0.0812." per run.
+_DIAGNOSE_LINE = re.compile(r": diagnosed with .*; \$(\d+(?:\.\d+)?)\.")
+
+
+def _diagnose_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, str]]) -> Callable[..., dict | None]:
+    def diagnose(run_id: str, model: str, env: dict[str, str], cap: float) -> dict[str, Any] | None:
+        """What the diagnosis's grades cost, with "incomplete" when one of them failed; None when it failed
+        before grading, or {"unreadable": ...}."""
+        code, output = invoke_output(["diagnose", run_id, "--model", model, "--max-usd", f"{cap:.2f}"], env)
+        match = _DIAGNOSE_LINE.search(output)
+        if code != 0:
+            return {"cost_usd": float(match.group(1)), "incomplete": True} if match else None
+        if match is None:
+            return {"unreadable": output.strip()[-200:]}
+        return {"cost_usd": float(match.group(1))}
+    return diagnose
 
 
 def _audit_with(invoke_output: Callable[[list[str], dict[str, str]], tuple[int, str]]) -> Callable[..., dict | None]:
@@ -394,6 +430,7 @@ def _calls(dsn: str, run_id: str) -> list[dict[str, Any]]:
 
 def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
               grade: Callable[..., dict | None] | None = None, audit: Callable[..., dict | None] | None = None,
+              diagnose: Callable[..., dict | None] | None = None,
               worktrees: Callable[[StudySpec], Any] = _worktrees, mode: Mode = "real",
               dsn: str | None = None, calls: Callable[[str, str], list[dict[str, Any]]] = _calls,
               preflight: Preflight | None = None) -> list[Outcome]:
@@ -404,8 +441,10 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
 
     grade = grade or _grade_with(_invoke_output)
     audit = audit or _audit_with(_invoke_output)
+    diagnose = diagnose or _diagnose_with(_invoke_output)
     preflight = preflight or _preflight
-    audit_model = spec.audit_model if mode == "real" else FAKE_MODEL if mode == "dry" else CHEAP_MODEL
+    audit_model = mode_model(spec.audit_model, mode)
+    diagnose_model = mode_model(spec.diagnose_model, mode)
     if (worst := spec.worst_case_usd()) > spec.ceiling_usd:
         raise StudyCeilingError(f"the planned runs could cost ${worst:.2f} by their estimates, over the "
                          f"${spec.ceiling_usd:.2f} ceiling; raise the ceiling or plan fewer runs")
@@ -414,6 +453,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
     spent = Decimal(0)  # what finished runs charged against the ceiling (Outcome.charged_usd)
     grade_reserve = _usd(spec.grade_estimate_usd) if spec.grade else Decimal(0)
     audit_reserve = _usd(spec.audit_estimate_usd) if spec.audit else Decimal(0)
+    diagnose_reserve = _usd(spec.diagnose_estimate_usd) if spec.diagnose else Decimal(0)
     with worktrees(spec) as trees:
         # Every arm is checked before any run, so an arm that cannot start does not find out after another spent.
         firsts = {run.arm.name: run for run in reversed(schedule(spec))}
@@ -428,7 +468,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
         if refusals:
             raise StudyConfigError("; ".join(refusals))
         for run in schedule(spec):
-            run_cap = _cap(spec.cap_usd, ceiling - spent - grade_reserve - audit_reserve)
+            run_cap = _cap(spec.cap_usd, ceiling - spent - grade_reserve - audit_reserve - diagnose_reserve)
             if spent + _usd(spec.per_run_usd()) > ceiling or run_cap <= 0:
                 note = f"not run: ${spent:.2f} spent, and another run could pass the ${ceiling:.2f} ceiling"
                 outcomes.append(Outcome(run, -1, notes=[note]))
@@ -453,7 +493,8 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                     outcome.violations += check_record(outcome.record, calls(run_dsn, outcome.record["run_id"]))
             case_id = _case_id(outcome.record)
             if spec.grade and outcome.record and outcome.record.get("report") and case_id:
-                grade_cap = _cap(spec.grade_cap_usd, ceiling - spent - outcome.charged_usd - audit_reserve)
+                grade_cap = _cap(spec.grade_cap_usd,
+                                 ceiling - spent - outcome.charged_usd - audit_reserve - diagnose_reserve)
                 if grade_cap <= 0:
                     outcome.notes.append("not graded: the ceiling leaves no room")
                 else:
@@ -467,7 +508,7 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                     if outcome.grade is None:
                         outcome.unaccounted_usd += grade_cap
             if spec.audit and outcome.record and outcome.record.get("report"):
-                audit_cap = _cap(spec.audit_cap_usd, ceiling - spent - outcome.charged_usd)
+                audit_cap = _cap(spec.audit_cap_usd, ceiling - spent - outcome.charged_usd - diagnose_reserve)
                 if audit_cap <= 0:
                     outcome.notes.append("not audited: the ceiling leaves no room")
                 else:
@@ -480,9 +521,42 @@ def run_study(spec: StudySpec, out_root: Path, *, invoke: Invoke = _invoke,
                         outcome.audit = None
                     if outcome.audit is None:
                         outcome.unaccounted_usd += audit_cap
+            if spec.diagnose and outcome.record and outcome.record.get("report") and case_id:
+                diagnose_cap = _cap(spec.diagnose_cap_usd, ceiling - spent - outcome.charged_usd)
+                if diagnose_cap <= 0:
+                    outcome.notes.append("not diagnosed: the ceiling leaves no room")
+                else:
+                    # The current code diagnoses every arm's run, since an older arm's code has no diagnosis.
+                    current = {name: value for name, value in env.items() if name != "PYTHONPATH"}
+                    outcome.diagnosis = diagnose(outcome.record["run_id"], diagnose_model, current, float(diagnose_cap))
+                    if outcome.diagnosis is None:
+                        outcome.notes.append("the diagnosis failed; see the output above")
+                    elif outcome.diagnosis.get("incomplete"):
+                        outcome.notes.append("the diagnosis is incomplete: a grade failed; see the output above")
+                    elif "unreadable" in outcome.diagnosis:
+                        outcome.notes.append(f"the diagnosis line could not be read: {outcome.diagnosis['unreadable']}")
+                        outcome.violations.append("research diagnose succeeded but its line could not be read")
+                        outcome.diagnosis = None
+                    if outcome.diagnosis is None:
+                        outcome.unaccounted_usd += diagnose_cap
             spent += outcome.charged_usd
             outcomes.append(outcome)
     return outcomes
+
+
+def study_diagnosis(spec: StudySpec, outcomes: list[Outcome], mode: Mode = "real", dsn: str | None = None,
+                    invoke_output: Callable[[list[str], dict[str, str]], tuple[int, str]] | None = None) -> str:
+    """The diagnosis of every diagnosed run together, from stored grades only (`research diagnose --free`):
+    where points were lost by arm, and whether the scores can show a change. Empty when nothing was diagnosed."""
+    diagnosed = [o for o in outcomes if o.diagnosis is not None and o.record]
+    if not spec.diagnose or not diagnosed:
+        return ""
+    invoke_output = invoke_output or _invoke_output
+    env = {name: value for name, value in mode_env(mode, diagnosed[0].run, dsn).items() if name != "PYTHONPATH"}
+    code, output = invoke_output(["diagnose", *(o.record["run_id"] for o in diagnosed),
+                                  "--model", mode_model(spec.diagnose_model, mode), "--free"], env)
+    tables = output.split("\n\n", 1)[1] if "\n\n" in output else ""
+    return tables if code == 0 or tables else f"The study's diagnosis failed (exit {code}); see the output above.\n"
 
 
 def _audit_cell(audit: dict[str, Any] | None) -> str:
