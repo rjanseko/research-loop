@@ -46,7 +46,7 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 - Python 3.12 or later.
 - Docker, for the local Postgres database. Research Loop runs without a database, but then nothing is stored and the study commands are unavailable.
 - An API key for each model provider you use. The default models need an OpenAI key and an Anthropic key. Z.ai, Google, and DeepSeek keys are optional; the support audit and the second rubric judge use Z.ai.
-- A Logfire token, if you want traces. Without one, tracing stays in the process.
+- A Logfire token or a project configured through `logfire auth`, if you want to export traces. Without either, tracing stays in the process.
 
 ### Install
 
@@ -67,7 +67,7 @@ Settings come from `.env` or the environment, and exported variables override th
 | `DATABASE_URL` | The Postgres database runs are stored in. The value in `.env.example` matches `make postgres-up`. |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY` | Provider keys. A provider is enabled when its key is set. |
 | `RESEARCH_ENABLED_PROVIDERS` | Allow only these providers, comma-separated, even if other keys are set. |
-| `LOGFIRE_TOKEN` | Send traces to Logfire. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
+| `LOGFIRE_TOKEN` | Send traces to Logfire; an authenticated Logfire project can also enable export. `RESEARCH_LOGFIRE=false` turns tracing off completely. |
 | `RESEARCH_MODELS__PLANNER`, `__SCOUT`, `__SYNTHESIZER`, `__FALLBACK`, `__JUDGE` | The model and reasoning effort for each role, as `provider:model@effort`. See [Models](#models). |
 | `RESEARCH_MODELS__SCOUT_ALT` | Optional. A second scout model, such as `zai:glm-5.3@xhigh`, that takes every other scout and deep dive of a deep run. See [Rate limits](#rate-limits). |
 | `RESEARCH_LIMITS__...` | A run's dollar, time, and call limits. See [Limits and budgets](#limits-and-budgets). |
@@ -319,7 +319,7 @@ These are all the outside services the code calls, what it sends them, and what 
 | Europe PMC | Open-access full text of a paper our fetch could not read | The reading fallback's `oa`, on by default | None | Free | DOIs |
 | Exa | Reading a page from Exa's crawl (`/contents`) | The reading fallback's `exa`, on by default when `EXA_API_KEY` is set | `EXA_API_KEY` | $1 per 1,000 pages; recorded and capped | The page's address |
 | Firecrawl | Scraping a page our fetch could not read, with basic proxies only | The reading fallback's `firecrawl`, on by default when `FIRECRAWL_API_KEY` is set | `FIRECRAWL_API_KEY` | One credit a page (about $0.0054 on the Hobby plan); recorded and capped | The page's address |
-| Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` | Your Logfire plan | Prompts, tool results, and timings |
+| Logfire | Traces of runs, model calls, and HTTP requests | Optional | `LOGFIRE_TOKEN` or `logfire auth` | Your Logfire plan | Prompts, tool results, and timings |
 | Postgres | Run records, grades, assessments, and audits | Local | `DATABASE_URL` | Free | Everything a run records |
 
 Two more services, Jina Reader and Tavily Extract (`TAVILY_API_KEY`), are used only by `scripts/fetch_bakeoff.py`, which measured which readers best read the pages our fetcher cannot; the bake-off chose the fallback above (see [docs/study-log.md](docs/study-log.md)).
@@ -541,7 +541,7 @@ run.to_record() # the run as JSON, the same record `--out` writes to run.json
 
 Postgres keeps each run: its question, configuration, plan, report, evidence ledger, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
 
-Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent only when `LOGFIRE_TOKEN` is set.
+Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent when a Logfire token or authenticated project is available.
 
 ## Troubleshooting
 
