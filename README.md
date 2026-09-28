@@ -16,7 +16,7 @@ The workflow is called Scout. It is built on [PydanticAI](https://ai.pydantic.de
 |---|---|
 | What you get | A Markdown report with a direct answer, inline citations, a coverage list, caveats, and a "Needs review" list of every weakness code found |
 | What a run costs | With the default models, as measured: about $0.05 for a quick question, $0.10 to $0.40 for a standard one, and about $0.50 for a deep one. Every run has a budget and a deadline. |
-| How long it takes | About a minute for a quick question, 3 to 9 minutes for a standard one, and about 11 minutes for a deep one |
+| How long it takes | About a minute for a quick question, 3 to 9 minutes for a standard one, and up to 32 minutes for a deep one (11 to 12 minutes under the shorter limits deep runs had before `scout-followup-v10`) |
 | The commands most people need | `research doctor` to check the setup, `research scout "question"` to run, `research breakdown <run id>` to see where the time and money went |
 
 > [!WARNING]
@@ -254,7 +254,7 @@ The gap analysis chooses its deep dives from open items first, and a deep dive m
 The planner also decides how much research the question warrants, and the run takes the limits of that depth:
 - **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.30 budget, and six minutes;
 - **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $0.75, and twelve minutes;
-- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $2.00 budget and fifteen minutes.
+- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $2.00 budget and up to 32 minutes. Its scouts get 20 minutes of research and 48 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
 
 `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used.
 
@@ -295,9 +295,9 @@ These are all the outside services the code calls, what it sends them, and what 
 
 | Service | What Scout uses it for | When | Key or setting | Cost | What is sent |
 |---|---|---|---|---|---|
-| OpenAI | `gpt-6-sol`: the planner, the gap analyzer, the rubric judge, and the fallback. `gpt-6-luna`: scouts, deep dives, and `--cheap` checks | Default | `OPENAI_API_KEY` | Per token, from the bundled price data | Prompts, including tool output |
-| Anthropic | `claude-opus-5-5`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
-| Z.ai | `glm-5.3`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
+| OpenAI | `gpt-6-sol@high`: the planner, the gap analyzer, the rubric judge, and the fallback. `gpt-6-luna@high`: scouts and deep dives; `gpt-6-luna@low`: `--cheap` checks | Default | `OPENAI_API_KEY` | Per token, from the bundled price data | Prompts, including tool output |
+| Anthropic | `claude-opus-5-5@medium`: the synthesizer | Default | `ANTHROPIC_API_KEY` (scoped to a workspace) | Per token | The checked evidence ledger |
+| Z.ai | `glm-5.3@high`: the support audit and the second rubric judge; any role on request | Optional | `ZAI_API_KEY` | Per token (`glm-5.3-flash` prices corrected in `prices.toml`) | Report statements and their quotes, or a report and its rubric |
 | Google | Any role on request | Optional | `GOOGLE_API_KEY` | Per token | Prompts |
 | DuckDuckGo | Web search, through PydanticAI's search tool | Default search | None | Free | Search queries |
 | Exa | Web search (`/search`, with highlights) | `RESEARCH_SEARCH_ENGINE=exa` | `EXA_API_KEY` | $7 per 1,000 searches; each search is recorded and capped | Search queries |
@@ -339,7 +339,7 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 | Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
 | Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
-| Deep depth | 8 questions and the gap follow-up | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `RESEARCH_LIMITS__DEEP__FOLLOW_UP` |
+| Deep depth | 8 questions and the gap follow-up; 20 minutes of research and 32 in all; 48 useful tool calls a scout; deep dives of 8 minutes with 20 requests, 32 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
 | Per scout | 20 requests, 32 useful tool calls, 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 | Follow-up total cost | $2.00 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.25 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
@@ -349,6 +349,8 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 | Each deep dive | 12 requests, 16 useful tool calls, 8 failed ones | `RESEARCH_LIMITS__DEEP_DIVE_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
 
 In follow-up mode, the gap analysis share and three deep-dive shares come off the top as well, which leaves four scouts $0.175 each.
+
+A setting for one limit of a depth, such as `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS=6`, changes only that limit; the depth keeps the rest of its own. The follow-up rows above apply to `--follow-up` on a standard run, and the deep row replaces them for a deep run.
 
 A useful tool call is a search that found something, a fetch that returned text, or a scholarly call that returned works. A failed one is an empty search, an HTTP error, or a blocked address. Counting them apart lets a scout that is only failing stop early, without cutting short one that is working. The framework's own limit on tool calls sits 12 above the sum, so that a batch of parallel calls asked for just before the budget ran out can still run. When a turn asks for more tool calls than that limit leaves, only the calls that fit run, and the next request tells the model how many were dropped.
 

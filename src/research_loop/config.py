@@ -117,8 +117,27 @@ class DepthTier(BaseModel):
     synthesis_usd: float | None = Field(None, gt=0)
     research_seconds: float | None = Field(None, gt=0)
     deadline_seconds: float | None = Field(None, gt=0)
+    followup_deadline_seconds: float | None = Field(None, gt=0)
+    deep_dive_seconds: float | None = Field(None, gt=0)
+    scout_productive_calls: int | None = Field(None, ge=1)
+    deep_dive_requests: int | None = Field(None, ge=2)
+    deep_dive_productive_calls: int | None = Field(None, ge=1)
+    deep_dive_misses: int | None = Field(None, ge=1)
     # A run at this depth adds the gap follow-up, with the follow-up envelope, as `--follow-up` does.
     follow_up: bool = False
+
+
+# Each depth's own limits. A setting for one of them, such as RESEARCH_LIMITS__DEEP__MAX_QUESTIONS, replaces
+# only that one; the rest of the depth keeps these.
+_QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research_seconds": 240,
+          "deadline_seconds": 360}
+# In the first deep example run (d8c8198e), three of four Luna scouts were cut off at the 480-second research
+# deadline with over 90% of their dollar share unspent, and the fourth scout and a deep dive stopped on their
+# productive calls. Paced under Luna's token rate, eight scouts need far longer than four, so a deep run gets
+# more time and tool calls, and each deep dive a full scout's loop budget, but no more money.
+_DEEP = {"max_questions": 8, "follow_up": True, "research_seconds": 1200, "deadline_seconds": 1920,
+         "followup_deadline_seconds": 1920, "deep_dive_seconds": 480, "scout_productive_calls": 48,
+         "deep_dive_requests": 20, "deep_dive_productive_calls": 32, "deep_dive_misses": 16}
 
 
 class ScoutLimits(BaseModel):
@@ -145,10 +164,10 @@ class ScoutLimits(BaseModel):
     # provider's rate limit.
     parallel_scouts: int = Field(8, ge=1)
     # The planner chooses a depth (`ResearchPlan.depth`); standard is these limits unchanged. A quick
-    # question gets two scouts and a small report; a deep one up to eight scouts and the gap follow-up.
-    quick: DepthTier = DepthTier(max_questions=2, cost_usd=0.30, synthesis_usd=0.12, research_seconds=240,
-                                 deadline_seconds=360)
-    deep: DepthTier = DepthTier(max_questions=8, follow_up=True)
+    # question gets two scouts and a small report; a deep one up to eight scouts, the gap follow-up, and
+    # more time and tool calls.
+    quick: DepthTier = DepthTier(**_QUICK)
+    deep: DepthTier = DepthTier(**_DEEP)
     # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
     # 12, 16, and 12 to stop Flash loops that only failed; with Luna, 39 of 68 scouts stopped on the 16
     # productive calls after reading one to eight pages, while spending about 15% of their dollar share.
@@ -163,6 +182,16 @@ class ScoutLimits(BaseModel):
     deadline_seconds: float = Field(720, gt=0, description="Wall-clock limit for the whole run")
     research_seconds: float = Field(480, gt=0, description="Scouts still running after this are stopped")
     request_timeout_seconds: float = Field(120, gt=0, description="One model request, or between streamed chunks")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _depth_defaults(cls, data: Any) -> Any:
+        """A depth given as a mapping, from settings or the environment, keeps the limits it does not name."""
+        if isinstance(data, dict):
+            for name, defaults in (("quick", _QUICK), ("deep", _DEEP)):
+                if isinstance(data.get(name), dict):
+                    data = data | {name: defaults | data[name]}
+        return data
 
     @model_validator(mode="after")
     def _consistent(self) -> ScoutLimits:
@@ -193,7 +222,8 @@ class ScoutLimits(BaseModel):
         if depth == "standard":
             return self
         update = getattr(self, depth).model_dump(exclude_none=True, exclude={"follow_up"})
-        return ScoutLimits.model_validate(self.model_dump() | update | {"quick": {}, "deep": {}})
+        # Empty tiers, as models rather than mappings, so the result takes no depth's defaults.
+        return ScoutLimits.model_validate(self.model_dump() | update | {"quick": DepthTier(), "deep": DepthTier()})
 
     def follows_up(self, depth: Depth) -> bool:
         """Whether a run at `depth` adds the gap follow-up."""

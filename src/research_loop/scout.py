@@ -141,8 +141,10 @@ from .web import WebAcquisition, WebSearch, exa_engine
 # v8: open items are short names only, at most five per result; caveats go in `unresolved`.
 # v9: scouts quote the passage behind every piece of evidence, not only specific wording: two method-survey
 # scouts of a v6 deep run quoted 1 of 34 items, and 11 of its 30 statements rested on their summaries alone.
+# followup-v10: a deep run gets 20 minutes of research, 8-minute deep dives with a full scout's loop budget,
+# and 48 productive calls a scout (config.py); a single depth setting no longer resets the rest of the depth.
 WORKFLOW_VERSION = "scout-v9"
-FOLLOWUP_VERSION = "scout-followup-v9"
+FOLLOWUP_VERSION = "scout-followup-v10"
 RESCOUT_VERSION = "scout-research-v9"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.

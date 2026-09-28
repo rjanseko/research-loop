@@ -912,11 +912,12 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
     fake = "fake:fuzz@high"
     # Validated like any configuration, so the harness only explores limits Scout accepts. Deadlines are
     # upper bounds and fake calls are fast, so the 90 seconds kept for synthesis cost no time.
-    limits = type(base.limits).model_validate(base.limits.model_dump() | {
-        "research_seconds": rng.choice([3.0, 20.0, 20.0]), "deadline_seconds": 60.0,
-        "followup_deadline_seconds": 130.0, "gap_seconds": 5.0, "deep_dive_seconds": 8.0,
-        "request_timeout_seconds": 1.0, "max_gaps": rng.choice([1, 3]),
+    times = {"research_seconds": rng.choice([3.0, 20.0, 20.0]), "deadline_seconds": 60.0,
+             "followup_deadline_seconds": 130.0, "deep_dive_seconds": 8.0}
+    limits = type(base.limits).model_validate(base.limits.model_dump() | times | {
+        "gap_seconds": 5.0, "request_timeout_seconds": 1.0, "max_gaps": rng.choice([1, 3]),
         "quick": base.limits.quick.model_dump() | {"research_seconds": 3.0, "deadline_seconds": 30.0},
+        "deep": base.limits.deep.model_dump() | times,
     })
     return base.model_copy(update={
         "models": ScoutModels(planner=fake, scout=fake, synthesizer=fake, fallback=rng.choice([fake, None]), judge=fake),

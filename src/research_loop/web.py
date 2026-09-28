@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import unicodedata
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -287,11 +288,23 @@ class WebAcquisition:
             method = "pypdf-first-pages" if more_pages else "pypdf"
         elif media in ("text/html", "application/xhtml+xml"):
             extracted, method = await asyncio.to_thread(_html_text, response.text)
+        elif media == "application/json" or media.endswith("+json"):
+            extracted, method = _json_text(response.text), "json"
+        elif media == "text/plain":
+            extracted, method = response.text, "text"
         else:
             raise ValueError("unsupported content type")
         if not extracted.strip():
             raise ValueError("empty extraction")
         return {"text": extracted, "extraction": method, "content_sha256": hashlib.sha256(response.content).hexdigest()}
+
+
+def _json_text(text: str) -> str:
+    """JSON laid out one value a line, with its escapes decoded so a quoted value matches the text."""
+    try:
+        return json.dumps(json.loads(text), indent=1, ensure_ascii=False)
+    except ValueError:
+        return text
 
 
 def _pdf_text(content: bytes) -> tuple[str, bool]:
