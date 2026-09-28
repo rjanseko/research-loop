@@ -15,6 +15,7 @@
 #   than $0.50 a rescout more.
 # - Otherwise the arm is recorded as not advancing, or undecided when the scores are within the
 #   detectable difference but cost and time do not settle it. No default changes on this screen.
+# Every scout runs at xhigh, the highest effort (DeepSeek receives it as max), at the user's request.
 # Reported per plan: status, points claimed and seen, verified quotes, coverage, scout cost and
 # tokens, time, searches found/empty/failed, pages read/failed, 429s. Arm order rotates by plan.
 study = "deepseek-rescout-task8"
@@ -22,9 +23,9 @@ kind = "rescout"
 sources = ["aea52be0-2e67-4a9b-8400-ca2b907fe12b", "8f753940-34f6-4a5b-a677-238157672d54",
            "27701a2f-b052-457d-8d59-ed3ada12189f"]
 replicates = 1
-cap_usd = 2.00          # each rescout's hard cap; DeepSeek V4 Pro at peak prices with no cache hits is about $1.30
-estimate_usd = 0.60     # source scouts used about 800k input and 50k output tokens; V4 Pro with half cached, plus v13's larger windows
-ceiling_usd = 8.00      # nine rescouts and diagnoses at their estimates come to $6.75
+cap_usd = 2.50          # each rescout's hard cap; DeepSeek V4 Pro at peak prices with no cache hits is about $1.30 at high
+estimate_usd = 0.90     # source scouts used about 800k input and 50k output tokens; V4 Pro half cached, v13's windows, xhigh reasoning
+ceiling_usd = 10.50     # nine rescouts and diagnoses at their estimates come to $9.45
 diagnose = true
 diagnose_model = "zai:glm-5.3@high"
 diagnose_estimate_usd = 0.15
@@ -32,15 +33,15 @@ diagnose_cap_usd = 0.75
 
 [[arms]]
 name = "luna"
-args = ["--model", "openai:gpt-6-luna@high"]
+args = ["--model", "openai:gpt-6-luna@xhigh"]
 env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-flash"
-args = ["--model", "deepseek:deepseek-flash@high"]
+args = ["--model", "deepseek:deepseek-flash@xhigh"]
 env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-v4-pro"
-args = ["--model", "deepseek:deepseek-v4-pro@high"]
+args = ["--model", "deepseek:deepseek-v4-pro@xhigh"]
 env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }

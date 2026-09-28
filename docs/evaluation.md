@@ -171,8 +171,8 @@ These rules come from the studies so far; AGENTS.md requires them.
 - **Fix the decision rule first.** Write it in the study spec's header before any paid run: what must not regress, what must improve, and by how much, and what added cost is acceptable. A result that does not meet it is recorded as undecided or negative.
 - **Make sure the sample can decide.** Run-to-run variation on the frozen cases is several rubric points, so one run per arm is a screen, not a result. Prefer measures that vary less than rubric points: failed fetches, sources read in full, audit verdicts, time, and cost.
 - **Change one thing.** Compare rescouts on one stored plan to compare scouts (`research rescout`), and syntheses of one stored ledger to compare synthesizers (`research synthesize`). Rotate the arm order between replicates and targets, as the study runner does, and let the arms share the study's cache.
-- **Check it for free, then for cents.** Run the spec `--dry`, then `--cheap`, before paying; both must report no invariant violations.
-- **Estimate from the most expensive comparable run,** set a hard cap per run and a ceiling for the study, and get approval before the paid run. Leave the ceiling some room above the worst case by the estimates: the runner lowers each run's cap to what remains of the ceiling, so a tight ceiling gives the last runs smaller caps than the first, and a cut-short run would count against whichever arm ran last. Run one Luna study at a time, because the rate limit is per account.
+- **Check it for free, then for cents if anything is new.** Run the spec `--dry` before paying; it must report no invariant violations. Run `--cheap` too when an arm uses something that has not had a real run on the current code (a new engine, reader, model, or provider, or changed scout, fetch, or study code); otherwise it repeats what earlier real runs showed.
+- **Estimate from the most expensive comparable run,** set a hard cap per run and a ceiling for the study, and get approval before the paid run. Leave the ceiling some room above the worst case by the estimates: the runner lowers each run's cap to what remains of the ceiling, so a tight ceiling gives the last runs smaller caps than the first, and a cut-short run would count against whichever arm ran last. Run at most two Luna studies at once, because the rate limit is per account and each study process paces itself.
 - **Report every case separately,** with failed and partial runs kept in the denominator, and record the runs, costs, and outcome in the study log.
 
 ## Serper, Brave, and DeepSeek integration study
@@ -196,8 +196,12 @@ V4 Pro each rescout the same three stored drb2-task8 plans, and a rescout's clai
 with `diagnose`, since a rescout writes no report. Only the scout model changes, with no planner or
 synthesizer variation. The spec's header holds its decision rule. Run the trimming study
 ([`trim-history-rescout-task8.toml`](../studies/trim-history-rescout-task8.toml)) first, because DeepSeek's
-cost depends far more on the prompt cache hit rate than Luna's, and report each arm's hit rate. Whether
-Serper still needs a quality screen is undecided.
+cost depends far more on the prompt cache hit rate than Luna's, and report each arm's hit rate.
+
+The search comparison is now a rescout study too, [`search-rescout-task8.toml`](../studies/search-rescout-task8.toml):
+DuckDuckGo, Serper, Brave, and Exa, each alone, rescout the same three plans with Luna@xhigh scouts and trimming
+off, graded with `diagnose`. It pins trimming instead of waiting for the trimming study, and it replaces
+the search screen's full runs. Both rescout studies run every scout at xhigh, the highest effort.
 
 ### Screen and confirmation
 
@@ -227,11 +231,11 @@ search setting and needs its own comparison after the direct-engine result; it m
 to the direct-engine arm. Search caches are namespaced by engine, while page reads can be shared
 within a study.
 
-Run these studies **one at a time**, with no other Luna research study running. The study runner
+Run **at most two** Luna studies at once (AGENTS.md). The study runner
 executes its runs sequentially. Standard depth plans at most four research questions, so a single
 run can have up to four simultaneous scouts; scouts on Luna share that run's token pacer. Its
 configured rate is 2,000,000 tokens per minute and it adopts a limit OpenAI reports. Separate
-study processes have separate pacers, so launching both screens or another Luna run concurrently
+study processes have separate pacers, so a third concurrent Luna study
 can exceed the account limit even though each process looks safe alone. After each paid screen,
 check `research breakdown` for long model spans, 429s, and request timeouts, and Logfire
 for explicit pacing waits. Keep affected runs in

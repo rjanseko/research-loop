@@ -37,6 +37,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Search replay, DeepSeek smoke, and the screens' cheap checks](#2026-09-28-search-replay-deepseek-smoke-and-the-screens-cheap-checks) | $0.29 | On 40 replayed scout queries DuckDuckGo found nothing for 18, Serper and Brave for 4 each; both DeepSeek scouts call tools after the Flash profile fix |
 | 09-28 | [What scouts see and skip, and MDPI's bot wall (fetch version 17)](#2026-09-28-what-scouts-see-and-skip-and-mdpis-bot-wall-fetch-version-17) | free | Scouts fetched 1 of 545 scholarly works shown and mostly the top web results; 29% of fetches failed. MDPI challenges our fetcher, so its articles now find their DOI and a free copy first: 3 of 11 recovered |
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
+| 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | free so far | Four engines on three drb2-task8 plans with Luna@xhigh and trimming off; dry checks clean, cheap check skipped; study running |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -223,3 +224,14 @@ The DeepSeek comparison was redesigned to rescout fixed plans (see "Serper, Brav
 
 **Server-error retries and CORE.** With the user's approval, scouts now send a request again twice after an HTTP 500, 502, 503, or 504, pausing 2 then 8 seconds (`scout-429-v5`). The open-access reader asks CORE last for its full text of the DOI (fetch version 18). CORE allows 100 requests a day without a key, so requests are spaced 6.5 seconds apart, and none is sent after a 429 until CORE's reset time. The dry world sends injected 500s again at once; with the real pauses the fixed fuzz sweep took 30 s instead of 12 s. Both specs' dry checks, then their cheap checks, ran clean on this code: trimming study `7a637fe8` (trimmed, complete) and `63026306` (untrimmed, partial), $0.13; DeepSeek study `dd80a830`, `82ea3f46`, `80945be6`, $0.13. The three partials each hit the cheap mode's run cap.
 
+## 2026-09-28 A search-engine rescout study, xhigh scouts, and fewer cheap checks
+
+`studies/search-rescout-task8.toml` compares DuckDuckGo, Serper, Brave, and Exa, each alone, as rescouts of the three stored drb2-task8 plans the trimming and DeepSeek studies use. Only the engine changes. Scouts are Luna@xhigh, and trimming is pinned off in every arm, both at the user's request, so the study does not wait on the trimming study's result. It has its own study label and so its own search and page cache. Its decision rule is in the spec header. The ceiling is $9.50, with a $1.50 cap per rescout and $8.40 planned by the estimates. The user approved it.
+
+At the same request, every arm of `deepseek-rescout-task8.toml` now runs at xhigh too (Luna@xhigh, DeepSeek Flash@xhigh, and V4 Pro@xhigh, which DeepSeek receives as `max`). Its per-rescout cap rose to $2.50 and its ceiling to $10.50.
+
+**Dry checks.** Both specs ran `--dry` after these changes, with 12 and 9 rescouts and no invariant violations. Their failed and partial runs came from the dry world's injected faults.
+
+**Cheap check skipped.** The first cheap attempt was refused before any spend, because four arms plan to $0.32 against the fixed $0.25 cheap ceiling. With the user's agreement, it was skipped: each arm's path had already had a real run on the current code. Serper and Brave ran in `887f7cc0` and `18e3adc3`, Exa in the hybrid-search cheap check, and untrimmed DuckDuckGo with Luna in the trimming spec's cheap check after scout-429-v5 and fetch version 18. The rule in AGENTS.md, the README, and evaluation.md now asks for a cheap check only when an arm uses something without a real run on the current code. Cheap and smoke checks had cost about $0.85 that day, mostly repeated confirmations.
+
+The study was started detached alongside the trimming study, two Luna processes as AGENTS.md allows. Its results will follow here.

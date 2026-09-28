@@ -121,7 +121,7 @@ flowchart TD
 flowchart TD
     change["Change and bump the version"] --> tests["Tests, lint, fuzz"]
     tests --> spec["Study spec with a decision rule"]
-    spec --> checks["Dry run, then cheap run"]
+    spec --> checks["Dry run, and a cheap run if anything is new"]
     checks --> approve{"Approved?"}
     approve -- "yes" --> paid["Paid study, both judges"]
     paid --> decide{"Rule met?"}
@@ -132,9 +132,9 @@ flowchart TD
 1. Make the change, and bump the version the change affects: the workflow version when prompts or scout behavior change, the evidence, fetch, budget, or rate-limit version when those rules change. Runs record every version, so results are only compared within one.
 2. Run the narrowest tests first, then `pytest -q`, `make lint`, and `make fuzz`.
 3. Write a study spec in `studies/`. Put the decision rule in its header before anything is paid for: what must not regress, what must improve, and by how much, and what added cost is acceptable. [docs/evaluation.md](docs/evaluation.md) explains how to make a comparison able to decide.
-4. Run `research study run SPEC --dry`, which is free, then `--cheap`, which costs cents. Both must report no invariant violations.
+4. Run `research study run SPEC --dry`, which is free and must report no invariant violations. Run `--cheap`, which costs cents, only when an arm uses something that has not had a real run on the current code, such as a new engine, reader, model, or provider, or changed scout, fetch, or study code.
 5. Estimate the paid study from the most expensive comparable run, set a hard cap per run and a ceiling for the study, and get approval.
-6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, one Luna study at a time. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
+6. Run the study with `grade = true`, `audit = true`, and `diagnose = true`, at most two Luna studies at once. The diagnosis grades every report with a second judge as well, and the summary says where each arm lost its points and the smallest difference the study can detect.
 7. Check the judges' disagreements and any points the diagnosis marks as never met by hand.
 8. Record the runs, costs, and outcome in [docs/study-log.md](docs/study-log.md), and change the default only if the rule was met.
 
