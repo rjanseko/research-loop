@@ -83,13 +83,24 @@ def _model_spec(value: str) -> str:
     return value
 
 
+def synthesizer_spec(value: str) -> str:
+    """`value` as a synthesizer model: a Claude model, whose citations the report is built from, or the fake
+    provider of offline runs."""
+    spec = _model_spec(value)
+    if model_provider(split_model(spec)[0]) not in ("anthropic", FAKE_PROVIDER):
+        raise ValueError(f"the synthesizer must be an anthropic: model, since its report is built from Claude's "
+                         f"citations; got {spec}")
+    return spec
+
+
 class ScoutModels(BaseModel):
     """The model each Scout role runs on. Workflow and model choice stay separate: change these freely.
 
     The planner, synthesizer, and fallback are the settings study's lineup (docs/lessons.md). The
     scout is `gpt-6-luna`: on the screened cases it finished inside the deadline, and Flash at max did
-    not. `fallback` takes a planner or synthesizer call when its model refuses it or its provider fails;
-    Opus 5.5 refused to plan one ordinary research question as a biological risk.
+    not. `fallback` takes a planner call when its model refuses it or its provider fails; Opus 5.5 refused
+    to plan one ordinary research question as a biological risk. The synthesizer is always a Claude model:
+    its report is built from Claude's citations of the ledger's passages (citations.py), so it has no fallback.
 
     Each is `provider:model@effort`, and a model without its effort is refused, so a model and the
     reasoning effort it runs at are always chosen together.
@@ -109,8 +120,10 @@ class ScoutModels(BaseModel):
     # Evaluation models run after research; a study spec may override either one.
     audit: str = "zai:glm-5.3@high"
     diagnose: str = "zai:glm-5.3@high"
-    # The paid and offline bug-finding study modes replace every role with these models.
+    # The paid and offline bug-finding study modes replace every role with these models; a cheap run's
+    # synthesizer must be Claude too.
     cheap: str = "openai:gpt-6-luna@low"
+    cheap_synthesizer: str = "anthropic:claude-haiku-4-5-20251001@low"
     dry: str = "fake:fuzz@high"
 
     @model_validator(mode="before")
@@ -121,10 +134,15 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "synthesizer", "judge", "audit", "diagnose", "cheap")
+    @field_validator("planner", "scout", "judge", "audit", "diagnose", "cheap")
     @classmethod
     def _required_model(cls, value: str) -> str:
         return _model_spec(value)
+
+    @field_validator("synthesizer", "cheap_synthesizer")
+    @classmethod
+    def _claude_model(cls, value: str) -> str:
+        return synthesizer_spec(value)
 
     @field_validator("scout_alt", "fallback")
     @classmethod

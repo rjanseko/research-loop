@@ -95,15 +95,23 @@ def test_model_call_limits_come_from_the_environment(keyed: Settings, monkeypatc
     assert run_config(settings, [], [])["model_calls"]["planner_max_output_tokens"] == 12_000
 
 
-def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Settings) -> None:
+def test_the_synthesizer_is_claude_with_citations_and_has_no_fallback(keyed: Settings) -> None:
+    from research_loop.citations import CitingAnthropicModel
+
     synthesizer = role_model("synthesizer", keyed)
-    assert isinstance(synthesizer, FallbackModel)
-    assert [m.model_name for m in synthesizer.models] == ["claude-opus-5-5", "gpt-6-sol"]
-    # The fallback runs with its own effort, not the primary's.
-    assert [m.settings["thinking"] for m in synthesizer.models] == ["medium", "high"]
+    assert isinstance(synthesizer, CitingAnthropicModel) and synthesizer.model_name == "claude-opus-5-5"
+    assert synthesizer.settings["thinking"] == "medium"
     assert not isinstance(role_model("scout", keyed), FallbackModel)
     # The default planner is the fallback model itself, so it has nothing to fall back to.
     assert not isinstance(role_model("planner", keyed), FallbackModel)
+    # Other roles on Claude keep PydanticAI's own model.
+    assert type(build_model("anthropic:claude-opus-5-5@medium", "planner", keyed)).__name__ == "AnthropicModel"
+
+
+def test_a_synthesizer_that_is_not_claude_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARCH_MODELS__SYNTHESIZER", "openai:gpt-6-sol@high")
+    with pytest.raises(ValueError, match="must be an anthropic: model"):
+        Settings()
 
 
 def test_another_planner_falls_back_too(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:
@@ -124,8 +132,7 @@ def test_a_scout_makes_one_attempt_and_other_roles_keep_the_client_default(keyed
     synthesizer = role_model("synthesizer", keyed)
     assert scout.client.max_retries == 0
     assert planner.client.max_retries == 2
-    assert synthesizer.models[0].client.max_retries == 2
-    assert synthesizer.models[1].client.max_retries == 2
+    assert synthesizer.client.max_retries == 2
 
 
 def test_a_google_scout_makes_one_attempt(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:

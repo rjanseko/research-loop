@@ -14,12 +14,13 @@ Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`
 | `RESEARCH_MODELS__PLANNER` | `openai:gpt-6-sol@high` | Plan and gap analysis. |
 | `RESEARCH_MODELS__SCOUT` | `openai:gpt-6-luna@high` | Scouts and deep dives. |
 | `RESEARCH_MODELS__SCOUT_ALT` | unset | When set, every other scout and deep dive in a **deep** run uses it. |
-| `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. |
-| `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner or synthesizer fallback on refusal or provider error; scouts have no fallback. |
+| `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. Must be an `anthropic:` model: the report is built from Claude's citations. |
+| `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner fallback on refusal or provider error; the synthesizer and scouts have no fallback. |
 | `RESEARCH_MODELS__JUDGE` | `openai:gpt-6-sol@high` | Rubric and quality judges; audit and diagnosis use their own configured defaults. |
 | `RESEARCH_MODELS__AUDIT` | `zai:glm-5.3@high` | Support auditor for standalone commands and studies with `audit = true`; `--model` or a study `audit_model` overrides it. |
 | `RESEARCH_MODELS__DIAGNOSE` | `zai:glm-5.3@high` | Diagnosis judge for standalone commands and studies with `diagnose = true`; `--model` or a study `diagnose_model` overrides it. |
-| `RESEARCH_MODELS__CHEAP` | `openai:gpt-6-luna@low` | Replaces every model in a `study run --cheap` check, including audit and diagnosis models. |
+| `RESEARCH_MODELS__CHEAP` | `openai:gpt-6-luna@low` | Replaces every model but the synthesizer in a `study run --cheap` check, including audit and diagnosis models. |
+| `RESEARCH_MODELS__CHEAP_SYNTHESIZER` | `anthropic:claude-haiku-4-5-20251001@low` | The synthesizer in a `study run --cheap` check; must be an `anthropic:` model. |
 | `RESEARCH_MODELS__DRY` | `fake:fuzz@high` | Replaces every model in a `study run --dry` check; only the offline `fake:` provider is accepted. |
 | `RESEARCH_ENABLED_PROVIDERS` | empty | Empty means every provider with a key is enabled; otherwise a comma-separated allowlist. |
 | `RESEARCH_TOKENS_PER_MINUTE` | `{"openai:gpt-6-luna": 2000000}` | Initial per-model scout pacing limit. An OpenAI response can replace an unset default with the reported limit; setting this variable fixes the value. `{}` disables pacing. |

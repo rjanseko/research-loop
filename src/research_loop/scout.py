@@ -54,7 +54,7 @@ from pydantic_ai.exceptions import (
     UnexpectedModelBehavior,
     UsageLimitExceeded,
 )
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelResponse, UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
@@ -68,7 +68,6 @@ from .acquisition import (
 from .agents import (
     Assignment,
     GapRefs,
-    LedgerRefs,
     PlanLimits,
     gap_agent,
     planner_agent,
@@ -76,6 +75,7 @@ from .agents import (
     synthesizer_agent,
 )
 from .budget_notes import LoopBudget
+from .citations import cited_report, search_results
 from .config import ScoutLimits, Settings, split_model
 from .evals import case_blocked_titles
 from .evidence import (
@@ -179,12 +179,14 @@ def _paid_search(name: str) -> Any:
 # v16: the planner's, scouts', and output schema's examples no longer carry drb2-task8's wording (an ICSD example
 # since v6; its categories and database fields since v13), and a test keeps every frozen case's wording out of
 # model-visible text (docs/audit-2026-09-28-case-contamination.md). followup-v17 and research-v16 carry it.
-WORKFLOW_VERSION = "scout-v16"
-FOLLOWUP_VERSION = "scout-followup-v17"
+# v17: synthesis v5, Claude's citations (citations.py). followup-v18 carries it.
+WORKFLOW_VERSION = "scout-v17"
+FOLLOWUP_VERSION = "scout-followup-v18"
 RESCOUT_VERSION = "scout-research-v16"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
-# v4: it addresses coverage items.
-SYNTHESIS_VERSION = "scout-synthesis-v4"
+# v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
+# Claude's citations, and code writes the report's [sN] citations and claim list from them (citations.py).
+SYNTHESIS_VERSION = "scout-synthesis-v5"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
@@ -331,10 +333,9 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         roles["gap_analyzer"] = roles["planner"]
         roles["deep_dive"] = roles["scout"]
     if models.fallback:
-        # The fallback takes planner and synthesizer calls, each with that role's settings.
+        # The fallback takes planner calls; the synthesizer has none, since it must be Claude.
         roles["fallback"] = {"model": split_model(models.fallback)[0], "thinking": split_model(models.fallback)[1],
-                             "sent": {role: sent_settings(models.fallback, role, settings)
-                                      for role in ("planner", "synthesizer")}}
+                             "sent": {"planner": sent_settings(models.fallback, "planner", settings)}}
     return {
         "models": roles,
         "limits": settings.limits.model_dump(), "model_calls": settings.model_calls.model_dump(),
@@ -464,7 +465,8 @@ class _Run:
         else:
             self.cost += usage.cost
 
-    async def _call(self, *, role: Role, agent: Agent[Any, Any], prompt: str, deps: Any, limits: UsageLimits,
+    async def _call(self, *, role: Role, agent: Agent[Any, Any], prompt: str | Sequence[UserContent], deps: Any,
+                    limits: UsageLimits,
                     question_id: str | None = None, capabilities: list[Any] | None = None,
                     toolsets: list[Any] | None = None, stream: bool = False, attempt: _Attempt | None = None,
                     finish: Callable[[Any], Any] | None = None, finished: Callable[[Any], str] | None = None,
@@ -715,19 +717,25 @@ class _Run:
         return result
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:
-        prompt = json.dumps({"question": self.question, "notes": self.notes_in, "research": ledger.prompt_view(),
-                             "not_established": _not_established(plan, ledger),
-                             **({"coverage": view} if (view := _coverage_view(plan, ledger)) else {}),
-                             **({"assumptions": [item.requirement for item in plan.coverage
-                                                 if item.kind == "assumption"]}
-                                if any(item.kind == "assumption" for item in plan.coverage) else {})},
-                            ensure_ascii=False)
+        # Supporting evidence goes to Claude as citable passages, one search result per source, and the report
+        # is built from what Claude cites (citations.py); the research view keeps the checks without the text.
+        passages = ledger.passages()
+        brief = json.dumps({"question": self.question, "notes": self.notes_in,
+                            "research": ledger.prompt_view(passages=False),
+                            "not_established": _not_established(plan, ledger),
+                            **({"coverage": view} if (view := _coverage_view(plan, ledger)) else {}),
+                            **({"assumptions": [item.requirement for item in plan.coverage
+                                                if item.kind == "assumption"]}
+                               if any(item.kind == "assumption" for item in plan.coverage) else {})},
+                           ensure_ascii=False)
         limits = self.limits
         try:
             async with asyncio.timeout_at(deadline):
+                # Not streamed through PydanticAI, which would drop the citations; the model streams each
+                # request itself (citations.CitingAnthropicModel).
                 return await self._call(
-                    role="synthesizer", agent=synthesizer_agent, prompt=prompt, stream=True,
-                    deps=LedgerRefs(frozenset(ledger.claim_ids()), ledger.claim_source_ids()),
+                    role="synthesizer", agent=synthesizer_agent, prompt=[brief, *search_results(passages)],
+                    deps=None, finish=lambda result: cited_report(result.response, passages),
                     limits=UsageLimits(request_limit=self.settings.model_calls.synthesizer_requests,
                                        total_tokens_limit=limits.synthesis_tokens,
                                        cost_limit=Decimal(str(limits.synthesis_usd))),
@@ -1098,7 +1106,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     """Run production synthesis on an exact stored Scout ledger, without planning or retrieval.
 
     The new run points at its source and records a digest of the fixed ledger. Its synthesis call
-    uses `_Run._synthesize`, so prompts, validation, fallback, usage, and call recording match Scout.
+    uses `_Run._synthesize`, so prompts, citations, validation, usage, and call recording match Scout.
     """
     if (source.get("workflow_version") not in _SOURCE_VERSIONS
             or not source.get("plan") or not source.get("ledger")):

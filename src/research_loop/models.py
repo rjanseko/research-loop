@@ -97,7 +97,11 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
     elif provider == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
-        model = AnthropicModel(name, provider=AnthropicProvider(api_key=key), settings=own)
+
+        # The synthesizer cites the ledger's passages through Claude's citations (citations.py).
+        from .citations import CitingAnthropicModel
+        kind = CitingAnthropicModel if role == "synthesizer" else AnthropicModel
+        model = kind(name, provider=AnthropicProvider(api_key=key), settings=own)
     elif provider == "zai":
         from pydantic_ai.models.zai import ZaiModel
         from pydantic_ai.providers.zai import ZaiProvider
@@ -142,16 +146,19 @@ def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
 
 
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:
-    """The model `role` runs on, or `spec` in its place. The planner and synthesizer fall back to
-    `models.fallback` when their model refuses a call (ContentFilterError) or its provider fails
-    (ModelAPIError); scouts do not, since a failed scout leaves its question unanswered rather than failing
-    the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent again."""
+    """The model `role` runs on, or `spec` in its place. The planner falls back to `models.fallback` when its
+    model refuses a call (ContentFilterError) or its provider fails (ModelAPIError). The synthesizer does not,
+    since it must be Claude; nor do scouts, since a failed scout leaves its question unanswered rather than
+    failing the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent
+    again."""
     spec = spec or getattr(settings.models, role)
     primary = build_model(spec, role, settings, sdk_retries=0 if role == "scout" else None)
     fallback = settings.models.fallback
     if role == "scout":
         return scout_model(primary, split_model(spec)[0], settings)
-    if not fallback or fallback == spec:
+    # The synthesizer is always Claude, since its report is built from Claude's citations; another provider
+    # could not take its call.
+    if role == "synthesizer" or not fallback or fallback == spec:
         return primary
     return FallbackModel(primary, build_model(fallback, role, settings),
                          fallback_on=(ModelAPIError, ContentFilterError))

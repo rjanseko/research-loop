@@ -14,10 +14,12 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    TextContent,
+    TextPart,
     ToolCallPart,
     UserPromptPart,
 )
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from research_loop.agents import planner_agent, scout_agent, synthesizer_agent
 from research_loop.config import ScoutLimits, Settings
@@ -66,10 +68,47 @@ def pages(serve) -> None:
           if url in PAGES else httpx.Response(404))
 
 
-def _prompt(messages: list[ModelMessage]) -> dict[str, Any]:
+def _user_content(messages: list[ModelMessage]) -> list[Any]:
     first = messages[0]
     assert isinstance(first, ModelRequest)
-    return json.loads(next(p.content for p in first.parts if isinstance(p, UserPromptPart)))
+    content = next(p.content for p in first.parts if isinstance(p, UserPromptPart))
+    return [content] if isinstance(content, str) else list(content)
+
+
+def _prompt(messages: list[ModelMessage]) -> dict[str, Any]:
+    """The JSON a role is given; the synthesizer's comes first, before its search results."""
+    return json.loads(next(item for item in _user_content(messages) if isinstance(item, str)))
+
+
+def _search_results(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """The citable passages a synthesizer is given, as the search results Claude would receive."""
+    return [item.metadata for item in _user_content(messages) if isinstance(item, TextContent) and item.metadata]
+
+
+def citing(text: str, index: int, result: dict[str, Any], start: int = 0, end: int | None = None) -> TextPart:
+    """A text block of Claude's reply that cites blocks `start` to `end` of the `index`th search result."""
+    end = start + 1 if end is None else end
+    return TextPart(text, provider_name="anthropic", provider_details={"citations": [{
+        "type": "search_result_location", "source": result["source"], "title": result["title"],
+        "cited_text": "".join(result["blocks"][start:end]), "search_result_index": index,
+        "start_block_index": start, "end_block_index": end}]})
+
+
+def tagged(answer: list[TextPart | str], *, title: str = "SWE-bench Verified",
+           summary: list[TextPart | str] | tuple[str, ...] = ("S",), caveats: tuple[str, ...] = (),
+           not_established: tuple[str, ...] = ()) -> ModelResponse:
+    """A synthesizer's reply: the report's tagged sections, with Claude's citations on the blocks that cite."""
+    def parts(items: list[TextPart | str] | tuple[str, ...]) -> list[TextPart]:
+        return [item if isinstance(item, TextPart) else TextPart(item) for item in items]
+
+    closing = ("</answer>\n<caveats>\n" + "".join(f"- {caveat}\n" for caveat in caveats) + "</caveats>\n"
+               f"<not_established>{', '.join(not_established)}</not_established>")
+    return ModelResponse(parts=[TextPart(f"<title>{title}</title>\n<summary>"), *parts(summary),
+                                TextPart("</summary>\n<answer>"), *parts(answer), TextPart(closing)])
+
+
+def _claim_of(block: str) -> str:
+    return block.removeprefix("(").partition(";")[0]
 
 
 def _output(info: AgentInfo, value: dict[str, Any]) -> ModelResponse:
@@ -100,34 +139,29 @@ def researcher(urls: dict[str, str] | None = None, *, quoted: frozenset[str] = f
     return FunctionModel(respond)
 
 
-def streamed(respond) -> FunctionModel:
-    """Synthesis streams its reply; stream a scripted output call in one chunk."""
-    async def stream(messages: list[ModelMessage], info: AgentInfo):
-        part = respond(messages, info).parts[0]
-        yield {0: DeltaToolCall(name=part.tool_name, json_args=json.dumps(part.args))}
-
-    return FunctionModel(stream_function=stream)
-
-
 def reasons(run) -> list[str]:
     return [reason for reason in run.checks.review_reasons if reason != UNPRICED]
 
 
-def writer(extra_claim: str | None = None, *, calls: list[int] | None = None):
-    """A synthesizer that cites every claim and its sources; `extra_claim` adds one that does not exist."""
+def writer(*, untagged_first: bool = False, calls: list[int] | None = None):
+    """A synthesizer that cites every passage it is given, once in the summary and once in the answer, each
+    with its claim's statement; `untagged_first` makes its first reply lack its sections."""
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if calls is not None:
             calls.append(len(messages))
-        research = _prompt(messages)["research"]
-        claims = [claim for result in research["research"] for claim in result.get("claims", [])]
-        statements = [{"statement": claim["statement"], "claim_ids": [claim["id"]]} for claim in claims]
-        if extra_claim and len(messages) == 1:
-            statements.append({"statement": "Unsupported", "claim_ids": [extra_claim]})
-        cited = " ".join(f"{c['statement']} [{c['evidence'][0]['source_id']}]." for c in claims)
-        return _output(info, {"title": "SWE-bench Verified", "executive_summary": cited,
-                              "answer": f"Mostly trustworthy. {cited}", "claims": statements, "caveats": []})
+        if untagged_first and len(messages) == 1:
+            return ModelResponse(parts=[TextPart("Mostly trustworthy.")])
+        statements = {claim["id"]: claim["statement"] for result in _prompt(messages)["research"]["research"]
+                      for claim in result.get("claims", [])}
 
-    return streamed(respond)
+        def cited() -> list[TextPart | str]:
+            return [part for index, result in enumerate(_search_results(messages))
+                    for block, text in enumerate(result["blocks"])
+                    for part in (citing(statements[_claim_of(text)], index, result, block), ". ")]
+
+        return tagged(["Mostly trustworthy. ", *cited()], summary=cited())
+
+    return FunctionModel(respond)
 
 
 async def _run(settings: Settings, store: MemoryStore | None = None, *, plan=None, research=None, write=None, **kwargs):
@@ -158,7 +192,7 @@ async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(setting
     assert stored["status"] == "complete" and stored["trace_id"] == run.trace_id
     scout_model = stored["config"]["models"]["scout"]
     assert (scout_model["model"], scout_model["thinking"]) == ("openai:gpt-6-luna", "high")
-    assert set(stored["config"]["models"]["fallback"]["sent"]) == {"planner", "synthesizer"}
+    assert set(stored["config"]["models"]["fallback"]["sent"]) == {"planner"}  # the synthesizer must be Claude
     assert len(stored["input_hash"]) == 64 and stored["study_id"] is None
     assert stored["cache"] == {"mode": "off", "by_provider": {}}
     roles = sorted(call["role"] for call in store.calls.values())
@@ -281,19 +315,18 @@ async def test_when_every_fetch_fails_the_run_fails_and_says_why(settings, pages
     assert "## Sources that could not be read" in render_markdown(run.to_record())
 
 
-async def test_a_report_citing_an_unknown_claim_gets_one_retry(settings, pages) -> None:
+async def test_a_reply_without_its_sections_gets_one_retry(settings, pages) -> None:
     calls: list[int] = []
-    run = await _run(settings, write=writer(extra_claim="q9/c1", calls=calls))
+    run = await _run(settings, write=writer(untagged_first=True, calls=calls))
     assert len(calls) == 2 and run.status == "complete"
     assert run.checks.citation_problems == []
 
 
 async def test_a_synthesis_that_fails_returns_the_claims_found(settings, pages) -> None:
     def always_wrong(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        return _output(info, {"title": "t", "executive_summary": "", "answer": "a",
-                              "claims": [{"statement": "s", "claim_ids": ["q9/c9"]}]})
+        return ModelResponse(parts=[TextPart("<title>t</title> An answer without its other sections.")])
 
-    run = await _run(settings, write=streamed(always_wrong))
+    run = await _run(settings, write=FunctionModel(always_wrong))
     assert run.status == "partial" and run.report is None
     assert run.notes == ["the synthesis did not finish (the model's output failed its checks on every attempt)"]
     markdown = render_markdown(run.to_record())
@@ -745,14 +778,9 @@ def test_misattributed_quotes_are_listed_for_review() -> None:
 async def test_run_status_and_answer_support_are_separate(settings, pages) -> None:
     # Every question ran and the report was written, but one statement cites no evidence.
     def bare(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        research = _prompt(messages)["research"]
-        claims = [claim for result in research["research"] for claim in result.get("claims", [])]
-        statements = [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims]
-        return _output(info, {"title": "T", "executive_summary": "S", "answer": "Mostly trustworthy.",
-                              "claims": [*statements, {"statement": "An uncited finding", "claim_ids": []}],
-                              "caveats": []})
+        return tagged(["Mostly trustworthy. An uncited finding that no passage supports at all."], title="T")
 
-    run = await _run(settings, write=streamed(bare))
+    run = await _run(settings, write=FunctionModel(bare))
     assert run.status == "complete" and run.checks.answer_support == "unsupported"
     good = await _run(settings)
     assert good.status == "complete" and good.checks.answer_support == "supported"
@@ -803,14 +831,13 @@ async def test_coverage_items_run_from_the_plan_through_research_to_the_report(s
                                         "reason": "An open member of the set."}]})
 
     def write(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        research_view = _prompt(messages)["research"]
-        claims = [c for result in research_view["research"] for c in result.get("claims", [])]
-        return _output(info, {"title": "T", "executive_summary": "S", "answer": "A",
-                              "claims": [{"statement": c["statement"], "claim_ids": [c["id"]]} for c in claims],
-                              "caveats": [], "not_established": ["k2"]})
+        cited = [citing(f"Finding {block}", index, result, block)
+                 for index, result in enumerate(_search_results(messages)) for block in range(len(result["blocks"]))]
+        return tagged(["A. ", *cited], title="T", not_established=("k2",))
 
     with gap_agent.override(model=FunctionModel(gap)):
-        run = await _run(settings, plan=plan, research=FunctionModel(research), write=streamed(write), follow_up=True)
+        run = await _run(settings, plan=plan, research=FunctionModel(research), write=FunctionModel(write),
+                         follow_up=True)
     # Each scout works toward its question's items; the deep dive toward every item still open.
     icsd = next(state.id for state in run.checks.coverage if state.requirement == "ICSD")
     assert seen["q1"] == ["k1"] and seen["q2"] == ["k2"] and seen["deep"] == ["k2", icsd]

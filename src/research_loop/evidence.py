@@ -346,18 +346,39 @@ class EvidenceLedger:
         return cls(results={question_id: [ResearchResult.model_validate(item) for item in results]
                             for question_id, results in data.items()})
 
-    def prompt_view(self) -> dict[str, Any]:
+    def prompt_view(self, *, passages: bool = True) -> dict[str, Any]:
         """The ledger compacted for the synthesizer's prompt; `to_json` is unchanged.
 
         Sources are listed once, under `sources`, and evidence cites them by `source_id`. Null and
         empty values are left out, as is `supports` when the evidence supports its claim. A quote
         replaces the excerpt unless it was not found, and excerpts are cut at 300 characters. The
         checks code set (quote_check, quote_access, source_check, source_access) stay, so the
-        synthesizer can tell evidence it read from evidence it only glimpsed.
+        synthesizer can tell evidence it read from evidence it only glimpsed. Without `passages`, the
+        text of supporting evidence is left out, because the synthesizer receives it as citable
+        passages instead (`passages()`).
         """
         numbering = self._source_numbering()
         return {"sources": self.source_table(),
-                "research": [_project_result(result, numbering) for result in self.all()]}
+                "research": [_project_result(result, numbering, texts=passages) for result in self.all()]}
+
+    def passages(self) -> list[SourcePassages]:
+        """Each source's supporting evidence as citable passages, in source ID order: the evidence's quote, or
+        its excerpt when the quote is missing or was not verified. Each passage opens with its claim's ID
+        and checks in parentheses, so the synthesizer can tell a quote it read in full from a snippet or a
+        summary. Contradicting evidence is not citable; the prompt view keeps its text."""
+        numbering = self._source_numbering()
+        titles: dict[str, str] = {}
+        by_source: dict[str, list[Passage]] = {}
+        for claim in self.claims():
+            for item in claim.evidence:
+                if not item.supports or not (text := _evidence_text(item)):
+                    continue
+                source_id = numbering[_source_key(item.source)]
+                titles.setdefault(source_id, item.source.title or source_id)
+                by_source.setdefault(source_id, []).append(
+                    Passage(claim.id, f"({_passage_label(claim.id, item)}) {text}"))
+        return [SourcePassages(source_id, titles[source_id], tuple(items))
+                for source_id, items in sorted(by_source.items(), key=lambda pair: int(pair[0][1:]))]
 
 
 def _natural_key(text: str) -> list[Any]:
@@ -380,23 +401,75 @@ def _source_key(source: SourceRef) -> str:
     return json.dumps(_omit_empty(source.model_dump(mode="json")), sort_keys=True)
 
 
-def _project_evidence(item: Evidence, numbering: dict[str, str]) -> dict[str, Any]:
+def _quote_holds(item: Evidence) -> bool:
+    return bool(item.quote) and item.quote_check not in ("not_found", "misattributed")
+
+
+def _cut(excerpt: str) -> str:
+    return excerpt if len(excerpt) <= _EXCERPT_CHARS else excerpt[: _EXCERPT_CHARS - 3].rstrip() + "..."
+
+
+def _evidence_text(item: Evidence) -> str:
+    """What the synthesizer may cite of one piece of evidence: its quote, or else the scout's excerpt."""
+    return (item.quote if _quote_holds(item) else _cut(item.excerpt)).strip()  # type: ignore[union-attr]
+
+
+# How a passage the synthesizer may cite opens: its claim, the most a tool returned of the text it rests on, and
+# its check. The synthesizer sees these, so the prompt fingerprint covers them (prompts.PASSAGE_LABELS).
+PASSAGE_LABEL = "{claim_id}; {access}; {check}"
+PASSAGE_QUOTE = "quote {check}"
+PASSAGE_SUMMARY = "the researcher's summary; its quote was {check}"
+PASSAGE_NO_QUOTE = "the researcher's summary; no quote"
+
+
+def _passage_label(claim_id: str, item: Evidence) -> str:
+    access = item.quote_access if _quote_holds(item) and item.quote_access else item.source_access or "unchecked"
+    if _quote_holds(item):
+        check = PASSAGE_QUOTE.format(check=item.quote_check or "unchecked")
+    elif item.quote:
+        check = PASSAGE_SUMMARY.format(check=(item.quote_check or "unchecked").replace("_", " "))
+    else:
+        check = PASSAGE_NO_QUOTE
+    return PASSAGE_LABEL.format(claim_id=claim_id, access=access, check=check)
+
+
+@dataclass(frozen=True)
+class Passage:
+    """One piece of supporting evidence as a citable block, and the claim it supports."""
+
+    claim_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class SourcePassages:
+    """One source's supporting evidence, which the synthesizer receives as one search result (citations.py)."""
+
+    source_id: str
+    title: str
+    passages: tuple[Passage, ...]
+
+
+def _project_evidence(item: Evidence, numbering: dict[str, str], *, text: bool = True) -> dict[str, Any]:
     body = _omit_empty(item.model_dump(mode="json", exclude={"source"}))
-    if body.get("quote") and body.get("quote_check") not in ("not_found", "misattributed"):
+    if not text and item.supports and _evidence_text(item):
+        body.pop("quote", None)
+        body.pop("excerpt", None)
+    elif _quote_holds(item):
         body.pop("excerpt", None)
     elif excerpt := body.get("excerpt"):
-        body["excerpt"] = excerpt if len(excerpt) <= _EXCERPT_CHARS else excerpt[: _EXCERPT_CHARS - 3].rstrip() + "..."
+        body["excerpt"] = _cut(excerpt)
     if body.get("supports") is True:
         body.pop("supports")
     return {"source_id": numbering[_source_key(item.source)], **body}
 
 
-def _project_result(result: ResearchResult, numbering: dict[str, str]) -> dict[str, Any]:
+def _project_result(result: ResearchResult, numbering: dict[str, str], *, texts: bool = True) -> dict[str, Any]:
     claims = []
     for claim in result.claims:
         body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence"}))
         if claim.evidence:
-            body["evidence"] = [_project_evidence(item, numbering) for item in claim.evidence]
+            body["evidence"] = [_project_evidence(item, numbering, text=texts) for item in claim.evidence]
         claims.append(body)
     rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS, *_UNINFORMATIVE_FIELDS}))
     projected = {key: rest.pop(key) for key in ("question_id", "question", "conclusion") if key in rest}

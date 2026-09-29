@@ -139,6 +139,13 @@ async def _rerun(args: argparse.Namespace, settings: Settings, *, role: str, ver
     from .store import PostgresStore, load_run
     from .study_budget import StudyBudget
 
+    if role == "synthesizer":
+        from .config import synthesizer_spec
+        try:
+            synthesizer_spec(args.model)
+        except ValueError as exc:
+            print(f"research {verb}: {exc}", file=sys.stderr)
+            return 2
     settings = settings.model_copy(update={"models": settings.models.model_copy(update={role: args.model})})
     if (checked := _checked(settings, args.study)) is None:
         return 2
