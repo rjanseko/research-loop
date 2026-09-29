@@ -83,13 +83,24 @@ def _model_spec(value: str) -> str:
     return value
 
 
+def synthesizer_spec(value: str) -> str:
+    """`value` as a synthesizer model: a Claude model, whose citations the report is built from, or the fake
+    provider of offline runs."""
+    spec = _model_spec(value)
+    if model_provider(split_model(spec)[0]) not in ("anthropic", FAKE_PROVIDER):
+        raise ValueError(f"the synthesizer must be an anthropic: model, since its report is built from Claude's "
+                         f"citations; got {spec}")
+    return spec
+
+
 class ScoutModels(BaseModel):
     """The model each Scout role runs on. Workflow and model choice stay separate: change these freely.
 
     The planner, synthesizer, and fallback are the settings study's lineup (docs/lessons.md). The
     scout is `gpt-6-luna`: on the screened cases it finished inside the deadline, and Flash at max did
-    not. `fallback` takes a planner or synthesizer call when its model refuses it or its provider fails;
-    Opus 5.5 refused to plan one ordinary research question as a biological risk.
+    not. `fallback` takes a planner call when its model refuses it or its provider fails; Opus 5.5 refused
+    to plan one ordinary research question as a biological risk. The synthesizer is always a Claude model:
+    its report is built from Claude's citations of the ledger's passages (citations.py), so it has no fallback.
 
     Each is `provider:model@effort`, and a model without its effort is refused, so a model and the
     reasoning effort it runs at are always chosen together.
@@ -109,8 +120,10 @@ class ScoutModels(BaseModel):
     # Evaluation models run after research; a study spec may override either one.
     audit: str = "zai:glm-5.3@high"
     diagnose: str = "zai:glm-5.3@high"
-    # The paid and offline bug-finding study modes replace every role with these models.
+    # The paid and offline bug-finding study modes replace every role with these models; a cheap run's
+    # synthesizer must be Claude too.
     cheap: str = "openai:gpt-6-luna@low"
+    cheap_synthesizer: str = "anthropic:claude-haiku-4-5-20251001@low"
     dry: str = "fake:fuzz@high"
 
     @model_validator(mode="before")
@@ -121,10 +134,15 @@ class ScoutModels(BaseModel):
                              "such as RESEARCH_MODELS__SCOUT=openai:gpt-6-luna@high")
         return data
 
-    @field_validator("planner", "scout", "synthesizer", "judge", "audit", "diagnose", "cheap")
+    @field_validator("planner", "scout", "judge", "audit", "diagnose", "cheap")
     @classmethod
     def _required_model(cls, value: str) -> str:
         return _model_spec(value)
+
+    @field_validator("synthesizer", "cheap_synthesizer")
+    @classmethod
+    def _claude_model(cls, value: str) -> str:
+        return synthesizer_spec(value)
 
     @field_validator("scout_alt", "fallback")
     @classmethod
@@ -161,7 +179,11 @@ class DepthTier(BaseModel):
 
 # Each depth's own limits. A setting for one of them, such as RESEARCH_LIMITS__DEEP__MAX_QUESTIONS, replaces
 # only that one; the rest of the depth keeps these.
-_QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research_seconds": 240,
+# The synthesizer makes one request that is never retried, and PydanticAI checks its cost only once the reply
+# is in, so a reply over its share would be paid for and thrown away: every depth's share covers one reply at
+# the full output cap (32,000 tokens, $0.64 on Opus 5.5) plus its ledger. The totals grew by as much, so the
+# scouts' shares are unchanged (quick $0.30 to $0.98 with synthesis $0.12 to $0.80).
+_QUICK = {"max_questions": 2, "cost_usd": 0.98, "synthesis_usd": 0.80, "research_seconds": 240,
           "deadline_seconds": 360}
 # In the first deep example run (d8c8198e), three of four Luna scouts were cut off at the 480-second research
 # deadline with over 90% of their dollar share unspent, and the fourth scout and a deep dive stopped on their
@@ -170,7 +192,7 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research
 # $0.21 each, room for a GLM-5.3 second scout model (ScoutModels.scout_alt), which costs about seven times Luna.
 # Since scout-v14 the slowest tenth of deep scouts, which had reached the 1,200-second window (1,174 s), get
 # 1,800 seconds, and a deep dive keeps a full standard scout's loop budget.
-_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 4.00, "research_seconds": 1800,
+_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 4.40, "research_seconds": 1800,
          "deadline_seconds": 2520,
          "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 192,
          "deep_dive_requests": 30, "deep_dive_productive_calls": 128, "deep_dive_misses": 16}
@@ -187,14 +209,15 @@ class ScoutLimits(BaseModel):
     # they cost Brave and Exa scouts $0.06 and $0.10 each, beside $0.02 to $0.05 of model, so the envelopes
     # grew to leave each scout about $0.275 on a standard run and on a deep one
     # (scripts/budget_bottlenecks.py, study log 28 September 2026).
-    cost_usd: float = Field(1.75, gt=0, description="Total cap for the run")
+    cost_usd: float = Field(2.15, gt=0, description="Total cap for the run")
     planner_usd: float = Field(0.05, gt=0)
-    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25, and a deep run's larger ledger for up to $0.37 of
-    # $0.40 (93%); a synthesis cut off by its share writes no report, so it gets room for one validation retry.
-    synthesis_usd: float = Field(0.60, gt=0)
+    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25, and a deep run's larger ledger for up to $0.37.
+    # The synthesis is one request that is never retried, and its cost is checked once the reply is in, so the
+    # share covers a reply at the full output cap ($0.64) plus a deep run's ledger; it was $0.60 with a retry.
+    synthesis_usd: float = Field(1.00, gt=0)
     # Opt-in gap analysis and up to `max_gaps` parallel deep dives use a separate envelope, keeping the plain
     # Scout envelope unchanged. Each deep dive gets `deep_dive_usd`.
-    followup_cost_usd: float = Field(2.50, gt=0)
+    followup_cost_usd: float = Field(2.90, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     max_gaps: int = Field(3, ge=1, le=6)
     deep_dive_usd: float = Field(0.35, gt=0)
@@ -304,7 +327,9 @@ class ModelCallLimits(BaseModel):
     planner_requests: int = Field(2, ge=1)
     planner_tokens: int = Field(100_000, ge=1)
     planner_max_output_tokens: int = Field(16_000, ge=1)
-    synthesizer_requests: int = Field(2, ge=1)
+    # One request, never retried: a retry would resend the whole ledger, and a reply that lacks a section
+    # keeps what it has (citations.cited_report).
+    synthesizer_requests: int = Field(1, ge=1)
     rubric_timeout_seconds: float = Field(600, gt=0)
     rubric_max_output_tokens: int = Field(16_000, ge=1)
     audit_timeout_seconds: float = Field(600, gt=0)

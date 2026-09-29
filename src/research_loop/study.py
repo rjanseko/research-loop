@@ -259,6 +259,9 @@ def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutMode
     models = models or Settings().models
     model = mode_model(None, mode, "audit", run.arm.env, models)
     env = {f"RESEARCH_MODELS__{role}": model for role in _ROLES}
+    if mode == "cheap":
+        # The synthesizer must be Claude, whose citations its report is built from.
+        env["RESEARCH_MODELS__SYNTHESIZER"] = _cheap_synthesizer(run.arm.env, models)
     # A second scout model, from the arm or the environment, is replaced like the rest; without one the check
     # keeps one scout model, as the real run does.
     alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else models.scout_alt
@@ -270,6 +273,11 @@ def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutMode
         if dsn:
             env["DATABASE_URL"] = dry_database_url(dsn)
     return env
+
+
+def _cheap_synthesizer(env: dict[str, str], models: ScoutModels | None) -> str:
+    key = "RESEARCH_MODELS__CHEAP_SYNTHESIZER"
+    return env[key] if key in env else (models or Settings().models).cheap_synthesizer
 
 
 def _stable_seed(run: Planned) -> int:
@@ -284,7 +292,9 @@ def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: 
               "--max-usd", f"{_usd(spec.cap_usd) if cap is None else cap:.2f}", "--out", str(out)]
     args = list(run.arm.args)
     if mode != "real" and "--model" in args and args.index("--model") + 1 < len(args):
-        args[args.index("--model") + 1] = mode_model(None, mode, "audit", run.arm.env, models)
+        args[args.index("--model") + 1] = (_cheap_synthesizer(run.arm.env, models) if mode == "cheap"
+                                           and spec.kind == "synthesize"
+                                           else mode_model(None, mode, "audit", run.arm.env, models))
     if spec.kind == "scout":
         return ["scout", "--case", run.target, *labels, *args]
     return [spec.kind, run.target, *labels, *args]

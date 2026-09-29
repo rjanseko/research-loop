@@ -74,10 +74,19 @@ def test_reruns_refuse_what_cannot_run_before_opening_the_database(command, monk
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     run_id = "00000000-0000-0000-0000-000000000000"
-    assert _exit([command, run_id, "--model", "openai:gpt-6-luna", "--max-usd", "1"]) == 2
+    model = "openai:gpt-6-luna" if command == "rescout" else "anthropic:claude-opus-5-5"
+    assert _exit([command, run_id, "--model", model, "--max-usd", "1"]) == 2
     assert "must name its effort" in capsys.readouterr().err
-    assert _exit([command, run_id, "--model", "openai:gpt-6-luna@high", "--max-usd", "1", "--study", "../x"]) == 2
+    assert _exit([command, run_id, "--model", f"{model}@high", "--max-usd", "1", "--study", "../x"]) == 2
     assert "study name" in capsys.readouterr().err
+
+
+def test_a_synthesis_refuses_a_model_that_is_not_claude_before_opening_the_database(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/none")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    run_id = "00000000-0000-0000-0000-000000000000"
+    assert _exit(["synthesize", run_id, "--model", "openai:gpt-6-luna@high", "--max-usd", "1"]) == 2
+    assert "must be an anthropic: model" in capsys.readouterr().err
 
 
 def test_sigterm_mid_run_records_the_run_and_its_scouts_as_cancelled(tmp_path) -> None:

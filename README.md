@@ -241,7 +241,7 @@ Every request resends a scout's whole history, and page text is most of it. The 
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
-Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
+Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. The synthesizer is always a Claude model: each source's supporting evidence reaches it as one search result, with one citable passage per piece of evidence, and Claude's citations say which passages each span of the report drew on. Code, not the model, then writes the report's [sN] citations and its list of statements and the claim IDs behind them, so a citation cannot name a source or claim that does not exist. Citations cannot be combined with structured output, so the synthesizer replies in tagged sections. It makes one request, which is not cached and never retried: a retry would resend the whole ledger, so a reply that lacks a section keeps what it has, and the run notes what was missing. Its share of the budget therefore covers a reply at the full output cap. If the synthesis cannot finish or writes no answer, the run returns the ledger's claims without a written answer.
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish. A deep dive researches each one in parallel, with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run. The run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
 
@@ -262,9 +262,9 @@ The gap analysis chooses its deep dives from open items first, and a deep dive m
 ### Depth
 
 The planner also decides how much research the question warrants, and the run takes the limits of that depth:
-- **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.30 budget, and six minutes;
-- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $1.75, and 22 minutes;
-- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $4.00 budget and up to 42 minutes. Its scouts get 30 minutes of research and up to 192 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
+- **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.98 budget ($0.80 of it for synthesis), and six minutes;
+- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $2.15, and 22 minutes;
+- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $4.40 budget and up to 42 minutes. Its scouts get 30 minutes of research and up to 192 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
 
 `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used.
 
@@ -344,19 +344,19 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 
 | Limit | Default | Setting |
 |---|---|---|
-| Total cost | $1.75 | `RESEARCH_LIMITS__COST_USD` |
+| Total cost | $2.15 | `RESEARCH_LIMITS__COST_USD` |
 | Planner's share | $0.05 | `RESEARCH_LIMITS__PLANNER_USD` |
-| Synthesizer's share | $0.60 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
+| Synthesizer's share, enough for one reply at the full output cap | $1.00 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
 | Whole run | 22 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
 | Research phase | 15 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
 | One planner, gap, or synthesis request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
 | One scout or deep-dive request | 600 seconds | `RESEARCH_LIMITS__SCOUT_REQUEST_TIMEOUT_SECONDS` |
 | Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
-| Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
-| Deep depth | 8 questions and the gap follow-up; $4.00, which leaves eight scouts about $0.275 each; 30 minutes of research and 42 in all; 192 useful tool calls a scout; deep dives of 8 minutes with 30 requests, 128 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
+| Quick depth | 2 questions, $0.98 with $0.80 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
+| Deep depth | 8 questions and the gap follow-up; $4.40, which leaves eight scouts about $0.275 each; 30 minutes of research and 42 in all; 192 useful tool calls a scout; deep dives of 8 minutes with 30 requests, 128 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
 | Per scout | 30 requests, 128 useful tool calls (a guard against loops), 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
-| Follow-up total cost | $2.50 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
+| Follow-up total cost | $2.90 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.35 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
 | Gaps followed up | at most 3 | `RESEARCH_LIMITS__MAX_GAPS` |
 | Follow-up whole run | 25 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
@@ -400,7 +400,7 @@ The limit paced under is the one OpenAI reports. Every OpenAI response carries `
 
 The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v5`.
 
-A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $4.00.
+A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run's scouts get $0.275 each.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
@@ -449,12 +449,13 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Planner and gap analyzer | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__PLANNER` |
 | Scouts and deep dives | `openai:gpt-6-luna@high` | `RESEARCH_MODELS__SCOUT` |
 | Synthesizer | `anthropic:claude-opus-5-5@medium` | `RESEARCH_MODELS__SYNTHESIZER` |
-| Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
+| Planner fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
 | Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
 | Study support auditor | `zai:glm-5.3@high` | `RESEARCH_MODELS__AUDIT` |
 | Study diagnosis judge | `zai:glm-5.3@high` | `RESEARCH_MODELS__DIAGNOSE` |
-| Cheap study check, every role | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Cheap study check, every role but the synthesizer | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Cheap study check, synthesizer | `anthropic:claude-haiku-4-5-20251001@low` | `RESEARCH_MODELS__CHEAP_SYNTHESIZER` |
 | Dry study check, every role | `fake:fuzz@high` | `RESEARCH_MODELS__DRY` |
 
 Standalone `research audit` and `research diagnose` use their configured defaults unless `--model` selects another model. A study spec's `audit_model` or `diagnose_model` overrides its configured default.
@@ -463,7 +464,7 @@ A model is named with the reasoning effort it runs at, as `provider:model@effort
 
 DeepSeek Flash uses automatic tool choice in thinking mode. DeepSeek rejects a forced tool choice in that mode; `research doctor --smoke` checks that the configured model can call a tool before a study.
 
-Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner switches to the fallback model when its own model refuses a call or its provider fails. The synthesizer must be a Claude (`anthropic:`) model, since its report is built from Claude's citations, so it has no fallback, and a setting or `--model` naming another provider is refused before any call. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
 
 A model selected for a paid command is refused before calls if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
 
@@ -487,7 +488,7 @@ research scout --case drb2-task8 --max-usd 3.00 --study NAME --arm ARM --replica
 research grade <run id> --case drb2-task8 --max-usd 1.00
 research assess <run id> --case st07 --max-usd 1.00
 research audit <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.00
-research synthesize <run id> --model openai:gpt-6-sol@high --max-usd 1.00 --study NAME --arm ARM --replicate 1
+research synthesize <run id> --model anthropic:claude-opus-5-5@medium --max-usd 1.00 --study NAME --arm ARM --replicate 1
 research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study NAME --arm ARM --replicate 1
 ```
 
@@ -521,12 +522,12 @@ The judges and the audit:
 
 The harness in `src/research_loop/dryrun.py` finds bugs in the workflow's plumbing, IDs, money, and error handling for free, so that a paid study measures research instead of paying for a crash. It never produces useful research, and it cannot see quality problems.
 
-- **`research fuzz --runs N`** runs seeded Scout runs in process, each followed by a rescout and a fixed-ledger synthesis. A fuzz model stands in for every role, and an offline world stands in for the web, including a fake Exa API.
+- **`research fuzz --runs N`** runs seeded Scout runs in process, each followed by a rescout and a fixed-ledger synthesis. A fuzz model stands in for every role, and an offline world stands in for the web, including a fake Exa API. The fuzz model writes no tagged report with citations, so its syntheses fail their checks and fuzz runs do not reach a written report.
   - The model returns edge cases and injects rate limits, server errors, refusals, one-time TLS faults, and oversized costs.
   - The world serves copies of the same work, 403s, redirects to blocked addresses, timeouts, broken bodies, and a PDF whose text holds lone surrogates.
   - After each run, `check_record` checks the invariants, and each problem is printed with the command that reproduces it. `make fuzz` runs 200.
 - **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the configured `RESEARCH_MODELS__DRY` fake model, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
-- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), against the real web. Each run and the whole check are capped at $0.25.
+- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role but the synthesizer on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), and the synthesizer on `RESEARCH_MODELS__CHEAP_SYNTHESIZER` (`anthropic:claude-haiku-4-5-20251001@low`), against the real web. Each run and the whole check are capped at $0.25.
 - **Hypothesis property tests** in `tests/test_properties.py` check the pure functions, and a fixed fuzz sweep runs with the test suite.
 
 When a paid run finds a bug, it first gets the narrowest test that would have caught it: a unit test for a local bug, and fuzz or invariant behavior only when the bug comes from how a run's parts interact. `fake:` models and the offline world only run together, so neither can reach a real run.

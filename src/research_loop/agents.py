@@ -12,11 +12,9 @@ from dataclasses import dataclass, field
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .acquisition import SourcePolicy
-from .evidence import inline_source_ids, strip_inline_citations
 from .prompts import INSTRUCTIONS
 from .schemas import (
     Depth,
-    FinalReport,
     GapAnalysis,
     ResearchPlan,
     ResearchQuestion,
@@ -55,21 +53,18 @@ class GapRefs:
     coverage_ids: frozenset[str] = frozenset()
 
 
-@dataclass(frozen=True)
-class LedgerRefs:
-    """What the synthesizer may cite: ledger claim IDs, and the source IDs behind each claim."""
-
-    claim_ids: frozenset[str]
-    claim_sources: Mapping[str, frozenset[str]] = field(default_factory=dict)
-
-
 planner_agent = Agent(name="planner", output_type=ResearchPlan, deps_type=PlanLimits, instructions=INSTRUCTIONS["planner"])
 # Two retries rather than one: a scout's result is its whole question's research, and a Luna@xhigh scout lost one
 # by leaving out a required field twice (search-rescout-task8-v14, run 43e5c141).
 scout_agent = Agent(name="scout", output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"],
                     retries={"tools": 1, "output": 2})
 gap_agent = Agent(name="gap_analyzer", output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
-synthesizer_agent = Agent(name="synthesizer", output_type=FinalReport, deps_type=LedgerRefs, instructions=INSTRUCTIONS["synthesizer"])
+# The synthesizer replies in tagged text with Claude's citations, which `citations.cited_report` turns into the
+# FinalReport; citations cannot be combined with structured output.
+# It makes one request with no output retry: a retry would resend the whole ledger, and a reply that lacks a
+# section keeps what it has, with a note (citations.cited_report).
+synthesizer_agent = Agent(name="synthesizer", output_type=str, instructions=INSTRUCTIONS["synthesizer"],
+                          retries={"output": 0})
 
 
 def _retry_on(problems: Iterable[str]) -> None:
@@ -153,31 +148,3 @@ def open_item_names(items: Iterable[str]) -> list[str]:
                 and name.casefold() not in {n.casefold() for n in names}):
             names.append(name)
     return names[:OPEN_ITEMS_PER_RESULT]
-
-
-# Added to a report whose inline citations named sources that none of its listed claims rest on.
-DROPPED_CITATIONS_CAVEAT = (
-    "Inline citations to {ids} were removed, because none of the evidence claims this report lists rests on "
-    "those sources; the statements they followed may have less support than first cited."
-)
-
-
-@synthesizer_agent.output_validator
-def _report_cites_ledger_claims(ctx: RunContext[LedgerRefs], output: FinalReport) -> FinalReport:
-    unknown = sorted(set(output.claim_ids_used) - ctx.deps.claim_ids)
-    if unknown:
-        _retry_on([(f"These claim IDs do not exist: {', '.join(unknown[:25])}. Cite only claim IDs that appear in "
-                    "the supplied research, copied exactly, or drop the citation.")])
-    behind = frozenset(source_id for claim_id in output.claim_ids_used for source_id in ctx.deps.claim_sources.get(claim_id, ()))
-    cited = {source_id for text in output.cited_texts for source_id in inline_source_ids(text)}
-    if stray := sorted(cited - behind, key=lambda source_id: int(source_id[1:])):
-        # Dropped rather than retried: a retry resends the whole ledger, and one retry for five stray citations
-        # doubled a settings-study synthesis's cost. Dropping a citation never makes a statement look better
-        # supported than it is, and the caveat says which were dropped.
-        return output.model_copy(update={
-            "answer": strip_inline_citations(output.answer, behind),
-            "executive_summary": strip_inline_citations(output.executive_summary, behind),
-            "caveats": [*(strip_inline_citations(caveat, behind) for caveat in output.caveats),
-                        DROPPED_CITATIONS_CAVEAT.format(ids=", ".join(stray))],
-        })
-    return output

@@ -18,6 +18,10 @@ All paid calls are paused until the contamination audit passes ([audit](audit-20
 
 After it passes, write up the Serper rerun and the partial DeepSeek study, then design a held-out measurement of the claim fix with its baseline and cost, for approval.
 
+## Experiment: synthesis with Claude's citations (29 September)
+
+Branch `claude/citations-synthesis`, stacked on `claude/scout-v15`, tests binding each sentence of the report to the passages it rests on, which addresses audit findings A02 and A04 (the support label and the evaluators judge a claim list that is not the report's text). The synthesizer is always Claude. It receives the ledger's supporting evidence as `search_result` blocks, and code writes the report's citations and claim list from the passages Claude cites (`citations.py`). It makes one request, not cached and never retried, and each depth's budget grew so its synthesis share covers a reply at the full output cap. One live check on st07 cost $0.03 and worked end to end (study log, "First live synthesis with Claude's citations"). Nothing has been graded. Whether it replaces the current synthesis needs a paired, graded comparison with a decision rule, planned and approved after the audit passes. The fuzz model writes no tagged reply, so on this branch fuzz runs never reach a written report.
+
 ## 1. Finish the two running studies
 
 The trimming study (`studies/trim-history-rescout-task8.toml`, $3.00 ceiling) and the search-engine study (`studies/search-rescout-task8.toml`, $9.50 ceiling) were started detached on 28 September. Check them with `pgrep -af "study run"`, then read `runs/<study>/run.log` and `runs/<study>/summary.md`.

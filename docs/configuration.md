@@ -14,12 +14,13 @@ Model values use `provider:model@effort`; effort must be `low`, `medium`, `high`
 | `RESEARCH_MODELS__PLANNER` | `openai:gpt-6-sol@high` | Plan and gap analysis. |
 | `RESEARCH_MODELS__SCOUT` | `openai:gpt-6-luna@high` | Scouts and deep dives. |
 | `RESEARCH_MODELS__SCOUT_ALT` | unset | When set, every other scout and deep dive in a **deep** run uses it. |
-| `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. |
-| `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner or synthesizer fallback on refusal or provider error; scouts have no fallback. |
+| `RESEARCH_MODELS__SYNTHESIZER` | `anthropic:claude-opus-5-5@medium` | Report synthesis. Must be an `anthropic:` model: the report is built from Claude's citations. |
+| `RESEARCH_MODELS__FALLBACK` | `openai:gpt-6-sol@high` | Planner fallback on refusal or provider error; the synthesizer and scouts have no fallback. |
 | `RESEARCH_MODELS__JUDGE` | `openai:gpt-6-sol@high` | Rubric and quality judges; audit and diagnosis use their own configured defaults. |
 | `RESEARCH_MODELS__AUDIT` | `zai:glm-5.3@high` | Support auditor for standalone commands and studies with `audit = true`; `--model` or a study `audit_model` overrides it. |
 | `RESEARCH_MODELS__DIAGNOSE` | `zai:glm-5.3@high` | Diagnosis judge for standalone commands and studies with `diagnose = true`; `--model` or a study `diagnose_model` overrides it. |
-| `RESEARCH_MODELS__CHEAP` | `openai:gpt-6-luna@low` | Replaces every model in a `study run --cheap` check, including audit and diagnosis models. |
+| `RESEARCH_MODELS__CHEAP` | `openai:gpt-6-luna@low` | Replaces every model but the synthesizer in a `study run --cheap` check, including audit and diagnosis models. |
+| `RESEARCH_MODELS__CHEAP_SYNTHESIZER` | `anthropic:claude-haiku-4-5-20251001@low` | The synthesizer in a `study run --cheap` check; must be an `anthropic:` model. |
 | `RESEARCH_MODELS__DRY` | `fake:fuzz@high` | Replaces every model in a `study run --dry` check; only the offline `fake:` provider is accepted. |
 | `RESEARCH_ENABLED_PROVIDERS` | empty | Empty means every provider with a key is enabled; otherwise a comma-separated allowlist. |
 | `RESEARCH_TOKENS_PER_MINUTE` | `{"openai:gpt-6-luna": 2000000}` | Initial per-model scout pacing limit. An OpenAI response can replace an unset default with the reported limit; setting this variable fixes the value. `{}` disables pacing. |
@@ -43,9 +44,9 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 |---|---:|---:|---:|
 | `max_questions` count | 2 | 4 | 8 |
 | `parallel_scouts` count | 8 | 8 | 8 |
-| `cost_usd` ordinary-run soft envelope | $0.30 | $1.75 | $1.75* |
+| `cost_usd` ordinary-run soft envelope | $0.98 | $2.15 | $2.15* |
 | `planner_usd` | $0.05 | $0.05 | $0.05 |
-| `synthesis_usd` | $0.12 | $0.60 | $0.60 |
+| `synthesis_usd` | $0.80 | $1.00 | $1.00 |
 | `deadline_seconds` ordinary-run deadline | 360 | 1,320 | 2,520* |
 | `research_seconds` scout deadline | 240 | 900 | 1,800 |
 | `request_timeout_seconds` per planner, gap, or synthesis request | 120 | 120 | 120 |
@@ -57,7 +58,7 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `guarded_scout_max_output_tokens` per request | 48,000 | 48,000 | 48,000 |
 | `synthesis_tokens` total token limit | 200,000 | 200,000 | 200,000 |
 | `synthesis_max_output_tokens` per request | 32,000 | 32,000 | 32,000 |
-| `followup_cost_usd` follow-up soft envelope | $2.50 | $2.50 | $4.00 |
+| `followup_cost_usd` follow-up soft envelope | $2.90 | $2.90 | $4.40 |
 | `followup_deadline_seconds` | 1,500 | 1,500 | 2,520 |
 | `gap_usd` | $0.10 | $0.10 | $0.10 |
 | `gap_seconds` | 45 | 45 | 45 |
@@ -69,7 +70,7 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `deep_dive_misses` | 8 | 8 | 16 |
 | `quick.follow_up` / `deep.follow_up` | `false` | `false` | `true` |
 
-*Deep automatically uses follow-up, so its active envelope is **$4.00** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
+*Deep automatically uses follow-up, so its active envelope is **$4.40** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
 
 The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.275** standard, **$0.175** standard with follow-up, and **$0.275** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap. Since scout-v15 a scout's share also counts its own paid searches and page reads (`ExternalSpend.by_question`), and its tools are withdrawn with a note once the share or `scout_tokens` would not cover two more requests, each taken as twice the average so far (`LoopBudget.out_of_money`).
 
@@ -84,7 +85,7 @@ These defaults live in `Settings.model_calls` and can be overridden with `RESEAR
 | `planner_requests` | 2 | Planner and gap analyzer request cap. |
 | `planner_tokens` | 100,000 | Planner and gap analyzer total token cap. |
 | `planner_max_output_tokens` | 16,000 | Planner and gap analyzer output cap per request. |
-| `synthesizer_requests` | 2 | Synthesizer request cap. |
+| `synthesizer_requests` | 1 | Synthesizer request cap: one request, not cached and never retried, so each depth's `synthesis_usd` covers a reply at the full output cap. |
 | `rubric_timeout_seconds` | 600 | Rubric grading model request. |
 | `rubric_max_output_tokens` | 16,000 | Rubric grading request under a hard cap. |
 | `audit_timeout_seconds` | 600 | Support audit model request. |
