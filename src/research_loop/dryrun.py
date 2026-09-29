@@ -960,7 +960,8 @@ def fuzz_settings(seed: int, fault_rate: float, base: Any = None) -> Any:
     times = {"research_seconds": rng.choice([3.0, 20.0, 20.0]), "deadline_seconds": 60.0,
              "followup_deadline_seconds": 130.0, "deep_dive_seconds": 8.0}
     limits = type(base.limits).model_validate(base.limits.model_dump() | times | {
-        "gap_seconds": 5.0, "request_timeout_seconds": 1.0, "max_gaps": rng.choice([1, 3]),
+        "gap_seconds": 5.0, "request_timeout_seconds": 1.0, "scout_request_timeout_seconds": 1.0,
+        "max_gaps": rng.choice([1, 3]),
         "quick": base.limits.quick.model_dump() | {"research_seconds": 3.0, "deadline_seconds": 30.0},
         "deep": base.limits.deep.model_dump() | times,
     })

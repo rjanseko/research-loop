@@ -37,7 +37,10 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Search replay, DeepSeek smoke, and the screens' cheap checks](#2026-09-28-search-replay-deepseek-smoke-and-the-screens-cheap-checks) | $0.29 | On 40 replayed scout queries DuckDuckGo found nothing for 18, Serper and Brave for 4 each; both DeepSeek scouts call tools after the Flash profile fix |
 | 09-28 | [What scouts see and skip, and MDPI's bot wall (fetch version 17)](#2026-09-28-what-scouts-see-and-skip-and-mdpis-bot-wall-fetch-version-17) | free | Scouts fetched 1 of 545 scholarly works shown and mostly the top web results; 29% of fetches failed. MDPI challenges our fetcher, so its articles now find their DOI and a free copy first: 3 of 11 recovered |
 | 09-28 | [Rescout studies graded on claims; the DeepSeek and trimming specs' checks](#2026-09-28-rescout-studies-graded-on-claims-the-deepseek-and-trimming-specs-checks) | $0.53 | Both specs' dry and cheap checks clean, before and after server-error retries (scout-429-v5) and CORE (fetch version 18) |
-| 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | free so far | Four engines on three drb2-task8 plans with Luna@xhigh and trimming off; dry checks clean, cheap check skipped; study running |
+| 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
+| 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
+| 09-28 | [Search engines on three drb2-task8 plans (scout-v14)](#2026-09-28-search-engines-on-three-drb2-task8-plans-scout-v14) | $4.99 | No engine advanced under the rule: Serper was disqualified by one partial unrelated to search and Exa by quote share; Serper is rerun on scout-v15 |
+| 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -234,4 +237,101 @@ At the same request, every arm of `deepseek-rescout-task8.toml` now runs at xhig
 
 **Cheap check skipped.** The first cheap attempt was refused before any spend, because four arms plan to $0.32 against the fixed $0.25 cheap ceiling. With the user's agreement, it was skipped: each arm's path had already had a real run on the current code. Serper and Brave ran in `887f7cc0` and `18e3adc3`, Exa in the hybrid-search cheap check, and untrimmed DuckDuckGo with Luna in the trimming spec's cheap check after scout-429-v5 and fetch version 18. The rule in AGENTS.md, the README, and evaluation.md now asks for a cheap check only when an arm uses something without a real run on the current code. Cheap and smoke checks had cost about $0.85 that day, mostly repeated confirmations.
 
-The study was started detached alongside the trimming study, two Luna processes as AGENTS.md allows. Its results will follow here.
+The study was started detached alongside the trimming study, two Luna processes as AGENTS.md allows.
+
+**Stopped after 6 of 12 rescouts, $2.32** ($1.80 of rescouts and $0.52 of diagnoses). Five of the six ended partial, in every arm but DuckDuckGo's single run, because scout requests hit the 120-second request timeout ("Request timed out"). Without trimming, Luna@xhigh requests carried 200,000 to 365,000 input tokens, and the requests that wrote a result took longest. Runs: DuckDuckGo `710c5d4e` (complete, $0.127); Serper `0a85fb23` and `721c4455`, Brave `7b254786` and `357910a3`, Exa `7bdcebca` (all partial); Exa `6e1d421b` was cancelled when the study was stopped. The partials say nothing about the engines, and the study is not scored. One Exa rescout spent $0.45 on searching and reading (63 searches) against $0.08 on its scouts. The study was rerun under scout-v14 as `search-rescout-task8-v14`.
+
+## 2026-09-28 Trimming off, and limits as safety nets (scout-v14)
+
+**The trimming study.** `studies/trim-history-rescout-task8.toml` rescouted three drb2-task8 plans with Luna@high scouts, trimmed and untrimmed, and diagnosed each with GLM. It cost $1.49 of its $3.00 ceiling ($0.82 of rescouts and $0.67 of diagnoses).
+
+| Plan | Trimmed | Untrimmed |
+|---|---|---|
+| `aea52be0` | `38687e43` partial (a scout passed its $0.075 share), $0.344, 23 points claimed | `513bdff1` complete, $0.223, 23 |
+| `8f753940` | `644101a7` partial (a request timed out), $0.200, 17 | `1bb386d1` complete, $0.212, 31 |
+| `27701a2f` | `02ae1629` complete, $0.268, 33 | `b1151f7b` complete, $0.240, 30 |
+
+Costs include the diagnosis. Scout input read from the prompt cache was 35.5% trimmed and 59.0% untrimmed (`run_calls` usage). Verified quotes were 165 of 184 (89.7%) trimmed and 200 of 228 (87.7%) untrimmed. Mean points claimed were 24.3 and 28.0.
+
+**Decision: trimming off.** Untrimmed met every condition of the rule. It had no failed, partial, or limit-stopped rescout that trimmed did not; a larger cache share; a lower median cost ($0.223 against $0.268); a verified-quote share 2.0 points lower, within 5; and more points claimed. Three plans per arm cannot show the difference in points is real, and the rule did not ask it to.
+
+**The limits.** Of 107 real-run scouts from 27 to 28 September:
+- 65 returned on their own;
+- 17 stopped on their 32 productive calls;
+- 11 stopped at or near the research deadline, and 10 on a request timeout, the last two losing their claims;
+- 1 stopped on its dollar share.
+
+The slowest tenth of standard scouts took 340 seconds of 480 and spent $0.037 of a $0.075 share. The slowest tenth of deep scouts took 1,174 of 1,200 seconds. One standard scout used 19 of its 20 requests. At the user's request, the limits became safety nets that a normal run should not reach (scout-v14, followup-v15, research-v14):
+
+| Limit | Before | Now |
+|---|---|---|
+| Scout request timeout | 120 s | 600 s (`scout_request_timeout_seconds`) |
+| Standard research window and run deadline | 480 s and 720 s | 900 s and 1,320 s |
+| Deep research window and deadlines | 1,200 s and 1,920 s | 1,800 s and 2,520 s |
+| Scout requests | 20 | 30 |
+| Productive calls, standard and deep | 32 and 48 | 48 and 64 |
+| Standard envelope | $0.75 ($0.075 a scout) | $1.25 ($0.20 a scout) |
+
+A timed-out request is still not sent again: at 600 seconds a second attempt would rarely fit, and the research deadline bounds time. Tests, lint, and 200 fuzz runs are clean. The user asked that the first case of the rerun search study be checked for failures before the rest runs.
+
+## 2026-09-28 Scouts pay for their own searches (scout-v15)
+
+A scout's dollar share bounded only its model requests. Paid searches and page reads were charged to the run and seen only by a hard cap, so the productive-call limit was the one per-scout bound on them: one Exa rescout spent $0.45 on searches and reads against $0.08 on its model. At the user's request, scout-v15 (followup-v16, research-v15) changes three things:
+- **Paid spend by scout.** Each scout call gets its own spend key, set on every tool call it makes (`reading.charged_question`), so `ExternalSpend.by_question` holds what each call's paid searches and page reads cost.
+- **Money as the budget.** The scout's loop budget withdraws its tools, with a new note ("Your research budget is spent"), once its model cost plus that spend would leave less than two requests like its average (`LoopBudget.out_of_money`). A scout that stops this way is recorded as "returned after its dollar share was spent". The note is part of the prompt fingerprint.
+- **Wider caps.** Productive calls became a guard against loops rather than a budget: 128 a scout and a deep dive, 192 a deep scout. A scout's reply under a hard cap may be 48,000 tokens, up from 24,000; the largest had used 22,313.
+
+Smoke calls with a 48,000-token cap were answered by `openai:gpt-6-luna@xhigh`, `deepseek:deepseek-flash@xhigh`, and `deepseek:deepseek-v4-pro@xhigh`, for under $0.001 in all. Tests (369, with the Postgres tests), lint, and 200 fuzz runs are clean, with new tests for spend attributed across two concurrent scout calls and for the money note. The change was built in a separate worktree while `search-rescout-task8-v14` ran on scout-v14, and it is merged after that study, so the study runs on one version.
+
+**Where budgets bind.** `scripts/budget_bottlenecks.py` reads the stored runs, makes no model calls, and reports what stopped each call and how much of each limit it used. Over the 35 real runs and 188 calls since 27 September:
+- **Scout dollar shares did not bind.** Scouts used a median of 15 to 28% of their share, and at most 52% at the 90th percentile. One scout of about 140 reached its share. Deep dives used 6 to 15%.
+- **The synthesizer's share nearly bound on deep runs.** It used 88 to 93% of its $0.40 on scout-followup-v11, and a synthesis cut off by its share writes no report.
+- **Paid searching is a scout's largest cost with a paid engine.** On the first v14 plan, search and reading were $0.26 of Brave's $0.36 run and $0.40 of Exa's $0.58, or $0.06 and $0.10 a scout. Under scout-v15 this counts against a $0.20 share, beside $0.02 to $0.05 of model.
+- **What bound was calls, time, and output checks.**
+  - Productive calls stopped 17 to 25% of standard scouts on every version.
+  - The research deadline cut off most scouts of the v9 and v10 deep runs.
+  - Request timeouts cut off 9 of 52 v13 rescout scouts.
+  - On v14, one Luna@xhigh scout left out a required field twice and lost its question (`43e5c141`, Serper).
+- **No real run reached a hard cap.** The study-budget refusals since 27 September were all in cheap checks.
+
+So scout-v15 also loosened the budgets that are close, or that paid searching will make close:
+
+| Budget | Before | Now |
+|---|---|---|
+| Standard envelope (scout share at four questions) | $1.25 ($0.20) | $1.75 ($0.275) |
+| Synthesizer's share | $0.40 | $0.60 |
+| Follow-up envelope, standard and deep | $2.00 and $3.00 | $2.50 and $4.00 (deep scouts $0.275 each) |
+| Deep dive share | $0.25 | $0.35 |
+| Scout output retries | 1 | 2 |
+
+These are soft shares, and a run pays only for what it uses. The envelopes change what a run may spend, not what it typically spends: v14 standard rescouts used a median of 21% of theirs. A new test checks that a scout whose result fails its checks twice gets a third try; it fails with one retry.
+
+**The token limit.** Plan 3's DuckDuckGo rescout (`0acd61da`) lost a question to the 2,000,000-token limit. With trimming off, its scout resent its whole history on each of 20 requests. It billed 2,034,129 tokens for $0.040, 93% of them read from the cache, and it was cut off with its claims. scout-v15 raises `scout_tokens` to 8,000,000, because the dollar share already bounds what tokens cost. Nearing either limit now withdraws the scout's tools with the budget note, instead of cutting it off. The next request is estimated as twice the average so far, since each request resends the history, and two such requests must still fit. A new test covers the token case.
+
+## 2026-09-28 Search engines on three drb2-task8 plans (scout-v14)
+
+`studies/search-rescout-task8.toml`, labelled `search-rescout-task8-v14`, rescouted three stored drb2-task8 plans once per arm. The arms were DuckDuckGo, Serper, Brave, and Exa, each alone, with Luna@xhigh scouts and trimming off on scout-v14. GLM@high diagnosed every run. Its dry check was clean. In place of a cheap check, the user asked for the first plan's four rescouts to be checked for failures before the rest ran: all 16 scouts returned. It cost $4.99 of its $9.50 ceiling, diagnoses included.
+
+| Plan | DuckDuckGo | Serper | Brave | Exa |
+|---|---|---|---|---|
+| `aea52be0` | `281aa7e2` complete, 26 | `6a76c7bb` complete, 25 | `6fa930d6` complete, 29 | `3c6697be` complete, 30 |
+| `8f753940` | `9f116926` complete, 24 | `43e5c141` partial, 13 | `9b822c2d` complete, 23 | `ed4872c8` complete, 26 |
+| `27701a2f` | `0acd61da` partial, 24 | `b1de9f70` complete, 30 | `7060df48` complete, 32 | `0ba7d7b8` complete, 32 |
+
+Each cell gives the run, its status, and the rubric points its claims met, of 52.
+
+| Arm | Empty or failed searches | Verified quotes | Mean points claimed | Median rescout cost (search and reading) |
+|---|---|---|---|---|
+| DuckDuckGo | 62 of 160 (39%) | 221 of 240 (92.1%) | 24.7 | $0.159 ($0.03) |
+| Serper | 9 of 215 (4%) | 210 of 231 (90.9%) | 22.7 | $0.221 ($0.08) |
+| Brave | 44 of 163 (27%) | 226 of 255 (88.6%) | 28.0 | $0.388 ($0.26) |
+| Exa | 1 of 138 (1%) | 232 of 267 (86.9%) | 29.3 | $0.462 ($0.33) |
+
+**Decision: no engine advances, and DuckDuckGo stays the default.**
+- **Serper is disqualified.** It had a partial rescout (`43e5c141`) where DuckDuckGo had none on the same plan. The cause was not the engine: one scout's result left out a required field twice. Without that disqualification, Serper met every other condition: 4% empty against 39%, points within 2 of DuckDuckGo's (22.7 against 24.7, on the line), and $0.06 more.
+- **Exa is disqualified.** Its verified-quote share was 5.2 points below DuckDuckGo's, past the 5-point limit. It also cost $0.30 more a rescout, over the $0.15 allowed, though it found the most.
+- **Brave does not advance.** Its empty share (27%) is not half of DuckDuckGo's, and it cost $0.23 more.
+- No point difference is larger than the study can detect: the diagnosis gives 5 to 14 points by arm.
+- Two fetches of a blocked source were refused, and no blocked source reached a scout.
+
+Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).

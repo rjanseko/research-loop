@@ -135,6 +135,35 @@ async def test_a_close_deadline_withdraws_tools_while_budget_remains() -> None:
         "returned because the research deadline was close"
 
 
+async def test_paid_tools_that_spend_the_share_withdraw_tools_with_a_note() -> None:
+    # Paid searches and page reads are not in the framework's cost limit: one Exa rescout spent $0.45 on them
+    # against $0.08 on its model (search-rescout-task8, 28 September 2026).
+    from decimal import Decimal
+
+    spent = Decimal(0)
+    budget = LoopBudget(max_requests=10, max_productive=128, max_misses=12, share=Decimal("0.05"),
+                        external=lambda: spent)
+    notes: list[list[str]] = []
+    offered: list[list[str]] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal spent
+        notes.append(_notes(messages))
+        offered.append(sorted(tool.name for tool in info.function_tools))
+        if info.function_tools:
+            spent += Decimal("0.03")
+            return ModelResponse(parts=[ToolCallPart("fetch", {"url": f"https://a.test/{len(notes)}"})])
+        return ModelResponse(parts=[TextPart("result")])
+
+    result = await _agent().run("research", model=FunctionModel(respond), capabilities=budget.capabilities(),
+                                usage_limits=UsageLimits(request_limit=budget.max_requests, tool_calls_limit=200))
+    assert result.output == "result"
+    assert offered == [["fetch"], ["fetch"], []]
+    assert notes[2][-1].startswith(NOTE_PREFIX + "Your research budget is spent")
+    assert budget.finish_reason(result.usage.requests, result.all_messages()) == \
+        "returned after its dollar or token budget was spent"
+
+
 async def test_a_returned_loop_says_which_budget_it_spent() -> None:
     async def finish(budget: LoopBudget, urls: list[str]) -> str:
         def respond(messages, info: AgentInfo) -> ModelResponse:
@@ -185,3 +214,15 @@ def test_the_prompt_fingerprint_covers_every_budget_note(monkeypatch: pytest.Mon
     before = prompts.prompt_fingerprint()
     monkeypatch.setitem(prompts.BUDGET_NOTES, "NOTE", "changed")
     assert prompts.prompt_fingerprint() != before
+
+
+def test_nearing_the_token_limit_counts_as_a_spent_budget() -> None:
+    # With the whole history resent, a scout billed 2,034,129 tokens in 20 requests for $0.04 and was cut off
+    # by the token limit with its claims (run 0acd61da); the loop now returns before that.
+    from pydantic_ai.usage import RunUsage
+
+    budget = LoopBudget(max_requests=30, max_productive=128, max_misses=16, max_tokens=2_000_000)
+    assert budget.out_of_money(RunUsage(requests=18, input_tokens=1_700_000))
+    assert not budget.out_of_money(RunUsage(requests=7, input_tokens=450_000))
+    assert budget.note(18, tool_yield([]), RunUsage(requests=18, input_tokens=1_700_000)).startswith(
+        NOTE_PREFIX + "Your research budget is spent")

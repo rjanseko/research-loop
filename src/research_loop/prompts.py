@@ -119,8 +119,8 @@ OUTPUTS = {"planner": ResearchPlan, "scout": ResearchResult, "gap_analyzer": Gap
 
 # The notes that end a scout's requests (budget_notes.py) are text the model sees, so they count too.
 BUDGET_NOTES = {name: getattr(budget_notes, name) for name in (
-    "LAST_REQUEST_NOTE", "DEADLINE_NOTE", "PRODUCTIVE_SPENT_NOTE", "MISS_SPENT_NOTE", "NOTE", "PARALLEL", "NARROW",
-    "DROPPED_NOTE")}
+    "LAST_REQUEST_NOTE", "DEADLINE_NOTE", "PRODUCTIVE_SPENT_NOTE", "MONEY_SPENT_NOTE", "MISS_SPENT_NOTE", "NOTE",
+    "PARALLEL", "NARROW", "DROPPED_NOTE")}
 
 
 def prompt_fingerprint(*, follow_up: bool = False) -> str:

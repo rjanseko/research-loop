@@ -4,6 +4,10 @@ This is the working plan as of 28 September 2026. A session that resumes the wor
 
 Every paid step follows AGENTS.md: a spec with its decision rule, a clean dry check, a cheap check only when an arm uses something without a real run on the current code, and the user's approval with an estimate and a hard ceiling. Steps 1 to 3 are already approved. Steps 4 onward each need approval before they spend anything.
 
+## Status on 28 September, evening
+
+The trimming study finished and turned trimming off. The first search study was stopped after request timeouts, and scout-v14 raised the scout request timeout to 600 seconds and the time, call, and request limits (study log, "Trimming off, and limits as safety nets"). The search study is rerunning as `search-rescout-task8-v14`: check its first plan's four rescouts for failures before letting the rest run. scout-v15 (scouts pay for their own paid searches, productive calls a loop guard at 128, 48,000-token replies) waits on branch `claude/scout-v15` and is merged once the search study finishes. The DeepSeek study then runs on scout-v15, with its dry check rerun first.
+
 ## 1. Finish the two running studies
 
 The trimming study (`studies/trim-history-rescout-task8.toml`, $3.00 ceiling) and the search-engine study (`studies/search-rescout-task8.toml`, $9.50 ceiling) were started detached on 28 September. Check them with `pgrep -af "study run"`, then read `runs/<study>/run.log` and `runs/<study>/summary.md`.
@@ -14,6 +18,17 @@ When each finishes:
 - write its study-log entry, with run IDs, costs, and the decision, and update the index at the top of the log.
 
 The trimming study's rule decides whether `RESEARCH_TRIM_HISTORY` defaults to off. The user expects trimming to hurt more than it helps, but the default changes only if the rule is met. The search study is a screen, so an engine can advance to a confirmation, but no default changes on its result.
+
+## 1b. Find where budgets bottleneck runs
+
+After the search study, and before the DeepSeek study, measure which limit actually stops each call, from the stored runs and for free: no model calls. The user asked for this on 28 September.
+
+For every planner, scout, deep dive, gap analysis, and synthesis call, by workflow version, depth, and model:
+- what stopped it: a limit (which one) or its own return;
+- how much of its dollar share, time window, requests, productive calls, input tokens, and output cap it used;
+- what the time went on: model time, tool time, pacing waits, and 429s.
+
+For each run, also record hard-cap and study-ceiling refusals, and paid search and reading spend against each share. Report which limits bind, and how often a binding limit cost claims (a cut-off keeps none). Then propose changes with the data behind them. Write it as a reusable script, so each study can be checked the same way. Record the findings in the study log.
 
 ## 2. Run the DeepSeek rescout study
 

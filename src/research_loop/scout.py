@@ -22,7 +22,8 @@ Dollars are allocated once the plan sets the depth: the planner's share, the syn
 split evenly across the scouts. Each call's share is its PydanticAI `cost_limit`, checked before every
 request, so a call can pass its share by at most the one request that crossed it. Time is bounded by
 `research_seconds` for the scouts and `deadline_seconds` for the whole run, and each model request by
-`request_timeout_seconds`. A scout's provider client does not retry a request that hits that timeout.
+`request_timeout_seconds`, or a scout's by `scout_request_timeout_seconds`. A scout's provider client does
+not retry a request that hits its timeout.
 
 Every call is recorded in the run store with its usage, cost, output, and messages, and the whole run is
 one Logfire trace carrying the run ID. `rescout_stored` and `synthesize_stored` repeat one step of a stored
@@ -165,9 +166,19 @@ def _paid_search(name: str) -> Any:
 # v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
 # review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
 # study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
-WORKFLOW_VERSION = "scout-v13"
-FOLLOWUP_VERSION = "scout-followup-v14"
-RESCOUT_VERSION = "scout-research-v13"
+# v14: scouts keep their whole history (trimming off by default); a scout request may take 600 seconds rather
+# than 120 (`scout_request_timeout_seconds`); and the limits became safety nets: a standard run gets $1.25,
+# 900 seconds of research, and 30 requests and 48 productive calls a scout, and a deep run 1,800 seconds and
+# 64 calls (config.py). followup-v15 and research-v14 carry the same change.
+# v15: a scout's dollar share also counts its paid searches and page reads, and its tools are withdrawn with a
+# note once the share would not cover two more requests; productive calls become a loop guard at 128 (192 for a
+# deep scout), and a scout's reply may be 48,000 tokens under a hard cap. A scout may bill 8,000,000 tokens, and
+# nearing that limit withdraws its tools like its share does, instead of cutting it off. Budgets grew to match: a standard run
+# $1.75 with $0.60 for synthesis, a follow-up $2.50 ($4.00 deep), a deep dive $0.35; and a scout's output gets two
+# retries. followup-v16 and research-v15 carry it.
+WORKFLOW_VERSION = "scout-v15"
+FOLLOWUP_VERSION = "scout-followup-v16"
+RESCOUT_VERSION = "scout-research-v15"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items.
 SYNTHESIS_VERSION = "scout-synthesis-v4"
@@ -182,7 +193,7 @@ _SOURCE_VERSIONS = tuple(
 Status = Literal["complete", "partial", "failed", "cancelled"]
 AnswerSupport = Literal["supported", "weak", "unsupported"]
 # Failures a single call can end on without the run failing: a limit, a provider error the SDK's retries did
-# not clear, a refusal, output that failed its checks twice, a deadline, or a network error the SDK let through.
+# not clear, a refusal, output that failed its checks on every attempt, a deadline, or a network error the SDK let through.
 # The OpenAI client raised a TLS `SSLError` (an OSError) from one scout's request unwrapped, which failed a
 # run whose other three scouts had finished.
 _CALL_FAILURES = (UsageLimitExceeded, ModelAPIError, ContentFilterError, UnexpectedModelBehavior,
@@ -358,7 +369,7 @@ def _reason(exc: BaseException) -> str:
     if isinstance(exc, ContentFilterError):
         return "the model refused"
     if isinstance(exc, UnexpectedModelBehavior):
-        return "the model's output failed its checks twice"
+        return "the model's output failed its checks on every attempt"
     if isinstance(exc, TimeoutError | asyncio.CancelledError):
         return "the research deadline passed"
     if isinstance(exc, OSError):
@@ -576,8 +587,11 @@ class _Run:
         requests = limits.deep_dive_requests if deep else limits.scout_requests
         productive = limits.deep_dive_productive_calls if deep else limits.scout_productive_calls
         misses = limits.deep_dive_misses if deep else limits.scout_misses
+        # The share covers this call's paid searches and page reads as well as its model requests.
+        spend_key = uuid4().hex
         budget = LoopBudget(requests, productive, misses, time_left=time_left,
-                            return_within=limits.request_timeout_seconds)
+                            return_within=limits.request_timeout_seconds, share=share,
+                            external=lambda: self.external_spend.of(spend_key), max_tokens=limits.scout_tokens)
         prompt_data: dict[str, Any] = {"question": question.model_dump(mode="json"), "notes": self.notes_in,
                                        "blocked_urls": self.blocked_urls,
                                        **({"blocked_titles": self.blocked_titles} if self.blocked_titles else {})}
@@ -601,7 +615,7 @@ class _Run:
                 return await self._call(
                     role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
                     prompt=prompt, question_id=question.id,
-                    deps=Assignment(question, self.policy, frozenset(item.id for item in coverage)),
+                    deps=Assignment(question, self.policy, frozenset(item.id for item in coverage), spend_key),
                     toolsets=[toolset], capabilities=budget.capabilities(),
                     limits=UsageLimits(
                         request_limit=requests, total_tokens_limit=limits.scout_tokens, cost_limit=share,

@@ -14,9 +14,9 @@ def test_defaults_are_the_settings_study_lineup_and_scout_limits() -> None:
     assert (settings.models.planner, settings.models.scout, settings.models.synthesizer, settings.models.fallback) == (
         "openai:gpt-6-sol@high", "openai:gpt-6-luna@high", "anthropic:claude-opus-5-5@medium", "openai:gpt-6-sol@high")
     limits = settings.limits
-    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (0.75, 720, 4)
-    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (20, 32, 16)
-    assert limits.scout_usd(4) == 0.075 and limits.scout_usd(1) == 0.3
+    assert (limits.cost_usd, limits.deadline_seconds, limits.max_questions) == (1.75, 1320, 4)
+    assert (limits.scout_requests, limits.scout_productive_calls, limits.scout_misses) == (30, 128, 16)
+    assert limits.scout_usd(4) == 0.275 and limits.scout_usd(1) == 1.1
     assert settings.logfire is True and settings.cache_mode == "live"
 
 
@@ -52,7 +52,7 @@ def test_keys_are_secret_and_never_exported(monkeypatch: pytest.MonkeyPatch, tmp
     ("RESEARCH_MODELS__AUDIT", "", "not provider:model"),
     ("RESEARCH_MODELS__DRY", "openai:gpt-6-luna@low", "must use the fake: provider"),
     ("RESEARCH_ENABLED_PROVIDERS", "openai,xai", "unknown providers: xai"),
-    ("RESEARCH_LIMITS__SYNTHESIS_USD", "0.9", "must leave part of cost_usd"),
+    ("RESEARCH_LIMITS__SYNTHESIS_USD", "1.8", "must leave part of cost_usd"),
     ("RESEARCH_CACHE_MODE", "sometimes", "cache_mode"),
 ])
 def test_bad_values_fail_at_startup(monkeypatch: pytest.MonkeyPatch, name: str, value: str, message: str) -> None:
@@ -105,7 +105,7 @@ def test_each_depth_changes_only_what_it_sets() -> None:
     assert (quick.max_questions, quick.cost_usd, quick.synthesis_usd, quick.deadline_seconds) == (2, 0.30, 0.12, 360)
     assert quick.scout_requests == limits.scout_requests and limits.for_depth("standard") is limits
     assert limits.follows_up("deep") and not limits.follows_up("quick") and not limits.follows_up("standard")
-    assert limits.followup_scout_usd(8) == 0.0875 and limits.for_depth("deep").followup_scout_usd(8) == 0.2125
+    assert limits.followup_scout_usd(8) == 0.0875 and limits.for_depth("deep").followup_scout_usd(8) == 0.275
     with pytest.raises(ValidationError, match="quick depth"):
         ScoutLimits(quick={"cost_usd": 0.10})
 
@@ -131,6 +131,6 @@ def test_a_deep_run_gets_more_time_tool_calls_and_scout_money() -> None:
     assert (deep.deep_dive_requests, deep.deep_dive_productive_calls, deep.deep_dive_misses) == (
         limits.scout_requests, limits.scout_productive_calls, limits.scout_misses)
     # Only the scouts' part of the envelope grows: $1.70 for eight scouts instead of $0.70.
-    assert (deep.followup_cost_usd, limits.followup_cost_usd) == (3.00, 2.00)
+    assert (deep.followup_cost_usd, limits.followup_cost_usd) == (4.00, 2.50)
     assert (deep.deep_dive_usd, deep.synthesis_usd, deep.gap_usd) == (limits.deep_dive_usd, limits.synthesis_usd, limits.gap_usd)
-    assert deep.followup_scout_usd(8) == 0.2125
+    assert deep.followup_scout_usd(8) == 0.275

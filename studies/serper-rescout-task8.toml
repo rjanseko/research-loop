@@ -1,0 +1,40 @@
+# Screening study, not an engine-selection result. Reruns Serper against DuckDuckGo on scout-v15, after
+# search-rescout-task8-v14 disqualified Serper for a partial rescout whose cause was not search: one scout's
+# result left out a required field twice, and scout-v15 gives scout output two retries (study log,
+# 28 September 2026). Each arm rescouts the same three stored drb2-task8 plans (scout-v10, gpt-6-sol@high
+# planner, standard depth) with Luna@xhigh scouts, and only RESEARCH_SEARCH_ENGINE changes. Trimming is off
+# (the scout-v15 default, pinned here). A rescout writes no report, so each run's claims and research are
+# graded by one judge (diagnose).
+#
+# Decision rule, fixed before any paid run. Serper advances to the four-case confirmation in
+# docs/evaluation.md if all of these hold:
+# - no failed or partial Serper rescout that DuckDuckGo did not have on the same plan, and no blocked source
+#   reaching a scout;
+# - its empty-or-failed search share is at most half of DuckDuckGo's;
+# - its verified-quote share is no more than 5 points below DuckDuckGo's;
+# - its mean points claimed is at least DuckDuckGo's minus 2;
+# - its median rescout cost, search charges included, is at most $0.15 above DuckDuckGo's.
+# Otherwise it does not advance, or is undecided when only the points condition fails by less than the
+# detectable difference. No default changes on this screen.
+study = "serper-rescout-task8"
+kind = "rescout"
+sources = ["aea52be0-2e67-4a9b-8400-ca2b907fe12b", "8f753940-34f6-4a5b-a677-238157672d54",
+           "27701a2f-b052-457d-8d59-ed3ada12189f"]
+replicates = 1
+cap_usd = 1.50          # each rescout's hard cap
+estimate_usd = 0.40     # v14's Serper and DuckDuckGo rescouts cost $0.10 to $0.26; v15's larger shares allow more
+ceiling_usd = 3.50      # six rescouts and diagnoses at their estimates come to $3.30
+diagnose = true
+diagnose_model = "zai:glm-5.3@high"
+diagnose_estimate_usd = 0.15
+diagnose_cap_usd = 0.75
+
+[[arms]]
+name = "duckduckgo"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }
+
+[[arms]]
+name = "serper"
+args = ["--model", "openai:gpt-6-luna@xhigh"]
+env = { RESEARCH_SEARCH_ENGINE = "serper", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false" }

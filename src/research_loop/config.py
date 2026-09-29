@@ -168,26 +168,37 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.30, "synthesis_usd": 0.12, "research
 # productive calls. Paced under Luna's token rate, eight scouts need far longer than four, so a deep run gets
 # more time and tool calls, and each deep dive a full scout's loop budget. Its $3.00 leaves eight scouts about
 # $0.21 each, room for a GLM-5.3 second scout model (ScoutModels.scout_alt), which costs about seven times Luna.
-_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 3.00, "research_seconds": 1200,
-         "deadline_seconds": 1920,
-         "followup_deadline_seconds": 1920, "deep_dive_seconds": 480, "scout_productive_calls": 48,
-         "deep_dive_requests": 20, "deep_dive_productive_calls": 32, "deep_dive_misses": 16}
+# Since scout-v14 the slowest tenth of deep scouts, which had reached the 1,200-second window (1,174 s), get
+# 1,800 seconds, and a deep dive keeps a full standard scout's loop budget.
+_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 4.00, "research_seconds": 1800,
+         "deadline_seconds": 2520,
+         "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 192,
+         "deep_dive_requests": 30, "deep_dive_productive_calls": 128, "deep_dive_misses": 16}
 
 
 class ScoutLimits(BaseModel):
     """What one Scout run may spend. Dollar shares are allocated before the run starts (scout.py)."""
 
-    cost_usd: float = Field(0.75, gt=0, description="Total cap for the run")
+    # Limits are safety nets, not the usual reason a scout stops. Of 107 real-run scouts from 27 to 28 September
+    # 2026, a third ended on a limit: 17 on productive calls, 11 at the research deadline, and 10 on a request
+    # timeout, the last two losing their claims; one on its dollar share, while the slowest tenth spent $0.037
+    # of a $0.075 share. scout-v14 raised the time, call, and request limits and this envelope to match.
+    # scout-v15 counts a scout's paid searches and page reads in its share: on the first search-rescout plan
+    # they cost Brave and Exa scouts $0.06 and $0.10 each, beside $0.02 to $0.05 of model, so the envelopes
+    # grew to leave each scout about $0.275 on a standard run and on a deep one
+    # (scripts/budget_bottlenecks.py, study log 28 September 2026).
+    cost_usd: float = Field(1.75, gt=0, description="Total cap for the run")
     planner_usd: float = Field(0.05, gt=0)
-    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25; this leaves room for one validation retry.
-    synthesis_usd: float = Field(0.40, gt=0)
+    # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25, and a deep run's larger ledger for up to $0.37 of
+    # $0.40 (93%); a synthesis cut off by its share writes no report, so it gets room for one validation retry.
+    synthesis_usd: float = Field(0.60, gt=0)
     # Opt-in gap analysis and up to `max_gaps` parallel deep dives use a separate envelope, keeping the plain
     # Scout envelope unchanged. Each deep dive gets `deep_dive_usd`.
-    followup_cost_usd: float = Field(2.00, gt=0)
+    followup_cost_usd: float = Field(2.50, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     max_gaps: int = Field(3, ge=1, le=6)
-    deep_dive_usd: float = Field(0.25, gt=0)
-    followup_deadline_seconds: float = Field(900, gt=0)
+    deep_dive_usd: float = Field(0.35, gt=0)
+    followup_deadline_seconds: float = Field(1500, gt=0)
     gap_seconds: float = Field(45, gt=0)
     deep_dive_seconds: float = Field(240, gt=0)
     deep_dive_requests: int = Field(12, ge=2)
@@ -205,18 +216,32 @@ class ScoutLimits(BaseModel):
     # A scout's loop budget: requests, productive calls, and misses (budget_notes.py). The settings study set
     # 12, 16, and 12 to stop Flash loops that only failed; with Luna, 39 of 68 scouts stopped on the 16
     # productive calls after reading one to eight pages, while spending about 15% of their dollar share.
-    scout_requests: int = Field(20, ge=2)
-    scout_productive_calls: int = Field(32, ge=1)
+    # Since scout-v14, 30 requests: a standard scout had used 19 of 20. Since scout-v15, 128 productive calls, a
+    # guard against loops rather than a budget: the dollar share, which now also counts a scout's paid searches
+    # and page reads, and the research deadline bound its work (budget_notes.LoopBudget.out_of_money).
+    scout_requests: int = Field(30, ge=2)
+    scout_productive_calls: int = Field(128, ge=1)
     scout_misses: int = Field(16, ge=1)
     # Billed input across a scout's requests; each request resends the loop's history. The most a scout used
     # was 660,000 with 12,000-character page windows; windows of 40,000 carry more a request.
-    scout_tokens: int = Field(2_000_000, ge=1_000)
-    guarded_scout_max_output_tokens: int = Field(24_000, ge=1_000)
+    # Since scout-v15, 8,000,000, and the loop budget withdraws tools before it is reached: with the whole history
+    # resent, a DuckDuckGo scout billed 2,034,129 tokens in 20 requests for $0.040, 93% of them cached, and was cut
+    # off with its claims (search-rescout-task8-v14, run 0acd61da). The dollar share bounds what tokens cost.
+    scout_tokens: int = Field(8_000_000, ge=1_000)
+    # A scout's reply under a hard cap; the largest used 22,313 of 24,000 by 28 September 2026 (scout-v15 doubled it).
+    guarded_scout_max_output_tokens: int = Field(48_000, ge=1_000)
     synthesis_tokens: int = Field(200_000, ge=1_000)
     synthesis_max_output_tokens: int = Field(32_000, ge=1_000)
-    deadline_seconds: float = Field(720, gt=0, description="Wall-clock limit for the whole run")
-    research_seconds: float = Field(480, gt=0, description="Scouts still running after this are stopped")
+    # Since scout-v14, 1,320 and 900: standard scouts had taken up to 435 of 480 seconds.
+    deadline_seconds: float = Field(1320, gt=0, description="Wall-clock limit for the whole run")
+    research_seconds: float = Field(900, gt=0, description="Scouts still running after this are stopped")
     request_timeout_seconds: float = Field(120, gt=0, description="One model request, or between streamed chunks")
+    # A scout's requests resend its whole history, and the one that writes its result reasons longest. Of 2,178
+    # Luna scout requests stored by 28 September 2026, 86 took over 90 seconds and 37 over 120; at 120 seconds,
+    # Luna@xhigh scouts without trimming timed out in 5 of 6 rescouts of search-rescout-task8, and a Luna@high
+    # scout in trim-history-rescout-task8. A timed-out request keeps no claims and is not sent again, so the
+    # timeout matches the judges' 600 seconds and the research deadline bounds the time instead.
+    scout_request_timeout_seconds: float = Field(600, gt=0, description="One scout or deep-dive model request")
 
     @model_validator(mode="before")
     @classmethod
@@ -340,8 +365,10 @@ class Settings(BaseSettings):
     # Whether a scout's requests leave out its oldest pages and search snippets (history.py). Trimming was
     # added for throughput under a 200,000 tokens-a-minute pacer that was ten times too low, and it breaks
     # the cached prompt prefix: Luna scouts read 67-74% of input from the cache untrimmed (v6, v9) and
-    # 43-49% trimmed (v10). On until a paired study decides (docs/notes.md).
-    trim_history: bool = True
+    # 43-49% trimmed (v10). Off since scout-v14: in trim-history-rescout-task8 (28 September 2026) untrimmed
+    # scouts completed all three rescouts against one of three, read 59% of input from the cache against 36%,
+    # and cost less at a median $0.223 against $0.268.
+    trim_history: bool = False
     # Readers tried in order when our fetch cannot read a page (reading.py): "oa", "exa", "firecrawl".
     # Unset, it is every reader that can run: the free open-access reader, then Exa and Firecrawl when
     # their keys are set (`readers`). Publishers behind bot protection refused 2 to 9% of fetches, and in

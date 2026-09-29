@@ -40,6 +40,9 @@ class Assignment:
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
     # The coverage items a claim may say it addresses.
     coverage_ids: frozenset[str] = frozenset()
+    # Names this scout call's paid searches and page reads (reading.ExternalSpend.by_question); a deep dive
+    # researches a planned question's ID too, so each call gets its own.
+    spend_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,10 @@ class LedgerRefs:
 
 
 planner_agent = Agent(name="planner", output_type=ResearchPlan, deps_type=PlanLimits, instructions=INSTRUCTIONS["planner"])
-scout_agent = Agent(name="scout", output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"])
+# Two retries rather than one: a scout's result is its whole question's research, and a Luna@xhigh scout lost one
+# by leaving out a required field twice (search-rescout-task8-v14, run 43e5c141).
+scout_agent = Agent(name="scout", output_type=ResearchResult, deps_type=Assignment, instructions=INSTRUCTIONS["scout"],
+                    retries={"tools": 1, "output": 2})
 gap_agent = Agent(name="gap_analyzer", output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
 synthesizer_agent = Agent(name="synthesizer", output_type=FinalReport, deps_type=LedgerRefs, instructions=INSTRUCTIONS["synthesizer"])
 

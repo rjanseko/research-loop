@@ -29,7 +29,8 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
     model_id, effort = split_model(spec)
     if not effort:
         raise ValueError(f"{spec} names no effort; write it as {model_id}@<effort>")
-    result: dict[str, Any] = {"thinking": effort, "timeout": limits.request_timeout_seconds}
+    timeout = limits.scout_request_timeout_seconds if role == "scout" else limits.request_timeout_seconds
+    result: dict[str, Any] = {"thinking": effort, "timeout": timeout}
     if role == "synthesizer":
         result["max_tokens"] = limits.synthesis_max_output_tokens
     elif role == "planner":

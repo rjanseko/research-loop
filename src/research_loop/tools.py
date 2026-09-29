@@ -25,6 +25,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
 from .evidence import ToolText, identity_keys, printed_dois
+from .reading import charged_question
 from .schemas import UnreachedSource
 from .scholar import ScholarClient, ScholarWork
 from .web import SearchChain, WebAcquisition, WebSearch
@@ -112,11 +113,14 @@ class TimedToolset(WrapperToolset[Any]):
     async def call_tool(self, name: str, tool_args: dict[str, Any], ctx: RunContext[Any],
                         tool: ToolsetTool[Any]) -> Any:
         started = time.monotonic()
+        question_id = getattr(getattr(ctx.deps, "question", None), "id", "")
+        # Paid searches and page reads made by this call count against this scout's dollar share.
+        token = charged_question.set(getattr(ctx.deps, "spend_key", "") or question_id or None)
         try:
             return await self.wrapped.call_tool(name, tool_args, ctx, tool)
         finally:
-            question = getattr(ctx.deps, "question", None)
-            self.intervals.setdefault(getattr(question, "id", ""), []).append((started, time.monotonic()))
+            charged_question.reset(token)
+            self.intervals.setdefault(question_id, []).append((started, time.monotonic()))
 
     def seconds(self, question_id: str) -> float:
         """Wall-clock seconds the tools of `question_id`'s scout ran, overlaps counted once."""

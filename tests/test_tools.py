@@ -143,3 +143,40 @@ def test_tool_text_is_always_sendable_as_utf8() -> None:
     result = valid_unicode({"text": "size𝐹 set", "works": [{"title": "a\ud835b"}], "start": 12_000})
     assert result == {"text": "size𝐹 set", "works": [{"title": "a�b"}], "start": 12_000}
     json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+async def test_a_paid_search_is_charged_to_the_scout_that_made_it() -> None:
+    # Each scout call names its spend so its dollar share can count its paid searches and page reads; two
+    # scouts' calls run at once in one run.
+    import asyncio
+    from decimal import Decimal
+
+    from pydantic_ai.toolsets import FunctionToolset
+
+    from research_loop.agents import Assignment
+    from research_loop.reading import ExternalSpend
+    from research_loop.schemas import ResearchQuestion
+    from research_loop.tools import TimedToolset
+
+    spend = ExternalSpend()
+    paid = FunctionToolset()
+
+    @paid.tool_plain
+    async def web_search(query: str) -> str:
+        await asyncio.sleep(0.01)
+        spend.charge(Decimal("0.01"), searches=1)
+        return "results"
+
+    toolset = TimedToolset(paid)
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("web_search", {"query": "q"}) for _ in range(3)])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = Agent(FunctionModel(respond), deps_type=Assignment, toolsets=[toolset])
+    question = ResearchQuestion(id="q1", question="Q?")
+    await asyncio.gather(agent.run("go", deps=Assignment(question, spend_key="scout")),
+                         agent.run("go", deps=Assignment(question, spend_key="dive")))
+    assert spend.of("scout") == spend.of("dive") == Decimal("0.03")
+    assert spend.usd == Decimal("0.06") and spend.searches == 6

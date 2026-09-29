@@ -24,7 +24,8 @@ import hashlib
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -65,13 +66,31 @@ _ARXIV = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})")
 _TAGS = re.compile(r"<[^>]+>")
 
 
+# The research question whose scout is running the current tool call (tools.TimedToolset sets it), so a paid
+# search or page read is charged to that scout's dollar share as well as to the run.
+charged_question: ContextVar[str | None] = ContextVar("charged_question", default=None)
+
+
 @dataclass
 class ExternalSpend:
-    """What a run's paid searches and page reads cost, as reported; a run adds it to its model calls' cost."""
+    """What a run's paid searches and page reads cost, as reported; a run adds it to its model calls' cost,
+    and each scout's share counts what its own tool calls spent (`by_question`)."""
 
     usd: Decimal = Decimal(0)
     searches: int = 0
     pages: int = 0
+    by_question: dict[str, Decimal] = field(default_factory=dict)
+
+    def charge(self, usd: Decimal, *, searches: int = 0, pages: int = 0) -> None:
+        self.usd += usd
+        self.searches += searches
+        self.pages += pages
+        if (question := charged_question.get()) is not None:
+            self.by_question[question] = self.by_question.get(question, Decimal(0)) + usd
+
+    def of(self, question_id: str) -> Decimal:
+        """What `question_id`'s tool calls have spent on paid searches and page reads."""
+        return self.by_question.get(question_id, Decimal(0))
 
 
 Document = dict[str, Any]
@@ -208,8 +227,7 @@ class ExaContentsReader:
         response.raise_for_status()
         data = response.json()
         cost = Decimal(str((data.get("costDollars") or {}).get("total", EXA_PAGE_RESERVE_USD / 2)))
-        self.spend.usd += cost
-        self.spend.pages += 1
+        self.spend.charge(cost, pages=1)
         if self.budget and charge is not None:
             self.budget.settle_fixed(charge, cost)
         results = data.get("results") or []
@@ -234,8 +252,7 @@ class FirecrawlReader:
         if response.status_code == 429 and self.budget and charge is not None:
             self.budget.release(charge)
         response.raise_for_status()
-        self.spend.usd += FIRECRAWL_PAGE_USD
-        self.spend.pages += 1
+        self.spend.charge(FIRECRAWL_PAGE_USD, pages=1)
         if self.budget and charge is not None:
             self.budget.settle_fixed(charge, FIRECRAWL_PAGE_USD)
         data = response.json().get("data") or {}

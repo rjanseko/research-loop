@@ -16,6 +16,7 @@
 # - Otherwise the arm is recorded as not advancing, or undecided when the scores are within the
 #   detectable difference but cost and time do not settle it. No default changes on this screen.
 # Every scout runs at xhigh, the highest effort (DeepSeek receives it as max), at the user's request.
+# Runs on scout-v15 with trimming off in every arm, after the trimming study turned it off (study log).
 # Reported per plan: status, points claimed and seen, verified quotes, coverage, scout cost and
 # tokens, time, searches found/empty/failed, pages read/failed, 429s. Arm order rotates by plan.
 study = "deepseek-rescout-task8"
@@ -34,14 +35,14 @@ diagnose_cap_usd = 0.75
 [[arms]]
 name = "luna"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-flash"
 args = ["--model", "deepseek:deepseek-flash@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-v4-pro"
 args = ["--model", "deepseek:deepseek-v4-pro@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
