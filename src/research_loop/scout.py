@@ -39,6 +39,7 @@ import time
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -54,7 +55,7 @@ from pydantic_ai.exceptions import (
     UnexpectedModelBehavior,
     UsageLimitExceeded,
 )
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelResponse, UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
@@ -68,7 +69,6 @@ from .acquisition import (
 from .agents import (
     Assignment,
     GapRefs,
-    LedgerRefs,
     PlanLimits,
     gap_agent,
     planner_agent,
@@ -76,10 +76,17 @@ from .agents import (
     synthesizer_agent,
 )
 from .budget_notes import LoopBudget
+from .citations import (
+    cited_report,
+    mismatched_citations,
+    missing_sections,
+    search_results,
+)
 from .config import ScoutLimits, Settings, split_model
 from .evals import case_blocked_titles
 from .evidence import (
     EvidenceLedger,
+    SourcePassages,
     Support,
     check_result,
     citation_problems,
@@ -108,6 +115,8 @@ from .schemas import (
     FinalReport,
     GapAnalysis,
     MaterialGap,
+    ReportAssertion,
+    ReportClaim,
     ResearchPlan,
     ResearchQuestion,
     ResearchResult,
@@ -166,7 +175,7 @@ def _paid_search(name: str) -> Any:
 # v13: the planner writes one coverage item for each category and field asked for; scouts claim what a
 # review states of a category as a whole and give each named set member its own claim (the drb2-task8 audit,
 # study log 28 September 2026); a scout may bill 2,000,000 input tokens, and keeps 120,000 characters of pages.
-# v14: scouts keep their whole history (trimming off by default); a scout request may take 600 seconds rather
+# v14: scouts keep their whole history (trimming off by default, and its code removed in v15); a scout request may take 600 seconds rather
 # than 120 (`scout_request_timeout_seconds`); and the limits became safety nets: a standard run gets $1.25,
 # 900 seconds of research, and 30 requests and 48 productive calls a scout, and a deep run 1,800 seconds and
 # 64 calls (config.py). followup-v15 and research-v14 carry the same change.
@@ -176,12 +185,31 @@ def _paid_search(name: str) -> Any:
 # nearing that limit withdraws its tools like its share does, instead of cutting it off. Budgets grew to match: a standard run
 # $1.75 with $0.60 for synthesis, a follow-up $2.50 ($4.00 deep), a deep dive $0.35; and a scout's output gets two
 # retries. followup-v16 and research-v15 carry it.
-WORKFLOW_VERSION = "scout-v15"
-FOLLOWUP_VERSION = "scout-followup-v16"
-RESCOUT_VERSION = "scout-research-v15"
+# v16: the planner's, scouts', and output schema's examples no longer carry drb2-task8's wording (an ICSD example
+# since v6; its categories and database fields since v13), and a test keeps every frozen case's wording out of
+# model-visible text (docs/audit-2026-09-28-case-contamination.md). followup-v17 and research-v16 carry it.
+# v17: synthesis v5, Claude's citations (citations.py). followup-v18 carries it.
+# v18: synthesis v6, one uncached request that is never retried. followup-v19 carries it.
+# v19: synthesis v7, the passages as the synthesizer's only facts and first in its prompt, citations checked
+# against them, and a server-side fallback when its model declines. followup-v20 carries it.
+# v20: synthesis v8, every sentence of a cited block carries its citation. followup-v21 carries it.
+# v21: checked tool snapshots, exact passage links, and assertion-level support; followup-v22
+# and research-v17 carry the same evidence behavior.
+WORKFLOW_VERSION = "scout-v21"
+FOLLOWUP_VERSION = "scout-followup-v22"
+RESCOUT_VERSION = "scout-research-v17"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
-# v4: it addresses coverage items.
-SYNTHESIS_VERSION = "scout-synthesis-v4"
+# v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
+# Claude's citations, and code writes the report's [sN] citations and claim list from them (citations.py).
+# v6: one request, not cached and never retried; a reply that lacks a section keeps what it has.
+# v7: a claim with a passage appears in the brief without its statement; the passages come before the brief;
+# a citation counts only when it matches the passages sent; Anthropic falls back to another Claude model
+# inside the request when the synthesizer's model declines it, and a reply declined partway through by every
+# model is discarded.
+# v8: code puts a cited block's citation before the full stop of each of its sentences, not only after its last
+# word (run 6e811f5f).
+# v9: cited passages identify report assertions; multi-sentence provider blocks are ambiguous.
+SYNTHESIS_VERSION = "scout-synthesis-v9"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
@@ -328,17 +356,16 @@ def run_config(settings: Settings, notes: Sequence[str], blocked_urls: Sequence[
         roles["gap_analyzer"] = roles["planner"]
         roles["deep_dive"] = roles["scout"]
     if models.fallback:
-        # The fallback takes planner and synthesizer calls, each with that role's settings.
+        # The fallback takes planner calls; the synthesizer has none, since it must be Claude.
         roles["fallback"] = {"model": split_model(models.fallback)[0], "thinking": split_model(models.fallback)[1],
-                             "sent": {role: sent_settings(models.fallback, role, settings)
-                                      for role in ("planner", "synthesizer")}}
+                             "sent": {"planner": sent_settings(models.fallback, "planner", settings)}}
     return {
         "models": roles,
         "limits": settings.limits.model_dump(), "model_calls": settings.model_calls.model_dump(),
         "prompt_fingerprint": prompt_fingerprint(follow_up=follow_up), "evidence_version": EVIDENCE_VERSION,
         "fetch_version": FETCH_VERSION, "cache_mode": settings.cache_mode, "cache_dir": str(settings.cache_dir), "git_commit": _git_commit(),
         "rate_limit_policy": RATE_LIMIT_POLICY_VERSION, "search_engine": settings.search_engine,
-        "read_fallback": list(settings.readers()), "trim_history": settings.trim_history,
+        "read_fallback": list(settings.readers()),
         "tokens_per_minute": settings.tokens_per_minute.get(split_model(models.scout)[0]),
         "notes": list(notes), "blocked_urls": list(blocked_urls),
     }
@@ -435,8 +462,11 @@ class _Run:
                 self.models[role, spec] = role_model(role, self.settings, spec)
             else:
                 model_id = split_model(spec)[0]
+                # A synthesis may also run on its server-side fallback inside the same request.
+                fallback = self.settings.models.synthesizer_fallback(spec) if role == "synthesizer" else None
                 guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
-                                           model_id, self.budget)
+                                           model_id, self.budget,
+                                           fallback_model_id=split_model(fallback)[0] if fallback else None)
                 # The guard is inside the 429 wrapper, so every retry reserves a new request.
                 self.models[role, spec] = (scout_model(guarded, model_id, self.settings)
                                            if role == "scout" else guarded)
@@ -461,7 +491,8 @@ class _Run:
         else:
             self.cost += usage.cost
 
-    async def _call(self, *, role: Role, agent: Agent[Any, Any], prompt: str, deps: Any, limits: UsageLimits,
+    async def _call(self, *, role: Role, agent: Agent[Any, Any], prompt: str | Sequence[UserContent], deps: Any,
+                    limits: UsageLimits,
                     question_id: str | None = None, capabilities: list[Any] | None = None,
                     toolsets: list[Any] | None = None, stream: bool = False, attempt: _Attempt | None = None,
                     finish: Callable[[Any], Any] | None = None, finished: Callable[[Any], str] | None = None,
@@ -606,7 +637,8 @@ class _Run:
         def checked(result: Any) -> ResearchResult:
             messages = result.all_messages()
             outcomes = tool_outcomes(messages)
-            return check_result(result.output, labeled_texts(messages)).model_copy(update={
+            return check_result(result.output, labeled_texts(messages),
+                                observed_at=datetime.now(UTC).isoformat()).model_copy(update={
                 "searches": outcomes.searches, "pages_read": outcomes.pages_read, "unreached": outcomes.unreached,
                 "read_via": outcomes.read_via})
 
@@ -712,19 +744,28 @@ class _Run:
         return result
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:
-        prompt = json.dumps({"question": self.question, "notes": self.notes_in, "research": ledger.prompt_view(),
-                             "not_established": _not_established(plan, ledger),
-                             **({"coverage": view} if (view := _coverage_view(plan, ledger)) else {}),
-                             **({"assumptions": [item.requirement for item in plan.coverage
-                                                 if item.kind == "assumption"]}
-                                if any(item.kind == "assumption" for item in plan.coverage) else {})},
-                            ensure_ascii=False)
+        # Supporting evidence goes to Claude as citable passages, one search result per source, and the report
+        # is built from what Claude cites (citations.py); the research view keeps the checks without the text,
+        # and without the statement of a claim that has a passage, so the passages are where facts come from.
+        # The passages come first and the brief, with the question, after them, as Anthropic advises for long
+        # input.
+        passages = ledger.passages()
+        brief = json.dumps({"question": self.question, "notes": self.notes_in,
+                            "research": ledger.prompt_view(passages=False),
+                            "not_established": _not_established(plan, ledger),
+                            **({"coverage": view} if (view := _coverage_view(plan, ledger)) else {}),
+                            **({"assumptions": [item.requirement for item in plan.coverage
+                                                if item.kind == "assumption"]}
+                               if any(item.kind == "assumption" for item in plan.coverage) else {})},
+                           ensure_ascii=False)
         limits = self.limits
         try:
             async with asyncio.timeout_at(deadline):
+                # Not streamed through PydanticAI, which would drop the citations; the model streams each
+                # request itself (citations.CitingAnthropicModel).
                 return await self._call(
-                    role="synthesizer", agent=synthesizer_agent, prompt=prompt, stream=True,
-                    deps=LedgerRefs(frozenset(ledger.claim_ids()), ledger.claim_source_ids()),
+                    role="synthesizer", agent=synthesizer_agent, prompt=[*search_results(passages), brief],
+                    deps=None, finish=lambda result: self._cited_report(result, passages),
                     limits=UsageLimits(request_limit=self.settings.model_calls.synthesizer_requests,
                                        total_tokens_limit=limits.synthesis_tokens,
                                        cost_limit=Decimal(str(limits.synthesis_usd))),
@@ -732,6 +773,34 @@ class _Run:
         except _CALL_FAILURES as exc:
             self.notes.append(f"the synthesis did not finish ({_reason(exc).replace('research deadline', 'run deadline')})")
             return None
+
+    def _cited_report(self, result: Any, passages: list[SourcePassages]) -> FinalReport | None:
+        """The report from the synthesizer's one reply, which is never retried: a missing section is noted,
+        and a reply with no answer at all, or one declined partway through, leaves the run without a report."""
+        response = result.response
+        details = response.provider_details or {}
+        if response.finish_reason == "content_filter":
+            # PydanticAI raises on a refusal only when the reply is empty; one declined partway through, by
+            # the synthesizer and any fallback, returns the text written so far, which Anthropic says to discard.
+            retry = f"; Anthropic suggests {details['recommended_model']}" if details.get("recommended_model") else ""
+            self.notes.append(f"the synthesizer's model declined the synthesis partway through "
+                              f"({details.get('refusal_category') or 'no category'}), so its partial reply was "
+                              f"discarded{retry}")
+            return None
+        report = cited_report(response, passages)
+        if fallback := details.get("fallback"):
+            categories = [str((handoff.get("trigger") or {}).get("category")) for handoff in fallback["handoffs"]]
+            self.notes.append(f"the synthesizer's model declined the synthesis ({', '.join(categories) or 'no category'})"
+                              f", and {response.model_name} continued it")
+        if problems := mismatched_citations(response, passages):
+            self.notes.append(f"{len(problems)} of the synthesizer's citations did not match the passages sent and "
+                              f"were left out: {'; '.join(dict.fromkeys(problems))}")
+        if missing := missing_sections(result.output):
+            self.notes.append(f"the synthesizer's reply had no {', '.join(missing)} section")
+        if not report.answer.strip():
+            self.notes.append("the synthesis wrote no answer")
+            return None
+        return report
 
     async def _recorded(self, mode: str, input_hash: str,
                         body: Callable[[AsyncExitStack], Awaitable[tuple[Status, RunChecks]]]) -> ScoutRun:
@@ -947,11 +1016,35 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
             *, synthesized: bool = True) -> RunChecks:
     claims = ledger.claims_by_id()
     evidence = [item for claim in claims.values() for item in claim.evidence]
+    cited_passages = {passage.passage_id: passage for source in ledger.passages() for passage in source.passages
+                      if passage.passage_id}
+
+    def statement_support(statement: ReportClaim | ReportAssertion) -> Support:
+        if statement.citation_scope in ("ambiguous", "uncited"):
+            return "unsupported"
+        if statement.citation_scope == "exact":
+            linked = [cited_passages[pid] for pid in statement.passage_ids if pid in cited_passages]
+            if len(linked) != len(statement.passage_ids) or not linked:
+                return "unsupported"
+            supporting = [passage for passage in linked if passage.supports]
+            if not supporting:
+                return "unsupported"
+            if any(p.snapshot_id and p.access in ("abstract", "full_text") for p in supporting):
+                return "read"
+            if any(p.quote_check is None and p.access in ("abstract", "full_text") for p in supporting):
+                return "paraphrase"
+            return "shallow"
+        if statement.source_ids:
+            restricted = [claims[i].model_copy(update={"evidence": [
+                item for item in claims[i].evidence if ledger.source_id(item.source) in statement.source_ids]})
+                for i in statement.claim_ids if i in claims]
+            return support_level(restricted)
+        return support_level(claims[i] for i in statement.claim_ids if i in claims)
+
     checks = RunChecks(
         citation_problems=citation_problems(report, ledger) if report else [],
-        statements=[StatementCheck(statement=c.statement, claim_ids=c.claim_ids,
-                                   support=support_level(claims[i] for i in c.claim_ids if i in claims))
-                    for c in (report.claims if report else [])],
+        statements=[StatementCheck(statement=c.statement, claim_ids=c.claim_ids, support=statement_support(c))
+                    for c in ((report.assertions or report.claims) if report else [])],
         not_established=_not_established(plan, ledger),
         unreached=[item for result in ledger.all() for item in result.unreached],
         quotes=sum(item.quote_check is not None for item in evidence),
@@ -1095,7 +1188,7 @@ async def synthesize_stored(source: dict[str, Any], *, settings: Settings, store
     """Run production synthesis on an exact stored Scout ledger, without planning or retrieval.
 
     The new run points at its source and records a digest of the fixed ledger. Its synthesis call
-    uses `_Run._synthesize`, so prompts, validation, fallback, usage, and call recording match Scout.
+    uses `_Run._synthesize`, so prompts, citations, validation, usage, and call recording match Scout.
     """
     if (source.get("workflow_version") not in _SOURCE_VERSIONS
             or not source.get("plan") or not source.get("ledger")):

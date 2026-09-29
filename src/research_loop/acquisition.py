@@ -67,7 +67,10 @@ CACHE_VERSION = 1
 #     challenge, and all 11 MDPI articles scouts failed to read went to a paid reader or were lost; 3 are in
 #     Europe PMC), and tries up to three PDFs at OpenAlex's other locations after its best one.
 # 18: the open-access reader tries CORE's repository full text last, within CORE's rate limits.
-FETCH_VERSION = 18
+# 19: a search result is also blocked by a shortened blocked title (cut with "…" or ending in a site's name)
+#     and by a blocked DOI in its title or snippet: under 18, drb2-task8's blocked review reached scouts as
+#     snippets in 25 of 42 runs (study log, 29 September 2026).
+FETCH_VERSION = 19
 
 
 def is_pdf(media: str, content: bytes) -> bool:
@@ -245,7 +248,7 @@ class SourcePolicy:
         for url in urls:
             if url and (entry := self.blocks(url)):
                 return entry
-        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id)) or self.blocks_title(title)
+        return self._blocked_identifier(identity_keys(doi=doi, arxiv_id=arxiv_id)) or self.blocks_result(title, None)
 
     def blocks_document(self, text: str) -> str | None:
         """The blocked entry whose DOI or title the opening of a fetched document prints as its own, if any: a
@@ -256,15 +259,48 @@ class SourcePolicy:
 
     def blocks_title(self, text: str | None) -> str | None:
         """The blocked title that `text` contains, ignoring case, accents, punctuation, and spacing, as
-        "title: ..."; titles under four words are never matched, so a generic phrase cannot block a page."""
+        "title: ..."; titles under four words are never matched, so a generic phrase cannot block a page. A
+        title's main part, before its first colon, counts too when it is at least `_SHORTENED_WORDS` words
+        long: copies of drb2-task8's blocked review were titled without its subtitle ": A Review"."""
         if not text or not self._titles:
             return None
         normal = f" {_normal_title(text)} "
         return next((f"title: {title}" for title, key in self._titles if f" {key} " in normal), None)
 
+    def blocks_result(self, title: str | None, snippet: str | None) -> str | None:
+        """The blocked entry that a search result matches by a blocked title in its title or snippet, by a
+        blocked DOI its title or snippet prints, or by a shortened blocked title. Engines cut long titles
+        ("…") and add their site's name (" - ProQuest", " | PDF"), so the whole title of drb2-task8's blocked
+        review never appeared in the results that showed it to scouts (study log, 29 September 2026). A
+        shortened title is matched when, without its ellipsis or site name, it is at least
+        `_SHORTENED_WORDS` words long and the blocked title begins with it."""
+        text = f"{title or ''} {snippet or ''}"
+        if entry := self.blocks_title(text):
+            return entry
+        if self._identifiers and (entry := self._blocked_identifier(printed_dois(text))):
+            return entry
+        if not title or not self._titles:
+            return None
+        cut = _ELLIPSIS.sub("", title)
+        for candidate in {cut, _SITE_SUFFIX.sub("", cut)}:
+            words = _normal_title(candidate).split()
+            if len(words) >= _SHORTENED_WORDS:
+                prefix = " ".join(words)
+                if found := next((t for t, key in self._titles if f"{key} ".startswith(f"{prefix} ")), None):
+                    return f"title: {found}"
+        return None
+
     @functools.cached_property
     def _titles(self) -> tuple[tuple[str, str], ...]:
-        return tuple((title, key) for title in self.titles if len((key := _normal_title(title)).split()) >= 4)
+        """Each blocked title with the normalized forms it is matched by: the whole title, and its main part."""
+        keys = []
+        for title in self.titles:
+            if len((key := _normal_title(title)).split()) >= 4:
+                keys.append((title, key))
+            main = _normal_title(title.split(":", 1)[0])
+            if ":" in title and len(main.split()) >= _SHORTENED_WORDS:
+                keys.append((title, main))
+        return tuple(keys)
 
     @functools.cached_property
     def _identifiers(self) -> tuple[tuple[str, frozenset[str]], ...]:
@@ -282,6 +318,13 @@ class SourcePolicy:
     def check(self, url: str) -> None:
         if entry := self.blocks(url):
             raise BlockedSource(url, entry)
+
+
+# A shortened search-result title: a trailing ellipsis, and one trailing site name after " - ", " | ", or " — ".
+_ELLIPSIS = re.compile(r"\s*(?:\.\.\.|…)\s*$")
+_SITE_SUFFIX = re.compile(r"\s+[-|–—]\s+[^-|–—]{1,40}$")
+# The fewest words a shortened title needs to match a blocked title's opening.
+_SHORTENED_WORDS = 6
 
 
 def _normal_title(text: str) -> str:

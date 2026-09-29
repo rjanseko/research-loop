@@ -68,8 +68,8 @@ NARROW = (
 # budget is spent, but a parallel batch asked for just before then still runs, instead of the whole loop
 # failing on the limit. The sixth settings-study pilot's broad scout failed that way at request 17.
 TOOL_BATCH_SLACK = 12
-# Re-reads of pages whose text has left a scout's view (history.py) are free under its loop budget, but the
-# framework counts them as tool calls.
+# Re-reads of a page window the scout already read are free under its loop budget, but the framework counts
+# them as tool calls.
 REREAD_SLACK = 16
 DROPPED_NOTE = (
     NOTE_PREFIX + "Only the first {kept} of the {asked} tool calls in your last turn ran; the rest were dropped "
@@ -87,7 +87,7 @@ class ToolYield:
 
 def tool_yield(messages: list[ModelMessage]) -> ToolYield:
     """Productive calls and misses so far, and how the latest batch of returns did. Reading a page window
-    again, as a scout does to quote a page whose text has left its view (history.py), counts as neither."""
+    again, as a scout may do to quote it, counts as neither."""
     spent = ToolYield()
     read: set[tuple[Any, Any]] = set()
     for message in messages:

@@ -129,6 +129,9 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     deep_env = calls[1][1]
     assert deep_env["PYTHONPATH"] == "/tmp/tree/src" and deep_env["RESEARCH_MODELS__SCOUT"].endswith("@high")
     assert "PYTHONPATH" not in first_env
+    # The synthesizer's fallbacks are frozen as JSON, which the run reads back as the same mapping.
+    fallbacks = first_env["RESEARCH_MODELS__SYNTHESIZER_FALLBACKS"]
+    assert json.loads(fallbacks) == Settings().models.synthesizer_fallbacks
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
     assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s |  | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table
@@ -489,3 +492,29 @@ def test_a_studys_runs_count_searches_found_empty_and_failed_and_pages_read(spec
     outcomes = run_study(one, tmp_path, invoke=invoke, worktrees=_no_worktrees, dsn="postgresql://unused",
                          calls=lambda dsn, run_id: stored)
     assert "| 300 s | 1 / 1 / 1 · 1 / 1 |" in summary(one, outcomes)
+
+
+def test_an_interrupted_study_stops_its_run_with_sigterm_not_sigkill(tmp_path, monkeypatch) -> None:
+    # subprocess.run killed a stopped study's rescout with SIGKILL, so the rescout never recorded itself as
+    # cancelled and its run stayed "running" (audit, 28 September 2026).
+    import subprocess
+    import sys
+
+    from research_loop.study import run_child
+
+    marker = tmp_path / "got-sigterm"
+    child = ("import signal, sys, time\n"
+             f"signal.signal(signal.SIGTERM, lambda *_: (open({str(marker)!r}, 'w').close(), sys.exit(130)))\n"
+             "print('ready', flush=True)\ntime.sleep(30)\n")
+    real = subprocess.Popen.communicate
+
+    def interrupted(self, *args, **kwargs):
+        if not kwargs.get("timeout"):
+            self.stdout.readline()  # the child's handler is installed
+            raise KeyboardInterrupt
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_child([sys.executable, "-c", child], {}, capture_stdout=True)
+    assert marker.exists()

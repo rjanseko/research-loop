@@ -5,15 +5,14 @@ snippet, scholarly metadata, an abstract, or full text. After each research call
 result against those labeled texts, and the model cannot set the outcome:
 
 - A quote is `verified` when each of its segments, split at '...' and bracketed insertions, appears
-  in one labeled text of the source it cites, comparing only letters and digits after NFKC
-  normalization and case folding. PDF extraction spacing, list bullets, and comment signs therefore
-  never decide the check. It is `misattributed` when it appears only in another source's text, and
+  in one labeled text of the source it cites, comparing normalized text while preserving numeric signs, decimals, commas, and percentages.
+  PDF extraction spacing and line breaks do not decide the check. It is `misattributed` when it appears only in another source's text, and
   `quote_found_in` then names that source; `not_found` when it appears nowhere. `quote_access` is the
   most complete kind of text it was found in. A quote matched anywhere used to count as verified,
   which let a quote from one page vouch for another.
 - A cited source is `observed` when a tool returned it as an item (a search result, a scholarly
-  record, or a fetched page), matched by URL (ignoring scheme, `www.`, query, fragment, and a trailing
-  slash), DOI, or arXiv ID. `source_access` is the most any tool returned of it. A source that only
+  record, or a fetched page), matched by URL (ignoring scheme, `www.`, fragment, and a trailing
+  slash, but preserving the query), DOI, or arXiv ID. `source_access` is the most any tool returned of it. A source that only
   appeared as a link inside another page is `not_found`: the research never read it.
 
 The ledger collects results in plan order and gives every claim a unique ID such as `q2/c3`, which
@@ -42,12 +41,13 @@ from .schemas import (
     ResearchPlan,
     ResearchResult,
     SourceRef,
+    SourceSnapshot,
 )
 
 # ---------------------------------------------------------------------------------------------
 # Labeled tool output and the checks against it
 
-# Only letters and digits are compared. NFKC folds ligatures and the ellipsis character.
+# NFKC folds ligatures and ellipses; numeric punctuation retains meaning.
 _NON_WORD = re.compile(r"[\W_]+")
 _GAP = re.compile(r"\.\.\.|\[[^\]]*\]")
 _ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
@@ -62,17 +62,66 @@ _OWN_DOI_CHARS = 3000
 _NATURE_ARTICLE = re.compile(r"^nature\.com/articles/([a-z0-9.-]+)$")
 
 
+def _normalized(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """A comparison key and offsets into original text. Numeric signs, decimals, and units survive.
+
+    Letters can bridge PDF line breaks and hyphenation, but `1.2`, `12`, `-5`, `+5`, and `5%`
+    remain distinct. Offsets let a verified quote point back into the exact returned tool text.
+    """
+    chars: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    for index, raw in enumerate(text):
+        char = "-" if raw == "−" else raw
+        folded = unicodedata.normalize("NFKC", char).casefold()
+        before = text[index - 1] if index else ""
+        after = text[index + 1] if index + 1 < len(text) else ""
+        for part in folded:
+            keep = part.isalnum()
+            if part in ".," and before.isdigit() and after.isdigit() or part in "+-" and after.isdigit() and not before.isalnum() or part == "%" and before.isdigit():
+                keep = True
+            if keep:
+                chars.append(part)
+                offsets.append((index, index + 1))
+    return "".join(chars), offsets
+
+
 def _key(text: str) -> str:
-    return _NON_WORD.sub("", unicodedata.normalize("NFKC", text).casefold())
+    return _normalized(text)[0]
 
 
 def _segments(quote: str) -> list[str]:
     return [segment for segment in map(_key, _GAP.split(unicodedata.normalize("NFKC", quote))) if segment]
 
 
+def _match_segments(segments: list[str], haystack: str,
+                    offsets: list[tuple[int, int]]) -> list[tuple[int, int]] | None:
+    """Find quote pieces in their quoted order, returning spans in the original tool text."""
+    position = 0
+    spans: list[tuple[int, int]] = []
+    for segment in segments:
+        while True:
+            found = haystack.find(segment, position)
+            if found < 0:
+                return None
+            after = found + len(segment)
+            number_before = (segment[0].isdigit() and found > 0
+                             and haystack[found - 1] in "0123456789.,+-")
+            number_after = (segment[-1].isdigit() and after < len(haystack)
+                            and (haystack[after] in "0123456789.,%"
+                                 or haystack[after].isalpha() and offsets[after - 1][1] == offsets[after][0]))
+            if not number_before and not number_after:
+                break
+            position = found + 1
+        spans.append((offsets[found][0], offsets[after - 1][1]))
+        position = after
+    return spans
+
+
 def _url_key(url: str) -> str:
     parsed = urlparse(url.strip().rstrip(".,;:)]"))
-    return (parsed.hostname or "").removeprefix("www.") + unquote(parsed.path).rstrip("/")
+    # A query can select a different record or version. Only fragments are view-local.
+    path = unquote(parsed.path).rstrip("/")
+    return (parsed.hostname or "").removeprefix("www.") + path + (f"?{parsed.query}" if parsed.query else "")
 
 
 def identity_keys(*, url: str | None = None, doi: str | None = None, arxiv_id: str | None = None) -> frozenset[str]:
@@ -91,14 +140,15 @@ def identity_keys(*, url: str | None = None, doi: str | None = None, arxiv_id: s
             # (a property test found "https://docs.example/./." keyed differently in its Wayback copy).
             keys |= identity_keys(url=archived.group(1) if "://" in archived.group(1)
                                   else "https://" + archived.group(1))
-        if location.startswith("doi.org/"):
-            doi = doi or location.removeprefix("doi.org/")
-        elif in_path := _DOI.search(location):
+        path_only = location.split("?", 1)[0]
+        if path_only.startswith("doi.org/"):
+            doi = doi or path_only.removeprefix("doi.org/")
+        elif in_path := _DOI.search(path_only):
             # Publishers that put the DOI in the path, such as Springer, APS, ACM, and Wiley.
             keys |= identity_keys(doi=in_path.group(0))
-        elif nature := _NATURE_ARTICLE.match(location.lower()):
+        elif nature := _NATURE_ARTICLE.match(path_only.lower()):
             keys |= identity_keys(doi=f"10.1038/{nature.group(1)}")
-        if location.startswith(_ARXIV_HOSTS) and (match := _ARXIV_ID.search(location)):
+        if path_only.startswith(_ARXIV_HOSTS) and (match := _ARXIV_ID.search(path_only)):
             keys.add(f"arxiv:{match.group(0)}")
     if doi:
         keys.add("doi:" + doi.strip().lower().removeprefix("https://doi.org/").removeprefix("doi:"))
@@ -125,11 +175,24 @@ def source_identity(source: SourceRef) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class ToolText:
-    """One source as a research tool returned it: how much of it, its identity, and its text."""
+    """One source as a research tool returned it, with a stable reference into that tool return."""
 
     access: Access
     keys: frozenset[str]
     text: str
+    tool_call_id: str | None = None
+    locator: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def snapshot(self, observed_at: str | None = None, *, include_text: bool = True) -> SourceSnapshot:
+        digest = hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+        identity = json.dumps([self.tool_call_id, self.locator, self.access, sorted(self.keys), digest,
+                               self.metadata], sort_keys=True, default=str)
+        return SourceSnapshot(id=hashlib.sha256(identity.encode()).hexdigest(), access=self.access,
+                              keys=sorted(self.keys), text=self.text if include_text else None,
+                              length=len(self.text), sha256=digest,
+                              tool_call_id=self.tool_call_id, locator=self.locator,
+                              metadata=self.metadata, observed_at=observed_at)
 
 
 def _more(a: Access | None, b: Access) -> Access:
@@ -141,26 +204,31 @@ class ToolOutputIndex:
 
     def __init__(self, texts: Iterable[ToolText]) -> None:
         self.texts = list(texts)
-        self._haystacks = [(item.access, _key(item.text)) for item in self.texts]
+        self._haystacks = [_normalized(item.text) for item in self.texts]
 
-    def find_quote(self, quote: str | None, keys: frozenset[str] | None = None) -> tuple[Access | None, ToolText | None]:
-        """The most complete kind of text containing `quote`, and that text; searched only among texts of
-        the source identified by `keys` when given. (None, None) when none does or the quote has no words."""
+    def find_passage(self, quote: str | None, keys: frozenset[str] | None = None) -> tuple[
+            Access | None, ToolText | None, list[tuple[int, int]]]:
+        """Locate every quote segment in order within one source snapshot."""
         segments = _segments(quote) if quote else []
         found: Access | None = None
         where: ToolText | None = None
+        spans: list[tuple[int, int]] = []
         if not segments:
-            return None, None
-        for item, (access, haystack) in zip(self.texts, self._haystacks, strict=True):
+            return None, None, []
+        for item, (haystack, offsets) in zip(self.texts, self._haystacks, strict=True):
             if keys is not None and not keys & item.keys:
                 continue
-            if all(segment in haystack for segment in segments) and _more(found, access) != found:
-                found, where = access, item
-        return found, where
+            match = _match_segments(segments, haystack, offsets)
+            if match is not None and _more(found, item.access) != found:
+                found, where, spans = item.access, item, match
+        return found, where, spans
+
+    def find_quote(self, quote: str | None, keys: frozenset[str] | None = None) -> tuple[Access | None, ToolText | None]:
+        access, where, _ = self.find_passage(quote, keys)
+        return access, where
 
     def quote_access(self, quote: str | None) -> Access | None:
-        """The most complete kind of text containing `quote`, from any source."""
-        return self.find_quote(quote)[0]
+        return self.find_passage(quote)[0]
 
     def source_access(self, source: SourceRef) -> Access | None:
         """The most any tool returned of `source`; None when no tool returned it."""
@@ -182,8 +250,8 @@ def _location(text: ToolText) -> str:
 
 def check_evidence(item: Evidence, index: ToolOutputIndex) -> Evidence:
     has_quote = bool(item.quote and _segments(item.quote))
-    in_source, _ = index.find_quote(item.quote, source_identity(item.source))
-    anywhere, where = (None, None) if in_source else index.find_quote(item.quote)
+    in_source, matched, spans = index.find_passage(item.quote, source_identity(item.source))
+    anywhere, where, _ = (None, None, []) if in_source else index.find_passage(item.quote)
     if not has_quote:
         quote_check = None
     else:
@@ -195,15 +263,24 @@ def check_evidence(item: Evidence, index: ToolOutputIndex) -> Evidence:
         "quote_found_in": _location(where) if where is not None and not in_source else None,
         "source_check": "observed" if source_access else "not_found",
         "source_access": source_access,
+        "snapshot_id": matched.snapshot().id if matched is not None else None,
+        "source_spans": spans if matched is not None else [],
     })
 
 
-def check_result(result: ResearchResult, texts: Iterable[ToolText]) -> ResearchResult:
+def check_result(result: ResearchResult, texts: Iterable[ToolText], *,
+                 observed_at: str | None = None) -> ResearchResult:
     """`result` with every evidence item's checks set from `texts`, the labeled output its call's tools returned."""
-    index = ToolOutputIndex(texts)
+    observed = list(texts)
+    index = ToolOutputIndex(observed)
     claims = [claim.model_copy(update={"evidence": [check_evidence(item, index) for item in claim.evidence]})
               for claim in result.claims]
-    return result.model_copy(update={"claims": claims})
+    linked = {item.snapshot_id for claim in claims for item in claim.evidence if item.snapshot_id}
+    snapshots = {}
+    for item in observed:
+        snapshot = item.snapshot(observed_at)
+        snapshots[snapshot.id] = snapshot if snapshot.id in linked else snapshot.model_copy(update={"text": None})
+    return result.model_copy(update={"claims": claims, "snapshots": list(snapshots.values())})
 
 
 # How well a report statement's evidence was read (evidence v7 split `paraphrase` from `read`).
@@ -214,7 +291,8 @@ _SHORT_QUOTE_SHARE = 0.25
 
 def evidence_is_read(item: Evidence) -> bool:
     """Supporting evidence from a source read as an abstract or in full, whose quote, if any, was found."""
-    return (item.supports and item.source_access in ("abstract", "full_text")
+    access = (item.quote_access or item.source_access) if item.quote_check == "verified" else item.source_access
+    return (item.supports and access in ("abstract", "full_text")
             and item.quote_check not in ("not_found", "misattributed"))
 
 
@@ -250,7 +328,7 @@ def quote_is_short(item: Evidence, claim: Claim) -> bool:
 # The ledger
 
 # Research bookkeeping that prompts for synthesis leave out.
-_BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached", "read_via")
+_BOOKKEEPING_FIELDS = ("searches", "pages_read", "unreached", "read_via", "snapshots")
 # Left out of prompts though stored: scouts rated a result 0.93 to 0.97 while writing that it was partial,
 # so the number misleads the gap analysis and synthesis; cut-offs and `unresolved` say more.
 _UNINFORMATIVE_FIELDS = ("confidence",)
@@ -307,33 +385,55 @@ class EvidenceLedger:
     def question_ids_with_claims(self) -> set[str]:
         return {question_id for question_id, results in self.results.items() if any(r.claims for r in results)}
 
+    def _legacy_source_keys(self) -> bool:
+        """Old ledgers had no snapshots and numbered the entire model-written source record."""
+        return not any(result.snapshots for result in self.all())
+
     def _source_numbering(self) -> dict[str, str]:
         """Every source's ID for the ledger's current contents: s1, s2, ... in question order."""
         numbering: dict[str, str] = {}
+        legacy = self._legacy_source_keys()
         for claim in self.claims():
             for item in claim.evidence:
-                numbering.setdefault(_source_key(item.source), f"s{len(numbering) + 1}")
+                numbering.setdefault(_source_key(item.source, legacy=legacy), f"s{len(numbering) + 1}")
         return numbering
 
     def source_id(self, source: SourceRef) -> str:
-        return self._source_numbering()[_source_key(source)]
+        return self._source_numbering()[_source_key(source, legacy=self._legacy_source_keys())]
 
     def source_table(self) -> list[dict[str, Any]]:
-        """Every source with its ID and the most any tool returned of it, in ID order."""
+        """Source identities and access, using tool-returned metadata when snapshots exist."""
         numbering = self._source_numbering()
+        legacy = self._legacy_source_keys()
         rows: dict[str, dict[str, Any]] = {}
+        snapshots = [snapshot for result in self.all() for snapshot in result.snapshots]
         for claim in self.claims():
             for item in claim.evidence:
-                source_id = numbering[_source_key(item.source)]
+                source_id = numbering[_source_key(item.source, legacy=legacy)]
                 row = rows.setdefault(source_id, {"id": source_id, **_omit_empty(item.source.model_dump(mode="json"))})
                 if item.source_access:
                     row["access"] = _more(row.get("access"), item.source_access)
+                if snapshots:
+                    matched = [snapshot for snapshot in snapshots if source_identity(item.source) & set(snapshot.keys)]
+                    observed: dict[str, Any] = {}
+                    for snapshot in sorted(matched, key=lambda snap: ACCESS_ORDER.index(snap.access), reverse=True):
+                        for key, value in snapshot.metadata.items():
+                            if key in {"title", "url", "doi", "arxiv_id", "publisher", "published_at",
+                                       "publication_status", "is_retracted"} and value not in (None, "", "unknown"):
+                                observed.setdefault(key, value)
+                    # These classifications are not reliable when only the scout supplied them.
+                    for key in ("publisher", "published_at", "source_type", "publication_status", "is_retracted"):
+                        row.pop(key, None)
+                    row.update(observed)
+                    row["metadata_origin"] = "tool" if observed else "scout_unverified"
         return sorted(rows.values(), key=lambda row: int(row["id"][1:]))
 
     def claim_source_ids(self) -> dict[str, frozenset[str]]:
         """The source IDs of each claim's supporting evidence; contradicting evidence is left out."""
         numbering = self._source_numbering()
-        return {claim.id: frozenset(numbering[_source_key(item.source)] for item in claim.evidence if item.supports)
+        legacy = self._legacy_source_keys()
+        return {claim.id: frozenset(numbering[_source_key(item.source, legacy=legacy)]
+                                    for item in claim.evidence if item.supports)
                 for claim in self.claims()}
 
     def to_json(self) -> dict[str, list[dict[str, Any]]]:
@@ -346,18 +446,62 @@ class EvidenceLedger:
         return cls(results={question_id: [ResearchResult.model_validate(item) for item in results]
                             for question_id, results in data.items()})
 
-    def prompt_view(self) -> dict[str, Any]:
+    def prompt_view(self, *, passages: bool = True) -> dict[str, Any]:
         """The ledger compacted for the synthesizer's prompt; `to_json` is unchanged.
 
         Sources are listed once, under `sources`, and evidence cites them by `source_id`. Null and
         empty values are left out, as is `supports` when the evidence supports its claim. A quote
         replaces the excerpt unless it was not found, and excerpts are cut at 300 characters. The
         checks code set (quote_check, quote_access, source_check, source_access) stay, so the
-        synthesizer can tell evidence it read from evidence it only glimpsed.
+        synthesizer can tell evidence it read from evidence it only glimpsed. Without `passages`, the
+        text of supporting evidence is left out, because the synthesizer receives it as citable
+        passages instead (`passages()`), and so is the statement of a claim that has such a passage.
         """
         numbering = self._source_numbering()
+        legacy = self._legacy_source_keys()
         return {"sources": self.source_table(),
-                "research": [_project_result(result, numbering) for result in self.all()]}
+                "research": [_project_result(result, numbering, texts=passages, legacy=legacy) for result in self.all()]}
+
+    def passages(self) -> list[SourcePassages]:
+        """Citable blocks tied to their exact checked tool-text spans when available.
+
+        Older ledgers lack snapshots and retain their legacy quote/summary blocks. A contradicting
+        source is also citable, with its stance made explicit; citing it is not an endorsement.
+        """
+        numbering = self._source_numbering()
+        legacy = self._legacy_source_keys()
+        snapshots = {snapshot.id: snapshot for result in self.all() for snapshot in result.snapshots}
+        titles: dict[str, str] = {}
+        by_source: dict[str, list[Passage]] = {}
+        for claim in self.claims():
+            for item in claim.evidence:
+                if not (text := _evidence_text(item)):
+                    continue
+                source_id = numbering[_source_key(item.source, legacy=legacy)]
+                snapshot = snapshots.get(item.snapshot_id) if item.snapshot_id else None
+                source_text = None
+                if (snapshot is not None and snapshot.text is not None and item.quote_check == "verified"
+                        and item.source_spans
+                        and source_identity(item.source) & set(snapshot.keys)
+                        and hashlib.sha256(snapshot.text.encode("utf-8")).hexdigest() == snapshot.sha256
+                        and all(0 <= start < end <= len(snapshot.text) for start, end in item.source_spans)
+                        and _segments(item.quote or "") ==
+                        [_key(snapshot.text[start:end]) for start, end in item.source_spans]):
+                    source_text = " ... ".join(snapshot.text[start:end] for start, end in item.source_spans)
+                    text = source_text
+                else:
+                    snapshot = None
+                identity = json.dumps([claim.id, source_id, item.snapshot_id if snapshot else None,
+                                       item.source_spans if snapshot else [], text, item.supports])
+                passage_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
+                titles.setdefault(source_id, item.source.title or source_id)
+                by_source.setdefault(source_id, []).append(Passage(
+                    claim.id, f"({_passage_label(claim.id, item)}) {text}", passage_id=passage_id,
+                    snapshot_id=snapshot.id if snapshot else None, source_text=source_text,
+                    access=item.quote_access if snapshot else item.source_access,
+                    quote_check=item.quote_check, supports=item.supports, source_ref=item.source))
+        return [SourcePassages(source_id, titles[source_id], tuple(items))
+                for source_id, items in sorted(by_source.items(), key=lambda pair: int(pair[0][1:]))]
 
 
 def _natural_key(text: str) -> list[Any]:
@@ -376,27 +520,100 @@ def _omit_empty(value: Any) -> Any:
     return value
 
 
-def _source_key(source: SourceRef) -> str:
-    return json.dumps(_omit_empty(source.model_dump(mode="json")), sort_keys=True)
+def _source_key(source: SourceRef, *, legacy: bool = False) -> str:
+    """Identify a work by its address/identifier; preserve stored-run numbering for old ledgers."""
+    if legacy:
+        return json.dumps(_omit_empty(source.model_dump(mode="json")), sort_keys=True)
+    keys = source_identity(source)
+    for prefix in ("doi:", "arxiv:", "url:"):
+        if matching := sorted(key for key in keys if key.startswith(prefix)):
+            return matching[0]
+    raise ValueError("a source has no address or work identifier")
 
 
-def _project_evidence(item: Evidence, numbering: dict[str, str]) -> dict[str, Any]:
-    body = _omit_empty(item.model_dump(mode="json", exclude={"source"}))
-    if body.get("quote") and body.get("quote_check") not in ("not_found", "misattributed"):
+def _quote_holds(item: Evidence) -> bool:
+    return bool(item.quote) and item.quote_check not in ("not_found", "misattributed")
+
+
+def _cut(excerpt: str) -> str:
+    return excerpt if len(excerpt) <= _EXCERPT_CHARS else excerpt[: _EXCERPT_CHARS - 3].rstrip() + "..."
+
+
+def _evidence_text(item: Evidence) -> str:
+    """What the synthesizer may cite of one piece of evidence: its quote, or else the scout's excerpt."""
+    return (item.quote if _quote_holds(item) else _cut(item.excerpt)).strip()  # type: ignore[union-attr]
+
+
+# How a passage the synthesizer may cite opens: its claim, the most a tool returned of the text it rests on, and
+# its check. The synthesizer sees these, so the prompt fingerprint covers them (prompts.PASSAGE_LABELS).
+PASSAGE_LABEL = "{claim_id}; {access}; {check}; {stance}"
+PASSAGE_QUOTE = "quote {check}"
+PASSAGE_SUMMARY = "the researcher's summary; its quote was {check}"
+PASSAGE_NO_QUOTE = "the researcher's summary; no quote"
+
+
+def _passage_label(claim_id: str, item: Evidence) -> str:
+    access = item.quote_access if _quote_holds(item) and item.quote_access else item.source_access or "unchecked"
+    if _quote_holds(item):
+        check = PASSAGE_QUOTE.format(check=item.quote_check or "unchecked")
+    elif item.quote:
+        check = PASSAGE_SUMMARY.format(check=(item.quote_check or "unchecked").replace("_", " "))
+    else:
+        check = PASSAGE_NO_QUOTE
+    return PASSAGE_LABEL.format(claim_id=claim_id, access=access, check=check,
+                                stance="supports" if item.supports else "contradicts")
+
+
+@dataclass(frozen=True)
+class Passage:
+    """One evidence item as a citable block, and the claim it supports or contradicts."""
+
+    claim_id: str
+    text: str
+    passage_id: str | None = None
+    snapshot_id: str | None = None
+    source_text: str | None = None
+    access: Access | None = None
+    quote_check: str | None = None
+    supports: bool = True
+    source_ref: SourceRef | None = None
+
+
+@dataclass(frozen=True)
+class SourcePassages:
+    """One source's evidence, which the synthesizer receives as one search result (citations.py)."""
+
+    source_id: str
+    title: str
+    passages: tuple[Passage, ...]
+
+
+def _project_evidence(item: Evidence, numbering: dict[str, str], *, text: bool = True,
+                      legacy: bool = False) -> dict[str, Any]:
+    body = _omit_empty(item.model_dump(mode="json", exclude={"source", "snapshot_id", "source_spans"}))
+    if not text and _evidence_text(item):
+        body.pop("quote", None)
+        body.pop("excerpt", None)
+    elif _quote_holds(item):
         body.pop("excerpt", None)
     elif excerpt := body.get("excerpt"):
-        body["excerpt"] = excerpt if len(excerpt) <= _EXCERPT_CHARS else excerpt[: _EXCERPT_CHARS - 3].rstrip() + "..."
+        body["excerpt"] = _cut(excerpt)
     if body.get("supports") is True:
         body.pop("supports")
-    return {"source_id": numbering[_source_key(item.source)], **body}
+    return {"source_id": numbering[_source_key(item.source, legacy=legacy)], **body}
 
 
-def _project_result(result: ResearchResult, numbering: dict[str, str]) -> dict[str, Any]:
+def _project_result(result: ResearchResult, numbering: dict[str, str], *, texts: bool = True,
+                    legacy: bool = False) -> dict[str, Any]:
+    """One result for a prompt. Without `texts`, the synthesizer's view, a claim that has a citable passage
+    (`EvidenceLedger.passages`) also leaves out its statement: the passage says it, and a sentence written
+    from the statement would be uncited."""
     claims = []
     for claim in result.claims:
-        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence"}))
+        cited = not texts and any(item.supports and _evidence_text(item) for item in claim.evidence)
+        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence", *(("statement",) if cited else ())}))
         if claim.evidence:
-            body["evidence"] = [_project_evidence(item, numbering) for item in claim.evidence]
+            body["evidence"] = [_project_evidence(item, numbering, text=texts, legacy=legacy) for item in claim.evidence]
         claims.append(body)
     rest = _omit_empty(result.model_dump(mode="json", exclude={"claims", *_BOOKKEEPING_FIELDS, *_UNINFORMATIVE_FIELDS}))
     projected = {key: rest.pop(key) for key in ("question_id", "question", "conclusion") if key in rest}
@@ -489,19 +706,28 @@ def coverage_states(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalRep
     return states
 
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# A line that is only bold text, as a report uses for a heading inside a list.
+_BOLD_HEADING = re.compile(r"\*\*[^*]+\*\*:?")
+
+
+def _is_table_rule(line: str) -> bool:
+    return bool(line) and set(line) <= set("|-: ")
 
 
 def uncited_sentences(answer: str) -> tuple[int, int]:
-    """The answer's sentences, and those with no inline [sN] citation. Headings, table rules, and lines
-    of fewer than six words are left out, since they state no finding; a citation that closes a sentence
-    after its full stop counts for it."""
+    """The answer's sentences, and those with no inline [sN] citation. Headings, bold heading lines, a
+    table's header row and rules, and lines of fewer than six words are left out, since they state no
+    finding; a table's other rows count. A citation that closes a sentence after its full stop counts for it."""
+    lines = [line.strip() for line in answer.splitlines()]
     sentences: list[str] = []
-    for line in answer.splitlines():
-        line = line.strip().lstrip("-*+> ").strip()
-        if not line or line.startswith("#") or set(line) <= set("|-: "):
+    for index, raw in enumerate(lines):
+        line = raw.lstrip("-*+> ").strip()
+        following = next((later for later in lines[index + 1:] if later), "")
+        if (not line or line.startswith("#") or _is_table_rule(line) or _BOLD_HEADING.fullmatch(raw.lstrip("-+> "))
+                or (raw.startswith("|") and _is_table_rule(following))):
             continue
-        sentences += _SENTENCE_END.split(line)
+        sentences += SENTENCE_END.split(line)
     counted = [s for s in sentences if len(strip_inline_citations(s).split()) >= 6]
     return len(counted), sum(not inline_source_ids(s) for s in counted)
 
@@ -513,8 +739,26 @@ def citation_problems(report: FinalReport, ledger: EvidenceLedger) -> list[str]:
     known = ledger.claim_ids()
     if unknown := sorted(set(report.claim_ids_used) - known):
         problems.append(f"unknown claim IDs: {', '.join(unknown)}")
-    behind = {source_id for claim_id in report.claim_ids_used if claim_id in known
-              for source_id in ledger.claim_source_ids()[claim_id]}
+    by_passage = {passage.passage_id: (source.source_id, passage)
+                  for source in ledger.passages() for passage in source.passages if passage.passage_id}
+    for number, statement in enumerate(report.assertions or report.claims, 1):
+        if statement.citation_scope == "uncited":
+            continue
+        if statement.citation_scope == "ambiguous":
+            problems.append(f"statement {number} has a citation spanning multiple sentences")
+        if statement.citation_scope != "legacy":
+            for passage_id in statement.passage_ids:
+                match = by_passage.get(passage_id)
+                if match is None or match[0] not in statement.source_ids or match[1].claim_id not in statement.claim_ids:
+                    problems.append(f"statement {number} has an unresolved cited passage {passage_id}")
+            if not statement.passage_ids:
+                problems.append(f"statement {number} has no cited passage ID")
+    units = report.assertions or report.claims
+    behind = {source_id for statement in units if statement.citation_scope not in ("legacy", "uncited")
+              for source_id in statement.source_ids}
+    behind |= {source_id for statement in units if statement.citation_scope == "legacy"
+               for claim_id in statement.claim_ids if claim_id in known
+               for source_id in ledger.claim_source_ids()[claim_id]}
     cited = {source_id for text in report.cited_texts for source_id in inline_source_ids(text)}
     if stray := sorted(cited - behind, key=lambda source_id: int(source_id[1:])):
         problems.append(f"inline citations with no listed claim behind them: {', '.join(stray)}")

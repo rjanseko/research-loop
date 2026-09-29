@@ -35,7 +35,9 @@ from .study_budget import BUDGET_POLICY_VERSION, StudyBudget, StudyBudgetModel
 # Recorded with every audit; bump when the instructions, the verdict schema, or what is sent changes.
 # 2: each quoted source's record as the tools returned it; v1 sent only a model-written title, so author
 # names, dates, and addresses a report took from a source's record counted as unsupported.
-AUDIT_VERSION = 2
+# 3: audit new reports against only their exact cited passage; include summary, answer, and caveat
+# assertions, and mark ambiguous citations without sending unlinked quotes to the judge.
+AUDIT_VERSION = 3
 AUDIT_INSTRUCTIONS = """\
 You check a research report against its evidence. For each statement you get the verified quotes
 behind it: words copied exactly from the sources, which code has confirmed appear in the cited source.
@@ -57,6 +59,7 @@ verdict for every statement ID, and no others.
 Verdict = Literal["supported", "partial", "unsupported"]
 # Not a judgment: code found no verified quote behind the statement, so it was not sent.
 NO_QUOTE = "no_quote"
+AMBIGUOUS = "ambiguous_citation"
 
 
 class StatementVerdict(BaseModel):
@@ -70,22 +73,40 @@ class AuditOutput(BaseModel):
 
 
 def audit_items(report: FinalReport, ledger: EvidenceLedger) -> list[dict[str, Any]]:
-    """Each report statement with the verified quotes of the supporting evidence behind its claims, IDs a1,
-    a2, ...; each quote names its source by ledger ID, and `source_ref` keeps the source for `source_view`."""
+    """Report claims with only the exact displayed passages for new provenance-aware reports.
+
+    Stored legacy reports keep their historical evidence lookup. A citation covering multiple
+    sentences is ambiguous and is never silently audited against the union of a claim's sources.
+    """
     claims = ledger.claims_by_id()
+    passages = {passage.passage_id: (source.source_id, passage)
+                for source in ledger.passages() for passage in source.passages if passage.passage_id}
     items = []
-    for number, statement in enumerate(report.claims, 1):
+    for number, statement in enumerate(report.assertions or report.claims, 1):
         quotes: list[dict[str, Any]] = []
-        for claim_id in statement.claim_ids:
-            claim = claims.get(claim_id)
-            for item in claim.evidence if claim else []:
-                entry = {"claim": claim_id, "source": ledger.source_id(item.source), "quote": item.quote or "",
-                         "source_ref": item.source}
-                if (item.supports and item.quote_check == "verified" and item.quote
-                        and not any((q["source"], q["quote"]) == (entry["source"], entry["quote"]) for q in quotes)):
-                    quotes.append(entry)
+        if statement.citation_scope == "exact":
+            for passage_id in statement.passage_ids:
+                resolved = passages.get(passage_id)
+                if resolved is None:
+                    continue
+                source_id, passage = resolved
+                if (source_id in statement.source_ids and passage.source_text and passage.source_ref
+                        and not any(q["source"] == source_id and q["quote"] == passage.source_text for q in quotes)):
+                    quotes.append({"claim": passage.claim_id, "source": source_id,
+                                   "quote": passage.source_text, "source_ref": passage.source_ref})
+        elif statement.citation_scope == "legacy":
+            for claim_id in statement.claim_ids:
+                claim = claims.get(claim_id)
+                for item in claim.evidence if claim else []:
+                    entry = {"claim": claim_id, "source": ledger.source_id(item.source), "quote": item.quote or "",
+                             "source_ref": item.source}
+                    if (item.supports and item.quote_check == "verified" and item.quote
+                            and (not statement.source_ids or entry["source"] in statement.source_ids)
+                            and not any((q["source"], q["quote"]) == (entry["source"], entry["quote"])
+                                        for q in quotes)):
+                        quotes.append(entry)
         items.append({"id": f"a{number}", "statement": statement.statement, "claim_ids": list(statement.claim_ids),
-                      "quotes": quotes})
+                      "scope": statement.citation_scope, "quotes": quotes})
     return items
 
 
@@ -177,8 +198,11 @@ async def audit(report: FinalReport, ledger: EvidenceLedger, question: str, run_
     record.reserved_usd = budget.reserved_usd if budget else None
     record.verdicts = [
         {"id": item["id"], "statement": item["statement"], "claim_ids": item["claim_ids"], "quotes": len(item["quotes"]),
-         "verdict": verdicts[item["id"]].verdict if item["id"] in verdicts else NO_QUOTE,
-         "reason": verdicts[item["id"]].reason if item["id"] in verdicts else "no verified quote behind this statement"}
+         "verdict": verdicts[item["id"]].verdict if item["id"] in verdicts else
+                    AMBIGUOUS if item["scope"] == "ambiguous" else NO_QUOTE,
+         "reason": verdicts[item["id"]].reason if item["id"] in verdicts else
+                   "citation covers multiple sentences" if item["scope"] == "ambiguous" else
+                   "no exact verified cited passage behind this statement"}
         for item in items]
     return record
 

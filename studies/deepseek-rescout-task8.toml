@@ -35,14 +35,14 @@ diagnose_cap_usd = 0.75
 [[arms]]
 name = "luna"
 args = ["--model", "openai:gpt-6-luna@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-flash"
 args = ["--model", "deepseek:deepseek-flash@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
 
 [[arms]]
 name = "deepseek-v4-pro"
 args = ["--model", "deepseek:deepseek-v4-pro@xhigh"]
-env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_TRIM_HISTORY = "false", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }
+env = { RESEARCH_SEARCH_ENGINE = "duckduckgo", RESEARCH_MODELS__SCOUT_ALT = "", RESEARCH_ENABLED_PROVIDERS = "openai,anthropic,zai,deepseek" }

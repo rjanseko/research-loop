@@ -48,7 +48,6 @@ def _found(quote: str, *texts: str) -> bool:
     "“Each instance pairs a GitHub issue”",                         # curly quotation marks
     "SWE-bench contains 2,294 task instances … 12 popular Python repositories",  # ellipsis
     "Each instance pairs [an] issue ... the pull request",          # editorial insertion
-    "the pull request that resolved it ... SWE-bench contains",     # segments in either order
 ])
 def test_quotes_survive_formatting_differences(quote: str) -> None:
     assert _found(quote, PAGE)
@@ -82,8 +81,21 @@ def test_altered_or_empty_quotes_are_not_found(quote: str) -> None:
     assert not _found(quote, PAGE)
 
 
-def test_segments_must_come_from_one_text() -> None:
+def test_segments_must_come_from_one_text_and_stay_in_order() -> None:
     assert not _found("task instances ... benchmark leaderboard", PAGE, "benchmark leaderboard")
+    assert not _found("the pull request that resolved it ... SWE-bench contains", PAGE)
+
+
+@pytest.mark.parametrize(("returned", "invented"), [
+    ("The rate was 1.2 percent.", "The rate was 12 percent."),
+    ("The change was -5 units.", "The change was +5 units."),
+    ("The change was +5 units.", "The change was -5 units."),
+    ("The share was 5%.", "The share was 5."),
+    ("The mass was 5kg.", "The mass was 5."),
+])
+def test_numeric_punctuation_and_signs_survive_quote_matching(returned: str, invented: str) -> None:
+    assert _found(returned, returned)
+    assert not _found(invented, returned)
 
 
 def test_a_quote_records_the_most_complete_text_it_was_found_in() -> None:
@@ -343,6 +355,12 @@ def test_uncited_sentences_count_findings_without_a_citation() -> None:
               "- Annotators screened each sample for underspecified problems [s3].")
     # The table row states a finding with no citation; headings, rules, and short lines are left out.
     assert uncited_sentences(answer) == (4, 1)
+    # A table's header row and a bold heading line state no finding, however many words they have (run 6e811f5f).
+    headed = ("**Scoring errors (peer-reviewed; UTBoost, ACL 2025)**\n"
+              "| Threat to the benchmark | Finding in the study | Publication status |\n|---|---|---|\n"
+              "| Contamination | Scores fall on tasks created after training [s4] | preprint |\n"
+              "- **Grading:** Each instance runs in a Docker environment with its tests.")
+    assert uncited_sentences(headed) == (2, 1)
 
 
 def test_open_items_never_share_an_id_with_the_plans_items() -> None:
@@ -361,3 +379,68 @@ def test_open_items_never_share_an_id_with_the_plans_items() -> None:
     assert [requirement for _, requirement in ids[2:]] == ["ICSD", "CSD"]
     assert all(item_id.startswith("o") and item_id not in {"o1", "d1"} for item_id, _ in ids[2:])
     assert len({item_id for item_id, _ in ids}) == 4
+
+
+def test_query_parameters_identify_distinct_pages() -> None:
+    first = identity_keys(url="https://example.org/data?version=1")
+    second = identity_keys(url="https://example.org/data?version=2")
+    assert not first & second
+    assert first == identity_keys(url="https://www.example.org/data/?version=1#section")
+
+
+def test_checked_evidence_points_to_a_saved_exact_tool_span() -> None:
+    source = SourceRef(url="https://example.org/data?version=1", title="Model title")
+    result = ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.8, claims=[
+        Claim(id="c1", statement="The rate was 1.2 percent.", confidence=0.8, evidence=[
+            Evidence(source=source, excerpt="rate", quote="rate was 1.2 percent", confidence=0.8)])])
+    snippet = ToolText("snippet", identity_keys(url=str(source.url)), "Rate was 1.2 percent.",
+                       "call-1", "web_search.results[0]", {"title": "Observed title", "url": str(source.url)})
+    full = ToolText("full_text", identity_keys(url=str(source.url)), "Another part of the page.",
+                    "call-2", "fetch.text", {"url": str(source.url)})
+    checked = check_result(result, [snippet, full], observed_at="2026-09-29T20:00:00Z")
+    item = checked.claims[0].evidence[0]
+    snapshot = next(snapshot for snapshot in checked.snapshots if snapshot.id == item.snapshot_id)
+    assert (item.quote_check, item.quote_access, item.source_access) == ("verified", "snippet", "full_text")
+    assert [snapshot.text[start:end] for start, end in item.source_spans] == ["Rate was 1.2 percent"]
+    assert (snapshot.tool_call_id, snapshot.locator, snapshot.observed_at) == (
+        "call-1", "web_search.results[0]", "2026-09-29T20:00:00Z")
+    assert snapshot.metadata["title"] == "Observed title"
+    assert checked.model_dump(mode="json")["snapshots"][0]["sha256"] == snapshot.sha256
+    receipt = next(saved for saved in checked.snapshots if saved.id != snapshot.id)
+    assert receipt.text is None and receipt.length == len(full.text) and receipt.sha256
+    ledger = EvidenceLedger()
+    ledger.add(checked)
+    [passage] = ledger.passages()[0].passages
+    assert passage.source_text == "Rate was 1.2 percent" and passage.snapshot_id == snapshot.id
+    assert "Observed title" == ledger.source_table()[0]["title"]
+    assert support_level(ledger.claims()) == "shallow"  # the quote itself was only a snippet
+
+
+def test_old_evidence_records_remain_legacy_without_invented_spans() -> None:
+    source = SourceRef(url="https://example.org/old", title="Old")
+    item = Evidence(source=source, excerpt="old", quote="old", confidence=0.8,
+                    quote_check="verified", source_access="full_text")
+    result = ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.8,
+                            claims=[Claim(id="c1", statement="Old", confidence=0.8, evidence=[item])])
+    restored = ResearchResult.model_validate(result.model_dump(mode="json", exclude={"snapshots"}))
+    assert restored.snapshots == [] and restored.claims[0].evidence[0].snapshot_id is None
+
+
+def test_old_ledgers_keep_historical_source_ids_when_titles_differ() -> None:
+    url = "https://example.org/work"
+    first = SourceRef(url=url, title="Old title")
+    second = SourceRef(url=url, title="Other title")
+    result = ResearchResult(question_id="q1", question="Q?", conclusion="c", confidence=0.8, claims=[
+        Claim(id="c1", statement="One", confidence=0.8, evidence=[
+            Evidence(source=first, excerpt="One", confidence=0.8)]),
+        Claim(id="c2", statement="Two", confidence=0.8, evidence=[
+            Evidence(source=second, excerpt="Two", confidence=0.8)]),
+    ])
+    old = EvidenceLedger()
+    old.add(result)
+    assert [row["id"] for row in old.source_table()] == ["s1", "s2"]
+    assert EvidenceLedger.from_json(old.to_json()).source_id(second) == "s2"
+
+    checked = EvidenceLedger()
+    checked.add(check_result(result, [ToolText("snippet", identity_keys(url=url), "One and two")]))
+    assert [row["id"] for row in checked.source_table()] == ["s1"]

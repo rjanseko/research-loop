@@ -10,6 +10,7 @@ from typing import Any, Literal, get_args
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     HttpUrl,
     ValidationInfo,
@@ -24,7 +25,9 @@ from pydantic.json_schema import SkipJsonSchema
 # 7: a statement is `read` only when read evidence behind it carries a verified quote; one resting only on
 # the research's summary of a read source is `paraphrase`, which makes the answer weak. Quote checks are
 # unchanged, so stored v6 evidence marks still hold; only statement support is stricter.
-EVIDENCE_VERSION = 7
+# 8: each quote records exact tool-text spans and source snapshots; statement support follows the
+# exact cited passage, with ambiguity and uncited assertions recorded explicitly.
+EVIDENCE_VERSION = 8
 
 # How much of a source a tool returned, from least to most. Search results give a snippet, a scholarly
 # record without an abstract gives metadata, arXiv and some OpenAlex records give an abstract, and a
@@ -85,6 +88,27 @@ class Evidence(BaseModel):
     source_check: SkipJsonSchema[Literal["observed", "not_found"] | None] = None
     # The most a tool returned of the cited source: a search snippet up to its full text.
     source_access: SkipJsonSchema[Access | None] = None
+    # Code-owned provenance. Older ledgers have no snapshot or spans and remain legacy evidence.
+    snapshot_id: SkipJsonSchema[str | None] = None
+    source_spans: SkipJsonSchema[list[tuple[int, int]]] = Field(default_factory=list)
+
+
+class SourceSnapshot(BaseModel):
+    """The immutable tool text from which a checked quote was located."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    access: Access
+    keys: list[str]
+    # Only quote-bearing snapshots retain full text in the ledger; other tool returns remain in call messages.
+    text: str | None
+    length: int
+    sha256: str
+    tool_call_id: str | None = None
+    locator: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    observed_at: str | None = None
 
 
 class Claim(BaseModel):
@@ -176,7 +200,7 @@ class ResearchResult(BaseModel):
     unresolved: list[str] = Field(default_factory=list, description="What this research could not establish")
     open_items: list[str] = Field(default_factory=list, description=(
         "Members or categories of the requested set that sources name but this research did not establish, "
-        "each as a short name such as 'Inorganic Crystal Structure Database (ICSD)'"))
+        "each as a short name such as 'Protein Data Bank (PDB)'"))
     confidence: float = Field(ge=0.0, le=1.0)
     # Set by code: queries and pages the research tried, which stay useful when it was cut off without claims.
     searches: SkipJsonSchema[list[str]] = Field(default_factory=list)
@@ -186,11 +210,30 @@ class ResearchResult(BaseModel):
     read_via: SkipJsonSchema[dict[str, str]] = Field(default_factory=dict)
     # Why the research stopped before returning a result, when it did: a limit, the deadline, or an error.
     cut_off: SkipJsonSchema[str | None] = None
+    # Code fills these from tool returns after the model has finished its research call.
+    snapshots: SkipJsonSchema[list[SourceSnapshot]] = Field(default_factory=list)
 
 
 class ReportClaim(BaseModel):
     statement: str
     claim_ids: list[str] = Field(default_factory=list)
+    # Exact passage references are code-owned for new syntheses. Old reports default to legacy.
+    source_ids: list[str] = Field(default_factory=list)
+    passage_ids: list[str] = Field(default_factory=list)
+    citation_scope: Literal["exact", "ambiguous", "legacy"] = "legacy"
+
+
+class ReportAssertion(BaseModel):
+    """A reader-visible line or sentence, with offsets within its report section."""
+
+    section: Literal["summary", "answer", "caveat"]
+    statement: str
+    start: int
+    end: int
+    claim_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    passage_ids: list[str] = Field(default_factory=list)
+    citation_scope: Literal["exact", "ambiguous", "uncited", "legacy"] = "uncited"
 
 
 class FinalReport(BaseModel):
@@ -198,13 +241,15 @@ class FinalReport(BaseModel):
     executive_summary: str = Field(description="The main findings in three to six sentences, cited inline like `answer`")
     answer: str
     claims: list[ReportClaim] = Field(default_factory=list)
+    assertions: list[ReportAssertion] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
     not_established: list[str] = Field(default_factory=list, description=(
         "IDs of coverage items the report could not establish from the research, which it says so about"))
 
     @property
     def claim_ids_used(self) -> list[str]:
-        return sorted({claim_id for claim in self.claims for claim_id in claim.claim_ids})
+        units = self.assertions if self.assertions else self.claims
+        return sorted({claim_id for unit in units for claim_id in unit.claim_ids})
 
     @property
     def cited_texts(self) -> list[str]:

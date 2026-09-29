@@ -1,3 +1,5 @@
+# Historical: trimming was removed in scout-v15, so RESEARCH_TRIM_HISTORY no longer does anything and both arms
+# would now run the same. Kept as the record of the 28 September 2026 study.
 # Does trimming a scout's history (history.py) do more harm than good now that Luna's pacer uses the
 # account's real 2,000,000 tokens a minute? Each arm rescouts the same three stored drb2-task8 plans
 # (scout-v10, gpt-6-sol@high planner, standard depth) on the current code with Luna@high scouts; only

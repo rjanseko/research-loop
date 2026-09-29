@@ -40,7 +40,16 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [A search-engine rescout study, xhigh scouts, and fewer cheap checks](#2026-09-28-a-search-engine-rescout-study-xhigh-scouts-and-fewer-cheap-checks) | $2.32 | Stopped after 6 of 12 rescouts: 5 lost questions to 120-second request timeouts, so it says nothing about the engines |
 | 09-28 | [Trimming off, and limits as safety nets (scout-v14)](#2026-09-28-trimming-off-and-limits-as-safety-nets-scout-v14) | $1.49 | Untrimmed met every condition of the rule; trimming is off by default, and the time, call, and request limits were raised |
 | 09-28 | [Search engines on three drb2-task8 plans (scout-v14)](#2026-09-28-search-engines-on-three-drb2-task8-plans-scout-v14) | $4.99 | No engine advanced under the rule: Serper was disqualified by one partial unrelated to search and Exa by quote share; Serper is rerun on scout-v15 |
+| 09-28 | [Sol regrades ten search-study rescouts](#2026-09-28-sol-regrades-ten-search-study-rescouts) | $1.58 | Sol gives 3 to 9 fewer claimed points than GLM (mean 21.6 against 27.7) but ranks the arms the same way |
+| 09-28 | [Case contamination audit (scout-v16)](#2026-09-28-case-contamination-audit-scout-v16) | $0.04 | drb2-task8's wording was in model-visible examples since v6 and v13; its absolute scores since v6 are suspect, comparisons within a study stand; held-out cases untouched |
 | 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
+| 09-29 | [First live synthesis with Claude's citations (synthesis v5, test branch)](#2026-09-29-first-live-synthesis-with-claudes-citations-synthesis-v5-test-branch) | $0.03 | The citation path works end to end on the real API: a complete, supported st07 report with 21 citations, all mapped to their claims. A first attempt was refused before dispatch because the passages were stored twice; fixed |
+| 09-29 | [Smoke check of the synthesizer's fallback (synthesis v7, test branch)](#2026-09-29-smoke-check-of-the-synthesizers-fallback-synthesis-v7-test-branch) | $0.011 | Anthropic accepts Opus 5@medium as Opus 5.5's server-side fallback: the synthesizer's smoke call carried it and was answered |
+| 09-29 | [Opus 5.5 resynthesis of st07 on synthesis v7 (test branch)](#2026-09-29-opus-55-resynthesis-of-st07-on-synthesis-v7-test-branch) | $0.13 | Complete and supported; all 34 citations matched their passages. 18 of 45 answer sentences uncited, but 6 are counting artifacts and 7 framing; 5 are facts left uncited, mostly lead-ins |
+| 09-29 | [Uncited sentences re-scored on synthesis v8 (offline)](#2026-09-29-uncited-sentences-re-scored-on-synthesis-v8-offline) | $0 | Run 6e811f5f's stored reply, marked and counted by the v8 code: 12 of 47 answer sentences uncited, not 18 of 45; the 12 are 7 framing sentences and 5 facts |
+| 09-29 | [Serper rerun against DuckDuckGo on scout-v15 (run 28 September)](#2026-09-29-serper-rerun-against-duckduckgo-on-scout-v15-written-up-screen) | $1.87 | Serper met every condition but the blocked-source one: the blocked review's snippets reached scouts in both arms. Does not advance; rerun on fetch version 19 |
+| 09-29 | [DeepSeek scouts against Luna, stopped partway (run 28 September)](#2026-09-29-deepseek-scouts-against-luna-stopped-partway-written-up-screen) | $3.22 recorded | 5 of 9 rescouts; Flash 3 points above Luna at 2.2 times the cost, V4 Pro 2 below at 5 times. Undecided; neither advances |
+| 09-29 | [The blocked review reached scouts under shortened titles (fetch version 19)](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19) | free | Snippets of drb2-task8's expert report reached scouts in most runs of every study since fetch version 15, and two rescouts cited it; shortened titles, main titles, and printed DOIs are now blocked |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -332,6 +341,114 @@ Each cell gives the run, its status, and the rubric points its claims met, of 52
 - **Exa is disqualified.** Its verified-quote share was 5.2 points below DuckDuckGo's, past the 5-point limit. It also cost $0.30 more a rescout, over the $0.15 allowed, though it found the most.
 - **Brave does not advance.** Its empty share (27%) is not half of DuckDuckGo's, and it cost $0.23 more.
 - No point difference is larger than the study can detect: the diagnosis gives 5 to 14 points by arm.
-- Two fetches of a blocked source were refused, and no blocked source reached a scout.
+- Two fetches of a blocked source were refused, and no blocked source reached a scout. *Corrected on 29 September: snippets of the blocked review reached scouts in 7 of the 12 rescouts, and two cited it ([entry](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19)).*
 
 Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).
+
+**Trimming removed.** At the user's request, the history-trimming code (`history.py`, `RESEARCH_TRIM_HISTORY`) was removed, after the trimming study turned it off by default. Runs at the defaults send the same requests as before, so no workflow version changes. The prompt fingerprint changes, because it no longer includes the trimming notes. Re-reading a page window a scout has already read still uses no loop budget, and its test moved to the budget-notes tests. The trimming spec is kept as the record, marked historical, and the other specs no longer set the removed variable.
+
+## 2026-09-28 Sol regrades ten search-study rescouts
+
+The v14 search study was diagnosed by GLM@high alone. To see whether a second judge would change what the rescout studies show, `gpt-6-sol@high` diagnosed ten of its complete rescouts: `research diagnose RUN --model openai:gpt-6-sol@high`, one run at a time, each under a $1.80 cap. The first attempt, under a $0.40 cap, was refused before dispatch, because the guard reserves $0.54 for Sol's claims view and $1.24 for its research view. The ten runs cost $1.58, or $0.16 a run against GLM's $0.12. The user asked for a handful rather than all 33 rescouts of the day's studies.
+
+| Run | Arm | Claims, GLM | Claims, Sol | Research, GLM | Research, Sol |
+|---|---|---|---|---|---|
+| `281aa7e2` | DuckDuckGo | 26 | 18 | 26 | 24 |
+| `9f116926` | DuckDuckGo | 24 | 19 | 22 | 21 |
+| `6a76c7bb` | Serper | 25 | 17 | 26 | 21 |
+| `b1de9f70` | Serper | 30 | 26 | 32 | 27 |
+| `6fa930d6` | Brave | 29 | 21 | 25 | 21 |
+| `9b822c2d` | Brave | 23 | 20 | 26 | 21 |
+| `7060df48` | Brave | 32 | 27 | 30 | 27 |
+| `3c6697be` | Exa | 30 | 23 | 32 | 24 |
+| `ed4872c8` | Exa | 26 | 18 | 30 | 24 |
+| `0ba7d7b8` | Exa | 32 | 27 | 33 | 25 |
+
+Sol gave fewer claimed points on every run, 3 to 9 fewer and 6.1 fewer on average (21.6 against 27.7). That matches the report grades, where GLM credited more and Sol read URLs and wording literally. The two judges order the runs much the same: both put `7060df48` and `0ba7d7b8` at the top. On the same runs, both put DuckDuckGo lowest: 18.5 under Sol and 25.0 under GLM, with the other engines 3 to 4 points above it under either judge. A second judge would not have changed the search study's decision.
+
+**Decision.** GLM stays the single judge for screens. Sol, or both judges, is used where a decision rests on a few points, such as a confirmation. Which judge is right on a disputed point is a hand check, and none was done here.
+
+## 2026-09-28 Case contamination audit (scout-v16)
+
+The user stopped all paid calls and asked for an audit, after the claim fix, designed from drb2-task8's rubric, was about to be measured on drb2-task8. The DeepSeek study was stopped after 5 of its 9 rescouts ($2.48 of rescouts; `e994230a` was cut off). The Serper rerun had finished ($1.87). Neither is written up yet. The full audit is [audit-2026-09-28-case-contamination.md](audit-2026-09-28-case-contamination.md).
+
+- **What a run receives is clean.** It gets the case's question, blocked addresses, and blocked titles, and no rubric.
+- **The models' examples carried drb2-task8's wording.** An expected database, ICSD, was in the scouts' output schema since scout-v6, and the case's category names and database fields were in the planner's and scouts' examples since scout-v13. So drb2-task8's absolute scores since v6 are suspect, while comparisons within a study stand.
+- **The held-out cases are untouched.** They have no runs, grades, or expected sets, and share no wording with the prompts.
+- **scout-v16** replaces the examples, adds a test that keeps every frozen case's wording out of model-visible text, and makes a stopped study stop its current run with SIGTERM, so the run records itself as cancelled.
+- **The planner calls.** The three planner-only calls earlier the same day cost $0.04 and used the v13 planner, whose example came from the case.
+
+## 2026-09-29 First live synthesis with Claude's citations (synthesis v5, test branch)
+
+A functional check of the citations test branch (`claude/citations-synthesis`, scout-v17 and synthesis v5), approved by the user with a $0.25 hard cap while other paid work stays paused. It resynthesized the stored ledger of st07 run `321ffb47` (scout-v9, 21 claims from 14 sources) with `anthropic:claude-haiku-4-5-20251001@low`. It is a check that the path works, not a quality comparison, and nothing was graded.
+
+- **The first attempt, `8e4bfa1c`, cost nothing.** The budget guard refused it before dispatch: it would have reserved $0.2919 against the $0.25 cap. Each passage was stored twice in the prompt message, as the text of its `TextContent` and in its metadata, and the guard bounds a first request at two tokens per byte of the serialized messages. The passages are now kept once, in the metadata, and a test checks it. Even so, the bound was about 100,000 input tokens with a 32,000-token output cap, so this check set `RESEARCH_LIMITS__SYNTHESIS_MAX_OUTPUT_TOKENS=16000`.
+- **The second, `54315592`, cost $0.0261 and took 24 seconds.** It was complete, with answer support `supported`. It used 12,222 input tokens, 12,203 of them written to the prompt cache, and 2,175 output tokens, 455 of them thinking.
+- **Claude followed the format.** It wrote all five tagged sections and cited inside them. Its reply came as 41 text blocks, 20 of them with 21 citations, and every citation mapped to its source and to the claims behind the cited blocks. The report lists 20 cited statements that use 17 of the 21 claims, all at support level `read`. There were no citation problems. 6 of the 14 answer sentences the check counts were uncited, mostly framing and concluding sentences.
+- **Two costs to watch.** PydanticAI's automatic prompt caching wrote the whole prompt to the cache at 1.25 times the input price, which pays only when a retry follows. And the guard's bound for a first request is about eight times the tokens this one used, so a synthesis at the default 32,000-token output cap needs a cap above $0.25 even on Haiku.
+
+## 2026-09-29 Smoke check of the synthesizer's fallback (synthesis v7, test branch)
+
+`research doctor --smoke` on commit `a3a95bf` (scout-v19, synthesis v7), which the user asked for while other paid work stays paused. It is a check that the configuration is accepted, not a quality measurement. Each call was capped at $0.05, so $0.20 at most.
+
+- **The synthesizer's call carried the fallback and was answered.** `anthropic:claude-opus-5-5@medium` was sent with `fallbacks: [{"model": "claude-opus-5", "output_config": {"effort": "medium"}}]` under the `server-side-fallback-2026-07-01` beta, and answered with a tool call for $0.0053. Anthropic rejects a request up front when a named fallback is not one of the requested model's permitted targets, so Opus 5 is a permitted fallback for Opus 5.5. No refusal occurred, so the handoff itself, its pricing, and the report built across it have been tested only offline.
+- **The other models answered too:** `openai:gpt-6-sol@high` for $0.0006, `openai:gpt-6-luna@high` for under $0.0001, and `anthropic:claude-opus-5@medium`, the fallback on its own, for $0.0054. Total about $0.011.
+
+## 2026-09-29 Opus 5.5 resynthesis of st07 on synthesis v7 (test branch)
+
+A functional check of synthesis v7 on its real synthesizer, approved by the user with a $2.60 hard cap: the budget guard reserves a declined reply at the full output cap and the fallback's full reply, about $2.50, though the synthesis was expected to cost $0.10 to $0.20. It resynthesized the stored ledger of st07 run `321ffb47` (scout-v9, 21 claims from 14 sources) with `anthropic:claude-opus-5-5@medium` on commit `1e1931f`. Nothing was graded.
+
+- **Run `6e811f5f` cost $0.1309 and took 30 seconds.** It was complete, with answer support `supported`. It used 14,387 input tokens, none cached, and 3,669 output tokens, 243 of them thinking. There was no refusal, so no fallback, and no notes.
+- **Every citation matched.** The reply came as 69 text blocks, 34 of them with one citation each, and all 34 matched their passages on source, search-result position, block range, and cited text. The report lists 34 cited statements that use 19 of the 21 claims.
+- **18 of 45 answer sentences were uncited, and most of that is not missing evidence.** Six are counting artifacts: four sit inside a cited block that spans several sentences, which code marks only after its last word, and two are a bold heading and a table header row. Seven are framing and conclusions, such as how the report reads "still" and what the benchmark can and cannot support. Five are facts left uncited, mostly lead-ins whose specifics are cited in the next block ("Sampling settings also changed between releases."), and one plain fact ("a curated subset of 12 Python repositories"). The v5 check's 6 of 14 on Haiku is not comparable: a different model and a report a third as long.
+- **Claude often quotes its passages nearly verbatim**, such as the harness's description of fail-to-pass tests, so parts of the answer read as quotation.
+
+## 2026-09-29 Uncited sentences re-scored on synthesis v8 (offline)
+
+Two changes followed the st07 resynthesis. Synthesis v8 puts a cited block's citation before the full stop of each of its sentences, not only after the block's last word, and the uncited count leaves out a table's header row and bold heading lines. Rebuilding run `6e811f5f`'s report from its stored reply and ledger with the v8 code, at no cost:
+
+- **12 of 47 answer sentences are uncited, where v7 counted 18 of 45.** Four sentences inside multi-sentence cited blocks now carry their citation, and the header row and bold heading are no longer counted. The total rose by two because v7 put a block's citation after its full stop, where the sentence splitter read it as part of the next sentence and counted the two as one.
+- **The 12 are the 7 framing and conclusion sentences and the 5 uncited facts** listed in the previous entry. The report's text is otherwise unchanged.
+
+## 2026-09-29 Serper rerun against DuckDuckGo on scout-v15, written up (screen)
+
+`studies/serper-rescout-task8.toml` rescouted the same three stored drb2-task8 plans (`aea52be0`, `8f753940`, `27701a2f`) with Luna@xhigh scouts, once with DuckDuckGo and once with Serper, and diagnosed each rescout's claims with `zai:glm-5.3@high`. It ran on 28 September and finished before the contamination audit stopped paid calls and was written up on 29 September from its stored summary and Postgres, at no cost. It cost $1.87 of its $3.50 ceiling: $1.19 of rescouts and $0.67 of diagnoses.
+
+| Plan | DuckDuckGo run | Serper run | Points claimed, DuckDuckGo / Serper |
+|---|---|---|---|
+| `aea52be0` | `4c694720`, $0.171, 370 s | `c15443ef`, $0.296, 484 s | 25 / 30 |
+| `8f753940` | `d8521f90`, $0.155, 394 s | `e2d4c38b`, $0.224, 217 s | 27 / 23 |
+| `27701a2f` | `d5d0b231`, $0.108, 401 s | `05236b70`, $0.239, 258 s | 28 / 31 |
+
+Against its rule:
+- **No partial or failed run** in either arm.
+- **Empty or failed searches:** 91 of 217 (42%) for DuckDuckGo, 18 of 255 (7%) for Serper, under half.
+- **Verified quotes:** 224 of 247 (90.7%) against 236 of 260 (90.8%).
+- **Points claimed:** 26.7 against 28.0; the study could detect about 7.5.
+- **Median rescout cost:** $0.155 against $0.239, $0.084 more, within the $0.15 allowed. Costs include paid searches and exclude the diagnosis.
+- **Blocked sources: the condition fails.** Snippets of drb2-task8's blocked review, under shortened titles, reached scouts in 5 of the 6 rescouts, in both arms (see [the entry below](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19)).
+
+**Decision: Serper does not advance on this screen.** Every other condition held. The study is contaminated in both arms, unevenly: 1 to 4 snippets per DuckDuckGo run and 0 to 5 per Serper run. The comparison should be rerun on fetch version 19 and on more than one case before a confirmation.
+
+## 2026-09-29 DeepSeek scouts against Luna, stopped partway, written up (screen)
+
+`studies/deepseek-rescout-task8.toml` rescouted the same three drb2-task8 plans with Luna@xhigh, DeepSeek Flash@xhigh, and DeepSeek V4 Pro@xhigh, diagnosed by `zai:glm-5.3@high`. It ran on 28 September, and the contamination audit stopped it after 5 of its 9 rescouts; it was written up on 29 September at no cost. Luna's rescout of `8f753940` (`e994230a`) was interrupted: its four scout calls have no recorded cost, and it was marked failed by `research db reconcile` on 29 September. Plan `27701a2f` never ran. The recorded spend is $3.22: $2.48 of rescouts and $0.74 of diagnoses, plus the unrecorded part of `e994230a`, at most its $2.50 cap.
+
+| Plan | Luna | DeepSeek Flash | DeepSeek V4 Pro |
+|---|---|---|---|
+| `aea52be0` | `a295e09f`: 30 points, $0.159, 357 s, 90.7% verified | `e847b26b`: 33, $0.356, 446 s, 90.1% | `804ef968`: 28, $0.806, 410 s, 91.4% |
+| `8f753940` | interrupted | `19099ad9`: 27, $0.357, 443 s, 88.6% | `7a839a17`: 28, $0.798, 478 s, 92.0% |
+
+**Decision: undecided, and neither arm advances.** On the one plan with all three arms, Flash claimed 3 more points than Luna at 2.2 times the cost, and V4 Pro 2 fewer at 5 times the cost. Neither is cheaper or faster at Luna's score, and neither is 8 points better, so neither meets the rule on the evidence there is. Snippets of the blocked review reached scouts in 5 of the 6 runs (up to 5 per run).
+
+## 2026-09-29 The blocked review reached scouts under shortened titles (fetch version 19)
+
+While writing up the two studies above, a free replay of every stored search result found that fetch version 15's title block misses what search engines actually show. It matched only the whole title, "Machine Learning-Based Methods for Materials Inverse Design: A Review". Engines cut it ("…Inverse Design ...") or append their site's name ("…for Materials - ProQuest"), and copies drop the subtitle. The snippets under those titles carried the review's abstract, including its three strategy labels and the algorithms of each, which are rubric points.
+
+- **Exposure since fetch version 15** (runs whose scouts saw at least one such snippet, per study): the trimming study 5 of 6, the v14 search study 7 of 12, the first search study 5 of 7, the Serper rerun 5 of 6, the DeepSeek study 5 of 6. Runs saw 0 to 5 snippets each, unevenly across arms. Three drb2-task68-plus snippets of its own expert report got through in older runs.
+- **Two rescouts cited it.** In the v14 search study, `710c5d4e` (DuckDuckGo) read the review's ProQuest page, which prints its abstract with neither title nor DOI, and `7bdcebca` (Exa) cited its SciOpen record. Both claimed the review's taxonomy of three strategies. That study's entry above says no blocked source reached a scout; it counted only refused fetches and was wrong.
+- **What this changes.** Every drb2-task8 study since fetch version 15 is contaminated in every arm, unevenly, on top of the prompt contamination found on 28 September. Their within-study comparisons are weaker than recorded, and none should support a default.
+- **The fix, fetch version 19.** A search result is also blocked by a shortened blocked title (without its ellipsis or site name, at least six words, and the start of a blocked title), by a blocked title's main part before its colon, and by a blocked DOI in its title or snippet. A scout's cited source is checked the same way. Replayed over all stored results, it blocks 101 more drb2-task8 results and 3 task68-plus results. The only one found that does not carry the review's text mentions it in a reference list, which the policy blocks by design. `tests/test_source_policy.py` holds the stored titles as a regression test, and the dry-run oracle uses the same check.
+- **Still open.** A copy with none of these marks, such as the ProQuest page when reached from an address found elsewhere, still passes. The next study on a DRB-II case should check its stored search results with this replay before its results are read.
+
+The two runs left `running` by the contamination audit, `6e1d421b` and `e994230a`, were marked failed with `research db reconcile --older-than 600 --apply`.

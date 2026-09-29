@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import httpx2
 import pytest
@@ -8,7 +9,7 @@ from pydantic_ai import Agent, models
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models.fallback import FallbackModel
 
-from research_loop.config import Settings
+from research_loop.config import Settings, split_model
 from research_loop.models import (
     build_model,
     model_settings,
@@ -75,7 +76,14 @@ def test_settings_refuse_a_model_without_its_effort(keyed: Settings, monkeypatch
 
 def test_each_model_carries_its_own_settings(keyed: Settings) -> None:
     synthesizer = model_settings("anthropic:claude-opus-5-5@medium", "synthesizer", keyed)
-    assert synthesizer == {"thinking": "medium", "timeout": 120, "max_tokens": 32_000, "anthropic_cache": True}
+    # The synthesizer's one request is never retried, so a cache write would never be read. Anthropic
+    # continues it on Opus 5, at Opus 5's own effort, when Opus 5.5's classifiers decline it.
+    assert synthesizer == {"thinking": "medium", "timeout": 120, "max_tokens": 32_000,
+                           "anthropic_betas": ["server-side-fallback-2026-07-01"],
+                           "extra_body": {"fallbacks": [{"model": "claude-opus-5", "output_config": {"effort": "medium"}}]}}
+    # A synthesizer with no fallback listed, such as the cheap one, sends none.
+    cheap = model_settings(keyed.models.cheap_synthesizer, "synthesizer", keyed)
+    assert "extra_body" not in cheap and "anthropic_betas" not in cheap
     planner = model_settings("openai:gpt-6-sol@high", "planner", keyed)
     assert planner["thinking"] == "high" and planner["openai_prompt_cache_key"] == "research-loop:openai:gpt-6-sol"
     assert "max_tokens" not in model_settings("zai:glm-5.3-flash@high", "scout", keyed)
@@ -95,15 +103,23 @@ def test_model_call_limits_come_from_the_environment(keyed: Settings, monkeypatc
     assert run_config(settings, [], [])["model_calls"]["planner_max_output_tokens"] == 12_000
 
 
-def test_the_synthesizer_falls_back_to_another_model_and_scouts_do_not(keyed: Settings) -> None:
+def test_the_synthesizer_is_claude_with_citations_and_no_client_side_fallback(keyed: Settings) -> None:
+    from research_loop.citations import CitingAnthropicModel
+
     synthesizer = role_model("synthesizer", keyed)
-    assert isinstance(synthesizer, FallbackModel)
-    assert [m.model_name for m in synthesizer.models] == ["claude-opus-5-5", "gpt-6-sol"]
-    # The fallback runs with its own effort, not the primary's.
-    assert [m.settings["thinking"] for m in synthesizer.models] == ["medium", "high"]
+    assert isinstance(synthesizer, CitingAnthropicModel) and synthesizer.model_name == "claude-opus-5-5"
+    assert synthesizer.settings["thinking"] == "medium"
     assert not isinstance(role_model("scout", keyed), FallbackModel)
     # The default planner is the fallback model itself, so it has nothing to fall back to.
     assert not isinstance(role_model("planner", keyed), FallbackModel)
+    # Other roles on Claude keep PydanticAI's own model.
+    assert type(build_model("anthropic:claude-opus-5-5@medium", "planner", keyed)).__name__ == "AnthropicModel"
+
+
+def test_a_synthesizer_that_is_not_claude_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARCH_MODELS__SYNTHESIZER", "openai:gpt-6-sol@high")
+    with pytest.raises(ValueError, match="must be an anthropic: model"):
+        Settings()
 
 
 def test_another_planner_falls_back_too(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:
@@ -124,8 +140,7 @@ def test_a_scout_makes_one_attempt_and_other_roles_keep_the_client_default(keyed
     synthesizer = role_model("synthesizer", keyed)
     assert scout.client.max_retries == 0
     assert planner.client.max_retries == 2
-    assert synthesizer.models[0].client.max_retries == 2
-    assert synthesizer.models[1].client.max_retries == 2
+    assert synthesizer.client.max_retries == 2
 
 
 def test_a_google_scout_makes_one_attempt(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:
@@ -175,22 +190,27 @@ async def test_glm_reaches_zai_with_reasoning_effort_max(keyed: Settings, monkey
     assert sent[0]["reasoning_effort"] == "max"
 
 
-def test_a_scout_model_keeps_its_history_unless_trimming_is_turned_on() -> None:
-    from pydantic_ai.models.test import TestModel
-
-    from research_loop.config import Settings
-    from research_loop.history import TrimmedHistoryModel
-    from research_loop.models import scout_model
-
-    off = Settings(_env_file=None)
-    assert not isinstance(scout_model(TestModel(), "openai:gpt-6-luna", off), TrimmedHistoryModel)
-    on = Settings(trim_history=True, _env_file=None)
-    assert isinstance(scout_model(TestModel(), "openai:gpt-6-luna", on), TrimmedHistoryModel)
-
-
 def test_a_scout_request_gets_longer_than_other_roles(keyed: Settings) -> None:
     # At 120 seconds, Luna@xhigh scouts timed out in 5 of 6 rescouts of search-rescout-task8.
     limits = keyed.limits
     assert model_settings("openai:gpt-6-luna@xhigh", "scout", keyed)["timeout"] == limits.scout_request_timeout_seconds
     assert model_settings("openai:gpt-6-sol@high", "planner", keyed)["timeout"] == limits.request_timeout_seconds
     assert limits.scout_request_timeout_seconds > limits.request_timeout_seconds
+
+
+@pytest.mark.parametrize("depth", ["quick", "standard", "deep"])
+def test_every_depths_synthesis_share_covers_a_declined_reply_and_its_fallback(keyed: Settings, depth: str) -> None:
+    # The synthesis is one request, never retried, and PydanticAI checks its cost once the reply is in: a
+    # reply over its share would be paid for and thrown away. A declined synthesis continues on its fallback
+    # inside the request, whose input carries the declined attempt's output. Leave room for a quick run's
+    # ledger as input.
+    from research_loop.prices import price_per_million
+
+    limits = keyed.limits.for_depth(depth)
+    cap = Decimal(limits.synthesis_max_output_tokens)
+    ledger = Decimal(40_000)
+    primary_in, primary_out = price_per_million(split_model(keyed.models.synthesizer)[0])
+    fallback_in, fallback_out = price_per_million(split_model(keyed.models.synthesizer_fallback(keyed.models.synthesizer))[0])
+    worst = (ledger * primary_in + cap * primary_out + (ledger + cap) * fallback_in + cap * fallback_out) / 1_000_000
+    assert Decimal(str(limits.synthesis_usd)) >= worst
+

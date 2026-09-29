@@ -259,6 +259,9 @@ def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutMode
     models = models or Settings().models
     model = mode_model(None, mode, "audit", run.arm.env, models)
     env = {f"RESEARCH_MODELS__{role}": model for role in _ROLES}
+    if mode == "cheap":
+        # The synthesizer must be Claude, whose citations its report is built from.
+        env["RESEARCH_MODELS__SYNTHESIZER"] = _cheap_synthesizer(run.arm.env, models)
     # A second scout model, from the arm or the environment, is replaced like the rest; without one the check
     # keeps one scout model, as the real run does.
     alt = run.arm.env.get(_SCOUT_ALT) if _SCOUT_ALT in run.arm.env else models.scout_alt
@@ -270,6 +273,11 @@ def mode_env(mode: Mode, run: Planned, dsn: str | None = None, models: ScoutMode
         if dsn:
             env["DATABASE_URL"] = dry_database_url(dsn)
     return env
+
+
+def _cheap_synthesizer(env: dict[str, str], models: ScoutModels | None) -> str:
+    key = "RESEARCH_MODELS__CHEAP_SYNTHESIZER"
+    return env[key] if key in env else (models or Settings().models).cheap_synthesizer
 
 
 def _stable_seed(run: Planned) -> int:
@@ -284,7 +292,9 @@ def command(spec: StudySpec, run: Planned, out: Path, mode: Mode = "real", cap: 
               "--max-usd", f"{_usd(spec.cap_usd) if cap is None else cap:.2f}", "--out", str(out)]
     args = list(run.arm.args)
     if mode != "real" and "--model" in args and args.index("--model") + 1 < len(args):
-        args[args.index("--model") + 1] = mode_model(None, mode, "audit", run.arm.env, models)
+        args[args.index("--model") + 1] = (_cheap_synthesizer(run.arm.env, models) if mode == "cheap"
+                                           and spec.kind == "synthesize"
+                                           else mode_model(None, mode, "audit", run.arm.env, models))
     if spec.kind == "scout":
         return ["scout", "--case", run.target, *labels, *args]
     return [spec.kind, run.target, *labels, *args]
@@ -338,10 +348,26 @@ def _cap(limit: float, room: Decimal) -> Decimal:
 Invoke = Callable[[list[str], dict[str, str]], tuple[int, str]]
 
 
+def run_child(command: list[str], env: dict[str, str], *, capture_stdout: bool) -> subprocess.CompletedProcess[str]:
+    """Run one `research` command to its end. When the study is interrupted, the command gets SIGTERM, which it
+    handles like Ctrl-C by recording its run as cancelled, and up to a minute to do so. `subprocess.run` sends
+    SIGKILL instead, which left two stopped rescouts marked running (audit, 28 September 2026)."""
+    with subprocess.Popen(command, cwd=REPO, env={**os.environ, **env}, text=True, stderr=subprocess.PIPE,
+                          stdout=subprocess.PIPE if capture_stdout else None) as child:
+        try:
+            out, err = child.communicate()
+        except KeyboardInterrupt:
+            child.terminate()
+            try:
+                child.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                child.kill()
+            raise
+    return subprocess.CompletedProcess(command, child.returncode, out, err)
+
+
 def _invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
-    executable = Path(sys.executable).with_name("research")
-    done = subprocess.run([str(executable), *args], cwd=REPO, env={**os.environ, **env}, check=False,
-                          stderr=subprocess.PIPE, text=True)
+    done = run_child([str(Path(sys.executable).with_name("research")), *args], env, capture_stdout=False)
     sys.stderr.write(done.stderr)
     return done.returncode, done.stderr
 
@@ -423,7 +449,9 @@ def _preflight(env: dict[str, str]) -> str | None:
 def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
              models: ScoutModels, model_calls: ModelCallLimits) -> dict[str, str]:
     """Freeze model IDs and call limits, then apply arm, mode, and git-ref overrides."""
-    env = {f"RESEARCH_MODELS__{role.upper()}": spec or "" for role, spec in models.model_dump().items()}
+    # A mapping, such as the synthesizer fallbacks, is frozen as the JSON pydantic-settings reads back.
+    env = {f"RESEARCH_MODELS__{role.upper()}": json.dumps(spec) if isinstance(spec, dict) else spec or ""
+           for role, spec in models.model_dump().items()}
     env |= {f"RESEARCH_MODEL_CALLS__{name.upper()}": str(value)
             for name, value in model_calls.model_dump().items()}
     env |= run.arm.env | mode_env(mode, run, dsn, models)
@@ -433,9 +461,7 @@ def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
 
 
 def _invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
-    executable = Path(sys.executable).with_name("research")
-    done = subprocess.run([str(executable), *args], cwd=REPO, env={**os.environ, **env}, check=False,
-                          capture_output=True, text=True)
+    done = run_child([str(Path(sys.executable).with_name("research")), *args], env, capture_stdout=True)
     sys.stderr.write(done.stderr)
     return done.returncode, done.stdout
 

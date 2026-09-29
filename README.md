@@ -176,14 +176,14 @@ A complete run can therefore have a weak or unsupported answer; the report's fir
 
 ### Reading the report
 
-A report opens with a line giving the run's status, its answer's support, how many answer sentences carry no inline citation, its cost and time, and how many sources were read. Uncited sentences are a diagnostic, since some of them are framing rather than findings. The sections follow in this order; sections with nothing to say are left out.
+A report opens with a line giving the run's status, its answer's support, how many answer sentences carry no inline citation, its cost and time, and how many sources were read. Uncited sentences are a diagnostic, since some of them are framing rather than findings; headings, bold heading lines, and a table's header row are not counted. Provenance checks also enumerate assertions in the summary, answer, caveats, and table rows. The sections follow in this order; sections with nothing to say are left out.
 
 | Section | What it holds |
 |---|---|
 | Needs review | Every reason code flagged the run, such as statements that rest only on search snippets, or questions that returned no evidence. |
 | Gap follow-up | In follow-up mode, which gaps were chosen and why, and whether the deep dives settled them. |
 | Coverage | Each thing a sufficient answer must address, and whether the answer addresses it, says it was not established, or leaves it out. |
-| Summary and Answer | The written report. Each statement carries inline citations such as [s3], which name sources. |
+| Summary and Answer | The written report. Inline citations such as [s3] name sources; uncited assertions are flagged. |
 | Caveats | Limits the synthesizer found in the evidence. |
 | Statements resting on thin evidence | Statements whose only support is the research's own summary of a source with no quote checked against it, a search snippet, a record's metadata, a quote not found in its cited source, or a source no tool returned. |
 | Could not establish | Research questions that returned no evidence, with the reason each one stopped. |
@@ -194,6 +194,7 @@ A report opens with a line giving the run's status, its answer's support, how ma
 
 ```bash
 research show <run id>              # render a stored run again as Markdown, or --format json
+research show <run id> --provenance # append each assertion's cited passage, exact text, and tool receipt
 research breakdown <run id>         # where the money and time went, call by call, and why each call stopped
 research audit <run id> --model zai:glm-5.3@high --max-usd 0.30   # do the quotes support each statement?
 research diagnose <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.50   # where were rubric points lost?
@@ -237,11 +238,11 @@ A scout returns claims. Each claim carries evidence: a source, a summary of what
 
 Each scout is told on every request how much of its budget is left. Its dollar share counts its paid searches and page reads as well as its model requests, and once the share, or its limit of 8,000,000 billed tokens, would not cover two more requests, it is told its research budget is spent. When its budget is spent, or when less than one request timeout remains before the research deadline, it loses its tools and is told to write up what it has, so that it returns a result instead of being cut off. A request that fails on a transient network fault is sent once more. A scout that fails or is still running at the deadline leaves its question unanswered, but keeps the searches it made and the pages it read.
 
-Every request resends a scout's whole history, and page text is most of it. By default the history is sent whole, which keeps the provider's cached prompt prefix intact: in a paired study, scouts with their whole history finished more often, read more of their input from the cache, and cost less. With `RESEARCH_TRIM_HISTORY=true`, once a scout has read more than 48,000 characters of pages, about four full fetches, the model sees a note in place of its oldest pages: fetch the page again before quoting it. Search results are treated the same way past 16,000 characters of snippets, keeping each result's title and address. The pages from its latest two requests always stay in view, and a page once replaced stays replaced. The re-read is served from the run's memory, and it uses none of the scout's budget. Only what the model is sent changes. The history that is stored and checked keeps every page.
+Every request resends a scout's whole history, and page text is most of it. The history is always sent whole, which keeps the provider's cached prompt prefix intact. An earlier option trimmed old pages from each request; in a paired study, scouts without it finished more often, read more of their input from the cache, and cost less, so it was removed. A scout's billed tokens are bounded by its dollar share and an 8,000,000-token limit, and it is told to return before it reaches either.
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
-Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. Each statement in the report names the claim IDs behind it, and a report that cites a claim that does not exist gets one retry. If the synthesis cannot finish, the run returns the ledger's claims without a written answer.
+Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. The synthesizer is always a Claude model: each source's supporting or contradicting evidence reaches it as one search result, with one citable passage per piece of evidence, and Claude's citations say which passages each span of the report drew on. Each passage carries its stance, and a verified quote is linked to its exact saved tool-text span. The search results come first and the research brief, with the question, after them. The brief lists each claim's checks, but a claim that has a passage appears without its statement, so a sentence about it has to come from the passage and is cited. Code, not the model, then writes the report's [sN] citations and the source, passage, and claim IDs behind each cited assertion, so a citation cannot name a source or claim that does not exist. When one provider text block contains several sentences, code marks its citation as ambiguous rather than assigning its passages to every sentence. A citation counts only when its source, its search result's position, its block range, and its cited text all match the passages sent; the run notes any that do not, and leaves them out. Citations cannot be combined with structured output, so the synthesizer replies in tagged sections. It makes one request, which is not cached and never retried: a retry would resend the whole ledger, so a reply that lacks a section keeps what it has, and the run notes what was missing. When the synthesizer's safety classifiers decline the request, Anthropic continues it on a fallback Claude model inside the same request (Opus 5 for Opus 5.5), keeping the text already written; the run notes the handoff and its refusal category, and its cost counts each attempt at its own model's rates. A reply that every model declined partway through is incomplete, so the run discards it and notes the refusal, as it does a reply with no answer. The synthesizer's share of the budget covers a declined reply at the full output cap and the fallback's full reply. If the synthesis cannot finish or writes no answer, the run returns the ledger's claims without a written answer.
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish. A deep dive researches each one in parallel, with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run. The run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
 
@@ -262,9 +263,9 @@ The gap analysis chooses its deep dives from open items first, and a deep dive m
 ### Depth
 
 The planner also decides how much research the question warrants, and the run takes the limits of that depth:
-- **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $0.30 budget, and six minutes;
-- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $1.75, and 22 minutes;
-- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $4.00 budget and up to 42 minutes. Its scouts get 30 minutes of research and up to 192 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
+- **quick**, for a question one or two sources can settle, such as a single fact or figure: at most two scouts, a $2.14 budget ($1.96 of it for synthesis), and six minutes;
+- **standard**, the limits in [Limits and budgets](#limits-and-budgets): up to four scouts, $3.60, and 22 minutes;
+- **deep**, for a comprehensive report, a survey of a field, or a complete set spanning several categories: up to eight scouts and the gap follow-up, with a $5.85 budget and up to 42 minutes. Its scouts get 30 minutes of research and up to 192 useful tool calls each, and its deep dives 8 minutes each with a scout's full loop budget. Scouts paced under Luna's token rate need that time: in the first deep example run, three of four scouts were cut off at the standard 8 minutes with over 90% of their money unspent, and a scout cut off at its deadline keeps no claims.
 
 `--depth` fixes the depth instead, and the plan, the run's recorded configuration, and its workflow version show the depth used.
 
@@ -272,7 +273,7 @@ The planner also decides how much research the question warrants, and the run ta
 
 Each piece of evidence gets marks that only code can set.
 
-A quote is `verified` when the tools returned those words, in that call, as part of the source the evidence cites, ignoring differences in case, spacing, and punctuation. It is `misattributed` when the words appear only in another source's text, and the evidence then names that source. It is `not_found` when they appear nowhere.
+A quote is `verified` when the tools returned those words, in that call, as part of the source the evidence cites. Matching tolerates case, spacing, and extraction punctuation, while preserving numeric signs, decimals, percentages, and attached units. It is `misattributed` when the words appear only in another source's text, and the evidence then names that source. It is `not_found` when they appear nowhere.
 
 A source counts as the same work under its other addresses:
 - an arXiv paper's abstract page, PDF, and ar5iv rendering;
@@ -286,18 +287,20 @@ A source is `observed` when a tool returned it in that call. A source that no to
 
 The access level says how much of the source the research saw: `full_text` for a page or PDF that was read, `abstract` for a paper's abstract from a scholarly index, `metadata` for a scholarly record without an abstract, and `snippet` for a search result.
 
-From these marks, each statement in the report gets a support level:
+The ledger saves a SHA-256 receipt for each tool result and the exact text and character spans for results containing verified quotes. A receipt includes the tool call, locator, access level, metadata, and observation time. Source titles and publication metadata shown for new runs come from tool results where available. URL queries remain part of source identity because they may select different pages. Older stored ledgers keep their original source IDs when reopened.
+
+From these marks and the passages actually cited, each assertion in the report gets a support level:
 
 | Level | When |
 |---|---|
-| `read` | At least one supporting item comes from a source read in full or as an abstract, and carries a `verified` quote |
-| `paraphrase` | The only read support is the research's own summary of the source, with no quote that code could check |
-| `shallow` | The only support is a snippet, metadata, an unverified quote, or a source no tool returned |
-| `unsupported` | No evidence supports it |
+| `read` | An exact cited passage supports the assertion with a verified quote from full text or an abstract |
+| `paraphrase` | The cited support is only the research's own summary of a source read in full or as an abstract |
+| `shallow` | The cited support is only a snippet, metadata, an unverified quote, or a source no tool returned |
+| `unsupported` | No usable cited passage supports it, including uncited or ambiguously cited assertions |
 
 Paraphrase, shallow, and unsupported statements are listed under "Needs review" and "Statements resting on thin evidence", and each makes the answer `weak` or `unsupported`. A run also counts its short quotes, verified quotes with fewer than a quarter of their claim's words.
 
-A verified quote shows that the source contains those words, not that they carry the whole claim. That is what the support audit checks (see [Studies and evaluation](#studies-and-evaluation)). The evidence version (7) is recorded with each run.
+A verified quote shows that the source contains those words, not that they carry the whole claim. The support audit judges each assertion against only its cited passage; ambiguous citations get a separate verdict without a model call. Older stored reports retain legacy claim-level audit behavior. The evidence version (8) and audit version (3) distinguish these rules from historical results (see [Studies and evaluation](#studies-and-evaluation)).
 
 ## External services and APIs
 
@@ -344,19 +347,19 @@ Every run has a fixed budget. The money is divided before the run starts. The pl
 
 | Limit | Default | Setting |
 |---|---|---|
-| Total cost | $1.75 | `RESEARCH_LIMITS__COST_USD` |
+| Total cost | $3.60 | `RESEARCH_LIMITS__COST_USD` |
 | Planner's share | $0.05 | `RESEARCH_LIMITS__PLANNER_USD` |
-| Synthesizer's share | $0.60 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
+| Synthesizer's share, enough for a declined reply at the full output cap and its fallback's full reply | $2.45 | `RESEARCH_LIMITS__SYNTHESIS_USD` |
 | Whole run | 22 minutes | `RESEARCH_LIMITS__DEADLINE_SECONDS` |
 | Research phase | 15 minutes | `RESEARCH_LIMITS__RESEARCH_SECONDS` |
 | One planner, gap, or synthesis request | 120 seconds | `RESEARCH_LIMITS__REQUEST_TIMEOUT_SECONDS` |
 | One scout or deep-dive request | 600 seconds | `RESEARCH_LIMITS__SCOUT_REQUEST_TIMEOUT_SECONDS` |
 | Research questions (standard depth) | 4 | `RESEARCH_LIMITS__MAX_QUESTIONS` |
 | Scouts at once | 8 | `RESEARCH_LIMITS__PARALLEL_SCOUTS` |
-| Quick depth | 2 questions, $0.30 with $0.12 for synthesis, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
-| Deep depth | 8 questions and the gap follow-up; $4.00, which leaves eight scouts about $0.275 each; 30 minutes of research and 42 in all; 192 useful tool calls a scout; deep dives of 8 minutes with 30 requests, 128 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
+| Quick depth | 2 questions, $2.14 with $1.96 for synthesis, $4.06 with the follow-up, 4 minutes of research, 6 in all | `RESEARCH_LIMITS__QUICK__MAX_QUESTIONS`, `..._COST_USD`, `..._SYNTHESIS_USD`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._DEADLINE_SECONDS` |
+| Deep depth | 8 questions and the gap follow-up; $5.85, which leaves eight scouts about $0.275 each; 30 minutes of research and 42 in all; 192 useful tool calls a scout; deep dives of 8 minutes with 30 requests, 128 useful tool calls, and 16 failed ones | `RESEARCH_LIMITS__DEEP__MAX_QUESTIONS`, `..._FOLLOW_UP`, `..._FOLLOWUP_COST_USD`, `..._RESEARCH_SECONDS`, `..._FOLLOWUP_DEADLINE_SECONDS`, `..._SCOUT_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_SECONDS`, `..._DEEP_DIVE_REQUESTS`, `..._DEEP_DIVE_PRODUCTIVE_CALLS`, `..._DEEP_DIVE_MISSES` |
 | Per scout | 30 requests, 128 useful tool calls (a guard against loops), 16 failed ones | `RESEARCH_LIMITS__SCOUT_REQUESTS`, `..._PRODUCTIVE_CALLS`, `..._MISSES` |
-| Follow-up total cost | $2.50 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
+| Follow-up total cost | $4.35 | `RESEARCH_LIMITS__FOLLOWUP_COST_USD` |
 | Follow-up gap analysis share, and each deep dive's | $0.10 and $0.35 | `RESEARCH_LIMITS__GAP_USD`, `RESEARCH_LIMITS__DEEP_DIVE_USD` |
 | Gaps followed up | at most 3 | `RESEARCH_LIMITS__MAX_GAPS` |
 | Follow-up whole run | 25 minutes | `RESEARCH_LIMITS__FOLLOWUP_DEADLINE_SECONDS` |
@@ -386,7 +389,7 @@ The output bound is the call's output cap:
 
 The reservation prices the input bound at the model's highest input rate and the output bound at its output rate. It is never less than the price of one request that uses both bounds, so a long-context tier is covered. GPT-6 Luna and Sol, for example, charge 1.5 times as much for output once the input passes 272,000 tokens.
 
-Guarded runs disable the provider SDK's retries and the fallback model, so that nothing is sent without a reservation. The reservation policy is recorded with the run as `usage-anchor-v6`; earlier versions are described in `src/research_loop/study_budget.py`.
+Guarded runs disable the provider SDK's retries and the planner's fallback model, so that nothing is sent without a reservation. The synthesizer's fallback stays on, since it runs inside the same request and the reservation covers it. The reservation policy is recorded with the run as `usage-anchor-v7`, which reserves a synthesis with a fallback as both of its attempts; earlier versions are described in `src/research_loop/study_budget.py`.
 
 `--max-usd` is required for frozen study cases and for `grade`, `assess`, `audit`, `synthesize`, and `rescout`. It is optional for ordinary runs.
 
@@ -400,7 +403,7 @@ The limit paced under is the one OpenAI reports. Every OpenAI response carries `
 
 The default used to be 200,000. After the tier rose, that held every run to a tenth of the account's real limit of 2,000,000. The deep runs' scouts ran out of time under our own pacer, not OpenAI's limit (study log, 28 September 2026). Time spent waiting counts against the research window, so a tight limit makes runs slower rather than failing them. Long tool results fill the window quickly: every request resends a scout's history. The rate-limit policy is recorded with the run as `scout-429-v5`.
 
-A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run has $4.00.
+A deep run can also spread its scouts over two providers' limits. With `RESEARCH_MODELS__SCOUT_ALT` set, such as `zai:glm-5.3@xhigh`, a deep run's second, fourth, and later even-numbered scouts and deep dives use that model, each model with its own pacer. It applies to deep runs only, and the run records the model with its configuration. Paced under Luna's limit alone, the scouts of the first two deep example runs together sent about 115,000 tokens a minute, whether they had 8 minutes or 20. GLM-5.3 costs about seven times Luna per token, which is why a deep run's scouts get $0.275 each.
 
 > [!IMPORTANT]
 > Pacing is per run, so two runs at once against the same account can still reach the limit. Run one Luna study at a time.
@@ -449,12 +452,14 @@ Models are configuration, separate from the workflow. The defaults come from the
 | Planner and gap analyzer | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__PLANNER` |
 | Scouts and deep dives | `openai:gpt-6-luna@high` | `RESEARCH_MODELS__SCOUT` |
 | Synthesizer | `anthropic:claude-opus-5-5@medium` | `RESEARCH_MODELS__SYNTHESIZER` |
-| Fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
+| Synthesizer fallback after a refusal, by synthesizer model | `anthropic:claude-opus-5@medium` for `anthropic:claude-opus-5-5` | `RESEARCH_MODELS__SYNTHESIZER_FALLBACKS`, as JSON |
+| Planner fallback after a refusal or provider error | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__FALLBACK` |
 | Every other scout and deep dive of a deep run | none | `RESEARCH_MODELS__SCOUT_ALT` |
 | Rubric and quality judge | `openai:gpt-6-sol@high` | `RESEARCH_MODELS__JUDGE` |
 | Study support auditor | `zai:glm-5.3@high` | `RESEARCH_MODELS__AUDIT` |
 | Study diagnosis judge | `zai:glm-5.3@high` | `RESEARCH_MODELS__DIAGNOSE` |
-| Cheap study check, every role | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Cheap study check, every role but the synthesizer | `openai:gpt-6-luna@low` | `RESEARCH_MODELS__CHEAP` |
+| Cheap study check, synthesizer | `anthropic:claude-haiku-4-5-20251001@low` | `RESEARCH_MODELS__CHEAP_SYNTHESIZER` |
 | Dry study check, every role | `fake:fuzz@high` | `RESEARCH_MODELS__DRY` |
 
 Standalone `research audit` and `research diagnose` use their configured defaults unless `--model` selects another model. A study spec's `audit_model` or `diagnose_model` overrides its configured default.
@@ -463,7 +468,7 @@ A model is named with the reasoning effort it runs at, as `provider:model@effort
 
 DeepSeek Flash uses automatic tool choice in thinking mode. DeepSeek rejects a forced tool choice in that mode; `research doctor --smoke` checks that the configured model can call a tool before a study.
 
-Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner and synthesizer switch to the fallback model when their own model refuses a call or its provider fails. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
+Each run records the model and effort every role was sent, plus the effective model-call limits. Price entries and `RESEARCH_TOKENS_PER_MINUTE` are keyed by the model alone, without the effort. The planner switches to the fallback model when its own model refuses a call or its provider fails. The synthesizer must be a Claude (`anthropic:`) model, since its report is built from Claude's citations, and a setting or `--model` naming another provider is refused before any call. Its fallback is another Claude model that Anthropic runs inside the same request when the synthesizer's safety classifiers decline it (server-side fallback, in beta). The fallback is set for each synthesizer model, since each model allows its own fallback targets; a synthesizer with none listed, such as the cheap one, has no fallback. `research doctor --smoke` sends the fallback with the synthesizer's smoke call, so it checks that Anthropic accepts that pair. Scouts have no fallback, since a failed scout leaves one question unanswered rather than failing the run.
 
 A model selected for a paid command is refused before calls if it has no price, because its cost could not be capped. `src/research_loop/prices.toml` adds or corrects prices that the bundled price data lacks or gets wrong. Model IDs change often, so run `research doctor --smoke` after changing a model.
 
@@ -487,7 +492,7 @@ research scout --case drb2-task8 --max-usd 3.00 --study NAME --arm ARM --replica
 research grade <run id> --case drb2-task8 --max-usd 1.00
 research assess <run id> --case st07 --max-usd 1.00
 research audit <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.00
-research synthesize <run id> --model openai:gpt-6-sol@high --max-usd 1.00 --study NAME --arm ARM --replicate 1
+research synthesize <run id> --model anthropic:claude-opus-5-5@medium --max-usd 1.00 --study NAME --arm ARM --replicate 1
 research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study NAME --arm ARM --replicate 1
 ```
 
@@ -514,19 +519,19 @@ The study cases are in `src/research_loop/study_cases.jsonl`:
 The judges and the audit:
 - **`research grade`** scores a stored report against a case's rubric, one verdict per point. Grade close decisions with both judges: the choice of judge alone has moved a long case's score by up to 8 points.
 - **`research assess`** judges overall quality and specific facts against independently reviewed source summaries.
-- **`research audit`** asks the configured auditor model whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
+- **`research audit`** asks the configured auditor model whether the exact verified passages cited by each assertion say what the assertion says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
 - **`research synthesize` and `research rescout`** repeat the synthesis of a stored ledger, or the research of a stored plan, with another model, so that one step can be compared alone.
 
 ### Finding bugs before paying
 
 The harness in `src/research_loop/dryrun.py` finds bugs in the workflow's plumbing, IDs, money, and error handling for free, so that a paid study measures research instead of paying for a crash. It never produces useful research, and it cannot see quality problems.
 
-- **`research fuzz --runs N`** runs seeded Scout runs in process, each followed by a rescout and a fixed-ledger synthesis. A fuzz model stands in for every role, and an offline world stands in for the web, including a fake Exa API.
+- **`research fuzz --runs N`** runs seeded Scout runs in process, each followed by a rescout and a fixed-ledger synthesis. A fuzz model stands in for every role, and an offline world stands in for the web, including a fake Exa API. The fuzz model writes no tagged report with citations, so its syntheses fail their checks and fuzz runs do not reach a written report.
   - The model returns edge cases and injects rate limits, server errors, refusals, one-time TLS faults, and oversized costs.
   - The world serves copies of the same work, 403s, redirects to blocked addresses, timeouts, broken bodies, and a PDF whose text holds lone surrogates.
   - After each run, `check_record` checks the invariants, and each problem is printed with the command that reproduces it. `make fuzz` runs 200.
 - **`research study run SPEC --dry [--seeds N]`** runs a study's real commands in subprocesses with the configured `RESEARCH_MODELS__DRY` fake model, the offline world, and a separate `research_dry` database (`make dry-db`). It costs nothing.
-- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), against the real web. Each run and the whole check are capped at $0.25.
+- **`research study run SPEC --cheap`** runs one replicate of the first target, with every role but the synthesizer on the configured `RESEARCH_MODELS__CHEAP` model (`openai:gpt-6-luna@low` by default), and the synthesizer on `RESEARCH_MODELS__CHEAP_SYNTHESIZER` (`anthropic:claude-haiku-4-5-20251001@low`), against the real web. Each run and the whole check are capped at $0.25.
 - **Hypothesis property tests** in `tests/test_properties.py` check the pure functions, and a fixed fuzz sweep runs with the test suite.
 
 When a paid run finds a bug, it first gets the narrowest test that would have caught it: a unit test for a local bug, and fuzz or invariant behavior only when the bug comes from how a run's parts interact. `fake:` models and the offline world only run together, so neither can reach a real run.
@@ -553,7 +558,7 @@ run.to_record() # the run as JSON, the same record `--out` writes to run.json
 
 ## Storage and tracing
 
-Postgres keeps each run: its question, configuration, plan, report, evidence ledger, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
+Postgres keeps each run: its question, configuration, plan, report assertions and citation links, evidence ledger with snapshot receipts and exact quote spans, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
 
 Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent when a Logfire token or authenticated project is available.
 
@@ -655,16 +660,23 @@ In `scripts/`:
 - `import_drb2.py` freezes DeepResearch Bench II tasks as study cases;
 - `ledger_coverage.py` counts how much of a development case's expected set a run found;
 - `rescore_quotes.py` re-checks every stored scout call's quotes under the current evidence rules;
+- `budget_bottlenecks.py` shows which limits stopped stored runs' calls and how much of each budget they used;
+- `blocked_exposure.py` lists what stored runs' tools showed that the current source policy blocks; run it on a study of a case with blocked sources before reading its results;
+- `search_replay.py` replays stored scout searches through each search engine;
 - `fetch_bakeoff.py` tries other ways to read the pages our fetcher failed on.
 
-The last three make no model calls.
+None of them makes a model call. `search_replay.py` and `fetch_bakeoff.py` can call paid search and reading services; the others read only stored runs.
 
 | In `docs/` | What it holds |
 |---|---|
+| [project-synthesis.md](docs/project-synthesis.md) | Current state, reconciled audit findings, open suggestions, and the source map for all docs |
 | [study-log.md](docs/study-log.md) | Index of every study, paid run, and offline re-scoring, linking to archived detail where needed |
 | [evaluation.md](docs/evaluation.md) | How quality is measured and how a comparison is set up so that it can decide |
 | [lessons.md](docs/lessons.md) | What the first design and Scout's first days taught |
-| [notes.md](docs/notes.md) | Ideas with some evidence but no decision yet: cache warming and a source ranker |
+| [roadmap.md](docs/roadmap.md) | The current order of work |
+| [passage-evidence-plan.md](docs/passage-evidence-plan.md) | The approved plan to rebuild the evidence layer around passages |
+| [takeaways-2026-09-29.md](docs/takeaways-2026-09-29.md) | What the studies of 25 to 29 September support, and their limits |
+| [notes.md](docs/notes.md) | Pointer to unadopted ideas and their test conditions |
 | [archive/](docs/archive/) | Superseded plans and dated historical study-log entries |
 
 `.agents/skills/` holds agent skills used as API references, such as Exa's `build-with-exa`. The first design of this project, a six-role graph with benchmark adapters and long-horizon studies, is kept at the git tag `archive/pre-scout-2026-09`.

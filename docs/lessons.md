@@ -102,3 +102,24 @@ These come from Scout's first three days of studies; the runs behind them are in
 **Fuzzing guards plumbing, not quality.** The bug-finding harness found five bugs as it was built, one of them by fuzzing, and catches every earlier bug when it is put back. It cannot see a claim that overreaches its quote or a page that cannot be read. A bug a paid run finds now gets the narrowest test that would have caught it, and fuzzing only when it comes from parts of a run interacting.
 
 **A guarantee covers only the paths that enforce it.** Blocked sources were matched by address in web search and fetch but not in the scholarly tools, and drb2-task8's blocked expert report reached five early ledgers by its DOI. The study ceiling was compared with estimates while each run kept its full cap, so it did not bound spending. An outside audit found both by writing counterexamples against the stated guarantee rather than against the code's own rules. The fuzz model shared those rules, so it could not find them.
+
+## Lessons from 28 September 2026
+
+**An example in a prompt is part of the test.** The claim fix was designed from drb2-task8's rubric, and its examples were drb2-task8's own: its category names, its database fields, and, since scout-v6, one of its expected databases in the scouts' output schema. A higher drb2-task8 score could then come from the prompt echoing the case rather than from the fix. A development case may shape a fix, but not the text a model sees, and a fix is confirmed on held-out cases. A test now keeps every frozen case's wording out of model-visible text; a paraphrase still needs reading ([audit](audit-2026-09-28-case-contamination.md)).
+
+**A limit should stop work only where it saves something.** In one day, request timeouts, the token limit, and output checks each cost a question while money and time were left. Where a limit is reached, the scout should return what it has, and the dollar share and deadline should bound the work.
+
+**Stopping a study must stop its runs cleanly.** `subprocess.run` answers an interrupt with SIGKILL, so a stopped study's current run could not record itself and stayed marked running.
+
+
+## Provenance of new Scout reports (29 September 2026)
+
+**A valid citation pointer is not the same as support for an assertion.** A report can cite a search snippet while the same claim also has a full page from another source; grading the claim's whole evidence set made that assertion look well read. Evidence version 8 saves the exact checked tool-text span and a hash of its source snapshot, and report assertions keep the particular passage and source IDs they cite. The support check and audit follow those links. Numeric punctuation and attached units need stricter quote matching than ordinary PDF formatting. This design has offline tests but no paid study result yet; whether its labels agree with human review still needs measurement.
+
+## Blocking and rebuilding, later on 29 September 2026
+
+**Block what the engines show, not what the benchmark names.** The blocked title was the review's whole title. Search engines cut it short or append their site's name, and copies drop the subtitle, so the full title never appeared in the results that showed the review's abstract to scouts. The check passed its tests because the tests used the whole title. A block needs test cases taken from real stored results, and every study of a case with blocked sources needs a replay of what its scouts were shown before its results are read. Perfect blocking on the live web is not achievable, but measuring exposure is.
+
+**A study entry's "no blocked source reached a scout" must say how it was checked.** The v14 search study counted refused fetches, and so missed snippets and two rescouts that cited copies of the blocked review.
+
+**Checking reconstructed provenance keeps finding new cases.** Every evidence version since v4 fixed how a scout's copied quote is matched back to tool text, and the next review found more mismatches. The passage-evidence plan removes the reconstruction: code splits tool output into passages before a model sees it, and models cite their IDs.

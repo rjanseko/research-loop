@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
+from .acquisition import SourcePolicy
 from .evidence import ToolText, identity_keys, printed_dois
 from .reading import charged_question
 from .schemas import UnreachedSource
@@ -157,21 +158,29 @@ def labeled_texts(messages: Iterable[ModelMessage]) -> list[ToolText]:
         if not isinstance(data, dict):
             continue
         if part.tool_name == WEB_SEARCH:
-            for item in data.get("results") or []:
+            for index, item in enumerate(data.get("results") or []):
                 texts.append(ToolText("snippet", identity_keys(url=item.get("url")),
-                                      f"{item.get('title', '')}\n{item.get('snippet', '')}"))
+                                      f"{item.get('title', '')}\n{item.get('snippet', '')}",
+                                      part.tool_call_id, f"web_search.results[{index}]",
+                                      {"title": item.get("title"), "url": item.get("url")}))
         elif part.tool_name == FETCH and data.get("text"):
             keys = identity_keys(url=data.get("url"))
             if not data.get("start"):
                 keys |= printed_dois(data["text"])
-            texts.append(ToolText("full_text", keys, data["text"]))
+            texts.append(ToolText("full_text", keys, data["text"], part.tool_call_id, "fetch.text",
+                                  {"url": data.get("url"), "start": data.get("start", 0)}))
         else:
-            for work in data.get("works") or []:
+            for index, work in enumerate(data.get("works") or []):
                 keys = identity_keys(url=work.get("url"), doi=work.get("doi"), arxiv_id=work.get("arxiv_id"))
                 if work.get("openalex_id"):
                     keys |= identity_keys(url=work["openalex_id"])
                 texts.append(ToolText("abstract" if work.get("abstract") else "metadata", keys,
-                                      f"{work.get('title', '')}\n{work.get('abstract') or ''}"))
+                                      f"{work.get('title', '')}\n{work.get('abstract') or ''}",
+                                      part.tool_call_id, f"{part.tool_name}.works[{index}]",
+                                      {key: work[key] for key in ("title", "url", "doi", "arxiv_id", "openalex_id",
+                                                                  "authors", "published_at", "venue", "publisher",
+                                                                  "publication_status", "is_retracted")
+                                       if work.get(key) not in (None, "", [], "unknown")}))
     return texts
 
 
@@ -209,6 +218,31 @@ def source_records(messages: Iterable[ModelMessage]) -> list[tuple[frozenset[str
                 records.append((keys, record))
     return [(keys, {name: value for name, value in record.items() if value not in (None, "", [], "unknown")})
             for keys, record in records]
+
+
+def blocked_shown(messages: Iterable[ModelMessage], policy: SourcePolicy) -> list[str]:
+    """What the research tools showed in `messages` that `policy` blocks: search results, scholarly records, and
+    fetched text, each as "tool: title or address". A run's tools applied the policy of its own fetch version, so
+    replaying its messages through the current one finds what an older, weaker policy let through; drb2-task8's
+    blocked review reached scouts under shortened titles until fetch version 19 (study log, 29 September 2026)."""
+    shown: list[str] = []
+    for part in _returns(messages):
+        data = _data(part.content)
+        if not isinstance(data, dict):
+            continue
+        if part.tool_name == WEB_SEARCH:
+            shown += [f"{WEB_SEARCH}: {item.get('title') or item.get('url')}" for item in data.get("results") or []
+                      if isinstance(item, dict) and (policy.blocks(str(item.get("url") or ""))
+                                                     or policy.blocks_result(item.get("title"), item.get("snippet")))]
+        elif part.tool_name == FETCH and data.get("text"):
+            if policy.blocks(str(data.get("url") or "")) or (not data.get("start") and policy.blocks_document(data["text"])):
+                shown.append(f"{FETCH}: {data.get('url')}")
+        else:
+            shown += [f"{part.tool_name}: {work.get('title') or work.get('url')}" for work in data.get("works") or []
+                      if isinstance(work, dict) and policy.blocks_work(
+                          (work.get("url"), work.get("full_text_url")), work.get("doi"), work.get("arxiv_id"),
+                          title=work.get("title"))]
+    return shown
 
 
 def searched_snippets(content: Any) -> dict[str, Any] | None:

@@ -17,10 +17,12 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
-from .history import TrimmedHistoryModel
 from .rate_limit import ScoutRateLimitModel, TokenPacer, rate_limit_hook
 
 Role = Literal["planner", "scout", "synthesizer"]
+
+# The beta that lets a request name a model to continue on when a safety classifier declines it.
+SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
 def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
@@ -33,13 +35,22 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
     result: dict[str, Any] = {"thinking": effort, "timeout": timeout}
     if role == "synthesizer":
         result["max_tokens"] = limits.synthesis_max_output_tokens
+        if fallback := settings.models.synthesizer_fallback(spec):
+            # Anthropic continues a declined synthesis on the fallback inside the same request, at the
+            # fallback's own effort (citations.py prices each attempt).
+            fallback_id, fallback_effort = split_model(fallback)
+            result["anthropic_betas"] = [SERVER_FALLBACK_BETA]
+            result["extra_body"] = {"fallbacks": [{"model": fallback_id.partition(":")[2],
+                                                   "output_config": {"effort": fallback_effort}}]}
     elif role == "planner":
         # Anthropic defaults max_tokens to 4,096, shared by thinking and output.
         result["max_tokens"] = settings.model_calls.planner_max_output_tokens
     provider = model_provider(model_id)
     # Ask for the growing prompt prefix of a tool loop to be cached. OpenAI caches on its own, and a
-    # stable key raises the hit rate; Anthropic caches only when asked; Z.ai caches on its own.
-    if provider == "anthropic":
+    # stable key raises the hit rate; Anthropic caches only when asked; Z.ai caches on its own. The synthesizer
+    # makes one request that is never retried, so a cache write, billed at 1.25 times the input price, would
+    # never be read.
+    if provider == "anthropic" and role != "synthesizer":
         result["anthropic_cache"] = True
     elif provider == "openai":
         result["openai_prompt_cache_key"] = f"research-loop:{model_id}"
@@ -98,7 +109,11 @@ def build_model(spec: str, role: Role, settings: Settings, *, sdk_retries: int |
     elif provider == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
-        model = AnthropicModel(name, provider=AnthropicProvider(api_key=key), settings=own)
+
+        # The synthesizer cites the ledger's passages through Claude's citations (citations.py).
+        from .citations import CitingAnthropicModel
+        kind = CitingAnthropicModel if role == "synthesizer" else AnthropicModel
+        model = kind(name, provider=AnthropicProvider(api_key=key), settings=own)
     elif provider == "zai":
         from pydantic_ai.models.zai import ZaiModel
         from pydantic_ai.providers.zai import ZaiProvider
@@ -137,23 +152,25 @@ def token_pacer(model_id: str, settings: Settings) -> TokenPacer | None:
 
 def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
     """A scout's model: `inner` behind a run-shared wrapper that retries only timed rate limits and paces
-    `model_id` under its token rate, and with old page text trimmed from each request (history.py) unless
-    `trim_history` is off."""
-    model = ScoutRateLimitModel(inner, token_pacer(model_id, settings))
-    return TrimmedHistoryModel(model) if settings.trim_history else model
+    `model_id` under its token rate. Every request carries the scout's whole history, which keeps the cached
+    prompt prefix whole; trimming old pages from it was removed after trim-history-rescout-task8."""
+    return ScoutRateLimitModel(inner, token_pacer(model_id, settings))
 
 
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:
-    """The model `role` runs on, or `spec` in its place. The planner and synthesizer fall back to
-    `models.fallback` when their model refuses a call (ContentFilterError) or its provider fails
-    (ModelAPIError); scouts do not, since a failed scout leaves its question unanswered rather than failing
-    the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent again."""
+    """The model `role` runs on, or `spec` in its place. The planner falls back to `models.fallback` when its
+    model refuses a call (ContentFilterError) or its provider fails (ModelAPIError). The synthesizer does not,
+    since it must be Claude: Anthropic falls back for it inside the request (`model_settings`); nor do scouts, since a failed scout leaves its question unanswered rather than
+    failing the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent
+    again."""
     spec = spec or getattr(settings.models, role)
     primary = build_model(spec, role, settings, sdk_retries=0 if role == "scout" else None)
     fallback = settings.models.fallback
     if role == "scout":
         return scout_model(primary, split_model(spec)[0], settings)
-    if not fallback or fallback == spec:
+    # The synthesizer is always Claude, since its report is built from Claude's citations; another provider
+    # could not take its call, and its Claude fallback runs server-side.
+    if role == "synthesizer" or not fallback or fallback == spec:
         return primary
     return FallbackModel(primary, build_model(fallback, role, settings),
                          fallback_on=(ModelAPIError, ContentFilterError))
