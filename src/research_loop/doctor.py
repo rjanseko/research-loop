@@ -72,6 +72,8 @@ async def run_doctor(settings: Settings, *, smoke: bool = False) -> int:
              "synthesizer": settings.models.synthesizer}
     if settings.models.fallback:
         roles["fallback"] = settings.models.fallback
+    if synthesizer_fallback := settings.models.synthesizer_fallback(settings.models.synthesizer):
+        roles["synthesizer fallback"] = synthesizer_fallback
     problems = settings.route_problems()
     for problem in problems:
         report("FAIL", "models", problem)
@@ -126,7 +128,8 @@ async def run_doctor(settings: Settings, *, smoke: bool = False) -> int:
             tried.add(model_id)
             try:
                 report("OK", f"smoke {model_id}",
-                       await _smoke(model_id, "planner" if role == "fallback" else role, settings))
+                       await _smoke(model_id, "planner" if role in ("fallback", "synthesizer fallback") else role,
+                                    settings))
             except Exception as exc:  # noqa: BLE001 - every check reports its own failure instead of raising
                 report("FAIL", f"smoke {model_id}", _smoke_failure(exc))
     return 1 if failed else 0

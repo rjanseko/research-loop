@@ -355,7 +355,7 @@ class EvidenceLedger:
         checks code set (quote_check, quote_access, source_check, source_access) stay, so the
         synthesizer can tell evidence it read from evidence it only glimpsed. Without `passages`, the
         text of supporting evidence is left out, because the synthesizer receives it as citable
-        passages instead (`passages()`).
+        passages instead (`passages()`), and so is the statement of a claim that has such a passage.
         """
         numbering = self._source_numbering()
         return {"sources": self.source_table(),
@@ -465,9 +465,13 @@ def _project_evidence(item: Evidence, numbering: dict[str, str], *, text: bool =
 
 
 def _project_result(result: ResearchResult, numbering: dict[str, str], *, texts: bool = True) -> dict[str, Any]:
+    """One result for a prompt. Without `texts`, the synthesizer's view, a claim that has a citable passage
+    (`EvidenceLedger.passages`) also leaves out its statement: the passage says it, and a sentence written
+    from the statement would be uncited."""
     claims = []
     for claim in result.claims:
-        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence"}))
+        cited = not texts and any(item.supports and _evidence_text(item) for item in claim.evidence)
+        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence", *(("statement",) if cited else ())}))
         if claim.evidence:
             body["evidence"] = [_project_evidence(item, numbering, text=texts) for item in claim.evidence]
         claims.append(body)
@@ -562,19 +566,28 @@ def coverage_states(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalRep
     return states
 
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# A line that is only bold text, as a report uses for a heading inside a list.
+_BOLD_HEADING = re.compile(r"\*\*[^*]+\*\*:?")
+
+
+def _is_table_rule(line: str) -> bool:
+    return bool(line) and set(line) <= set("|-: ")
 
 
 def uncited_sentences(answer: str) -> tuple[int, int]:
-    """The answer's sentences, and those with no inline [sN] citation. Headings, table rules, and lines
-    of fewer than six words are left out, since they state no finding; a citation that closes a sentence
-    after its full stop counts for it."""
+    """The answer's sentences, and those with no inline [sN] citation. Headings, bold heading lines, a
+    table's header row and rules, and lines of fewer than six words are left out, since they state no
+    finding; a table's other rows count. A citation that closes a sentence after its full stop counts for it."""
+    lines = [line.strip() for line in answer.splitlines()]
     sentences: list[str] = []
-    for line in answer.splitlines():
-        line = line.strip().lstrip("-*+> ").strip()
-        if not line or line.startswith("#") or set(line) <= set("|-: "):
+    for index, raw in enumerate(lines):
+        line = raw.lstrip("-*+> ").strip()
+        following = next((later for later in lines[index + 1:] if later), "")
+        if (not line or line.startswith("#") or _is_table_rule(line) or _BOLD_HEADING.fullmatch(raw.lstrip("-+> "))
+                or (raw.startswith("|") and _is_table_rule(following))):
             continue
-        sentences += _SENTENCE_END.split(line)
+        sentences += SENTENCE_END.split(line)
     counted = [s for s in sentences if len(strip_inline_citations(s).split()) >= 6]
     return len(counted), sum(not inline_source_ids(s) for s in counted)
 

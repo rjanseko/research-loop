@@ -5,12 +5,23 @@ from decimal import Decimal
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RequestUsage
 
-from research_loop.study_budget import StudyBudget, StudyBudgetModel, StudyBudgetRefusal
+from research_loop.study_budget import (
+    StudyBudget,
+    StudyBudgetModel,
+    StudyBudgetRefusal,
+    upper_input_tokens,
+)
 
 pytestmark = pytest.mark.filterwarnings("ignore::pydantic_ai.exceptions.CostNotFoundWarning")
 
@@ -183,3 +194,33 @@ async def test_the_reservation_covers_the_long_context_output_tier(model_id: str
     for used in (input_tokens, bound):
         actual = calc_price(RequestUsage(input_tokens=used, output_tokens=24_000), name, provider_id=provider).total_price
         assert charge >= actual
+
+
+async def test_a_synthesis_with_a_fallback_reserves_both_attempts() -> None:
+    # A declined synthesis continues on its fallback inside the same request (citations.py): the declined
+    # attempt may have streamed its whole output, which the fallback then reads as input.
+    messages = [ModelRequest(parts=[UserPromptPart("x" * 40_000)])]
+    settings, parameters = {"max_tokens": 32_000}, ModelRequestParameters()
+    alone = await StudyBudget(Decimal(100)).reserve("anthropic:claude-opus-5-5", messages, settings, parameters)
+    both = await StudyBudget(Decimal(100)).reserve("anthropic:claude-opus-5-5", messages, settings, parameters,
+                                                   fallback_model_id="anthropic:claude-opus-5")
+    upper = upper_input_tokens(messages, parameters, settings)
+    # Opus 5 at $5 in and $25 out a million, on the input plus the declined attempt's output.
+    assert both - alone == (Decimal(upper + 32_000) * 5 + Decimal(32_000) * 25) / 1_000_000
+    with pytest.raises(StudyBudgetRefusal, match="no price"):
+        await StudyBudget(Decimal(100)).reserve("anthropic:claude-opus-5-5", messages, settings, parameters,
+                                                fallback_model_id="anthropic:no-such-model")
+
+
+async def test_a_response_that_carries_its_cost_settles_to_it() -> None:
+    # A synthesis that fell back carries its cost summed over its attempts at each model's rates; its tokens
+    # are only the serving attempt's, so pricing them as the requested model would under-count.
+    def respond(_messages: list[ModelMessage], _info) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("ok")],
+                             usage=RequestUsage(input_tokens=1000, output_tokens=10, cost=Decimal("0.4321")))
+
+    budget = StudyBudget(Decimal(10))
+    model = StudyBudgetModel(FunctionModel(respond), "anthropic:claude-opus-5-5", budget,
+                             fallback_model_id="anthropic:claude-opus-5")
+    await Agent(model, output_type=str).run("hello", model_settings={"max_tokens": 100})
+    assert budget.reserved_usd == Decimal("0.4321")

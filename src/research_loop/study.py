@@ -449,7 +449,9 @@ def _preflight(env: dict[str, str]) -> str | None:
 def _run_env(run: Planned, mode: Mode, dsn: str | None, trees: dict[str, Path],
              models: ScoutModels, model_calls: ModelCallLimits) -> dict[str, str]:
     """Freeze model IDs and call limits, then apply arm, mode, and git-ref overrides."""
-    env = {f"RESEARCH_MODELS__{role.upper()}": spec or "" for role, spec in models.model_dump().items()}
+    # A mapping, such as the synthesizer fallbacks, is frozen as the JSON pydantic-settings reads back.
+    env = {f"RESEARCH_MODELS__{role.upper()}": json.dumps(spec) if isinstance(spec, dict) else spec or ""
+           for role, spec in models.model_dump().items()}
     env |= {f"RESEARCH_MODEL_CALLS__{name.upper()}": str(value)
             for name, value in model_calls.model_dump().items()}
     env |= run.arm.env | mode_env(mode, run, dsn, models)

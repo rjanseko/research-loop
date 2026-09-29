@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
@@ -76,7 +77,7 @@ def _user_content(messages: list[ModelMessage]) -> list[Any]:
 
 
 def _prompt(messages: list[ModelMessage]) -> dict[str, Any]:
-    """The JSON a role is given; the synthesizer's comes first, before its search results."""
+    """The JSON a role is given; the synthesizer's comes after its search results."""
     return json.loads(next(item for item in _user_content(messages) if isinstance(item, str)))
 
 
@@ -145,19 +146,17 @@ def reasons(run) -> list[str]:
 
 def writer(*, untagged_first: bool = False, calls: list[int] | None = None):
     """A synthesizer that cites every passage it is given, once in the summary and once in the answer, each
-    with its claim's statement; `untagged_first` makes its first reply lack its sections."""
+    written from the passage's text, as the brief lists a claim with a passage without its statement;
+    `untagged_first` makes its first reply lack its sections."""
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if calls is not None:
             calls.append(len(messages))
         if untagged_first and len(messages) == 1:
             return ModelResponse(parts=[TextPart("Mostly trustworthy.")])
-        statements = {claim["id"]: claim["statement"] for result in _prompt(messages)["research"]["research"]
-                      for claim in result.get("claims", [])}
-
         def cited() -> list[TextPart | str]:
             return [part for index, result in enumerate(_search_results(messages))
                     for block, text in enumerate(result["blocks"])
-                    for part in (citing(statements[_claim_of(text)], index, result, block), ". ")]
+                    for part in (citing(text.partition(") ")[2], index, result, block), ". ")]
 
         return tagged(["Mostly trustworthy. ", *cited()], summary=cited())
 
@@ -336,6 +335,45 @@ async def test_a_synthesis_that_writes_no_answer_returns_the_claims_found(settin
     assert "## Claims found" in markdown and "- Finding for q1 [s1] (q1/c1)" in markdown
 
 
+async def test_a_synthesis_that_fell_back_or_cited_what_was_not_sent_says_so(settings, pages) -> None:
+    # Anthropic continued a declined synthesis on the fallback (citations.py records the handoff), and one
+    # citation's text is not the passage sent: the report keeps the rest and leaves that citation out.
+    written = writer().function
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        reply = written(messages, info)
+        stray = citing("A stray sentence.", 0, _search_results(messages)[0])
+        stray.provider_details["citations"][0]["cited_text"] = "not what was sent"
+        handoff = {"type": "fallback", "from": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"},
+                   "trigger": {"type": "refusal", "category": "bio"}}
+        return replace(reply, parts=[*reply.parts[:-1], stray, reply.parts[-1]],
+                       provider_details={"fallback": {"handoffs": [handoff], "attempts": []}})
+
+    run = await _run(settings, write=FunctionModel(respond, model_name="claude-opus-5"))
+    assert run.status == "complete" and "A stray sentence." in run.report.answer
+    assert "A stray sentence" not in [claim.statement for claim in run.report.claims]
+    assert run.notes == [
+        "the synthesizer's model declined the synthesis (bio), and claude-opus-5 continued it",
+        ("1 of the synthesizer's citations did not match the passages sent and were left out: "
+         "the cited text of s1 blocks 0 to 1 is not theirs")]
+
+
+async def test_a_synthesis_declined_partway_through_is_discarded_not_published(settings, pages) -> None:
+    # PydanticAI returns the text of a reply declined partway through as output; Anthropic says to discard it.
+    written = writer().function
+
+    def declined(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        reply = written(messages, info)
+        return replace(reply, parts=reply.parts[:3], finish_reason="content_filter",
+                       provider_details={"refusal_category": "bio", "recommended_model": "claude-opus-4-8"})
+
+    run = await _run(settings, write=FunctionModel(declined))
+    assert run.report is None and run.status == "partial"
+    assert run.notes == [("the synthesizer's model declined the synthesis partway through (bio), so its partial "
+                          "reply was discarded; Anthropic suggests claude-opus-4-8")]
+    assert "## Claims found" in render_markdown(run.to_record())
+
+
 async def test_a_failed_plan_researches_the_question_as_one(settings, pages) -> None:
     def refuses(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return _output(info, {"questions": []})  # fails its check twice
@@ -493,7 +531,7 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
-    assert run.config["limits"]["followup_cost_usd"] == 2.9
+    assert run.config["limits"]["followup_cost_usd"] == 4.35
 
 
 async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -> None:
@@ -675,7 +713,7 @@ async def test_the_plan_sets_the_depth_and_its_limits(settings, pages) -> None:
     assert seen[0]["max_questions"] == {"quick": 2, "standard": 4, "deep": 8} and "depth" not in seen[0]
     assert quick.plan.depth == "quick" and quick.workflow_version == WORKFLOW_VERSION
     saved = store.runs[quick.run_id]
-    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 0.98
+    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 2.14
     assert saved["config"]["follow_up"] is False and not quick.checks.gap_analysis
 
     # A deep plan turns the gap follow-up on, and the stored run says so.

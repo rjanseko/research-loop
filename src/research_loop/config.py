@@ -100,7 +100,8 @@ class ScoutModels(BaseModel):
     scout is `gpt-6-luna`: on the screened cases it finished inside the deadline, and Flash at max did
     not. `fallback` takes a planner call when its model refuses it or its provider fails; Opus 5.5 refused
     to plan one ordinary research question as a biological risk. The synthesizer is always a Claude model:
-    its report is built from Claude's citations of the ledger's passages (citations.py), so it has no fallback.
+    its report is built from Claude's citations of the ledger's passages (citations.py), so its fallback is
+    another Claude model that Anthropic runs inside the same request (`synthesizer_fallbacks`).
 
     Each is `provider:model@effort`, and a model without its effort is refused, so a model and the
     reasoning effort it runs at are always chosen together.
@@ -114,6 +115,11 @@ class ScoutModels(BaseModel):
     # turned out to be the pacer's stale 200,000 limit, a tenth of the account's real one.
     scout_alt: str | None = None
     synthesizer: str = "anthropic:claude-opus-5-5@medium"
+    # The model Anthropic continues a synthesis on, inside the same request and stream, when the
+    # synthesizer's safety classifiers decline it (server-side fallback, citations.py); a declined synthesis
+    # would otherwise leave the run without a report. Keyed by the synthesizer's model, since each model
+    # permits its own fallback targets; a synthesizer not listed has none.
+    synthesizer_fallbacks: dict[str, str] = {"anthropic:claude-opus-5-5": "anthropic:claude-opus-5@medium"}
     fallback: str | None = "openai:gpt-6-sol@high"
     # Grades rubric points and assesses quality (evals.py, quality.py); each grade records it.
     judge: str = "openai:gpt-6-sol@high"
@@ -143,6 +149,24 @@ class ScoutModels(BaseModel):
     @classmethod
     def _claude_model(cls, value: str) -> str:
         return synthesizer_spec(value)
+
+    @field_validator("synthesizer_fallbacks")
+    @classmethod
+    def _claude_fallbacks(cls, value: dict[str, str]) -> dict[str, str]:
+        checked = {}
+        for model_id, spec in value.items():
+            model_id = model_id.strip()
+            if split_model(model_id)[1] or model_provider(model_id) != "anthropic":
+                raise ValueError(f"a synthesizer fallback is keyed by an anthropic:model ID with no effort; got {model_id}")
+            spec = synthesizer_spec(spec)
+            if model_provider(split_model(spec)[0]) != "anthropic" or split_model(spec)[0] == model_id:
+                raise ValueError(f"{model_id} needs another anthropic: model as its fallback; got {spec}")
+            checked[model_id] = spec
+        return checked
+
+    def synthesizer_fallback(self, spec: str) -> str | None:
+        """The fallback of a synthesis on `spec`, or None when its model has none."""
+        return self.synthesizer_fallbacks.get(split_model(spec)[0])
 
     @field_validator("scout_alt", "fallback")
     @classmethod
@@ -182,8 +206,11 @@ class DepthTier(BaseModel):
 # The synthesizer makes one request that is never retried, and PydanticAI checks its cost only once the reply
 # is in, so a reply over its share would be paid for and thrown away: every depth's share covers one reply at
 # the full output cap (32,000 tokens, $0.64 on Opus 5.5) plus its ledger. The totals grew by as much, so the
-# scouts' shares are unchanged (quick $0.30 to $0.98 with synthesis $0.12 to $0.80).
-_QUICK = {"max_questions": 2, "cost_usd": 0.98, "synthesis_usd": 0.80, "research_seconds": 240,
+# scouts' shares are unchanged (quick $0.30 to $0.98 with synthesis $0.12 to $0.80). Since synthesis v7 a
+# declined synthesis continues on Opus 5 inside the same request, so each share also covers that second
+# attempt at the full output cap, its input carrying the first attempt's output: $1.16 on a quick run's
+# ledger (quick $0.98 to $2.14, synthesis $0.80 to $1.96, follow-up $2.90 to $4.06), $1.45 on the others.
+_QUICK = {"max_questions": 2, "cost_usd": 2.14, "synthesis_usd": 1.96, "followup_cost_usd": 4.06, "research_seconds": 240,
           "deadline_seconds": 360}
 # In the first deep example run (d8c8198e), three of four Luna scouts were cut off at the 480-second research
 # deadline with over 90% of their dollar share unspent, and the fourth scout and a deep dive stopped on their
@@ -192,7 +219,7 @@ _QUICK = {"max_questions": 2, "cost_usd": 0.98, "synthesis_usd": 0.80, "research
 # $0.21 each, room for a GLM-5.3 second scout model (ScoutModels.scout_alt), which costs about seven times Luna.
 # Since scout-v14 the slowest tenth of deep scouts, which had reached the 1,200-second window (1,174 s), get
 # 1,800 seconds, and a deep dive keeps a full standard scout's loop budget.
-_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 4.40, "research_seconds": 1800,
+_DEEP = {"max_questions": 8, "follow_up": True, "followup_cost_usd": 5.85, "research_seconds": 1800,
          "deadline_seconds": 2520,
          "followup_deadline_seconds": 2520, "deep_dive_seconds": 480, "scout_productive_calls": 192,
          "deep_dive_requests": 30, "deep_dive_productive_calls": 128, "deep_dive_misses": 16}
@@ -209,15 +236,17 @@ class ScoutLimits(BaseModel):
     # they cost Brave and Exa scouts $0.06 and $0.10 each, beside $0.02 to $0.05 of model, so the envelopes
     # grew to leave each scout about $0.275 on a standard run and on a deep one
     # (scripts/budget_bottlenecks.py, study log 28 September 2026).
-    cost_usd: float = Field(2.15, gt=0, description="Total cap for the run")
+    cost_usd: float = Field(3.60, gt=0, description="Total cap for the run")
     planner_usd: float = Field(0.05, gt=0)
     # Opus 5.5 synthesizes a Scout-sized ledger for about $0.25, and a deep run's larger ledger for up to $0.37.
     # The synthesis is one request that is never retried, and its cost is checked once the reply is in, so the
     # share covers a reply at the full output cap ($0.64) plus a deep run's ledger; it was $0.60 with a retry.
-    synthesis_usd: float = Field(1.00, gt=0)
+    # Since synthesis v7 it also covers the server-side fallback's attempt on Opus 5, a full reply on that
+    # ledger plus the first attempt's output ($1.41), so the run totals grew by $1.45 and scouts keep theirs.
+    synthesis_usd: float = Field(2.45, gt=0)
     # Opt-in gap analysis and up to `max_gaps` parallel deep dives use a separate envelope, keeping the plain
     # Scout envelope unchanged. Each deep dive gets `deep_dive_usd`.
-    followup_cost_usd: float = Field(2.90, gt=0)
+    followup_cost_usd: float = Field(4.35, gt=0)
     gap_usd: float = Field(0.10, gt=0)
     max_gaps: int = Field(3, ge=1, le=6)
     deep_dive_usd: float = Field(0.35, gt=0)
@@ -481,6 +510,8 @@ class Settings(BaseSettings):
                  "judge": self.models.judge}
         if self.models.fallback:
             roles["fallback"] = self.models.fallback
+        if synthesizer_fallback := self.models.synthesizer_fallback(self.models.synthesizer):
+            roles["synthesizer_fallback"] = synthesizer_fallback
         if self.models.scout_alt:
             roles["scout_alt"] = self.models.scout_alt
         if self.offline_world is None:

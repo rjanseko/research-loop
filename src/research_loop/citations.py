@@ -10,7 +10,16 @@ PydanticAI (2.51 and before) neither sends search_result blocks nor keeps the ci
 (pydantic/pydantic-ai#2128). `CitingAnthropicModel` does both: a `TextContent` whose metadata is a search
 result goes to Claude as a search_result block, and each text block's citations are kept in its
 `TextPart.provider_details`. Citations cannot be combined with structured output, so the report comes back
-as tagged text that `cited_report` parses into a `FinalReport`.
+as tagged text that `cited_report` parses into a `FinalReport`. A citation is used only when its source,
+its search result's position, its block range, and its cited text all agree with the passages sent
+(`mismatched_citations` names the ones that do not).
+
+When the synthesizer's safety classifiers decline the request, Anthropic continues it on the configured
+fallback model inside the same stream (server-side fallback, `ScoutModels.synthesizer_fallbacks`): the text
+already streamed stays, and the fallback model writes the rest. When no model finishes it, the reply ends
+with a refusal, and whatever text it has is incomplete: the run discards it (`scout._Run._cited_report`). PydanticAI 2.48 prices only the top-level
+usage, which covers only the attempt that served the reply, so `CitingAnthropicModel` prices every attempt
+in `usage.iterations` at its own model's rates and records the handoff in the response's `provider_details`.
 """
 from __future__ import annotations
 
@@ -18,8 +27,10 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import Any, cast
 
+from genai_prices import calc_price
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -35,8 +46,10 @@ from pydantic_ai.models import (
 )
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RequestUsage
 
-from .evidence import SourcePassages, strip_inline_citations
+from .evidence import SENTENCE_END, SourcePassages, strip_inline_citations
+from .prices import install_price_overrides
 from .schemas import FinalReport, ReportClaim
 
 SEARCH_RESULT = "search_result"
@@ -48,6 +61,9 @@ _SECTION = re.compile(r"<(" + "|".join(SECTIONS) + r")>(.*?)(?:</\1>|(?=<(?:" + 
 # Whitespace and section tags at the end of a cited span, which its citation goes before.
 _TRAILING = re.compile(r"(?:\s|</?[a-z_]+>)*\Z")
 _TAG = re.compile(r"</?[a-z_]+>")
+# A sentence's closing punctuation, which its citation goes before; after a closing quote or bracket, the
+# citation follows it rather than go inside.
+_SENTENCE_CLOSE = re.compile(r"[.!?]+\Z")
 _ITEM_ID = re.compile(r"[A-Za-z0-9_~/-]+")
 
 
@@ -86,11 +102,16 @@ class _Block:
 
 
 class _CitationRecorder:
-    """Passes a streamed response's events through unchanged, and keeps each text block's text and citations."""
+    """Passes a streamed response's events through unchanged, and keeps each text block's text and citations,
+    each server-side fallback's handoff, and the usage of every attempt."""
 
     def __init__(self, stream: AsyncIterator[Any]) -> None:
         self._stream = stream
         self.blocks: dict[int, _Block] = {}
+        self.fallbacks: list[dict[str, Any]] = []
+        self.iterations: list[Any] = []
+        # The model Anthropic names to retry a refusal on when it skipped the fallback, such as for a rate limit.
+        self.recommended_model: str | None = None
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self._events()
@@ -102,7 +123,16 @@ class _CitationRecorder:
     async def _events(self) -> AsyncIterator[Any]:
         async for event in self._stream:
             kind = getattr(event, "type", None)
-            if kind == "content_block_start" and event.content_block.type == "text":
+            # The usage of each attempt; the final message_delta's replaces the opening one's.
+            usage = (getattr(event.message, "usage", None) if kind == "message_start"
+                     else event.usage if kind == "message_delta" else None)
+            if usage is not None and getattr(usage, "iterations", None):
+                self.iterations = list(usage.iterations)
+            if kind == "message_delta" and (details := getattr(event.delta, "stop_details", None)) is not None:
+                self.recommended_model = getattr(details, "recommended_model", None) or self.recommended_model
+            if kind == "content_block_start" and event.content_block.type == "fallback":
+                self.fallbacks.append(_dump(event.content_block))
+            elif kind == "content_block_start" and event.content_block.type == "text":
                 self.blocks[event.index] = _Block(
                     event.content_block.text or "",
                     [_dump(citation) for citation in event.content_block.citations or []])
@@ -128,11 +158,52 @@ class _CitationRecorder:
                         part = replace(part, provider_name=provider_name,
                                        provider_details={**(part.provider_details or {}), "citations": block.citations})
             parts.append(part)
-        return replace(response, parts=parts)
+        response = replace(response, parts=parts)
+        if self.recommended_model:
+            response = replace(response, provider_details={**(response.provider_details or {}),
+                                                           "recommended_model": self.recommended_model})
+        if self.fallbacks or any(item.type == "fallback_message" for item in self.iterations):
+            response = _fallen_back(response, self.fallbacks, self.iterations)
+        return response
 
 
-def _dump(citation: Any) -> dict[str, Any]:
-    return citation.model_dump(mode="json") if hasattr(citation, "model_dump") else dict(citation)
+def _dump(value: Any) -> dict[str, Any]:
+    return value.model_dump(mode="json", by_alias=True) if hasattr(value, "model_dump") else dict(value)
+
+
+def _fallen_back(response: ModelResponse, fallbacks: list[dict[str, Any]], iterations: list[Any]) -> ModelResponse:
+    """`response` after a server-side fallback: named by the model that served it, with its cost summed over
+    every attempt, each priced at its own model's rates, and the handoffs and attempts in `provider_details`.
+
+    The token counts stay the serving attempt's, as Anthropic reports them, since one usage cannot hold two
+    models' tokens; `provider_details["fallback"]["attempts"]` has each attempt's. PydanticAI keeps a cost that
+    is already set. A declined attempt is priced even when it was refused before any output in a category
+    Anthropic does not bill, so the cost may be over. When an attempt cannot be priced, the cost is left for
+    PydanticAI to price from the serving attempt alone, which is under; the route check refuses a synthesizer
+    or fallback without a price, so only a model Anthropic chose itself could cause that."""
+    install_price_overrides()
+    attempts: list[dict[str, Any]] = []
+    cost: Decimal | None = Decimal(0)
+    for item in iterations:
+        if item.type not in ("message", "fallback_message"):
+            continue
+        model = (item.model or response.model_name or "").removeprefix("anthropic:")
+        usage = RequestUsage(input_tokens=item.input_tokens + item.cache_creation_input_tokens
+                             + item.cache_read_input_tokens,
+                             cache_write_tokens=item.cache_creation_input_tokens,
+                             cache_read_tokens=item.cache_read_input_tokens, output_tokens=item.output_tokens)
+        try:
+            price = calc_price(usage, model, provider_id="anthropic").total_price
+        except LookupError:
+            price = None
+        cost = cost + price if cost is not None and price is not None else None
+        attempts.append({"model": model, "served": item.type == "fallback_message", "input_tokens": usage.input_tokens,
+                         "output_tokens": usage.output_tokens,
+                         "cost_usd": None if price is None else str(price)})
+    served = next((attempt["model"] for attempt in attempts if attempt["served"]), response.model_name)
+    usage = replace(response.usage, cost=cost if attempts else None)
+    details = {**(response.provider_details or {}), "fallback": {"handoffs": fallbacks, "attempts": attempts}}
+    return replace(response, model_name=served, usage=usage, provider_details=details)
 
 
 class CitingAnthropicModel(AnthropicModel):
@@ -183,42 +254,82 @@ def missing_sections(text: str) -> list[str]:
     return [name for name in _REQUIRED if not found.get(name)]
 
 
-def _references(part: TextPart, by_source: dict[str, SourcePassages]) -> list[tuple[str, str]]:
-    """The (source ID, claim ID) pairs a text part cites, in order, each once."""
+def _citation_problem(citation: dict[str, Any], passages: Sequence[SourcePassages]) -> str | None:
+    """Why `citation` does not match the search results sent, which are `passages` in order, or None when
+    its source, its search result's position, its block range (end exclusive), and its cited text, which
+    Anthropic documents as the cited blocks joined, all agree."""
+    if citation.get("type") != "search_result_location":
+        return f"a {citation.get('type')} citation"
+    index, source_id = citation.get("search_result_index"), citation.get("source")
+    if not isinstance(index, int) or not 0 <= index < len(passages) or passages[index].source_id != source_id:
+        return f"search result {index} is not {source_id}"
+    blocks = passages[index].passages
+    start, end = citation.get("start_block_index"), citation.get("end_block_index")
+    if not isinstance(start, int) or not isinstance(end, int) or not 0 <= start < end <= len(blocks):
+        return f"{source_id} has no blocks {start} to {end}"
+    if citation.get("cited_text") != "".join(passage.text for passage in blocks[start:end]):
+        return f"the cited text of {source_id} blocks {start} to {end} is not theirs"
+    return None
+
+
+def mismatched_citations(response: ModelResponse, passages: Sequence[SourcePassages]) -> list[str]:
+    """Why each citation in `response` that `cited_report` leaves out does not match the passages sent."""
+    return [problem for part in response.parts if isinstance(part, TextPart)
+            for citation in (part.provider_details or {}).get("citations", [])
+            if (problem := _citation_problem(citation, passages))]
+
+
+def _references(part: TextPart, passages: Sequence[SourcePassages]) -> list[tuple[str, str]]:
+    """The (source ID, claim ID) pairs a text part cites, in order, each once, from the citations that match
+    the passages sent."""
     pairs: list[tuple[str, str]] = []
     for citation in (part.provider_details or {}).get("citations", []):
-        if citation.get("type") != "search_result_location" or not (source := by_source.get(citation.get("source", ""))):
+        if _citation_problem(citation, passages):
             continue
-        start, end = int(citation.get("start_block_index", 0)), int(citation.get("end_block_index", 0))
-        for passage in source.passages[max(start, 0):max(end, start + 1)]:
+        source = passages[citation["search_result_index"]]
+        for passage in source.passages[citation["start_block_index"]:citation["end_block_index"]]:
             if (source.source_id, passage.claim_id) not in pairs:
                 pairs.append((source.source_id, passage.claim_id))
     return pairs
 
 
 def _marked(text: str, source_ids: list[str]) -> str:
-    """`text` with an inline citation of `source_ids` after its last word, before trailing space and tags."""
-    end = _TRAILING.search(text)
-    cut = end.start() if end else len(text)
-    if not text[:cut].strip():
-        return text
-    return f"{text[:cut]} [{', '.join(source_ids)}]{text[cut:]}"
+    """`text` with an inline citation of `source_ids` closing each of its sentences: before the sentence's
+    full stop, or after its last word when it has none, and before trailing space and tags. A cited block
+    can hold several sentences, and one marked only at its end left the others uncited (run 6e811f5f); a
+    citation after a full stop would read as the next sentence's."""
+    citation = f" [{', '.join(source_ids)}]"
+    # The separators are kept (odd indices), so the text is rebuilt unchanged apart from the citations.
+    pieces = re.split(f"({SENTENCE_END.pattern})", text)
+    return "".join(piece if index % 2 else _mark_sentence(piece, citation) for index, piece in enumerate(pieces))
+
+
+def _mark_sentence(sentence: str, citation: str) -> str:
+    end = _TRAILING.search(sentence)
+    body, rest = sentence[:end.start()], sentence[end.start():] if end else ""
+    close = _SENTENCE_CLOSE.search(body)
+    head = body[:close.start()] if close else body
+    words = head.rstrip()
+    if not words.strip():
+        return sentence
+    # After the last word, so any space before the full stop stays where it was.
+    return f"{words}{citation}{body[len(words):]}{rest}"
 
 
 def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) -> FinalReport:
     """The report in the synthesizer's tagged reply, with inline citations and a claim list written by code
     from the passages Claude cited. Citations the model typed itself are removed first, so every [sN] in the
-    report stands for a passage the API says the text drew on. The reply is never retried, so a missing
-    section is left empty, and a reply with no <answer> section has the text outside its sections as its
-    answer."""
-    by_source = {source.source_id: source for source in passages}
+    report stands for a passage the API says the text drew on; a citation that does not match the passages
+    sent is left out (`mismatched_citations`). `passages` are the search results sent, in their order. The
+    reply is never retried, so a missing section is left empty, and a reply with no <answer> section has the
+    text outside its sections as its answer."""
     text = ""
     claims: list[ReportClaim] = []
     for part in response.parts:
         if not isinstance(part, TextPart):
             continue
         content = strip_inline_citations(part.content)
-        if pairs := _references(part, by_source):
+        if pairs := _references(part, passages):
             source_ids = list(dict.fromkeys(source_id for source_id, _ in pairs))
             content = _marked(content, source_ids)
             statement = " ".join(_TAG.sub(" ", strip_inline_citations(part.content)).split())
