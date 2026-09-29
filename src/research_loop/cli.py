@@ -280,7 +280,8 @@ async def _show(args: argparse.Namespace, settings: Settings) -> int:
         print(f"No run {args.run_id}", file=sys.stderr)
         return 1
     record = _record_from_row(row)
-    print(json.dumps(record, indent=2, ensure_ascii=False, default=str) if args.format == "json" else render_markdown(record))
+    print(json.dumps(record, indent=2, ensure_ascii=False, default=str) if args.format == "json" else
+          render_markdown(record, include_provenance=args.provenance))
     return 0
 
 
@@ -668,6 +669,7 @@ def main(argv: list[str] | None = None) -> None:
     show = commands.add_parser("show", help="Render a stored run")
     show.add_argument("run_id", type=UUID)
     show.add_argument("--format", choices=("md", "json"), default="md")
+    show.add_argument("--provenance", action="store_true", help="Append exact cited passages and saved tool-text IDs")
 
     split = commands.add_parser("breakdown", help="Show where a stored run's money and time went, call by call")
     split.add_argument("run_id", type=UUID)

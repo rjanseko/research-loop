@@ -44,21 +44,21 @@ def _ledger() -> EvidenceLedger:
     return ledger
 
 
-def test_passages_are_each_sources_supporting_evidence_labelled_with_claim_and_check() -> None:
+def test_passages_label_supporting_and_contradicting_evidence_with_claim_and_check() -> None:
     passages = _ledger().passages()
-    assert [(p.source_id, p.title) for p in passages] == [("s1", "The Protein Data Bank")]
+    assert [(p.source_id, p.title) for p in passages] == [("s1", "The Protein Data Bank"), ("s2", "A review")]
     assert [(p.claim_id, p.text) for p in passages[0].passages] == [
-        ("q1/c1", "(q1/c1; full_text; quote verified) The PDB holds 3D structures of proteins."),
-        ("q1/c2", "(q1/c2; snippet; the researcher's summary; no quote) Weekly updates."),
+        ("q1/c1", "(q1/c1; full_text; quote verified; supports) The PDB holds 3D structures of proteins."),
+        ("q1/c2", "(q1/c2; snippet; the researcher's summary; no quote; supports) Weekly updates."),
     ]
+    assert [p.supports for p in passages[1].passages] == [False, False]
     # The prompt view keeps each item's checks, and contradicting evidence's text, but not the cited text.
     view = _ledger().prompt_view(passages=False)
     claims = [claim for result in view["research"] for claim in result["claims"]]
     evidence = [item for claim in claims for item in claim["evidence"]]
-    assert [("quote" in item or "excerpt" in item) for item in evidence] == [False, False, True, True]
+    assert [("quote" in item or "excerpt" in item) for item in evidence] == [False, False, False, False]
     assert evidence[0]["quote_check"] == "verified"
-    # A claim with a passage is listed without its statement, so the passage is where the fact comes from; a
-    # claim with only contradicting evidence has no passage and keeps it.
+    # A claim with supporting passages leaves its text in those blocks; the disputed claim stays in the brief.
     assert [claim.get("statement") for claim in claims] == [None, None, "It is free to use"]
     assert all(claim["id"] for claim in claims)
     # Other prompts keep every statement.
@@ -147,7 +147,8 @@ async def test_claude_receives_search_results_and_its_citations_become_the_repor
     assert content[0] == {"type": "search_result", "source": "s1", "title": "The Protein Data Bank",
                           "citations": {"enabled": True},
                           "content": [{"type": "text", "text": p.text} for p in passages[0].passages]}
-    assert content[1]["type"] == "text" and json.loads(content[1]["text"])["research"]
+    assert content[1]["type"] == "search_result" and content[1]["source"] == "s2"
+    assert content[2]["type"] == "text" and json.loads(content[2]["text"])["research"]
 
     # The citations Claude streamed stay on the text blocks that carry them.
     cited = [part for part in result.response.parts
@@ -202,9 +203,8 @@ def test_a_citation_that_does_not_match_the_passages_sent_adds_no_reference_and_
         "the cited text of s1 blocks 0 to 1 is not theirs", "a char_location citation"]
 
 
-def test_every_sentence_of_a_cited_block_carries_its_citation() -> None:
-    # Claude cites whole blocks, and one block can hold several sentences; marking only its end left the
-    # others uncited (run 6e811f5f). A citation goes before a full stop, or it would read as the next sentence's.
+def test_a_multi_sentence_cited_block_is_marked_ambiguous() -> None:
+    # The provider names a text block, not which of its sentences drew on which source.
     passages = _ledger().passages()
     response = ModelResponse(parts=[
         TextPart("<title>T</title><summary>S</summary><answer>"),
@@ -215,10 +215,11 @@ def test_every_sentence_of_a_cited_block_carries_its_citation() -> None:
         TextPart("</answer>"),
     ])
     report = cited_report(response, passages)
-    assert report.answer == ('Each task gives the issue text [s1]. The system then edits the code [s1]. Tests decide [s1].'
+    assert report.answer == ('Each task gives the issue text. The system then edits the code. Tests decide [s1].'
                              ' It is described as "curated." [s1]')
-    # One cited block is still one statement.
-    assert report.claims[0].statement == "Each task gives the issue text. The system then edits the code. Tests decide."
+    assert report.claims[0].citation_scope == "ambiguous"
+    assert [a.citation_scope for a in report.assertions if a.section == "answer"] == [
+        "uncited", "uncited", "ambiguous", "exact"]
 
 
 def _fallback_block(index: int, category: str | None) -> list[dict[str, Any]]:
@@ -291,9 +292,10 @@ def test_the_passages_are_kept_once_so_the_budget_guard_counts_them_once() -> No
     # The first live check was refused before dispatch: each passage was in both the text and the metadata,
     # and the guard reserves by the bytes of the serialized messages (run 8e4bfa1c).
     passages = _ledger().passages()
-    [content] = search_results(passages)
-    assert not any(passage.text in content.content for passage in passages[0].passages)
-    assert content.metadata["blocks"] == [passage.text for passage in passages[0].passages]
+    contents = search_results(passages)
+    assert len(contents) == 2
+    assert not any(passage.text in contents[0].content for passage in passages[0].passages)
+    assert contents[0].metadata["blocks"] == [passage.text for passage in passages[0].passages]
 
 
 

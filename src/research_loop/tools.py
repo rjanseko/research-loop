@@ -157,21 +157,29 @@ def labeled_texts(messages: Iterable[ModelMessage]) -> list[ToolText]:
         if not isinstance(data, dict):
             continue
         if part.tool_name == WEB_SEARCH:
-            for item in data.get("results") or []:
+            for index, item in enumerate(data.get("results") or []):
                 texts.append(ToolText("snippet", identity_keys(url=item.get("url")),
-                                      f"{item.get('title', '')}\n{item.get('snippet', '')}"))
+                                      f"{item.get('title', '')}\n{item.get('snippet', '')}",
+                                      part.tool_call_id, f"web_search.results[{index}]",
+                                      {"title": item.get("title"), "url": item.get("url")}))
         elif part.tool_name == FETCH and data.get("text"):
             keys = identity_keys(url=data.get("url"))
             if not data.get("start"):
                 keys |= printed_dois(data["text"])
-            texts.append(ToolText("full_text", keys, data["text"]))
+            texts.append(ToolText("full_text", keys, data["text"], part.tool_call_id, "fetch.text",
+                                  {"url": data.get("url"), "start": data.get("start", 0)}))
         else:
-            for work in data.get("works") or []:
+            for index, work in enumerate(data.get("works") or []):
                 keys = identity_keys(url=work.get("url"), doi=work.get("doi"), arxiv_id=work.get("arxiv_id"))
                 if work.get("openalex_id"):
                     keys |= identity_keys(url=work["openalex_id"])
                 texts.append(ToolText("abstract" if work.get("abstract") else "metadata", keys,
-                                      f"{work.get('title', '')}\n{work.get('abstract') or ''}"))
+                                      f"{work.get('title', '')}\n{work.get('abstract') or ''}",
+                                      part.tool_call_id, f"{part.tool_name}.works[{index}]",
+                                      {key: work[key] for key in ("title", "url", "doi", "arxiv_id", "openalex_id",
+                                                                  "authors", "published_at", "venue", "publisher",
+                                                                  "publication_status", "is_retracted")
+                                       if work.get(key) not in (None, "", [], "unknown")}))
     return texts
 
 

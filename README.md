@@ -176,14 +176,14 @@ A complete run can therefore have a weak or unsupported answer; the report's fir
 
 ### Reading the report
 
-A report opens with a line giving the run's status, its answer's support, how many answer sentences carry no inline citation, its cost and time, and how many sources were read. Uncited sentences are a diagnostic, since some of them are framing rather than findings; headings, bold heading lines, and a table's header row are not counted. The sections follow in this order; sections with nothing to say are left out.
+A report opens with a line giving the run's status, its answer's support, how many answer sentences carry no inline citation, its cost and time, and how many sources were read. Uncited sentences are a diagnostic, since some of them are framing rather than findings; headings, bold heading lines, and a table's header row are not counted. Provenance checks also enumerate assertions in the summary, answer, caveats, and table rows. The sections follow in this order; sections with nothing to say are left out.
 
 | Section | What it holds |
 |---|---|
 | Needs review | Every reason code flagged the run, such as statements that rest only on search snippets, or questions that returned no evidence. |
 | Gap follow-up | In follow-up mode, which gaps were chosen and why, and whether the deep dives settled them. |
 | Coverage | Each thing a sufficient answer must address, and whether the answer addresses it, says it was not established, or leaves it out. |
-| Summary and Answer | The written report. Each statement carries inline citations such as [s3], which name sources. |
+| Summary and Answer | The written report. Inline citations such as [s3] name sources; uncited assertions are flagged. |
 | Caveats | Limits the synthesizer found in the evidence. |
 | Statements resting on thin evidence | Statements whose only support is the research's own summary of a source with no quote checked against it, a search snippet, a record's metadata, a quote not found in its cited source, or a source no tool returned. |
 | Could not establish | Research questions that returned no evidence, with the reason each one stopped. |
@@ -194,6 +194,7 @@ A report opens with a line giving the run's status, its answer's support, how ma
 
 ```bash
 research show <run id>              # render a stored run again as Markdown, or --format json
+research show <run id> --provenance # append each assertion's cited passage, exact text, and tool receipt
 research breakdown <run id>         # where the money and time went, call by call, and why each call stopped
 research audit <run id> --model zai:glm-5.3@high --max-usd 0.30   # do the quotes support each statement?
 research diagnose <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.50   # where were rubric points lost?
@@ -241,7 +242,7 @@ Every request resends a scout's whole history, and page text is most of it. The 
 
 Code then checks every piece of evidence against what the tools actually returned in that scout's call. The checked claims go into the evidence ledger, where each has a unique ID such as `q2/c3`.
 
-Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. The synthesizer is always a Claude model: each source's supporting evidence reaches it as one search result, with one citable passage per piece of evidence, and Claude's citations say which passages each span of the report drew on. The search results come first and the research brief, with the question, after them. The brief lists each claim's checks, but a claim that has a passage appears without its statement, so a sentence about it has to come from the passage and is cited. Code, not the model, then writes the report's [sN] citations, one before the full stop of each sentence Claude cited, and its list of statements and the claim IDs behind them, so a citation cannot name a source or claim that does not exist. A citation counts only when its source, its search result's position, its block range, and its cited text all match the passages sent; the run notes any that do not, and leaves them out. Citations cannot be combined with structured output, so the synthesizer replies in tagged sections. It makes one request, which is not cached and never retried: a retry would resend the whole ledger, so a reply that lacks a section keeps what it has, and the run notes what was missing. When the synthesizer's safety classifiers decline the request, Anthropic continues it on a fallback Claude model inside the same request (Opus 5 for Opus 5.5), keeping the text already written; the run notes the handoff and its refusal category, and its cost counts each attempt at its own model's rates. A reply that every model declined partway through is incomplete, so the run discards it and notes the refusal, as it does a reply with no answer. The synthesizer's share of the budget covers a declined reply at the full output cap and the fallback's full reply. If the synthesis cannot finish or writes no answer, the run returns the ledger's claims without a written answer.
+Third, a synthesizer writes the report from the ledger. It sees only the checked evidence, never raw pages. The synthesizer is always a Claude model: each source's supporting or contradicting evidence reaches it as one search result, with one citable passage per piece of evidence, and Claude's citations say which passages each span of the report drew on. Each passage carries its stance, and a verified quote is linked to its exact saved tool-text span. The search results come first and the research brief, with the question, after them. The brief lists each claim's checks, but a claim that has a passage appears without its statement, so a sentence about it has to come from the passage and is cited. Code, not the model, then writes the report's [sN] citations and the source, passage, and claim IDs behind each cited assertion, so a citation cannot name a source or claim that does not exist. When one provider text block contains several sentences, code marks its citation as ambiguous rather than assigning its passages to every sentence. A citation counts only when its source, its search result's position, its block range, and its cited text all match the passages sent; the run notes any that do not, and leaves them out. Citations cannot be combined with structured output, so the synthesizer replies in tagged sections. It makes one request, which is not cached and never retried: a retry would resend the whole ledger, so a reply that lacks a section keeps what it has, and the run notes what was missing. When the synthesizer's safety classifiers decline the request, Anthropic continues it on a fallback Claude model inside the same request (Opus 5 for Opus 5.5), keeping the text already written; the run notes the handoff and its refusal category, and its cost counts each attempt at its own model's rates. A reply that every model declined partway through is incomplete, so the run discards it and notes the refusal, as it does a reply with no answer. The synthesizer's share of the budget covers a declined reply at the full output cap and the fallback's full reply. If the synthesis cannot finish or writes no answer, the run returns the ledger's claims without a written answer.
 
 With `--follow-up`, a gap analyzer reads the plan and the checked ledger after the scouts finish. It picks up to three missing pieces of evidence that could change the answer, preferring members of a requested set that a scout named but did not establish. A deep dive researches each one in parallel, with the same tools, checks, and budget notes as a scout. Each deep dive's claims join the ledger under the original question, in the order the gaps were chosen. The gap analyzer's decision is saved with the run. The run is marked `partial` if the analysis failed or any deep dive did not settle its gap. Follow-up mode has its own, larger budget and deadline.
 
@@ -272,7 +273,7 @@ The planner also decides how much research the question warrants, and the run ta
 
 Each piece of evidence gets marks that only code can set.
 
-A quote is `verified` when the tools returned those words, in that call, as part of the source the evidence cites, ignoring differences in case, spacing, and punctuation. It is `misattributed` when the words appear only in another source's text, and the evidence then names that source. It is `not_found` when they appear nowhere.
+A quote is `verified` when the tools returned those words, in that call, as part of the source the evidence cites. Matching tolerates case, spacing, and extraction punctuation, while preserving numeric signs, decimals, percentages, and attached units. It is `misattributed` when the words appear only in another source's text, and the evidence then names that source. It is `not_found` when they appear nowhere.
 
 A source counts as the same work under its other addresses:
 - an arXiv paper's abstract page, PDF, and ar5iv rendering;
@@ -286,18 +287,20 @@ A source is `observed` when a tool returned it in that call. A source that no to
 
 The access level says how much of the source the research saw: `full_text` for a page or PDF that was read, `abstract` for a paper's abstract from a scholarly index, `metadata` for a scholarly record without an abstract, and `snippet` for a search result.
 
-From these marks, each statement in the report gets a support level:
+The ledger saves a SHA-256 receipt for each tool result and the exact text and character spans for results containing verified quotes. A receipt includes the tool call, locator, access level, metadata, and observation time. Source titles and publication metadata shown for new runs come from tool results where available. URL queries remain part of source identity because they may select different pages. Older stored ledgers keep their original source IDs when reopened.
+
+From these marks and the passages actually cited, each assertion in the report gets a support level:
 
 | Level | When |
 |---|---|
-| `read` | At least one supporting item comes from a source read in full or as an abstract, and carries a `verified` quote |
-| `paraphrase` | The only read support is the research's own summary of the source, with no quote that code could check |
-| `shallow` | The only support is a snippet, metadata, an unverified quote, or a source no tool returned |
-| `unsupported` | No evidence supports it |
+| `read` | An exact cited passage supports the assertion with a verified quote from full text or an abstract |
+| `paraphrase` | The cited support is only the research's own summary of a source read in full or as an abstract |
+| `shallow` | The cited support is only a snippet, metadata, an unverified quote, or a source no tool returned |
+| `unsupported` | No usable cited passage supports it, including uncited or ambiguously cited assertions |
 
 Paraphrase, shallow, and unsupported statements are listed under "Needs review" and "Statements resting on thin evidence", and each makes the answer `weak` or `unsupported`. A run also counts its short quotes, verified quotes with fewer than a quarter of their claim's words.
 
-A verified quote shows that the source contains those words, not that they carry the whole claim. That is what the support audit checks (see [Studies and evaluation](#studies-and-evaluation)). The evidence version (7) is recorded with each run.
+A verified quote shows that the source contains those words, not that they carry the whole claim. The support audit judges each assertion against only its cited passage; ambiguous citations get a separate verdict without a model call. Older stored reports retain legacy claim-level audit behavior. The evidence version (8) and audit version (3) distinguish these rules from historical results (see [Studies and evaluation](#studies-and-evaluation)).
 
 ## External services and APIs
 
@@ -516,7 +519,7 @@ The study cases are in `src/research_loop/study_cases.jsonl`:
 The judges and the audit:
 - **`research grade`** scores a stored report against a case's rubric, one verdict per point. Grade close decisions with both judges: the choice of judge alone has moved a long case's score by up to 8 points.
 - **`research assess`** judges overall quality and specific facts against independently reviewed source summaries.
-- **`research audit`** asks the configured auditor model whether the verified quotes behind each report statement say what the statement says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
+- **`research audit`** asks the configured auditor model whether the exact verified passages cited by each assertion say what the assertion says. It also sends the record the tools returned for each quoted source, and nothing a model wrote about it.
 - **`research synthesize` and `research rescout`** repeat the synthesis of a stored ledger, or the research of a stored plan, with another model, so that one step can be compared alone.
 
 ### Finding bugs before paying
@@ -555,7 +558,7 @@ run.to_record() # the run as JSON, the same record `--out` writes to run.json
 
 ## Storage and tracing
 
-Postgres keeps each run: its question, configuration, plan, report, evidence ledger, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
+Postgres keeps each run: its question, configuration, plan, report assertions and citation links, evidence ledger with snapshot receipts and exact quote spans, and checks. It also keeps every model call, with its usage, cost, output, full messages, why it stopped, and, for a scout, how long its tools ran. Rubric grades, quality assessments, and support audits are kept in their own tables, each with its judge, version, cost, and messages. `research db migrate` applies the schema in `src/research_loop/migrations/`.
 
 Each run is one Logfire trace, and every span in it carries the run ID; the trace ID is stored on the run's database row. Each agent call is an `invoke_agent` span named for its role, and carries the run ID, role, question ID, and depth as metadata, which never reaches the model. Page fetches, scholarly lookups, and Exa searches appear as HTTP spans with their status and latency, with request headers left out and secret query parameters redacted. DuckDuckGo searches go through the search library and are not traced at the HTTP level. Traces include prompts and tool results, and are sent when a Logfire token or authenticated project is available.
 

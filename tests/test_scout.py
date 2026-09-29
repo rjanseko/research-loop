@@ -158,7 +158,7 @@ def writer(*, untagged_first: bool = False, calls: list[int] | None = None):
                     for block, text in enumerate(result["blocks"])
                     for part in (citing(text.partition(") ")[2], index, result, block), ". ")]
 
-        return tagged(["Mostly trustworthy. ", *cited()], summary=cited())
+        return tagged(cited(), summary=cited())
 
     return FunctionModel(respond)
 
@@ -184,7 +184,7 @@ async def test_a_question_becomes_a_cited_answer_traced_to_what_was_read(setting
     assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
     evidence = run.ledger.claims_by_id()["q1/c1"].evidence[0]
     assert (evidence.quote_check, evidence.quote_access, evidence.source_access) == ("verified", "full_text", "full_text")
-    assert [s.support for s in run.checks.statements] == ["read", "read"]
+    assert [(s.support) for s in run.checks.statements] == ["read", "read", "read", "read"]
     assert run.checks.evidence_by_access == {"full_text": 2} and run.checks.quotes_verified == 2
 
     stored = store.runs[run.run_id]
@@ -831,9 +831,9 @@ async def test_run_status_and_answer_support_are_separate(settings, pages) -> No
 async def test_a_statement_resting_only_on_a_summary_weakens_the_answer(settings, pages) -> None:
     # Evidence v7: a page that was read but not quoted leaves nothing code can check against the source.
     run = await _run(settings, research=researcher(quoted=frozenset({"q1"})))
-    assert [s.support for s in run.checks.statements] == ["read", "paraphrase"]
+    assert [s.support for s in run.checks.statements] == ["read", "paraphrase", "read", "paraphrase"]
     assert run.status == "complete" and run.checks.answer_support == "weak"
-    assert ("1 of 2 statements rest only on the research's own summaries of sources it read, with no quote "
+    assert ("2 of 4 statements rest only on the research's own summaries of sources it read, with no quote "
             "checked against the source") in run.checks.review_reasons
     assert "(summary only, no checked quote)" in render_markdown(run.to_record())
 
@@ -874,7 +874,7 @@ async def test_coverage_items_run_from_the_plan_through_research_to_the_report(s
     def write(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         cited = [citing(f"Finding {block}", index, result, block)
                  for index, result in enumerate(_search_results(messages)) for block in range(len(result["blocks"]))]
-        return tagged(["A. ", *cited], title="T", not_established=("k2",))
+        return tagged(cited, title="T", summary=cited, not_established=("k2",))
 
     with gap_agent.override(model=FunctionModel(gap)):
         run = await _run(settings, plan=plan, research=FunctionModel(research), write=FunctionModel(write),
