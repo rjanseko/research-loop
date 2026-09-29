@@ -16,7 +16,8 @@ its search result's position, its block range, and its cited text all agree with
 
 When the synthesizer's safety classifiers decline the request, Anthropic continues it on the configured
 fallback model inside the same stream (server-side fallback, `ScoutModels.synthesizer_fallbacks`): the text
-already streamed stays, and the fallback model writes the rest. PydanticAI 2.48 prices only the top-level
+already streamed stays, and the fallback model writes the rest. When no model finishes it, the reply ends
+with a refusal, and whatever text it has is incomplete: the run discards it (`scout._Run._cited_report`). PydanticAI 2.48 prices only the top-level
 usage, which covers only the attempt that served the reply, so `CitingAnthropicModel` prices every attempt
 in `usage.iterations` at its own model's rates and records the handoff in the response's `provider_details`.
 """
@@ -106,6 +107,8 @@ class _CitationRecorder:
         self.blocks: dict[int, _Block] = {}
         self.fallbacks: list[dict[str, Any]] = []
         self.iterations: list[Any] = []
+        # The model Anthropic names to retry a refusal on when it skipped the fallback, such as for a rate limit.
+        self.recommended_model: str | None = None
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self._events()
@@ -122,6 +125,8 @@ class _CitationRecorder:
                      else event.usage if kind == "message_delta" else None)
             if usage is not None and getattr(usage, "iterations", None):
                 self.iterations = list(usage.iterations)
+            if kind == "message_delta" and (details := getattr(event.delta, "stop_details", None)) is not None:
+                self.recommended_model = getattr(details, "recommended_model", None) or self.recommended_model
             if kind == "content_block_start" and event.content_block.type == "fallback":
                 self.fallbacks.append(_dump(event.content_block))
             elif kind == "content_block_start" and event.content_block.type == "text":
@@ -151,6 +156,9 @@ class _CitationRecorder:
                                        provider_details={**(part.provider_details or {}), "citations": block.citations})
             parts.append(part)
         response = replace(response, parts=parts)
+        if self.recommended_model:
+            response = replace(response, provider_details={**(response.provider_details or {}),
+                                                           "recommended_model": self.recommended_model})
         if self.fallbacks or any(item.type == "fallback_message" for item in self.iterations):
             response = _fallen_back(response, self.fallbacks, self.iterations)
         return response

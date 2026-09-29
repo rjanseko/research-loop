@@ -198,7 +198,8 @@ RESCOUT_VERSION = "scout-research-v16"
 # v6: one request, not cached and never retried; a reply that lacks a section keeps what it has.
 # v7: a claim with a passage appears in the brief without its statement; the passages come before the brief;
 # a citation counts only when it matches the passages sent; Anthropic falls back to another Claude model
-# inside the request when the synthesizer's model declines it.
+# inside the request when the synthesizer's model declines it, and a reply declined partway through by every
+# model is discarded.
 SYNTHESIS_VERSION = "scout-synthesis-v7"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
@@ -765,10 +766,19 @@ class _Run:
 
     def _cited_report(self, result: Any, passages: list[SourcePassages]) -> FinalReport | None:
         """The report from the synthesizer's one reply, which is never retried: a missing section is noted,
-        and a reply with no answer at all leaves the run without a report."""
+        and a reply with no answer at all, or one declined partway through, leaves the run without a report."""
         response = result.response
+        details = response.provider_details or {}
+        if response.finish_reason == "content_filter":
+            # PydanticAI raises on a refusal only when the reply is empty; one declined partway through, by
+            # the synthesizer and any fallback, returns the text written so far, which Anthropic says to discard.
+            retry = f"; Anthropic suggests {details['recommended_model']}" if details.get("recommended_model") else ""
+            self.notes.append(f"the synthesizer's model declined the synthesis partway through "
+                              f"({details.get('refusal_category') or 'no category'}), so its partial reply was "
+                              f"discarded{retry}")
+            return None
         report = cited_report(response, passages)
-        if fallback := (response.provider_details or {}).get("fallback"):
+        if fallback := details.get("fallback"):
             categories = [str((handoff.get("trigger") or {}).get("category")) for handoff in fallback["handoffs"]]
             self.notes.append(f"the synthesizer's model declined the synthesis ({', '.join(categories) or 'no category'})"
                               f", and {response.model_name} continued it")

@@ -276,3 +276,74 @@ def test_the_passages_are_kept_once_so_the_budget_guard_counts_them_once() -> No
     assert not any(passage.text in content.content for passage in passages[0].passages)
     assert content.metadata["blocks"] == [passage.text for passage in passages[0].passages]
 
+
+
+def _stop(reason: str, iterations: list[dict[str, Any]], *, category: str | None = None,
+          recommended: str | None = None, output_tokens: int = 80) -> list[dict[str, Any]]:
+    details = ({"type": "refusal", "category": category, "explanation": "declined", "recommended_model": recommended}
+               if reason == "refusal" else None)
+    return [{"type": "message_delta", "delta": {"stop_reason": reason, "stop_sequence": None, "stop_details": details},
+             "usage": {"output_tokens": output_tokens, **({"iterations": iterations} if iterations else {})}},
+            {"type": "message_stop"}]
+
+
+def _start(model: str, input_tokens: int = 900) -> dict[str, Any]:
+    return {**REPLY[0], "message": {**REPLY[0]["message"], "model": model,
+                                    "usage": {"input_tokens": input_tokens, "output_tokens": 1}}}
+
+
+async def test_a_synthesis_declined_before_any_output_is_served_by_the_fallback(monkeypatch) -> None:
+    # Before any output, the fallback block comes first and message_start already names the fallback model.
+    reply = [_start("claude-opus-5", 940), *_fallback_block(0, "cyber"),
+             *_text_block(1, "<title>T</title><summary>S</summary><answer>It holds structures",
+                          [_citation("s1", 0, 0, 1)]),
+             *_text_block(2, ".</answer>"),
+             *_stop("end_turn", [_iteration("message", "claude-opus-5-5", 900, 0),
+                                 _iteration("fallback_message", "claude-opus-5", 940, 80)])]
+    model, _ = _claude(monkeypatch, reply)
+    ledger = _ledger()
+    result = await synthesizer_agent.run(_prompt(ledger), model=model)
+    # The declined attempt wrote nothing, and is priced for its input all the same.
+    assert result.response.model_name == "claude-opus-5"
+    assert result.response.usage.cost == (Decimal(900 * 4) + Decimal(940 * 5 + 80 * 25)) / 1_000_000
+    assert cited_report(result.response, ledger.passages()).answer == "It holds structures [s1]."
+
+
+async def test_a_refusal_the_fallback_did_not_take_keeps_anthropics_retry_hint(monkeypatch) -> None:
+    # When the fallback model is rate limited, Anthropic returns the refusal and names a model to retry on.
+    reply = [REPLY[0], *_text_block(0, "<title>T</title><summary>The PDB holds"),
+             *_stop("refusal", [], category="bio", recommended="claude-opus-4-8", output_tokens=12)]
+    model, _ = _claude(monkeypatch, reply)
+    result = await synthesizer_agent.run(_prompt(_ledger()), model=model)
+    # PydanticAI returns a reply declined partway through as output; the run discards it (test_scout.py).
+    response = result.response
+    assert response.finish_reason == "content_filter" and result.output.endswith("The PDB holds")
+    assert (response.provider_details["refusal_category"], response.provider_details["recommended_model"]) == (
+        "bio", "claude-opus-4-8")
+
+
+async def test_a_synthesis_every_model_declined_partway_is_priced_for_every_attempt(monkeypatch) -> None:
+    reply = [REPLY[0], *_text_block(0, "<title>T</title><summary>The PDB holds"), *_fallback_block(1, "bio"),
+             *_text_block(2, " protein structures"),
+             *_stop("refusal", [_iteration("message", "claude-opus-5-5", 900, 40),
+                                _iteration("fallback_message", "claude-opus-5", 940, 20)], category="bio")]
+    model, _ = _claude(monkeypatch, reply)
+    result = await synthesizer_agent.run(_prompt(_ledger()), model=model)
+    assert result.response.finish_reason == "content_filter"
+    assert result.usage.cost == (Decimal(900 * 4 + 40 * 20) + Decimal(940 * 5 + 20 * 25)) / 1_000_000
+
+
+async def test_a_synthesis_every_model_declined_before_any_output_still_counts_its_cost(monkeypatch) -> None:
+    # PydanticAI raises on an empty refusal; the run's usage must still hold what both attempts were billed.
+    from pydantic_ai.exceptions import ContentFilterError
+    from pydantic_ai.usage import RunUsage
+
+    reply = [_start("claude-opus-5", 940), *_fallback_block(0, "bio"),
+             *_stop("refusal", [_iteration("message", "claude-opus-5-5", 900, 0),
+                                _iteration("fallback_message", "claude-opus-5", 940, 0)], category="bio",
+                    output_tokens=0)]
+    model, _ = _claude(monkeypatch, reply)
+    usage = RunUsage()
+    with pytest.raises(ContentFilterError):
+        await synthesizer_agent.run(_prompt(_ledger()), model=model, usage=usage)
+    assert usage.requests == 1 and usage.cost == Decimal(900 * 4 + 940 * 5) / 1_000_000

@@ -358,6 +358,22 @@ async def test_a_synthesis_that_fell_back_or_cited_what_was_not_sent_says_so(set
          "the cited text of s1 blocks 0 to 1 is not theirs")]
 
 
+async def test_a_synthesis_declined_partway_through_is_discarded_not_published(settings, pages) -> None:
+    # PydanticAI returns the text of a reply declined partway through as output; Anthropic says to discard it.
+    written = writer().function
+
+    def declined(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        reply = written(messages, info)
+        return replace(reply, parts=reply.parts[:3], finish_reason="content_filter",
+                       provider_details={"refusal_category": "bio", "recommended_model": "claude-opus-4-8"})
+
+    run = await _run(settings, write=FunctionModel(declined))
+    assert run.report is None and run.status == "partial"
+    assert run.notes == [("the synthesizer's model declined the synthesis partway through (bio), so its partial "
+                          "reply was discarded; Anthropic suggests claude-opus-4-8")]
+    assert "## Claims found" in render_markdown(run.to_record())
+
+
 async def test_a_failed_plan_researches_the_question_as_one(settings, pages) -> None:
     def refuses(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return _output(info, {"questions": []})  # fails its check twice
