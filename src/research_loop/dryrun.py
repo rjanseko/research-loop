@@ -723,6 +723,31 @@ def _from_schema(schema: dict[str, Any], rng: random.Random, root: dict[str, Any
 # ---------------------------------------------------------------------------------------------
 # Invariants
 
+def check_research(record: dict[str, Any], calls: list[dict[str, Any]], research: list[dict[str, Any]]) -> list[str]:
+    """What a run's stored research results (store.ResearchCheckpoint) get wrong: every scout or deep-dive call
+    that succeeded has exactly one stored result, a returned result's call succeeded, and every question in a
+    finished run's ledger has a stored result."""
+    problems: list[str] = []
+    by_call: dict[Any, int] = {}
+    for row in research:
+        if row.get("call_id") is not None:
+            by_call[row["call_id"]] = by_call.get(row["call_id"], 0) + 1
+    statuses = {call.get("id"): call.get("status") for call in calls}
+    for call in calls:
+        if (call.get("role") in ("scout", "deep_dive") and call.get("status") == "succeeded"
+                and by_call.get(call.get("id"), 0) != 1):
+            problems.append(f"{call.get('role')} call for {call.get('question_id')} has "
+                            f"{by_call.get(call.get('id'), 0)} stored results, not one")
+    for row in research:
+        if row.get("status") == "returned" and statuses.get(row.get("call_id")) not in ("succeeded", None):
+            problems.append(f"a returned result for {row.get('question_id')} has a {statuses.get(row.get('call_id'))} call")
+    if record.get("status") in ("complete", "partial"):
+        stored = {row.get("question_id") for row in research}
+        if missing := sorted(set(record.get("ledger") or {}) - stored):
+            problems.append(f"ledger questions with no stored result: {', '.join(missing)}")
+    return problems
+
+
 def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[str]:
     """Every invariant a finished run's stored record and calls break; empty when it keeps them all."""
     from .acquisition import SourcePolicy
@@ -1014,13 +1039,19 @@ async def fuzz_one(seed: int, fault_rate: float = 0.2) -> list[FuzzFinding]:
     except Exception:  # noqa: BLE001 - a crash is the finding
         return [FuzzFinding(seed, "scout crashed", [traceback.format_exc(limit=6)])]
     record = {**store.runs[run.run_id], **run.to_record()}
-    if problems := check_record(record, calls_of(run.run_id)):
+    def research_of(run_id: UUID) -> list[dict[str, Any]]:
+        return [row for row in store.research.values() if row["run_id"] == run_id]
+
+    if problems := check_record(record, calls_of(run.run_id)) + check_research(
+            record, calls_of(run.run_id), research_of(run.run_id)):
         findings.append(FuzzFinding(seed, "scout", problems))
     source = {**store.runs[run.run_id], "id": run.run_id}
     if source.get("plan"):
         try:
             again = await rescout_stored(source, settings=settings, store=store)
-            if problems := check_record({**store.runs[again.run_id], **again.to_record()}, calls_of(again.run_id)):
+            again_record = {**store.runs[again.run_id], **again.to_record()}
+            if problems := check_record(again_record, calls_of(again.run_id)) + check_research(
+                    again_record, calls_of(again.run_id), research_of(again.run_id)):
                 findings.append(FuzzFinding(seed, "rescout", problems))
         except Exception:  # noqa: BLE001
             findings.append(FuzzFinding(seed, "rescout crashed", [traceback.format_exc(limit=6)]))

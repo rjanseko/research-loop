@@ -297,6 +297,63 @@ async def test_a_cancelled_run_is_recorded_with_what_it_found(settings, pages) -
     assert {c["status"] for c in store.calls.values() if c["role"] == "scout"} == {"cancelled"}
 
 
+async def test_a_run_cancelled_mid_wave_keeps_the_research_that_finished(settings, pages) -> None:
+    # Architectural audit F09: results reached the ledger only when the whole wave returned, so cancelling a run
+    # after one of two paid scouts finished recorded an empty ledger.
+    finished = asyncio.Event()
+    scouted = researcher()
+
+    async def one_finishes(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if _prompt(messages)["question"]["id"] == "q2":
+            await asyncio.sleep(60)
+        return scouted.function(messages, info)
+
+    store = MemoryStore()
+    original = store.record_research
+
+    async def record(checkpoint) -> None:
+        await original(checkpoint)
+        finished.set()
+
+    store.record_research = record  # type: ignore[method-assign]
+    task = asyncio.create_task(_run(settings, store, research=FunctionModel(one_finishes)))
+    await asyncio.wait_for(finished.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (checkpoint,) = store.research.values()
+    assert (checkpoint["question_id"], checkpoint["role"], checkpoint["status"]) == ("q1", "scout", "returned")
+    assert checkpoint["call_id"] in store.calls and checkpoint["result"]["claims"]
+    (run,) = store.runs.values()
+    assert run["status"] == "cancelled" and list(run["ledger"]) == ["q1"]
+
+
+async def test_every_scout_result_is_stored_as_it_ends(settings, pages) -> None:
+    store = MemoryStore()
+    run = await _run(settings, store)
+    stored = sorted(store.research.values(), key=lambda row: row["question_id"])
+    assert [(row["question_id"], row["status"]) for row in stored] == [("q1", "returned"), ("q2", "returned")]
+    # The ledger names claims by question (q1/c1) when it adds them; what is stored is the result as it ended.
+    assert [[c["statement"] for c in row["result"]["claims"]] for row in stored] == [
+        [claim.statement for claim in result.claims] for result in run.ledger.all()]
+    assert all(row["call_id"] in store.calls for row in stored)
+
+
+async def test_a_failed_write_of_a_finished_scouts_record_keeps_its_result(settings, pages, monkeypatch) -> None:
+    # Architectural audit C04: a failed finish_call(status="succeeded") turned a paid result into a cut-off.
+    monkeypatch.setattr("research_loop.scout._DURABLE_PAUSES", (0.0,))
+
+    class FailingStore(MemoryStore):
+        async def finish_call(self, call_id, **fields) -> None:
+            if fields.get("status") == "succeeded" and self.calls[call_id]["role"] == "scout":
+                raise OSError("database went away")
+            await super().finish_call(call_id, **fields)
+
+    run = await _run(settings, FailingStore())
+    assert run.status == "complete" and sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
+    assert "the scout call's record could not be stored (OSError); the run kept it in memory" in run.notes
+
+
 async def test_when_every_fetch_fails_the_run_fails_and_says_why(settings, pages) -> None:
     urls = {"q1": "https://example.org/gone", "q2": "https://example.org/also-gone"}
 
@@ -535,6 +592,8 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert store.runs[run.run_id]["checks"]["gap_analysis"]["gaps"][0]["question_id"] == "q2"
     assert sorted(run.ledger.claim_ids()) == ["q1/c1", "q2/c1"]
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
+    # The deep dive's result is stored too, under the question it researched, after the scouts'.
+    assert [(r["role"], r["question_id"]) for r in store.research.values()][-1] == ("deep_dive", "q2")
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
     assert run.config["limits"]["followup_cost_usd"] == 4.35
