@@ -37,13 +37,14 @@ from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.settings import ModelSettings
 
 from .evidence import SourcePassages, strip_inline_citations
-from .prompts import MISSING_SECTION
 from .schemas import FinalReport, ReportClaim
 
 SEARCH_RESULT = "search_result"
 SECTIONS = ("title", "summary", "answer", "caveats", "not_established")
 _REQUIRED = ("title", "summary", "answer")
-_SECTION = re.compile(r"<(" + "|".join(SECTIONS) + r")>(.*?)</\1>", re.DOTALL)
+# A section ends at its closing tag, or, when a reply leaves it open, at the next section or the reply's end.
+_SECTION = re.compile(r"<(" + "|".join(SECTIONS) + r")>(.*?)(?:</\1>|(?=<(?:" + "|".join(SECTIONS) + r")>)|\Z)",
+                      re.DOTALL)
 # Whitespace and section tags at the end of a cited span, which its citation goes before.
 _TRAILING = re.compile(r"(?:\s|</?[a-z_]+>)*\Z")
 _TAG = re.compile(r"</?[a-z_]+>")
@@ -176,10 +177,10 @@ class CitingAnthropicModel(AnthropicModel):
 
 
 def missing_sections(text: str) -> list[str]:
-    """What the synthesizer's reply lacks: each required section that is absent or empty."""
+    """The required sections the synthesizer's reply lacks or leaves empty. It is not retried, so the report
+    keeps what the reply has (`cited_report`) and the run notes what was missing."""
     found = {name: body.strip() for name, body in _SECTION.findall(text)}
-    missing = [name for name in _REQUIRED if not found.get(name)]
-    return [MISSING_SECTION.format(name=name) for name in missing[:1]]
+    return [name for name in _REQUIRED if not found.get(name)]
 
 
 def _references(part: TextPart, by_source: dict[str, SourcePassages]) -> list[tuple[str, str]]:
@@ -207,7 +208,9 @@ def _marked(text: str, source_ids: list[str]) -> str:
 def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) -> FinalReport:
     """The report in the synthesizer's tagged reply, with inline citations and a claim list written by code
     from the passages Claude cited. Citations the model typed itself are removed first, so every [sN] in the
-    report stands for a passage the API says the text drew on."""
+    report stands for a passage the API says the text drew on. The reply is never retried, so a missing
+    section is left empty, and a reply with no <answer> section has the text outside its sections as its
+    answer."""
     by_source = {source.source_id: source for source in passages}
     text = ""
     claims: list[ReportClaim] = []
@@ -225,6 +228,8 @@ def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) ->
                 claims.append(claim)
         text += content
     sections = {name: body.strip() for name, body in _SECTION.findall(text)}
+    if not sections.get("answer"):
+        sections["answer"] = _TAG.sub("", _SECTION.sub("", text)).strip()
     caveats = [line.strip().lstrip("-*•").strip() for line in sections.get("caveats", "").splitlines()]
     return FinalReport(
         title=" ".join(strip_inline_citations(sections.get("title", "")).split()),

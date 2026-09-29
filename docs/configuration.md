@@ -44,9 +44,9 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 |---|---:|---:|---:|
 | `max_questions` count | 2 | 4 | 8 |
 | `parallel_scouts` count | 8 | 8 | 8 |
-| `cost_usd` ordinary-run soft envelope | $0.30 | $1.75 | $1.75* |
+| `cost_usd` ordinary-run soft envelope | $0.98 | $2.15 | $2.15* |
 | `planner_usd` | $0.05 | $0.05 | $0.05 |
-| `synthesis_usd` | $0.12 | $0.60 | $0.60 |
+| `synthesis_usd` | $0.80 | $1.00 | $1.00 |
 | `deadline_seconds` ordinary-run deadline | 360 | 1,320 | 2,520* |
 | `research_seconds` scout deadline | 240 | 900 | 1,800 |
 | `request_timeout_seconds` per planner, gap, or synthesis request | 120 | 120 | 120 |
@@ -58,7 +58,7 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `guarded_scout_max_output_tokens` per request | 48,000 | 48,000 | 48,000 |
 | `synthesis_tokens` total token limit | 200,000 | 200,000 | 200,000 |
 | `synthesis_max_output_tokens` per request | 32,000 | 32,000 | 32,000 |
-| `followup_cost_usd` follow-up soft envelope | $2.50 | $2.50 | $4.00 |
+| `followup_cost_usd` follow-up soft envelope | $2.90 | $2.90 | $4.40 |
 | `followup_deadline_seconds` | 1,500 | 1,500 | 2,520 |
 | `gap_usd` | $0.10 | $0.10 | $0.10 |
 | `gap_seconds` | 45 | 45 | 45 |
@@ -70,7 +70,7 @@ These are the values of `ScoutLimits().for_depth(depth)` with no environment ove
 | `deep_dive_misses` | 8 | 8 | 16 |
 | `quick.follow_up` / `deep.follow_up` | `false` | `false` | `true` |
 
-*Deep automatically uses follow-up, so its active envelope is **$4.00** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
+*Deep automatically uses follow-up, so its active envelope is **$4.40** and its active whole-run deadline is **2,520 seconds**. `--follow-up` turns on the follow-up envelope at quick or standard depth. The ordinary `cost_usd` value still exists in the effective deep object but is not the active envelope.* The time limits count from the start of the run, including planning. Gap and dive deadlines are also bounded by the remaining whole-run time, with **90 seconds reserved for synthesis**. Source: [`ScoutLimits`](../src/research_loop/config.py), [`_Run.execute`](../src/research_loop/scout.py).
 
 The ordinary scout share is `(cost_usd - planner_usd - synthesis_usd) / number_of_questions`, rounded to four decimals. In follow-up mode it is `(followup_cost_usd - planner_usd - synthesis_usd - gap_usd - max_gaps × deep_dive_usd) / number_of_questions`. With the maximum number of questions, that is **$0.065** quick, **$0.275** standard, **$0.175** standard with follow-up, and **$0.275** deep. These are per-call soft cost limits; `--max-usd` adds a shared pre-dispatch hard cap. Since scout-v15 a scout's share also counts its own paid searches and page reads (`ExternalSpend.by_question`), and its tools are withdrawn with a note once the share or `scout_tokens` would not cover two more requests, each taken as twice the average so far (`LoopBudget.out_of_money`).
 
@@ -85,7 +85,7 @@ These defaults live in `Settings.model_calls` and can be overridden with `RESEAR
 | `planner_requests` | 2 | Planner and gap analyzer request cap. |
 | `planner_tokens` | 100,000 | Planner and gap analyzer total token cap. |
 | `planner_max_output_tokens` | 16,000 | Planner and gap analyzer output cap per request. |
-| `synthesizer_requests` | 2 | Synthesizer request cap. |
+| `synthesizer_requests` | 1 | Synthesizer request cap: one request, not cached and never retried, so each depth's `synthesis_usd` covers a reply at the full output cap. |
 | `rubric_timeout_seconds` | 600 | Rubric grading model request. |
 | `rubric_max_output_tokens` | 16,000 | Rubric grading request under a hard cap. |
 | `audit_timeout_seconds` | 600 | Support audit model request. |

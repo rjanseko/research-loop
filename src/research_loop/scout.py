@@ -75,11 +75,12 @@ from .agents import (
     synthesizer_agent,
 )
 from .budget_notes import LoopBudget
-from .citations import cited_report, search_results
+from .citations import cited_report, missing_sections, search_results
 from .config import ScoutLimits, Settings, split_model
 from .evals import case_blocked_titles
 from .evidence import (
     EvidenceLedger,
+    SourcePassages,
     Support,
     check_result,
     citation_problems,
@@ -180,13 +181,15 @@ def _paid_search(name: str) -> Any:
 # since v6; its categories and database fields since v13), and a test keeps every frozen case's wording out of
 # model-visible text (docs/audit-2026-09-28-case-contamination.md). followup-v17 and research-v16 carry it.
 # v17: synthesis v5, Claude's citations (citations.py). followup-v18 carries it.
-WORKFLOW_VERSION = "scout-v17"
-FOLLOWUP_VERSION = "scout-followup-v18"
+# v18: synthesis v6, one uncached request that is never retried. followup-v19 carries it.
+WORKFLOW_VERSION = "scout-v18"
+FOLLOWUP_VERSION = "scout-followup-v19"
 RESCOUT_VERSION = "scout-research-v16"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
 # Claude's citations, and code writes the report's [sN] citations and claim list from them (citations.py).
-SYNTHESIS_VERSION = "scout-synthesis-v5"
+# v6: one request, not cached and never retried; a reply that lacks a section keeps what it has.
+SYNTHESIS_VERSION = "scout-synthesis-v6"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
@@ -735,7 +738,7 @@ class _Run:
                 # request itself (citations.CitingAnthropicModel).
                 return await self._call(
                     role="synthesizer", agent=synthesizer_agent, prompt=[brief, *search_results(passages)],
-                    deps=None, finish=lambda result: cited_report(result.response, passages),
+                    deps=None, finish=lambda result: self._cited_report(result, passages),
                     limits=UsageLimits(request_limit=self.settings.model_calls.synthesizer_requests,
                                        total_tokens_limit=limits.synthesis_tokens,
                                        cost_limit=Decimal(str(limits.synthesis_usd))),
@@ -743,6 +746,17 @@ class _Run:
         except _CALL_FAILURES as exc:
             self.notes.append(f"the synthesis did not finish ({_reason(exc).replace('research deadline', 'run deadline')})")
             return None
+
+    def _cited_report(self, result: Any, passages: list[SourcePassages]) -> FinalReport | None:
+        """The report from the synthesizer's one reply, which is never retried: a missing section is noted,
+        and a reply with no answer at all leaves the run without a report."""
+        report = cited_report(result.response, passages)
+        if missing := missing_sections(result.output):
+            self.notes.append(f"the synthesizer's reply had no {', '.join(missing)} section")
+        if not report.answer.strip():
+            self.notes.append("the synthesis wrote no answer")
+            return None
+        return report
 
     async def _recorded(self, mode: str, input_hash: str,
                         body: Callable[[AsyncExitStack], Awaitable[tuple[Status, RunChecks]]]) -> ScoutRun:

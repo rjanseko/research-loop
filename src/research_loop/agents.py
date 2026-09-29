@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .acquisition import SourcePolicy
-from .citations import missing_sections
 from .prompts import INSTRUCTIONS
 from .schemas import (
     Depth,
@@ -62,7 +61,10 @@ scout_agent = Agent(name="scout", output_type=ResearchResult, deps_type=Assignme
 gap_agent = Agent(name="gap_analyzer", output_type=GapAnalysis, deps_type=GapRefs, instructions=INSTRUCTIONS["gap_analyzer"])
 # The synthesizer replies in tagged text with Claude's citations, which `citations.cited_report` turns into the
 # FinalReport; citations cannot be combined with structured output.
-synthesizer_agent = Agent(name="synthesizer", output_type=str, instructions=INSTRUCTIONS["synthesizer"])
+# It makes one request with no output retry: a retry would resend the whole ledger, and a reply that lacks a
+# section keeps what it has, with a note (citations.cited_report).
+synthesizer_agent = Agent(name="synthesizer", output_type=str, instructions=INSTRUCTIONS["synthesizer"],
+                          retries={"output": 0})
 
 
 def _retry_on(problems: Iterable[str]) -> None:
@@ -146,11 +148,3 @@ def open_item_names(items: Iterable[str]) -> list[str]:
                 and name.casefold() not in {n.casefold() for n in names}):
             names.append(name)
     return names[:OPEN_ITEMS_PER_RESULT]
-
-
-@synthesizer_agent.output_validator
-def _report_has_its_sections(output: str) -> str:
-    """The reply is tagged text (citations.py); a retry names the first required section it lacks. Citations
-    need no check here: code writes them from the passages Claude cited, so none can name an unknown source."""
-    _retry_on(missing_sections(output))
-    return output

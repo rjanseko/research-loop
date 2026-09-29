@@ -37,8 +37,10 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
         result["max_tokens"] = settings.model_calls.planner_max_output_tokens
     provider = model_provider(model_id)
     # Ask for the growing prompt prefix of a tool loop to be cached. OpenAI caches on its own, and a
-    # stable key raises the hit rate; Anthropic caches only when asked; Z.ai caches on its own.
-    if provider == "anthropic":
+    # stable key raises the hit rate; Anthropic caches only when asked; Z.ai caches on its own. The synthesizer
+    # makes one request that is never retried, so a cache write, billed at 1.25 times the input price, would
+    # never be read.
+    if provider == "anthropic" and role != "synthesizer":
         result["anthropic_cache"] = True
     elif provider == "openai":
         result["openai_prompt_cache_key"] = f"research-loop:{model_id}"

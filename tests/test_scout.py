@@ -315,20 +315,23 @@ async def test_when_every_fetch_fails_the_run_fails_and_says_why(settings, pages
     assert "## Sources that could not be read" in render_markdown(run.to_record())
 
 
-async def test_a_reply_without_its_sections_gets_one_retry(settings, pages) -> None:
+async def test_a_reply_without_its_sections_is_not_retried_and_keeps_what_it_has(settings, pages) -> None:
     calls: list[int] = []
     run = await _run(settings, write=writer(untagged_first=True, calls=calls))
-    assert len(calls) == 2 and run.status == "complete"
-    assert run.checks.citation_problems == []
+    assert len(calls) == 1 and run.status == "complete"
+    assert run.report.answer == "Mostly trustworthy." and run.report.title == ""
+    assert run.notes == ["the synthesizer's reply had no title, summary, answer section"]
+    assert render_markdown(run.to_record()).startswith("# Is SWE-bench Verified trustworthy?")
 
 
-async def test_a_synthesis_that_fails_returns_the_claims_found(settings, pages) -> None:
-    def always_wrong(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        return ModelResponse(parts=[TextPart("<title>t</title> An answer without its other sections.")])
+async def test_a_synthesis_that_writes_no_answer_returns_the_claims_found(settings, pages) -> None:
+    def no_answer(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("<title>t</title><summary>Nothing to add.</summary>")])
 
-    run = await _run(settings, write=FunctionModel(always_wrong))
-    assert run.status == "partial" and run.report is None
-    assert run.notes == ["the synthesis did not finish (the model's output failed its checks on every attempt)"]
+    calls = []
+    run = await _run(settings, write=FunctionModel(lambda m, i: calls.append(1) or no_answer(m, i)))
+    assert len(calls) == 1 and run.status == "partial" and run.report is None
+    assert run.notes == ["the synthesizer's reply had no answer section", "the synthesis wrote no answer"]
     markdown = render_markdown(run.to_record())
     assert "## Claims found" in markdown and "- Finding for q1 [s1] (q1/c1)" in markdown
 
@@ -490,7 +493,7 @@ async def test_follow_up_recovers_one_missing_question(settings, pages) -> None:
     assert [c["role"] for c in store.calls.values()].count("deep_dive") == 1
     assert run.config["prompt_fingerprint"] == prompt_fingerprint(follow_up=True)
     assert run.config["prompt_fingerprint"] != prompt_fingerprint()
-    assert run.config["limits"]["followup_cost_usd"] == 2.5
+    assert run.config["limits"]["followup_cost_usd"] == 2.9
 
 
 async def test_follow_up_skips_deep_dive_when_no_material_gap(settings, pages) -> None:
@@ -672,7 +675,7 @@ async def test_the_plan_sets_the_depth_and_its_limits(settings, pages) -> None:
     assert seen[0]["max_questions"] == {"quick": 2, "standard": 4, "deep": 8} and "depth" not in seen[0]
     assert quick.plan.depth == "quick" and quick.workflow_version == WORKFLOW_VERSION
     saved = store.runs[quick.run_id]
-    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 0.30
+    assert saved["config"]["depth"] == "quick" and saved["config"]["limits"]["cost_usd"] == 0.98
     assert saved["config"]["follow_up"] is False and not quick.checks.gap_analysis
 
     # A deep plan turns the gap follow-up on, and the stored run says so.

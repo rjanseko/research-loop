@@ -121,9 +121,6 @@ INSTRUCTIONS: dict[str, str] = {
 # output (citations.py).
 OUTPUTS = {"planner": ResearchPlan, "scout": ResearchResult, "gap_analyzer": GapAnalysis}
 
-# What a synthesizer is told when its reply lacks a section (agents.py).
-MISSING_SECTION = ("The reply has no <{name}>...</{name}> section. Write the report in the tagged sections the "
-                   "instructions give: <title>, <summary>, <answer>, <caveats>, and <not_established>.")
 # How each citable passage opens (evidence.py).
 PASSAGE_LABELS = {name: getattr(evidence, name) for name in (
     "PASSAGE_LABEL", "PASSAGE_QUOTE", "PASSAGE_SUMMARY", "PASSAGE_NO_QUOTE")}
@@ -142,5 +139,5 @@ def prompt_fingerprint(*, follow_up: bool = False) -> str:
                                       "output_schema": OUTPUTS[role].model_json_schema() if role in OUTPUTS else None}
                                for role in roles}
     spec["budget_notes"] = BUDGET_NOTES
-    spec["synthesis_notes"] = {"MISSING_SECTION": MISSING_SECTION, **PASSAGE_LABELS}
+    spec["passage_labels"] = PASSAGE_LABELS
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
