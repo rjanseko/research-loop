@@ -592,7 +592,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     from pydantic_ai import UsageLimits
 
     from research_loop.agents import PlanLimits
-    from research_loop.rate_limit import ScoutRateLimitModel
+    from research_loop.rate_limit import RateLimitModel
     from research_loop.scout import _Run
     from research_loop.study_budget import StudyBudgetModel, StudyBudgetRefusal
 
@@ -607,7 +607,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     store = MemoryStore()
     runner = _Run("Q?", settings, store, [], [], None, None, budget=budget)
     model = runner._model("scout", settings.models.scout)
-    assert isinstance(model, ScoutRateLimitModel)
+    assert isinstance(model, RateLimitModel)
     assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
     assert model.pacer is not None and model.pacer.tokens_per_minute == 2_000_000  # gpt-6-luna's configured limit
     with pytest.raises(StudyBudgetRefusal):

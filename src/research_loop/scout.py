@@ -98,13 +98,14 @@ from .evidence import (
 from .models import (
     Role,
     build_model,
+    retry_counts,
     role_model,
     scout_model,
     sent_settings,
 )
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
-from .rate_limit import RATE_LIMIT_POLICY_VERSION
+from .rate_limit import RATE_LIMIT_POLICY_VERSION, RateLimitModel
 from .reading import ExaContentsReader, ExternalSpend, FirecrawlReader, OpenAccessReader
 from .schemas import (
     EVIDENCE_VERSION,
@@ -290,6 +291,8 @@ class RunChecks(BaseModel):
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
     study_budget_reserved_usd: Decimal | None = None
+    # Requests sent again, by cause (rate_limit.RateLimitModel): each may have been billed.
+    retries: dict[str, int] = Field(default_factory=dict)
 
 
 @dataclass
@@ -466,9 +469,9 @@ class _Run:
                 guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
                                            model_id, self.budget,
                                            fallback_model_id=split_model(fallback)[0] if fallback else None)
-                # The guard is inside the 429 wrapper, so every retry reserves a new request.
+                # The guard is inside the retry wrapper, so every retry reserves a new request.
                 self.models[role, spec] = (scout_model(guarded, model_id, self.settings)
-                                           if role == "scout" else guarded)
+                                           if role == "scout" else RateLimitModel(guarded))
         return self.models[role, spec]
 
     def _scout_spec(self, index: int) -> str:
@@ -828,6 +831,7 @@ class _Run:
             raise
         checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
         checks.external_usd = self._external_usd()
+        checks.retries = retry_counts(self.models.values())
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
         await self.store.finish_run(self.run_id, status=status, plan=self.plan, report=self.report,
                                     ledger=self.ledger.to_json(), checks=checks, cost_usd=self._total_cost(),

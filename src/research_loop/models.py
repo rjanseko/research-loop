@@ -9,6 +9,8 @@ effort; nothing picks one for it. PydanticAI sends GLM-5.3's `xhigh` as `reasoni
 """
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from pydantic_ai.exceptions import ContentFilterError, ModelAPIError
@@ -17,7 +19,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import FAKE_PROVIDER, PROVIDER_KEYS, Settings, model_provider, split_model
-from .rate_limit import ScoutRateLimitModel, TokenPacer, rate_limit_hook
+from .rate_limit import RateLimitModel, TokenPacer, rate_limit_hook
 
 Role = Literal["planner", "scout", "synthesizer"]
 
@@ -154,23 +156,47 @@ def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
     """A scout's model: `inner` behind a run-shared wrapper that retries only timed rate limits and paces
     `model_id` under its token rate. Every request carries the scout's whole history, which keeps the cached
     prompt prefix whole; trimming old pages from it was removed after trim-history-rescout-task8."""
-    return ScoutRateLimitModel(inner, token_pacer(model_id, settings))
+    return RateLimitModel(inner, token_pacer(model_id, settings))
 
 
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:
     """The model `role` runs on, or `spec` in its place. The planner falls back to `models.fallback` when its
     model refuses a call (ContentFilterError) or its provider fails (ModelAPIError). The synthesizer does not,
-    since it must be Claude: Anthropic falls back for it inside the request (`model_settings`); nor do scouts, since a failed scout leaves its question unanswered rather than
-    failing the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent
-    again."""
+    since it must be Claude: Anthropic falls back for it inside the request (`model_settings`); nor do scouts,
+    since a failed scout leaves its question unanswered rather than failing the run.
+
+    Every role's client makes one attempt, and `RateLimitModel` decides what is sent again: a timed rate limit,
+    a server error, or a connection fault, never a timeout. The SDK's own retries resent a timed-out request,
+    which for the synthesizer is the whole uncached ledger (rate_limit.py, v6)."""
     spec = spec or getattr(settings.models, role)
-    primary = build_model(spec, role, settings, sdk_retries=0 if role == "scout" else None)
+    primary = build_model(spec, role, settings, sdk_retries=0)
     fallback = settings.models.fallback
     if role == "scout":
         return scout_model(primary, split_model(spec)[0], settings)
     # The synthesizer is always Claude, since its report is built from Claude's citations; another provider
     # could not take its call, and its Claude fallback runs server-side.
     if role == "synthesizer" or not fallback or fallback == spec:
-        return primary
-    return FallbackModel(primary, build_model(fallback, role, settings),
+        return RateLimitModel(primary)
+    return FallbackModel(RateLimitModel(primary), RateLimitModel(build_model(fallback, role, settings, sdk_retries=0)),
                          fallback_on=(ModelAPIError, ContentFilterError))
+
+
+def retry_counts(models: Iterable[Model]) -> dict[str, int]:
+    """The requests `models` sent again, by cause, summed over every `RateLimitModel` among them and inside
+    a FallbackModel or a budget guard."""
+    total: Counter[str] = Counter()
+    seen: set[int] = set()
+
+    def visit(model: Model) -> None:
+        if id(model) in seen:
+            return
+        seen.add(id(model))
+        if isinstance(model, RateLimitModel):
+            total.update(model.retries)
+        for inner in (getattr(model, "wrapped", None), *getattr(model, "models", ())):
+            if isinstance(inner, Model):
+                visit(inner)
+
+    for model in models:
+        visit(model)
+    return dict(sorted(total.items()))

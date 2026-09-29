@@ -14,7 +14,7 @@ from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from research_loop.rate_limit import (
-    ScoutRateLimitModel,
+    RateLimitModel,
     _retry_delay,
     transient_network_error,
 )
@@ -55,7 +55,7 @@ async def test_one_429_pauses_other_scout_requests_and_retries_the_same_one() ->
             raise _limit_error()
         return ModelResponse(parts=[TextPart("ok")])
 
-    model = ScoutRateLimitModel(FunctionModel(respond))
+    model = RateLimitModel(FunctionModel(respond))
     params = ModelRequestParameters()
     first = asyncio.create_task(model.request([], None, params))
     await first_error.wait()
@@ -80,7 +80,7 @@ async def test_balance_429_is_not_retried() -> None:
             "error": {"message": "Insufficient balance", "code": "insufficient_quota"},
         })
 
-    model = ScoutRateLimitModel(FunctionModel(respond))
+    model = RateLimitModel(FunctionModel(respond))
     with pytest.raises(ModelHTTPError, match="Insufficient balance"):
         await model.request([], None, ModelRequestParameters())
     assert attempts == 1
@@ -97,7 +97,7 @@ async def test_stream_open_retries_only_a_timed_429() -> None:
             raise _limit_error()
         yield "ok"
 
-    model = ScoutRateLimitModel(FunctionModel(stream_function=stream))
+    model = RateLimitModel(FunctionModel(stream_function=stream))
     async with model.request_stream([], None, ModelRequestParameters()):
         pass
     assert attempts == 2
@@ -114,7 +114,7 @@ async def test_agent_retries_a_rate_limited_scout_request() -> None:
             raise _limit_error()
         return ModelResponse(parts=[TextPart("ok")])
 
-    result = await Agent(ScoutRateLimitModel(FunctionModel(respond))).run("question")
+    result = await Agent(RateLimitModel(FunctionModel(respond))).run("question")
     assert result.output == "ok" and attempts == 2
 
 
@@ -127,7 +127,7 @@ async def test_repeated_rate_limits_stop_after_two_retries() -> None:
         attempts += 1
         raise _limit_error("0s")
 
-    model = ScoutRateLimitModel(FunctionModel(respond))
+    model = RateLimitModel(FunctionModel(respond))
     with pytest.raises(ModelHTTPError):
         await model.request([], None, ModelRequestParameters())
     assert attempts == 3
@@ -179,7 +179,7 @@ async def test_paced_scouts_wait_their_turn_before_dispatch(monkeypatch) -> None
         await asyncio.sleep(0.05)  # still in flight when the second asks, so its estimate is counted
         return ModelResponse(parts=[TextPart("ok")])
 
-    model = ScoutRateLimitModel(FunctionModel(respond), TokenPacer(1_000))
+    model = RateLimitModel(FunctionModel(respond), TokenPacer(1_000))
     messages = [ModelRequest(parts=[UserPromptPart("x" * 2_400)])]  # about 600 estimated tokens
     await asyncio.gather(*(model.request(messages, None, ModelRequestParameters()) for _ in range(2)))
     assert len(times) == 2 and times[1] - times[0] >= 0.2
@@ -238,7 +238,7 @@ async def test_a_transient_network_fault_is_sent_again_once(monkeypatch, fault: 
             raise fault
         return ModelResponse(parts=[TextPart("ok")])
 
-    response = await ScoutRateLimitModel(FunctionModel(respond)).request([], None, ModelRequestParameters())
+    response = await RateLimitModel(FunctionModel(respond)).request([], None, ModelRequestParameters())
     assert response.text == "ok" and attempts == 2
 
 
@@ -255,12 +255,12 @@ async def test_a_second_network_fault_or_a_timeout_is_not_sent_again(monkeypatch
         return respond
 
     with pytest.raises(ssl.SSLError):
-        await ScoutRateLimitModel(FunctionModel(failing(ssl.SSLError("bad record mac")))).request(
+        await RateLimitModel(FunctionModel(failing(ssl.SSLError("bad record mac")))).request(
             [], None, ModelRequestParameters())
     assert attempts == 2
     attempts = 0
     with pytest.raises(TimeoutError):
-        await ScoutRateLimitModel(FunctionModel(failing(TimeoutError()))).request([], None, ModelRequestParameters())
+        await RateLimitModel(FunctionModel(failing(TimeoutError()))).request([], None, ModelRequestParameters())
     assert attempts == 1
 
 
@@ -276,7 +276,7 @@ async def test_a_stream_is_sent_again_after_a_network_fault_only_before_it_opens
             raise ssl.SSLError("bad record mac")
         yield "ok"
 
-    async with ScoutRateLimitModel(FunctionModel(stream_function=stream)).request_stream(
+    async with RateLimitModel(FunctionModel(stream_function=stream)).request_stream(
             [], None, ModelRequestParameters()):
         pass
     assert attempts == 2
@@ -349,13 +349,13 @@ async def test_a_server_error_is_sent_again_twice_and_other_errors_are_not(monke
             return ModelResponse(parts=[TextPart("ok")])
         return respond
 
-    response = await ScoutRateLimitModel(FunctionModel(failing(500, 2))).request([], None, ModelRequestParameters())
+    response = await RateLimitModel(FunctionModel(failing(500, 2))).request([], None, ModelRequestParameters())
     assert response.text == "ok" and attempts == 3
     attempts = 0
     with pytest.raises(ModelHTTPError):
-        await ScoutRateLimitModel(FunctionModel(failing(503, 3))).request([], None, ModelRequestParameters())
+        await RateLimitModel(FunctionModel(failing(503, 3))).request([], None, ModelRequestParameters())
     assert attempts == 3
     attempts = 0
     with pytest.raises(ModelHTTPError):  # a bad request is not a server fault
-        await ScoutRateLimitModel(FunctionModel(failing(400, 1))).request([], None, ModelRequestParameters())
+        await RateLimitModel(FunctionModel(failing(400, 1))).request([], None, ModelRequestParameters())
     assert attempts == 1
