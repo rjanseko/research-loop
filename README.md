@@ -163,7 +163,7 @@ A run reports two things separately: whether it did its work, and how well its a
 
 Its **status** says whether it did its work:
 - `complete` when every step ran to its end and the report was written;
-- `partial` when a research question was cut off by a limit, deadline, or error, the gap analysis failed, or the synthesis did not finish, in which case the report lists the claims found without a written answer;
+- `partial` when a research question was cut off by a limit, deadline, or error, the gap analysis failed, or the synthesis did not finish, in which case the report lists the claims found without a written answer; or when the report lacks its title, summary, or answer, which the run's checks list as `missing_sections`;
 - `failed` when the run found no evidence at all;
 - `cancelled` when you pressed Ctrl-C.
 

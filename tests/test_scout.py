@@ -317,9 +317,12 @@ async def test_when_every_fetch_fails_the_run_fails_and_says_why(settings, pages
 async def test_a_reply_without_its_sections_is_not_retried_and_keeps_what_it_has(settings, pages) -> None:
     calls: list[int] = []
     run = await _run(settings, write=writer(untagged_first=True, calls=calls))
-    assert len(calls) == 1 and run.status == "complete"
+    # An answer-only reply keeps its report, but the run is partial, not complete (architectural review S1).
+    assert len(calls) == 1 and run.status == "partial"
     assert run.report.answer == "Mostly trustworthy." and run.report.title == ""
     assert run.notes == ["the synthesizer's reply had no title, summary, answer section"]
+    assert run.checks.missing_sections == ["title", "summary", "answer"]
+    assert "the report has no title, summary, answer section" in reasons(run)
     assert render_markdown(run.to_record()).startswith("# Is SWE-bench Verified trustworthy?")
 
 
@@ -356,6 +359,9 @@ async def test_a_synthesis_that_fell_back_or_cited_what_was_not_sent_says_so(set
         "the synthesizer's model declined the synthesis (bio), and claude-opus-5 continued it",
         ("1 of the synthesizer's citations did not match the passages sent and were left out: "
          "the cited text of s1 blocks 0 to 1 is not theirs")]
+    # The mismatch is stored in the checks too, not only in a note (architectural review F01).
+    assert run.checks.invalid_citations == ["the cited text of s1 blocks 0 to 1 is not theirs"]
+    assert "1 citation(s) did not match the passages sent and were left out" in reasons(run)
 
 
 async def test_a_synthesis_declined_partway_through_is_discarded_not_published(settings, pages) -> None:

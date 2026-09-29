@@ -879,6 +879,16 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
             and any("gap analysis did not finish" in r for r in checks.get("review_reasons") or [])
         expected = _status(ledger, None if mode_research else report, synthesized=not mode_research,
                            gap_analysis_failed=gap_failed)
+        # A report without a required section is partial (synthesis v10); and a section the stored report left
+        # empty must be one the run says was missing, whatever the parser made of the reply.
+        missing = checks.get("missing_sections") or []
+        if expected == "complete" and report is not None and missing:
+            expected = "partial"
+        if report is not None:
+            empty = [name for name, text in (("title", report.title), ("summary", report.executive_summary),
+                                             ("answer", report.answer)) if not text.strip()]
+            if unlisted := [name for name in empty if name not in missing]:
+                problems.append(f"the report's {', '.join(unlisted)} is empty but not listed as missing")
         if status in ("complete", "partial", "failed") and expected != status:
             problems.append(f"status {status} recomputes as {expected}")
 
