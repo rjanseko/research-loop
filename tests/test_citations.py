@@ -164,3 +164,12 @@ def test_a_search_result_title_stays_within_the_apis_limit() -> None:
     [content] = search_results([SourcePassages("s1", "T" * 900, (Passage("q1/c1", "(q1/c1; abstract; quote verified) x"),))])
     assert len(content.metadata["title"]) == TITLE_CHARS and content.metadata["title"].endswith("...")
 
+
+def test_the_passages_are_kept_once_so_the_budget_guard_counts_them_once() -> None:
+    # The first live check was refused before dispatch: each passage was in both the text and the metadata,
+    # and the guard reserves by the bytes of the serialized messages (run 8e4bfa1c).
+    passages = _ledger().passages()
+    [content] = search_results(passages)
+    assert not any(passage.text in content.content for passage in passages[0].passages)
+    assert content.metadata["blocks"] == [passage.text for passage in passages[0].passages]
+

@@ -56,14 +56,15 @@ TITLE_CHARS = 500
 
 
 def search_results(passages: Sequence[SourcePassages]) -> list[TextContent]:
-    """The synthesizer's citable passages as prompt content. Claude receives each as a search_result block
-    (`CitingAnthropicModel`); any other model, such as a scripted one in tests, sees the text."""
+    """The synthesizer's citable passages as prompt content, which Claude receives as search_result blocks
+    (`CitingAnthropicModel`). The passages are kept once, in the metadata, and the text is a short stand-in
+    that no request sends: a copy of them in the text doubled the stored messages and the budget guard's
+    byte-based reservation, which refused the first live check (docs/study-log.md)."""
     contents = []
     for source in passages:
         title = source.title if len(source.title) <= TITLE_CHARS else source.title[: TITLE_CHARS - 3].rstrip() + "..."
         contents.append(TextContent(
-            content=f"<search_result source={source.source_id!r} title={title!r}>\n"
-                    + "\n".join(passage.text for passage in source.passages) + "\n</search_result>",
+            content=f"[search result {source.source_id}: {len(source.passages)} passages]",
             metadata={"kind": SEARCH_RESULT, "source": source.source_id, "title": title,
                       "blocks": [passage.text for passage in source.passages]}))
     return contents
