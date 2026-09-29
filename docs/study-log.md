@@ -46,6 +46,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-29 | [First live synthesis with Claude's citations (synthesis v5, test branch)](#2026-09-29-first-live-synthesis-with-claudes-citations-synthesis-v5-test-branch) | $0.03 | The citation path works end to end on the real API: a complete, supported st07 report with 21 citations, all mapped to their claims. A first attempt was refused before dispatch because the passages were stored twice; fixed |
 | 09-29 | [Smoke check of the synthesizer's fallback (synthesis v7, test branch)](#2026-09-29-smoke-check-of-the-synthesizers-fallback-synthesis-v7-test-branch) | $0.011 | Anthropic accepts Opus 5@medium as Opus 5.5's server-side fallback: the synthesizer's smoke call carried it and was answered |
 | 09-29 | [Opus 5.5 resynthesis of st07 on synthesis v7 (test branch)](#2026-09-29-opus-55-resynthesis-of-st07-on-synthesis-v7-test-branch) | $0.13 | Complete and supported; all 34 citations matched their passages. 18 of 45 answer sentences uncited, but 6 are counting artifacts and 7 framing; 5 are facts left uncited, mostly lead-ins |
+| 09-29 | [Uncited sentences re-scored on synthesis v8 (offline)](#2026-09-29-uncited-sentences-re-scored-on-synthesis-v8-offline) | $0 | Run 6e811f5f's stored reply, marked and counted by the v8 code: 12 of 47 answer sentences uncited, not 18 of 45; the 12 are 7 framing sentences and 5 facts |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -398,3 +399,10 @@ A functional check of synthesis v7 on its real synthesizer, approved by the user
 - **Every citation matched.** The reply came as 69 text blocks, 34 of them with one citation each, and all 34 matched their passages on source, search-result position, block range, and cited text. The report lists 34 cited statements that use 19 of the 21 claims.
 - **18 of 45 answer sentences were uncited, and most of that is not missing evidence.** Six are counting artifacts: four sit inside a cited block that spans several sentences, which code marks only after its last word, and two are a bold heading and a table header row. Seven are framing and conclusions, such as how the report reads "still" and what the benchmark can and cannot support. Five are facts left uncited, mostly lead-ins whose specifics are cited in the next block ("Sampling settings also changed between releases."), and one plain fact ("a curated subset of 12 Python repositories"). The v5 check's 6 of 14 on Haiku is not comparable: a different model and a report a third as long.
 - **Claude often quotes its passages nearly verbatim**, such as the harness's description of fail-to-pass tests, so parts of the answer read as quotation.
+
+## 2026-09-29 Uncited sentences re-scored on synthesis v8 (offline)
+
+Two changes followed the st07 resynthesis. Synthesis v8 puts a cited block's citation before the full stop of each of its sentences, not only after the block's last word, and the uncited count leaves out a table's header row and bold heading lines. Rebuilding run `6e811f5f`'s report from its stored reply and ledger with the v8 code, at no cost:
+
+- **12 of 47 answer sentences are uncited, where v7 counted 18 of 45.** Four sentences inside multi-sentence cited blocks now carry their citation, and the header row and bold heading are no longer counted. The total rose by two because v7 put a block's citation after its full stop, where the sentence splitter read it as part of the next sentence and counted the two as one.
+- **The 12 are the 7 framing and conclusion sentences and the 5 uncited facts** listed in the previous entry. The report's text is otherwise unchanged.

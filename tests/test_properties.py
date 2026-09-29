@@ -87,6 +87,23 @@ def test_open_item_ids_keep_their_meaning_as_research_is_added(plan_ids: list[st
     assert all(after.get(item_id) == requirement for item_id, requirement in before.items())
 
 
+# One line of a cited block, as the synthesizer writes it: prose, markdown, and section tags.
+_BLOCK_LINE = st.text(alphabet=st.sampled_from(list("abcAB 19.!?\"'()#*-|:<>/_,")), max_size=120)
+
+
+@SETTINGS
+@given(_BLOCK_LINE)
+def test_marking_a_cited_block_only_adds_citations_and_cites_every_sentence(text: str) -> None:
+    from hypothesis import assume
+
+    from research_loop.citations import _marked
+
+    assume(not inline_source_ids(text))  # the model's own citations are removed before marking
+    marked = _marked(text, ["s1"])
+    assert strip_inline_citations(marked) == text
+    assert uncited_sentences(marked)[1] == 0
+
+
 @SETTINGS
 @given(st.lists(st.text(max_size=80), max_size=12))
 def test_citing_a_line_never_adds_uncited_sentences(lines: list[str]) -> None:

@@ -202,6 +202,25 @@ def test_a_citation_that_does_not_match_the_passages_sent_adds_no_reference_and_
         "the cited text of s1 blocks 0 to 1 is not theirs", "a char_location citation"]
 
 
+def test_every_sentence_of_a_cited_block_carries_its_citation() -> None:
+    # Claude cites whole blocks, and one block can hold several sentences; marking only its end left the
+    # others uncited (run 6e811f5f). A citation goes before a full stop, or it would read as the next sentence's.
+    passages = _ledger().passages()
+    response = ModelResponse(parts=[
+        TextPart("<title>T</title><summary>S</summary><answer>"),
+        TextPart("Each task gives the issue text. The system then edits the code. Tests decide.",
+                 provider_name="anthropic", provider_details={"citations": [_citation("s1", 0, 0, 1)]}),
+        TextPart(' It is described as "curated."', provider_name="anthropic",
+                 provider_details={"citations": [_citation("s1", 0, 1, 2)]}),
+        TextPart("</answer>"),
+    ])
+    report = cited_report(response, passages)
+    assert report.answer == ('Each task gives the issue text [s1]. The system then edits the code [s1]. Tests decide [s1].'
+                             ' It is described as "curated." [s1]')
+    # One cited block is still one statement.
+    assert report.claims[0].statement == "Each task gives the issue text. The system then edits the code. Tests decide."
+
+
 def _fallback_block(index: int, category: str | None) -> list[dict[str, Any]]:
     block = {"type": "fallback", "from": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"},
              "trigger": {"type": "refusal", "category": category}}

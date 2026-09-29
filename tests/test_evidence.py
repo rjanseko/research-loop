@@ -343,6 +343,12 @@ def test_uncited_sentences_count_findings_without_a_citation() -> None:
               "- Annotators screened each sample for underspecified problems [s3].")
     # The table row states a finding with no citation; headings, rules, and short lines are left out.
     assert uncited_sentences(answer) == (4, 1)
+    # A table's header row and a bold heading line state no finding, however many words they have (run 6e811f5f).
+    headed = ("**Scoring errors (peer-reviewed; UTBoost, ACL 2025)**\n"
+              "| Threat to the benchmark | Finding in the study | Publication status |\n|---|---|---|\n"
+              "| Contamination | Scores fall on tasks created after training [s4] | preprint |\n"
+              "- **Grading:** Each instance runs in a Docker environment with its tests.")
+    assert uncited_sentences(headed) == (2, 1)
 
 
 def test_open_items_never_share_an_id_with_the_plans_items() -> None:

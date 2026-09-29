@@ -189,8 +189,9 @@ def _paid_search(name: str) -> Any:
 # v18: synthesis v6, one uncached request that is never retried. followup-v19 carries it.
 # v19: synthesis v7, the passages as the synthesizer's only facts and first in its prompt, citations checked
 # against them, and a server-side fallback when its model declines. followup-v20 carries it.
-WORKFLOW_VERSION = "scout-v19"
-FOLLOWUP_VERSION = "scout-followup-v20"
+# v20: synthesis v8, every sentence of a cited block carries its citation. followup-v21 carries it.
+WORKFLOW_VERSION = "scout-v20"
+FOLLOWUP_VERSION = "scout-followup-v21"
 RESCOUT_VERSION = "scout-research-v16"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
@@ -200,7 +201,9 @@ RESCOUT_VERSION = "scout-research-v16"
 # a citation counts only when it matches the passages sent; Anthropic falls back to another Claude model
 # inside the request when the synthesizer's model declines it, and a reply declined partway through by every
 # model is discarded.
-SYNTHESIS_VERSION = "scout-synthesis-v7"
+# v8: code puts a cited block's citation before the full stop of each of its sentences, not only after its last
+# word (run 6e811f5f).
+SYNTHESIS_VERSION = "scout-synthesis-v8"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(

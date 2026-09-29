@@ -48,7 +48,7 @@ from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from .evidence import SourcePassages, strip_inline_citations
+from .evidence import SENTENCE_END, SourcePassages, strip_inline_citations
 from .prices import install_price_overrides
 from .schemas import FinalReport, ReportClaim
 
@@ -61,6 +61,9 @@ _SECTION = re.compile(r"<(" + "|".join(SECTIONS) + r")>(.*?)(?:</\1>|(?=<(?:" + 
 # Whitespace and section tags at the end of a cited span, which its citation goes before.
 _TRAILING = re.compile(r"(?:\s|</?[a-z_]+>)*\Z")
 _TAG = re.compile(r"</?[a-z_]+>")
+# A sentence's closing punctuation, which its citation goes before; after a closing quote or bracket, the
+# citation follows it rather than go inside.
+_SENTENCE_CLOSE = re.compile(r"[.!?]+\Z")
 _ITEM_ID = re.compile(r"[A-Za-z0-9_~/-]+")
 
 
@@ -291,12 +294,26 @@ def _references(part: TextPart, passages: Sequence[SourcePassages]) -> list[tupl
 
 
 def _marked(text: str, source_ids: list[str]) -> str:
-    """`text` with an inline citation of `source_ids` after its last word, before trailing space and tags."""
-    end = _TRAILING.search(text)
-    cut = end.start() if end else len(text)
-    if not text[:cut].strip():
-        return text
-    return f"{text[:cut]} [{', '.join(source_ids)}]{text[cut:]}"
+    """`text` with an inline citation of `source_ids` closing each of its sentences: before the sentence's
+    full stop, or after its last word when it has none, and before trailing space and tags. A cited block
+    can hold several sentences, and one marked only at its end left the others uncited (run 6e811f5f); a
+    citation after a full stop would read as the next sentence's."""
+    citation = f" [{', '.join(source_ids)}]"
+    # The separators are kept (odd indices), so the text is rebuilt unchanged apart from the citations.
+    pieces = re.split(f"({SENTENCE_END.pattern})", text)
+    return "".join(piece if index % 2 else _mark_sentence(piece, citation) for index, piece in enumerate(pieces))
+
+
+def _mark_sentence(sentence: str, citation: str) -> str:
+    end = _TRAILING.search(sentence)
+    body, rest = sentence[:end.start()], sentence[end.start():] if end else ""
+    close = _SENTENCE_CLOSE.search(body)
+    head = body[:close.start()] if close else body
+    words = head.rstrip()
+    if not words.strip():
+        return sentence
+    # After the last word, so any space before the full stop stays where it was.
+    return f"{words}{citation}{body[len(words):]}{rest}"
 
 
 def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) -> FinalReport:
