@@ -900,7 +900,7 @@ def check_record(record: dict[str, Any], calls: list[dict[str, Any]]) -> list[st
                     if isinstance(content, dict) else []
                 if blocked := [item.get("url", "") for item in shown
                                if (item.get("url") and policy.blocks(item["url"]))
-                               or policy.blocks_title(f"{item.get('title') or ''} {item.get('snippet') or ''}")]:
+                               or policy.blocks_result(item.get("title"), item.get("snippet"))]:
                     problems.append(f"call {call.get('role')} {call.get('question_id')} was shown a blocked "
                                     f"search result: {blocked[0]}")
                 scholarly = part.get("content") if part.get("tool_name") in ("scholar_search", "scholar_get") else None

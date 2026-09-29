@@ -2,13 +2,16 @@
 tool refuses before the cache, DNS, or any request."""
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
+from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
 from research_loop.acquisition import MAX_FETCH_CHARS, AcquisitionCache, SourcePolicy
 from research_loop.schemas import SourceRef
 from research_loop.scholar import ScholarResponse, ScholarWork
-from research_loop.tools import research_toolset
+from research_loop.tools import blocked_shown, research_toolset
 from research_loop.web import WebAcquisition, WebSearch
 
 REPORT = "https://www.example.org/reports/2024/"
@@ -209,10 +212,38 @@ def test_a_blocked_title_matches_its_copies_whatever_the_case_punctuation_or_spa
     assert TITLED.blocks_title("machine learning based methods for materials inverse design  a review (2025)") == blocked
     assert TITLED.blocks_title("Machine learning-based inverse design methods considering data characteristics") is None
     # A title is matched whole, on word boundaries, and a short one is never matched.
-    assert TITLED.blocks_title("Machine Learning-Based Methods for Materials Inverse Design: A Reviewer's guide") is None
+    assert TITLED.blocks_title("Machine Learning-Based Methods for Materials Inverse Designers: A guide") is None
     assert SourcePolicy(titles=("A Review",)).blocks_title("A review of everything") is None
     assert SourcePolicy().blocks_title(TITLE) is None
     assert TITLED.blocks_work(urls=("https://cdn.example/x.pdf",), title=TITLE) == blocked
+
+
+def test_a_search_result_under_a_shortened_title_or_printing_the_doi_is_blocked() -> None:
+    """Search engines cut long titles and add their site's name, so the whole title never appears. These are the
+    results that showed drb2-task8's blocked review to scouts in 25 of 42 fetch-v18 runs (study log,
+    29 September 2026)."""
+    blocked = f"title: {TITLE}"
+    for title in ("Machine Learning-Based Methods for Materials Inverse Design ...",
+                  "Machine Learning-Based Methods for Materials Inverse Design …",
+                  "Machine Learning-Based Methods for Materials Inverse Design",
+                  "Machine Learning-Based Methods for Materials - ProQuest",
+                  "Machine Learning-Based Methods for Materials Inverse Design | PDF"):
+        assert TITLED.blocks_result(title, "three main inverse design methods") == blocked, title
+    review = "https://doi.org/10.32604/cmc.2025.060109"
+    assert SourcePolicy((review,)).blocks_result(
+        "Machine Learning-Based Methods for Materials - ProQuest",
+        "Computers, Materials, & Continua; Vol. 82, Iss. 2, (2025): 1463-1492. DOI:10.32604/cmc.2025.060109 Download") == review
+    # Other works that share only the opening words, or a short prefix, still pass.
+    for title in ("Machine learning-based inverse design methods considering data characteristics ...",
+                  "Machine Learning-Based Methods for Materials Discovery and Design",
+                  "Machine Learning-Based Methods ...",
+                  "[2210.11931] Deep Reinforcement Learning for Inverse ..."):
+        assert TITLED.blocks_result(title, "An unrelated abstract") is None, title
+    assert SourcePolicy().blocks_result(TITLE, "") is None
+    # A scout cited both of these for the review's three strategies in the v14 search study; its evidence is refused.
+    for cited in ("Machine Learning-Based Methods for Materials - ProQuest",
+                  "Scholar - SciOpen record for Machine Learning-Based Methods for Materials Inverse Design"):
+        assert TITLED.blocks_work(urls=("https://www.proquest.com/docview/3199833354",), title=cited) == blocked, cited
 
 
 @pytest.mark.asyncio
@@ -279,3 +310,23 @@ def test_every_frozen_case_blocks_its_expert_reports_title_and_a_rerun_recovers_
     task8 = study_cases()["drb2-task8"]
     assert case_blocked_titles(case_identity(task8)) == [TITLE]
     assert case_blocked_titles(None) == [] and case_blocked_titles({"id": "no-such-case"}) == []
+
+
+def test_a_runs_stored_messages_show_what_an_older_policy_let_through() -> None:
+    def returned(tool: str, content: dict) -> ModelRequest:
+        return ModelRequest(parts=[ToolReturnPart(tool_name=tool, content=json.dumps(content), tool_call_id=tool)])
+
+    messages = [
+        returned("web_search", {"results": [
+            {"title": "Machine Learning-Based Methods for Materials Inverse Design ...", "url": "https://cdn.example/a.pdf",
+             "snippet": "Then, three main inverse design methods"},
+            {"title": "Another review", "url": "https://ok.example/r", "snippet": "Inverse design survey"}]}),
+        returned("fetch", {"url": "https://cdn.example/b.pdf", "start": 0, "text": f"CMC. {TITLE}. Abstract ..."}),
+        returned("fetch", {"url": "https://ok.example/r", "start": 0, "text": "Our own study of inverse design."}),
+        returned("scholar_search", {"works": [{"title": TITLE, "url": "https://cdn.example/c"},
+                                              {"title": "Another paper", "doi": "10.5555/ok"}]}),
+    ]
+    assert blocked_shown(messages, TITLED) == [
+        "web_search: Machine Learning-Based Methods for Materials Inverse Design ...",
+        "fetch: https://cdn.example/b.pdf", f"scholar_search: {TITLE}"]
+    assert blocked_shown(messages, SourcePolicy()) == []
