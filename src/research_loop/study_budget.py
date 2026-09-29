@@ -42,7 +42,10 @@ from .prices import install_price_overrides
 # v7 reserves a synthesis with a server-side fallback (citations.py) as two attempts: the declined one in full,
 # and the fallback's, whose input also carries the declined attempt's streamed output, at the fallback's rates. A
 # response that carries its own cost, summed over those attempts, settles to it.
-BUDGET_POLICY_VERSION = "usage-anchor-v7"
+# v8: a run records what its guard still holds beyond its known cost (`uncertain_usd`): reservations of calls
+# that returned no price, or of requests that failed after they may have been billed. A study counts it against
+# its ceiling, where v7 counted only the reported cost, a lower bound (docs/architectural-review-2026-09-29.md, B1).
+BUDGET_POLICY_VERSION = "usage-anchor-v8"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 # Framing for the messages, tool definitions, and settings added since the anchoring reply.

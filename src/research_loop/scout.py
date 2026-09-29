@@ -98,13 +98,14 @@ from .evidence import (
 from .models import (
     Role,
     build_model,
+    retry_counts,
     role_model,
     scout_model,
     sent_settings,
 )
 from .prices import price_per_million
 from .prompts import prompt_fingerprint
-from .rate_limit import RATE_LIMIT_POLICY_VERSION
+from .rate_limit import RATE_LIMIT_POLICY_VERSION, RateLimitModel
 from .reading import ExaContentsReader, ExternalSpend, FirecrawlReader, OpenAccessReader
 from .schemas import (
     EVIDENCE_VERSION,
@@ -194,8 +195,11 @@ def _paid_search(name: str) -> Any:
 # v20: synthesis v8, every sentence of a cited block carries its citation. followup-v21 carries it.
 # v21: checked tool snapshots, exact passage links, and assertion-level support; followup-v22
 # and research-v17 carry the same evidence behavior.
-WORKFLOW_VERSION = "scout-v21"
-FOLLOWUP_VERSION = "scout-followup-v22"
+# v22: synthesis v10; a report without its title, summary, or answer makes the run partial. followup-v23
+# carries it. Every run role also retries under scout-429-v6 and records retries and uncertain spend, which
+# the rate-limit and budget policies version.
+WORKFLOW_VERSION = "scout-v22"
+FOLLOWUP_VERSION = "scout-followup-v23"
 RESCOUT_VERSION = "scout-research-v17"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
@@ -208,14 +212,17 @@ RESCOUT_VERSION = "scout-research-v17"
 # v8: code puts a cited block's citation before the full stop of each of its sentences, not only after its last
 # word (run 6e811f5f).
 # v9: cited passages identify report assertions; multi-sentence provider blocks are ambiguous.
-SYNTHESIS_VERSION = "scout-synthesis-v9"
+# v10: a reply without its title, summary, or answer makes the run partial, and the missing sections and the
+# citations that did not match the passages sent are stored in the run's checks (architectural review S1, F01).
+SYNTHESIS_VERSION = "scout-synthesis-v10"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
     f"scout-{kind}v{n}" for kind in ("", "followup-", "research-")
     for n in range(1, 1 + max(int(v.rpartition("v")[2]) for v in (WORKFLOW_VERSION, FOLLOWUP_VERSION, RESCOUT_VERSION))))
 # Whether the run did its work: `complete` when the report was written and every step ran to its end,
-# `partial` when a question was cut off, the synthesis did not finish, or the gap analysis failed.
+# `partial` when a question was cut off, the synthesis did not finish or lacked a required section, or the gap
+# analysis failed.
 # Whether the answer is backed is `RunChecks.answer_support`.
 Status = Literal["complete", "partial", "failed", "cancelled"]
 AnswerSupport = Literal["supported", "weak", "unsupported"]
@@ -290,6 +297,17 @@ class RunChecks(BaseModel):
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
     study_budget_reserved_usd: Decimal | None = None
+    # Under a hard cap, what the guard still holds beyond `cost_usd`: reservations of calls that returned no
+    # price, or of requests that failed after they may have been billed. The run's charge is known only up to
+    # it, and a study counts it against its ceiling (architectural review B1).
+    uncertain_usd: Decimal | None = None
+    # Required report sections the synthesizer's reply lacked or left empty (title, summary, answer); any
+    # makes the run partial (synthesis v10).
+    missing_sections: list[str] = Field(default_factory=list)
+    # The synthesizer's citations that did not match the passages sent, which the report leaves out.
+    invalid_citations: list[str] = Field(default_factory=list)
+    # Requests sent again, by cause (rate_limit.RateLimitModel): each may have been billed.
+    retries: dict[str, int] = Field(default_factory=dict)
 
 
 @dataclass
@@ -437,6 +455,9 @@ class _Run:
         self.cost = Decimal(0)
         self.unpriced = False
         self.notes: list[str] = []
+        # What the synthesizer's reply lacked, and its citations that did not match the passages sent.
+        self.missing_sections: list[str] = []
+        self.invalid_citations: list[str] = []
         self.blocked_titles = list(blocked_titles)
         self.policy = SourcePolicy(tuple(blocked_urls), titles=tuple(blocked_titles))
         self.models: dict[tuple[Role, str], Model] = {}
@@ -466,9 +487,9 @@ class _Run:
                 guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
                                            model_id, self.budget,
                                            fallback_model_id=split_model(fallback)[0] if fallback else None)
-                # The guard is inside the 429 wrapper, so every retry reserves a new request.
+                # The guard is inside the retry wrapper, so every retry reserves a new request.
                 self.models[role, spec] = (scout_model(guarded, model_id, self.settings)
-                                           if role == "scout" else guarded)
+                                           if role == "scout" else RateLimitModel(guarded))
         return self.models[role, spec]
 
     def _scout_spec(self, index: int) -> str:
@@ -792,9 +813,11 @@ class _Run:
             self.notes.append(f"the synthesizer's model declined the synthesis ({', '.join(categories) or 'no category'})"
                               f", and {response.model_name} continued it")
         if problems := mismatched_citations(response, passages):
+            self.invalid_citations = list(dict.fromkeys(problems))
             self.notes.append(f"{len(problems)} of the synthesizer's citations did not match the passages sent and "
                               f"were left out: {'; '.join(dict.fromkeys(problems))}")
         if missing := missing_sections(result.output):
+            self.missing_sections = missing
             self.notes.append(f"the synthesizer's reply had no {', '.join(missing)} section")
         if not report.answer.strip():
             self.notes.append("the synthesis wrote no answer")
@@ -816,18 +839,22 @@ class _Run:
                 span = stack.enter_context(run_span(self.run_id, mode, self.workflow_version))
                 span_trace = trace_id(span)
                 status, checks = await body(stack)
+                status = self._report_contract(status, checks)
                 span.set_attributes({"status": status, "cost_usd": float(self.cost)})
         except BaseException as exc:
             failed = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
             await _record(self.store.finish_run(
                 self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
                 checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd,
+                                 uncertain_usd=self._uncertain_usd(),
                                  external_usd=self._external_usd()) if self.budget else None,
                 cost_usd=self._total_cost(), error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
                 config=self.config, workflow_version=self.workflow_version))
             raise
         checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
+        checks.uncertain_usd = self._uncertain_usd()
         checks.external_usd = self._external_usd()
+        checks.retries = retry_counts(self.models.values())
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
         await self.store.finish_run(self.run_id, status=status, plan=self.plan, report=self.report,
                                     ledger=self.ledger.to_json(), checks=checks, cost_usd=self._total_cost(),
@@ -887,6 +914,25 @@ class _Run:
             return status, checks
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
+
+    def _report_contract(self, status: Status, checks: RunChecks) -> Status:
+        """Record what the synthesizer's reply lacked or cited wrongly; a report without its title, summary,
+        or answer makes a complete run partial (architectural review S1)."""
+        checks.missing_sections, checks.invalid_citations = self.missing_sections, self.invalid_citations
+        if self.report is None:
+            return status
+        if self.missing_sections:
+            checks.review_reasons.append(f"the report has no {', '.join(self.missing_sections)} section")
+        if self.invalid_citations:
+            checks.review_reasons.append(f"{len(self.invalid_citations)} citation(s) did not match the passages "
+                                         "sent and were left out")
+        return "partial" if status == "complete" and self.missing_sections else status
+
+    def _uncertain_usd(self) -> Decimal | None:
+        """What the budget guard holds beyond the run's known cost, or None without a hard cap."""
+        if self.budget is None:
+            return None
+        return max(self.budget.reserved_usd - self._total_cost(), Decimal(0))
 
     def _external_usd(self) -> Decimal | None:
         """What paid searches and page reads cost, or None when the run used only free services."""

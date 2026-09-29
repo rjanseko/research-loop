@@ -13,9 +13,11 @@ from research_loop.config import Settings, split_model
 from research_loop.models import (
     build_model,
     model_settings,
+    retry_counts,
     role_model,
     sent_settings,
 )
+from research_loop.rate_limit import RateLimitModel
 
 
 @pytest.fixture
@@ -107,8 +109,8 @@ def test_the_synthesizer_is_claude_with_citations_and_no_client_side_fallback(ke
     from research_loop.citations import CitingAnthropicModel
 
     synthesizer = role_model("synthesizer", keyed)
-    assert isinstance(synthesizer, CitingAnthropicModel) and synthesizer.model_name == "claude-opus-5-5"
-    assert synthesizer.settings["thinking"] == "medium"
+    assert isinstance(synthesizer, RateLimitModel) and isinstance(synthesizer.wrapped, CitingAnthropicModel)
+    assert synthesizer.model_name == "claude-opus-5-5" and synthesizer.wrapped.settings["thinking"] == "medium"
     assert not isinstance(role_model("scout", keyed), FallbackModel)
     # The default planner is the fallback model itself, so it has nothing to fall back to.
     assert not isinstance(role_model("planner", keyed), FallbackModel)
@@ -134,13 +136,28 @@ def test_a_missing_key_fails_instead_of_reaching_for_the_environment(monkeypatch
         build_model("zai:glm-5.3-flash@high", "scout", Settings())
 
 
-def test_a_scout_makes_one_attempt_and_other_roles_keep_the_client_default(keyed: Settings) -> None:
-    scout = role_model("scout", keyed)
-    planner = role_model("planner", keyed)
-    synthesizer = role_model("synthesizer", keyed)
-    assert scout.client.max_retries == 0
-    assert planner.client.max_retries == 2
-    assert synthesizer.client.max_retries == 2
+def test_every_role_makes_one_attempt_and_retries_only_through_the_wrapper(keyed: Settings,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    # The SDK's default of two retries resent a timed-out request, the synthesizer's whole ledger (B2).
+    for role in ("scout", "planner", "synthesizer"):
+        model = role_model(role, keyed)
+        assert isinstance(model, RateLimitModel) and model.wrapped.client.max_retries == 0, role
+    monkeypatch.setenv("RESEARCH_MODELS__PLANNER", "anthropic:claude-opus-5-5@medium")
+    planner = role_model("planner", Settings())
+    assert all(isinstance(inner, RateLimitModel) and inner.wrapped.client.max_retries == 0
+               for inner in planner.models)
+
+
+def test_retries_are_counted_through_fallbacks_and_guards() -> None:
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.models.wrapper import WrapperModel
+
+    first, second = RateLimitModel(FunctionModel(lambda m, i: None)), RateLimitModel(FunctionModel(lambda m, i: None))
+    first.retries.update({"server_error": 2})
+    second.retries.update({"server_error": 1, "network": 1})
+    fallback = FallbackModel(first, second)
+    assert retry_counts([fallback, WrapperModel(first)]) == {"network": 1, "server_error": 3}
+    assert retry_counts([]) == {}
 
 
 def test_a_google_scout_makes_one_attempt(monkeypatch: pytest.MonkeyPatch, keyed: Settings) -> None:

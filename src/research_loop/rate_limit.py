@@ -1,9 +1,9 @@
 """Pace a run's scouts under their model's token rate limit, and retry an explicitly timed rate limit,
-a transient network fault, or a server error.
+a transient network fault, or a server error, for every run role.
 
-The provider SDK retries timeouts along with 429s. Scout keeps SDK retries disabled and handles only
-rate limits that say when to retry, and connection faults that are not timeouts, which it sends once
-more. One wrapper instance is shared by the run's scouts, so a 429 pauses new requests from all of
+The provider SDK retries timeouts along with 429s. Scout keeps SDK retries disabled for every run role and
+handles only rate limits that say when to retry, and connection faults that are not timeouts, which it sends
+once more. One wrapper instance is shared by the run's scouts, so a 429 pauses new requests from all of
 them. A server error (500, 502, 503, 504) is sent again twice, after short pauses. Other provider errors
 with no retry time, including exhausted balances, fail, and so does a timeout.
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -42,7 +43,11 @@ from pydantic_ai.usage import RequestUsage
 # v2 adds pacing under a configured tokens-per-minute limit. v3 sends a request once more after a
 # transient network fault. v4 paces under the limit the provider reports, unless one was set explicitly.
 # v5 sends a request again after a server error.
-RATE_LIMIT_POLICY_VERSION = "scout-429-v5"
+# v6 applies this policy to every run role, not only scouts: the planner, gap analyzer, and synthesizer also
+# send with the provider SDK's own retries off, which retried a timeout and could send the synthesizer's one
+# uncached request up to twice more (docs/architectural-review-2026-09-29.md, B2). Each wrapper counts its
+# retries, and a run records them in its checks.
+RATE_LIMIT_POLICY_VERSION = "scout-429-v6"
 
 # Each model's tokens-per-minute limit as its provider last reported it, by `provider:model`.
 _REPORTED_TOKENS_PER_MINUTE: dict[str, int] = {}
@@ -210,13 +215,15 @@ class TokenPacer:
             entry[1] = float(usage.input_tokens + usage.output_tokens)
 
 
-class ScoutRateLimitModel(WrapperModel):
-    """Share the provider's pause across parallel scouts while leaving timeout retries disabled, and pace
-    requests under `pacer` when the model has a configured token rate limit."""
+class RateLimitModel(WrapperModel):
+    """A run role's retry policy: share the provider's pause across parallel callers while leaving timeout
+    retries disabled, and pace requests under `pacer` when the model has a configured token rate limit.
+    `retries` counts the requests sent again, by cause: `rate_limit`, `server_error`, and `network`."""
 
     def __init__(self, wrapped: Model, pacer: TokenPacer | None = None):
         super().__init__(wrapped)
         self.pacer = pacer
+        self.retries: Counter[str] = Counter()
         self._resume_at = 0.0
         self._lock = asyncio.Lock()
 
@@ -268,14 +275,17 @@ class ScoutRateLimitModel(WrapperModel):
             except ModelHTTPError as error:
                 if retries < _MAX_RETRIES and await self._pause(error):
                     retries += 1
+                    self.retries["rate_limit"] += 1
                 elif await self._server_retry(error, server):
                     server += 1
+                    self.retries["server_error"] += 1
                 else:
                     raise
             except (OSError, httpx.TransportError, ModelAPIError) as error:
                 if not await self._network_retry(error, network):
                     raise
                 network += 1
+                self.retries["network"] += 1
 
     @asynccontextmanager
     async def request_stream(
@@ -303,8 +313,10 @@ class ScoutRateLimitModel(WrapperModel):
                     raise
                 if retries < _MAX_RETRIES and await self._pause(error):
                     retries += 1
+                    self.retries["rate_limit"] += 1
                 elif await self._server_retry(error, server):
                     server += 1
+                    self.retries["server_error"] += 1
                 else:
                     raise
             except (OSError, httpx.TransportError, ModelAPIError) as error:
@@ -312,3 +324,4 @@ class ScoutRateLimitModel(WrapperModel):
                 if opened or not await self._network_retry(error, network):
                     raise
                 network += 1
+                self.retries["network"] += 1

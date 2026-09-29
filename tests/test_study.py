@@ -242,6 +242,29 @@ def test_low_estimates_cannot_carry_a_study_past_its_ceiling(tmp_path: Path) -> 
     assert sum(o.charged_usd for o in outcomes) <= 1
 
 
+def test_what_a_runs_guard_still_holds_counts_against_the_ceiling(tmp_path: Path) -> None:
+    # Architectural review B1: a run with an unpriced call reports a known lower bound, and under budget policy v7
+    # the study released the rest of what its guard had reserved.
+    spec = StudySpec(study="s", cases=["c"], arms=[{"name": "a"}], replicates=2, cap_usd=1, estimate_usd=0.1,
+                     ceiling_usd=1)
+    seen: list[str] = []
+
+    def invoke(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+        seen.append(args[args.index("--max-usd") + 1])
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True)
+        record = _record(f"run-{len(seen)}", 0.20)
+        record["checks"]["uncertain_usd"] = "0.45"
+        (out / "run.json").write_text(json.dumps(record))
+        return 0, ""
+
+    outcomes = run_study(spec, tmp_path, invoke=invoke, worktrees=_no_worktrees)
+    # The first run is charged $0.20 known and $0.45 uncertain, so the second gets $0.35, not $0.80.
+    assert seen == ["1.00", "0.35"]
+    assert outcomes[0].charged_usd == Decimal("0.65") and outcomes[0].uncertain_usd == Decimal("0.45")
+    assert "plus up to $0.90 held by runs' guards" in summary(spec, outcomes)
+
+
 def test_a_step_whose_cost_is_unknown_counts_its_whole_cap(tmp_path: Path) -> None:
     spec = StudySpec(study="s", cases=["st05-scaling-table"], arms=[{"name": "a"}], replicates=3, cap_usd=0.5,
                      estimate_usd=0.2, ceiling_usd=1.2, grade=True, grade_estimate_usd=0.05, grade_cap_usd=0.1)

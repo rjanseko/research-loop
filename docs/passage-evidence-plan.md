@@ -512,9 +512,9 @@ The rebuild does not cover these, and they are not blocked by it. They are small
 | Item | What to do | Version |
 |---|---|---|
 | Blocked-source exposure (F06) | Done in the cleanup of 29 September: fetch version 19 blocks shortened titles, main titles, and printed DOIs, and `tools.blocked_shown` with `scripts/blocked_exposure.py` replays what a stored run was shown. In the rebuild, every observation is checked against the run's policy as it is stored, and a run's checks record what it was shown that the policy blocks, so a study summary reports exposure without a replay. | `FETCH_VERSION` 19 (done) |
-| B2, synthesis HTTP retries | Set the synthesizer's SDK retries explicitly, as hard-capped calls already do, and record attempts. | `BUDGET_POLICY_VERSION` |
-| B1, unknown charges | Carry an unpriced call's reservation into the study ceiling until it is reconciled, and show known and uncertain spend apart. The DeepSeek study's interrupted Luna rescout (`e994230a`) is an example: its four scout calls have no recorded cost. | `BUDGET_POLICY_VERSION` |
-| S1, structural status | An answer-only reply makes the run `partial`. This lands with the rebuild's report contract, but is small enough to go first. | `SYNTHESIS_VERSION` |
+| B2, synthesis HTTP retries | Done 29 September: every run role sends with SDK retries off through `RateLimitModel`, and a run records its retries in `checks.retries`. | `RATE_LIMIT_POLICY_VERSION` `scout-429-v6` (done) |
+| B1, unknown charges | Done 29 September: a guarded run records `uncertain_usd`, what its guard holds beyond its known cost, and the study runner counts it against the ceiling and shows it apart. A run that wrote no record, like the DeepSeek study's interrupted `e994230a`, already counted its whole cap. | `BUDGET_POLICY_VERSION` `usage-anchor-v8` (done) |
+| S1, structural status | Done 29 September: a report without its title, summary, or answer makes the run `partial`, and the missing sections and invalid citations are stored in the run's checks. | `SYNTHESIS_VERSION` v10, `scout-v22` (done) |
 | C02, quality anchors | Validate a quality verdict's anchors against the reader-visible text and packet sources. It lands with the rebuild's shared report view as quality v2. | `QUALITY_VERSION` |
 
 `scripts/rescore_quotes.py` re-checks quotes under the current evidence rules; it is removed with quote matching.

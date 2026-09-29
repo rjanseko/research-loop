@@ -317,9 +317,12 @@ async def test_when_every_fetch_fails_the_run_fails_and_says_why(settings, pages
 async def test_a_reply_without_its_sections_is_not_retried_and_keeps_what_it_has(settings, pages) -> None:
     calls: list[int] = []
     run = await _run(settings, write=writer(untagged_first=True, calls=calls))
-    assert len(calls) == 1 and run.status == "complete"
+    # An answer-only reply keeps its report, but the run is partial, not complete (architectural review S1).
+    assert len(calls) == 1 and run.status == "partial"
     assert run.report.answer == "Mostly trustworthy." and run.report.title == ""
     assert run.notes == ["the synthesizer's reply had no title, summary, answer section"]
+    assert run.checks.missing_sections == ["title", "summary", "answer"]
+    assert "the report has no title, summary, answer section" in reasons(run)
     assert render_markdown(run.to_record()).startswith("# Is SWE-bench Verified trustworthy?")
 
 
@@ -356,6 +359,9 @@ async def test_a_synthesis_that_fell_back_or_cited_what_was_not_sent_says_so(set
         "the synthesizer's model declined the synthesis (bio), and claude-opus-5 continued it",
         ("1 of the synthesizer's citations did not match the passages sent and were left out: "
          "the cited text of s1 blocks 0 to 1 is not theirs")]
+    # The mismatch is stored in the checks too, not only in a note (architectural review F01).
+    assert run.checks.invalid_citations == ["the cited text of s1 blocks 0 to 1 is not theirs"]
+    assert "1 citation(s) did not match the passages sent and were left out" in reasons(run)
 
 
 async def test_a_synthesis_declined_partway_through_is_discarded_not_published(settings, pages) -> None:
@@ -586,13 +592,19 @@ async def test_undispatched_budget_refusal_is_not_an_unpriced_call(settings) -> 
     assert not runner.unpriced and runner.cost == 0
     runner._spend(RunUsage(requests=1))
     assert runner.unpriced
+    # What the guard reserved for the unpriced call stays held, and the run says its charge is uncertain by it.
+    runner.budget.reserved_usd = Decimal("0.004")
+    assert runner._uncertain_usd() == Decimal("0.004")
+    runner.cost = Decimal("0.001")
+    assert runner._uncertain_usd() == Decimal("0.003")
+    assert _Run("Q?", settings, MemoryStore(), [], [], None, None)._uncertain_usd() is None
 
 
 async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, monkeypatch) -> None:
     from pydantic_ai import UsageLimits
 
     from research_loop.agents import PlanLimits
-    from research_loop.rate_limit import ScoutRateLimitModel
+    from research_loop.rate_limit import RateLimitModel
     from research_loop.scout import _Run
     from research_loop.study_budget import StudyBudgetModel, StudyBudgetRefusal
 
@@ -607,7 +619,7 @@ async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, mo
     store = MemoryStore()
     runner = _Run("Q?", settings, store, [], [], None, None, budget=budget)
     model = runner._model("scout", settings.models.scout)
-    assert isinstance(model, ScoutRateLimitModel)
+    assert isinstance(model, RateLimitModel)
     assert isinstance(model.wrapped, StudyBudgetModel) and model.wrapped.budget is budget
     assert model.pacer is not None and model.pacer.tokens_per_minute == 2_000_000  # gpt-6-luna's configured limit
     with pytest.raises(StudyBudgetRefusal):
