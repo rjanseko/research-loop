@@ -3,6 +3,8 @@
 **Date:** 28 September 2026
 **Scope:** the checked-out `claude/example-glp1-alcohol` branch, its local study artifacts, and read-only queries of the local Postgres database. This report reviews the supplied, untracked `audit.md` as one input, but reaches its own conclusions from current code and offline probes. It makes no model or paid-service calls and changes no run data.
 
+**Workflow continuation:** [Step-by-step audit and complexity inventory](workflow-audit-addendum-2026-09-28.md) traces all 16 workflow stages and records additional findings on study caps, planner fallback, coverage, source identity, provenance, duplicate code, and removable complexity.
+
 ## Executive assessment
 
 Scout has a sound *separation of responsibilities*: typed PydanticAI roles produce plans, research, and reports; the workflow controls their order and budgets; code builds the evidence ledger and checks quotations; Postgres stores runs; versioned, external evaluators inspect completed work. The bounded gap follow-up is a reasonable extension of that design. The offline harness, explicit study ceilings, frozen cases, and recorded prompt/version metadata are unusual strengths for a small research agent.
