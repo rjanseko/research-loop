@@ -52,13 +52,16 @@ def _sse(events: list[dict[str, Any]]) -> bytes:
     return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
 
 
-def _text_block(index: int, text: str, citations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    start = {"type": "content_block_start", "index": index,
-             "content_block": {"type": "text", "text": "", **({"citations": []} if citations else {})}}
-    deltas = [{"type": "content_block_delta", "index": index, "delta": {"type": "citations_delta", "citation": c}}
-              for c in citations or []]
-    return [start, *deltas, {"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}},
-            {"type": "content_block_stop", "index": index}]
+def _text_block(index: int, text: str, citations: list[dict[str, Any]] | None = None, *,
+                citations_first: bool = False) -> list[dict[str, Any]]:
+    """One text block's events as Anthropic's streaming docs show them: it starts empty with no citations
+    field, and each citation arrives as a citations_delta, after its text unless `citations_first`."""
+    start = {"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}}
+    text_delta = [{"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}}]
+    cited = [{"type": "content_block_delta", "index": index, "delta": {"type": "citations_delta", "citation": c}}
+             for c in citations or []]
+    body = [*cited, *text_delta] if citations_first else [*text_delta, *cited]
+    return [start, *body, {"type": "content_block_stop", "index": index}]
 
 
 def _citation(source: str, index: int, start: int, end: int) -> dict[str, Any]:
@@ -73,7 +76,8 @@ REPLY = [
     *_text_block(0, "<title>What the PDB holds</title>\n<summary>"),
     *_text_block(1, "The PDB holds protein structures", [_citation("s1", 0, 0, 1)]),
     *_text_block(2, ".</summary>\n<answer>## Contents\n\nIt holds 3D structures [s9]"),
-    *_text_block(3, " and is updated weekly", [_citation("s1", 0, 0, 2)]),
+    {"type": "ping"},
+    *_text_block(3, " and is updated weekly", [_citation("s1", 0, 0, 2)], citations_first=True),
     *_text_block(4, ".\n</answer>\n<caveats>\n- The update schedule rests on a snippet.\n</caveats>\n"
                     "<not_established>k2</not_established>"),
     {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
@@ -151,3 +155,12 @@ def test_a_citation_of_an_unknown_source_or_block_adds_no_reference() -> None:
     ])
     report = cited_report(response, passages)
     assert report.answer == "A claim" and report.claims == []
+
+
+def test_a_search_result_title_stays_within_the_apis_limit() -> None:
+    from research_loop.citations import TITLE_CHARS
+    from research_loop.evidence import Passage, SourcePassages
+
+    [content] = search_results([SourcePassages("s1", "T" * 900, (Passage("q1/c1", "(q1/c1; abstract; quote verified) x"),))])
+    assert len(content.metadata["title"]) == TITLE_CHARS and content.metadata["title"].endswith("...")
+

@@ -50,15 +50,23 @@ _TAG = re.compile(r"</?[a-z_]+>")
 _ITEM_ID = re.compile(r"[A-Za-z0-9_~/-]+")
 
 
+# The API caps a cited document's title at 500 characters; source titles are written by the scouts, so a longer
+# one is cut rather than risk a refused request.
+TITLE_CHARS = 500
+
+
 def search_results(passages: Sequence[SourcePassages]) -> list[TextContent]:
     """The synthesizer's citable passages as prompt content. Claude receives each as a search_result block
     (`CitingAnthropicModel`); any other model, such as a scripted one in tests, sees the text."""
-    return [TextContent(
-        content=f"<search_result source={source.source_id!r} title={source.title!r}>\n"
-                + "\n".join(passage.text for passage in source.passages) + "\n</search_result>",
-        metadata={"kind": SEARCH_RESULT, "source": source.source_id, "title": source.title,
-                  "blocks": [passage.text for passage in source.passages]})
-        for source in passages]
+    contents = []
+    for source in passages:
+        title = source.title if len(source.title) <= TITLE_CHARS else source.title[: TITLE_CHARS - 3].rstrip() + "..."
+        contents.append(TextContent(
+            content=f"<search_result source={source.source_id!r} title={title!r}>\n"
+                    + "\n".join(passage.text for passage in source.passages) + "\n</search_result>",
+            metadata={"kind": SEARCH_RESULT, "source": source.source_id, "title": title,
+                      "blocks": [passage.text for passage in source.passages]}))
+    return contents
 
 
 def _search_result_block(metadata: Any) -> dict[str, Any] | None:
@@ -84,6 +92,10 @@ class _CitationRecorder:
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self._events()
+
+    async def close(self) -> None:
+        """Close the underlying stream, as PydanticAI's `close_stream` does for the SDK's own."""
+        await self._stream.close()  # type: ignore[attr-defined]
 
     async def _events(self) -> AsyncIterator[Any]:
         async for event in self._stream:
