@@ -21,6 +21,9 @@ from .rate_limit import ScoutRateLimitModel, TokenPacer, rate_limit_hook
 
 Role = Literal["planner", "scout", "synthesizer"]
 
+# The beta that lets a request name a model to continue on when a safety classifier declines it.
+SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
 
 def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
     """The settings the `provider:model@effort` in `spec` runs with in `role`."""
@@ -32,6 +35,13 @@ def model_settings(spec: str, role: Role, settings: Settings) -> ModelSettings:
     result: dict[str, Any] = {"thinking": effort, "timeout": timeout}
     if role == "synthesizer":
         result["max_tokens"] = limits.synthesis_max_output_tokens
+        if fallback := settings.models.synthesizer_fallback(spec):
+            # Anthropic continues a declined synthesis on the fallback inside the same request, at the
+            # fallback's own effort (citations.py prices each attempt).
+            fallback_id, fallback_effort = split_model(fallback)
+            result["anthropic_betas"] = [SERVER_FALLBACK_BETA]
+            result["extra_body"] = {"fallbacks": [{"model": fallback_id.partition(":")[2],
+                                                   "output_config": {"effort": fallback_effort}}]}
     elif role == "planner":
         # Anthropic defaults max_tokens to 4,096, shared by thinking and output.
         result["max_tokens"] = settings.model_calls.planner_max_output_tokens
@@ -150,7 +160,7 @@ def scout_model(inner: Model, model_id: str, settings: Settings) -> Model:
 def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model:
     """The model `role` runs on, or `spec` in its place. The planner falls back to `models.fallback` when its
     model refuses a call (ContentFilterError) or its provider fails (ModelAPIError). The synthesizer does not,
-    since it must be Claude; nor do scouts, since a failed scout leaves its question unanswered rather than
+    since it must be Claude: Anthropic falls back for it inside the request (`model_settings`); nor do scouts, since a failed scout leaves its question unanswered rather than
     failing the run. A scout's client makes one attempt, so a request that reaches the timeout is not sent
     again."""
     spec = spec or getattr(settings.models, role)
@@ -159,7 +169,7 @@ def role_model(role: Role, settings: Settings, spec: str | None = None) -> Model
     if role == "scout":
         return scout_model(primary, split_model(spec)[0], settings)
     # The synthesizer is always Claude, since its report is built from Claude's citations; another provider
-    # could not take its call.
+    # could not take its call, and its Claude fallback runs server-side.
     if role == "synthesizer" or not fallback or fallback == spec:
         return primary
     return FallbackModel(primary, build_model(fallback, role, settings),

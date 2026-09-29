@@ -129,6 +129,9 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     deep_env = calls[1][1]
     assert deep_env["PYTHONPATH"] == "/tmp/tree/src" and deep_env["RESEARCH_MODELS__SCOUT"].endswith("@high")
     assert "PYTHONPATH" not in first_env
+    # The synthesizer's fallbacks are frozen as JSON, which the run reads back as the same mapping.
+    fallbacks = first_env["RESEARCH_MODELS__SYNTHESIZER_FALLBACKS"]
+    assert json.loads(fallbacks) == Settings().models.synthesizer_fallbacks
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
     assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s |  | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table

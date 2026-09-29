@@ -355,7 +355,7 @@ class EvidenceLedger:
         checks code set (quote_check, quote_access, source_check, source_access) stay, so the
         synthesizer can tell evidence it read from evidence it only glimpsed. Without `passages`, the
         text of supporting evidence is left out, because the synthesizer receives it as citable
-        passages instead (`passages()`).
+        passages instead (`passages()`), and so is the statement of a claim that has such a passage.
         """
         numbering = self._source_numbering()
         return {"sources": self.source_table(),
@@ -465,9 +465,13 @@ def _project_evidence(item: Evidence, numbering: dict[str, str], *, text: bool =
 
 
 def _project_result(result: ResearchResult, numbering: dict[str, str], *, texts: bool = True) -> dict[str, Any]:
+    """One result for a prompt. Without `texts`, the synthesizer's view, a claim that has a citable passage
+    (`EvidenceLedger.passages`) also leaves out its statement: the passage says it, and a sentence written
+    from the statement would be uncited."""
     claims = []
     for claim in result.claims:
-        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence"}))
+        cited = not texts and any(item.supports and _evidence_text(item) for item in claim.evidence)
+        body = _omit_empty(claim.model_dump(mode="json", exclude={"evidence", *(("statement",) if cited else ())}))
         if claim.evidence:
             body["evidence"] = [_project_evidence(item, numbering, text=texts) for item in claim.evidence]
         claims.append(body)

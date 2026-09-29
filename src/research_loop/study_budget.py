@@ -39,7 +39,10 @@ from .prices import install_price_overrides
 # v6 also prices the input bound and output cap together, so the output's long-context tier is reserved: v5
 # priced output as if the input were short, and GPT-6 Luna and Sol, like Gemini Pro, charge 1.5 times as much
 # for output once the input passes 272,000 tokens (docs/architectural-audit-addendum-2026-09-27.md, C01).
-BUDGET_POLICY_VERSION = "usage-anchor-v6"
+# v7 reserves a synthesis with a server-side fallback (citations.py) as two attempts: the declined one in full,
+# and the fallback's, whose input also carries the declined attempt's streamed output, at the fallback's rates. A
+# response that carries its own cost, summed over those attempts, settles to it.
+BUDGET_POLICY_VERSION = "usage-anchor-v7"
 _BYTE_FACTOR = 2
 _FIXED_INPUT_TOKENS = 16_000
 # Framing for the messages, tool definitions, and settings added since the anchoring reply.
@@ -80,6 +83,24 @@ class StudyBudgetRefusal(RuntimeError):
     """A study request was not sent because its conservative reservation exceeds the cap."""
 
 
+def _attempt_charge(model_id: str, upper: int, max_output: int) -> Decimal:
+    """The most one attempt on `model_id` can cost with up to `upper` input and `max_output` output tokens."""
+    install_price_overrides()
+    provider, name = _priced(model_id)
+    if upper > 1_000_000:
+        raise StudyBudgetRefusal("input exceeds the priced one-million-token reservation range")
+    try:
+        input_rates = [calc_price(RequestUsage(input_tokens=n), name, provider_id=provider).total_price
+                       * Decimal(1_000_000) / n for n in (100_000, 1_000_000)]
+        output_rate = calc_price(RequestUsage(output_tokens=100_000), name, provider_id=provider).total_price * 10
+        # Prices rise with input length, so the request's price at both bounds covers any usage within them.
+        joint = calc_price(RequestUsage(input_tokens=upper, output_tokens=max_output), name,
+                           provider_id=provider).total_price
+    except LookupError as exc:
+        raise StudyBudgetRefusal(f"no price for {model_id}") from exc
+    return max((max(input_rates) * upper + output_rate * max_output) / 1_000_000, joint)
+
+
 class StudyBudget:
     def __init__(self, cap_usd: Decimal) -> None:
         if cap_usd <= 0:
@@ -89,26 +110,17 @@ class StudyBudget:
         self._lock = asyncio.Lock()
 
     async def reserve(self, model_id: str, messages: list[ModelMessage], settings: ModelSettings | None,
-                      parameters: ModelRequestParameters) -> Decimal:
+                      parameters: ModelRequestParameters, *, fallback_model_id: str | None = None) -> Decimal:
+        """Reserve the most the request can cost, or refuse it. With `fallback_model_id`, the request may run
+        twice inside one call: the declined attempt, and the fallback's, whose input also carries the
+        declined attempt's streamed output."""
         max_output = (settings or {}).get("max_tokens")
         if not isinstance(max_output, int) or max_output <= 0:
             raise StudyBudgetRefusal("study requests need an explicit positive max_tokens")
-        install_price_overrides()
-        provider, name = _priced(model_id)
-        try:
-            input_rates = [calc_price(RequestUsage(input_tokens=n), name, provider_id=provider).total_price
-                           * Decimal(1_000_000) / n for n in (100_000, 1_000_000)]
-            output_rate = calc_price(RequestUsage(output_tokens=100_000), name,
-                                     provider_id=provider).total_price * 10
-            upper = upper_input_tokens(messages, parameters, settings)
-            if upper > 1_000_000:
-                raise StudyBudgetRefusal("input exceeds the priced one-million-token reservation range")
-            # Prices rise with input length, so the request's price at both bounds covers any usage within them.
-            joint = calc_price(RequestUsage(input_tokens=upper, output_tokens=max_output), name,
-                               provider_id=provider).total_price
-        except LookupError as exc:
-            raise StudyBudgetRefusal(f"no price for {model_id}") from exc
-        charge = max((max(input_rates) * upper + output_rate * max_output) / 1_000_000, joint)
+        upper = upper_input_tokens(messages, parameters, settings)
+        charge = _attempt_charge(model_id, upper, max_output)
+        if fallback_model_id:
+            charge += _attempt_charge(fallback_model_id, upper + max_output, max_output)
         async with self._lock:
             if self.reserved_usd + charge > self.cap_usd:
                 raise StudyBudgetRefusal(
@@ -135,10 +147,12 @@ class StudyBudget:
         self.reserved_usd -= charge
 
     def settle(self, model_id: str, charge: Decimal, usage: RequestUsage) -> None:
-        """Replace a returned request's reservation with its actual charge, if it can be priced."""
+        """Replace a returned request's reservation with its actual charge, if it can be priced: the cost the
+        response carries, which a server-side fallback's sums over its attempts (citations.py), or else
+        its usage priced as `model_id`."""
         provider, name = _priced(model_id)
         try:
-            actual = calc_price(usage, name, provider_id=provider).total_price
+            actual = usage.cost if usage.cost is not None else calc_price(usage, name, provider_id=provider).total_price
         except LookupError:
             return
         # No await, so this cannot interleave with a reservation.
@@ -148,14 +162,15 @@ class StudyBudget:
 class StudyBudgetModel(WrapperModel):
     """Reserve a conservative maximum before every provider request, including validation retries."""
 
-    def __init__(self, wrapped: Model, model_id: str, budget: StudyBudget):
+    def __init__(self, wrapped: Model, model_id: str, budget: StudyBudget, *, fallback_model_id: str | None = None):
         super().__init__(wrapped)
-        self._priced_model_id, self.budget = model_id, budget
+        self._priced_model_id, self.budget, self._fallback_model_id = model_id, budget, fallback_model_id
 
     async def request(self, messages: list[ModelMessage], model_settings: ModelSettings | None,
                       model_request_parameters: ModelRequestParameters) -> ModelResponse:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
-        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
+        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters,
+                                           fallback_model_id=self._fallback_model_id)
         try:
             response = await self.wrapped.request(messages, model_settings, model_request_parameters)
         except ModelHTTPError as error:
@@ -170,7 +185,8 @@ class StudyBudgetModel(WrapperModel):
                              model_request_parameters: ModelRequestParameters,
                              run_context: Any = None) -> AsyncGenerator[StreamedResponse]:
         effective, _ = self.wrapped.prepare_request(model_settings, model_request_parameters)
-        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters)
+        charge = await self.budget.reserve(self._priced_model_id, messages, effective, model_request_parameters,
+                                           fallback_model_id=self._fallback_model_id)
         opened = False
         try:
             async with self.wrapped.request_stream(messages, model_settings, model_request_parameters,

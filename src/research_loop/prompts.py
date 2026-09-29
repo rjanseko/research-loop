@@ -91,9 +91,11 @@ INSTRUCTIONS: dict[str, str] = {
         "requirements. " + UNTRUSTED
     ),
     "synthesizer": (
-        "Answer the user's question from the supplied research only. " + UNTRUSTED + " The research lists each "
-        "question's claims and the checks code set on their evidence; the evidence's text comes separately, as "
-        "search results, one for each source, whose `source` is that source's `source_id` in the `sources` list. "
+        "Answer the user's question from the supplied research only. " + UNTRUSTED + " The evidence's text comes "
+        "first, as search results, one for each source, whose `source` is that source's `source_id` in the "
+        "`sources` list; the research after it lists each question's claims and the checks code set on their "
+        "evidence. A claim whose evidence is among the search results is listed without its statement: what it "
+        "found is in its passages, so write each statement from them. "
         "Each passage opens, in parentheses, with the ID of the claim it supports, the most a tool returned of "
         "the text it rests on (snippet, metadata, abstract, or full_text), and its check: a quote code found in "
         "that source's text as the tools returned it (`quote verified`), or the researcher's summary, when there "

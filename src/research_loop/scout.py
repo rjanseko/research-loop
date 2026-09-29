@@ -75,7 +75,12 @@ from .agents import (
     synthesizer_agent,
 )
 from .budget_notes import LoopBudget
-from .citations import cited_report, missing_sections, search_results
+from .citations import (
+    cited_report,
+    mismatched_citations,
+    missing_sections,
+    search_results,
+)
 from .config import ScoutLimits, Settings, split_model
 from .evals import case_blocked_titles
 from .evidence import (
@@ -182,14 +187,19 @@ def _paid_search(name: str) -> Any:
 # model-visible text (docs/audit-2026-09-28-case-contamination.md). followup-v17 and research-v16 carry it.
 # v17: synthesis v5, Claude's citations (citations.py). followup-v18 carries it.
 # v18: synthesis v6, one uncached request that is never retried. followup-v19 carries it.
-WORKFLOW_VERSION = "scout-v18"
-FOLLOWUP_VERSION = "scout-followup-v19"
+# v19: synthesis v7, the passages as the synthesizer's only facts and first in its prompt, citations checked
+# against them, and a server-side fallback when its model declines. followup-v20 carries it.
+WORKFLOW_VERSION = "scout-v19"
+FOLLOWUP_VERSION = "scout-followup-v20"
 RESCOUT_VERSION = "scout-research-v16"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
 # Claude's citations, and code writes the report's [sN] citations and claim list from them (citations.py).
 # v6: one request, not cached and never retried; a reply that lacks a section keeps what it has.
-SYNTHESIS_VERSION = "scout-synthesis-v6"
+# v7: a claim with a passage appears in the brief without its statement; the passages come before the brief;
+# a citation counts only when it matches the passages sent; Anthropic falls back to another Claude model
+# inside the request when the synthesizer's model declines it.
+SYNTHESIS_VERSION = "scout-synthesis-v7"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
@@ -442,8 +452,11 @@ class _Run:
                 self.models[role, spec] = role_model(role, self.settings, spec)
             else:
                 model_id = split_model(spec)[0]
+                # A synthesis may also run on its server-side fallback inside the same request.
+                fallback = self.settings.models.synthesizer_fallback(spec) if role == "synthesizer" else None
                 guarded = StudyBudgetModel(build_model(spec, role, self.settings, sdk_retries=0),
-                                           model_id, self.budget)
+                                           model_id, self.budget,
+                                           fallback_model_id=split_model(fallback)[0] if fallback else None)
                 # The guard is inside the 429 wrapper, so every retry reserves a new request.
                 self.models[role, spec] = (scout_model(guarded, model_id, self.settings)
                                            if role == "scout" else guarded)
@@ -721,7 +734,10 @@ class _Run:
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:
         # Supporting evidence goes to Claude as citable passages, one search result per source, and the report
-        # is built from what Claude cites (citations.py); the research view keeps the checks without the text.
+        # is built from what Claude cites (citations.py); the research view keeps the checks without the text,
+        # and without the statement of a claim that has a passage, so the passages are where facts come from.
+        # The passages come first and the brief, with the question, after them, as Anthropic advises for long
+        # input.
         passages = ledger.passages()
         brief = json.dumps({"question": self.question, "notes": self.notes_in,
                             "research": ledger.prompt_view(passages=False),
@@ -737,7 +753,7 @@ class _Run:
                 # Not streamed through PydanticAI, which would drop the citations; the model streams each
                 # request itself (citations.CitingAnthropicModel).
                 return await self._call(
-                    role="synthesizer", agent=synthesizer_agent, prompt=[brief, *search_results(passages)],
+                    role="synthesizer", agent=synthesizer_agent, prompt=[*search_results(passages), brief],
                     deps=None, finish=lambda result: self._cited_report(result, passages),
                     limits=UsageLimits(request_limit=self.settings.model_calls.synthesizer_requests,
                                        total_tokens_limit=limits.synthesis_tokens,
@@ -750,7 +766,15 @@ class _Run:
     def _cited_report(self, result: Any, passages: list[SourcePassages]) -> FinalReport | None:
         """The report from the synthesizer's one reply, which is never retried: a missing section is noted,
         and a reply with no answer at all leaves the run without a report."""
-        report = cited_report(result.response, passages)
+        response = result.response
+        report = cited_report(response, passages)
+        if fallback := (response.provider_details or {}).get("fallback"):
+            categories = [str((handoff.get("trigger") or {}).get("category")) for handoff in fallback["handoffs"]]
+            self.notes.append(f"the synthesizer's model declined the synthesis ({', '.join(categories) or 'no category'})"
+                              f", and {response.model_name} continued it")
+        if problems := mismatched_citations(response, passages):
+            self.notes.append(f"{len(problems)} of the synthesizer's citations did not match the passages sent and "
+                              f"were left out: {'; '.join(dict.fromkeys(problems))}")
         if missing := missing_sections(result.output):
             self.notes.append(f"the synthesizer's reply had no {', '.join(missing)} section")
         if not report.answer.strip():
