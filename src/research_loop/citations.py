@@ -1,6 +1,6 @@
 """Anthropic citations for the synthesizer, which on this design is always a Claude model.
 
-The synthesizer receives each source's supporting evidence as one search result: its `source` is the
+The synthesizer receives each source's evidence as one search result: its `source` is the
 source's ID (s4), and each passage is one text block that opens with the claim it supports
 (`EvidenceLedger.passages`). Claude cites whole blocks, and each citation names the search result and its
 block range, so code, not the model, maps every cited span of the report to the sources and claims behind
@@ -48,9 +48,15 @@ from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from .evidence import SENTENCE_END, SourcePassages, strip_inline_citations
+from .evidence import (
+    SENTENCE_END,
+    Passage,
+    SourcePassages,
+    inline_source_ids,
+    strip_inline_citations,
+)
 from .prices import install_price_overrides
-from .schemas import FinalReport, ReportClaim
+from .schemas import FinalReport, ReportAssertion, ReportClaim
 
 SEARCH_RESULT = "search_result"
 SECTIONS = ("title", "summary", "answer", "caveats", "not_established")
@@ -65,6 +71,8 @@ _TAG = re.compile(r"</?[a-z_]+>")
 # citation follows it rather than go inside.
 _SENTENCE_CLOSE = re.compile(r"[.!?]+\Z")
 _ITEM_ID = re.compile(r"[A-Za-z0-9_~/-]+")
+# Assertion boundaries fail closed when the next sentence begins with lowercase text, too.
+_ASSERTION_END = re.compile(r"(?<=[.!?])\s+(?=\S)")
 
 
 # The API caps a cited document's title at 500 characters; source titles are written by the scouts, so a longer
@@ -279,17 +287,19 @@ def mismatched_citations(response: ModelResponse, passages: Sequence[SourcePassa
             if (problem := _citation_problem(citation, passages))]
 
 
-def _references(part: TextPart, passages: Sequence[SourcePassages]) -> list[tuple[str, str]]:
-    """The (source ID, claim ID) pairs a text part cites, in order, each once, from the citations that match
-    the passages sent."""
-    pairs: list[tuple[str, str]] = []
+def _references(part: TextPart, passages: Sequence[SourcePassages]) -> list[tuple[str, Passage]]:
+    """The exact source blocks referenced by valid provider citations, in first-cited order."""
+    pairs: list[tuple[str, Passage]] = []
+    seen: set[tuple[str, str | None]] = set()
     for citation in (part.provider_details or {}).get("citations", []):
         if _citation_problem(citation, passages):
             continue
         source = passages[citation["search_result_index"]]
         for passage in source.passages[citation["start_block_index"]:citation["end_block_index"]]:
-            if (source.source_id, passage.claim_id) not in pairs:
-                pairs.append((source.source_id, passage.claim_id))
+            key = (source.source_id, passage.passage_id or passage.text)
+            if key not in seen:
+                seen.add(key)
+                pairs.append((source.source_id, passage))
     return pairs
 
 
@@ -316,6 +326,62 @@ def _mark_sentence(sentence: str, citation: str) -> str:
     return f"{words}{citation}{body[len(words):]}{rest}"
 
 
+def _assertion_spans(body: str) -> list[tuple[int, int]]:
+    """Non-heading prose sentences and table rows in a rendered report section."""
+    spans: list[tuple[int, int]] = []
+    lines = list(re.finditer(r"[^\n]+", body))
+    for index, line in enumerate(lines):
+        raw = line.group()
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or set(stripped) <= set("|-: "):
+            continue
+        if stripped.startswith("|") and index + 1 < len(lines) and set(lines[index + 1].group().strip()) <= set("|-: "):
+            continue  # a table header, whose following line is the rule
+        boundaries = [] if stripped.startswith("|") else list(_ASSERTION_END.finditer(raw))
+        position = 0
+        for boundary in [*boundaries, None]:
+            stop = boundary.start() if boundary else len(raw)
+            piece = raw[position:stop]
+            if strip_inline_citations(piece).strip():
+                left = len(piece) - len(piece.lstrip())
+                right = len(piece.rstrip())
+                spans.append((line.start() + position + left, line.start() + position + right))
+            position = boundary.end() if boundary else stop
+    return spans
+
+
+def _report_assertions(text: str, parts: list[tuple[int, int, list[tuple[str, Passage]], str]]) -> list[ReportAssertion]:
+    assertions: list[ReportAssertion] = []
+    for section in _SECTION.finditer(text):
+        kind = section.group(1)
+        if kind not in ("summary", "answer", "caveats"):
+            continue
+        raw = section.group(2)
+        body = raw.strip()
+        base = section.start(2) + len(raw) - len(raw.lstrip())
+        for start, end in _assertion_spans(body):
+            visible = body[start:end]
+            sources = list(dict.fromkeys(inline_source_ids(visible)))
+            absolute_start, absolute_end = base + start, base + end
+            overlap = [(refs, scope) for first, last, refs, scope in parts
+                       if first < absolute_end and last > absolute_start and refs]
+            linked = [(source_id, passage) for refs, _ in overlap for source_id, passage in refs
+                      if source_id in sources]
+            claim_ids = list(dict.fromkeys(p.claim_id for _, p in linked))
+            passage_ids = list(dict.fromkeys(p.passage_id for _, p in linked if p.passage_id))
+            if not sources:
+                scope = "uncited"
+            elif not linked or any(item_scope == "ambiguous" for _, item_scope in overlap):
+                scope = "ambiguous"
+            else:
+                scope = "exact"
+            assertions.append(ReportAssertion(
+                section="caveat" if kind == "caveats" else kind,
+                statement=strip_inline_citations(visible).strip(), start=start, end=end,
+                source_ids=sources, passage_ids=passage_ids, claim_ids=claim_ids, citation_scope=scope))
+    return assertions
+
+
 def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) -> FinalReport:
     """The report in the synthesizer's tagged reply, with inline citations and a claim list written by code
     from the passages Claude cited. Citations the model typed itself are removed first, so every [sN] in the
@@ -325,18 +391,30 @@ def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) ->
     text outside its sections as its answer."""
     text = ""
     claims: list[ReportClaim] = []
+    part_spans: list[tuple[int, int, list[tuple[str, Passage]], str]] = []
     for part in response.parts:
         if not isinstance(part, TextPart):
             continue
         content = strip_inline_citations(part.content)
-        if pairs := _references(part, passages):
+        pairs = _references(part, passages)
+        scope = "uncited"
+        if pairs:
             source_ids = list(dict.fromkeys(source_id for source_id, _ in pairs))
-            content = _marked(content, source_ids)
+            passage_ids = list(dict.fromkeys(passage.passage_id for _, passage in pairs if passage.passage_id))
+            plain = _TAG.sub(" ", content).strip()
+            multiple_sentences = len(_ASSERTION_END.split(plain)) > 1
+            # One provider text block can contain several unrelated facts. Its citations do not identify
+            # which sentence used which passage; put the visible marker at the block's end and flag it.
+            content = _mark_sentence(content, f" [{', '.join(source_ids)}]") if multiple_sentences else _marked(content, source_ids)
             statement = " ".join(_TAG.sub(" ", strip_inline_citations(part.content)).split())
-            claim = ReportClaim(statement=statement, claim_ids=list(dict.fromkeys(claim_id for _, claim_id in pairs)))
+            scope = "ambiguous" if multiple_sentences else "exact"
+            claim = ReportClaim(statement=statement,
+                                claim_ids=list(dict.fromkeys(p.claim_id for _, p in pairs)),
+                                source_ids=source_ids, passage_ids=passage_ids, citation_scope=scope)
             # A sentence the summary and the answer both cite is one statement.
             if statement and claim not in claims:
                 claims.append(claim)
+        part_spans.append((len(text), len(text) + len(content), pairs, scope))
         text += content
     sections = {name: body.strip() for name, body in _SECTION.findall(text)}
     if not sections.get("answer"):
@@ -347,6 +425,7 @@ def cited_report(response: ModelResponse, passages: Sequence[SourcePassages]) ->
         executive_summary=sections.get("summary", ""),
         answer=sections.get("answer", ""),
         claims=claims,
+        assertions=_report_assertions(text, part_spans),
         caveats=[caveat for caveat in caveats if caveat],
         not_established=[item for item in _ITEM_ID.findall(strip_inline_citations(sections.get("not_established", "")))
                          if item.casefold() != "none"],

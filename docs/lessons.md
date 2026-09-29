@@ -111,3 +111,7 @@ These come from Scout's first three days of studies; the runs behind them are in
 
 **Stopping a study must stop its runs cleanly.** `subprocess.run` answers an interrupt with SIGKILL, so a stopped study's current run could not record itself and stayed marked running.
 
+
+## Provenance of new Scout reports (29 September 2026)
+
+**A valid citation pointer is not the same as support for an assertion.** A report can cite a search snippet while the same claim also has a full page from another source; grading the claim's whole evidence set made that assertion look well read. Evidence version 8 saves the exact checked tool-text span and a hash of its source snapshot, and report assertions keep the particular passage and source IDs they cite. The support check and audit follow those links. Numeric punctuation and attached units need stricter quote matching than ordinary PDF formatting. This design has offline tests but no paid study result yet; whether its labels agree with human review still needs measurement.

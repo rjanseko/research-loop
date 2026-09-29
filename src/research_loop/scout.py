@@ -39,6 +39,7 @@ import time
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -114,6 +115,8 @@ from .schemas import (
     FinalReport,
     GapAnalysis,
     MaterialGap,
+    ReportAssertion,
+    ReportClaim,
     ResearchPlan,
     ResearchQuestion,
     ResearchResult,
@@ -190,9 +193,11 @@ def _paid_search(name: str) -> Any:
 # v19: synthesis v7, the passages as the synthesizer's only facts and first in its prompt, citations checked
 # against them, and a server-side fallback when its model declines. followup-v20 carries it.
 # v20: synthesis v8, every sentence of a cited block carries its citation. followup-v21 carries it.
-WORKFLOW_VERSION = "scout-v20"
-FOLLOWUP_VERSION = "scout-followup-v21"
-RESCOUT_VERSION = "scout-research-v16"
+# v21: checked tool snapshots, exact passage links, and assertion-level support; followup-v22
+# and research-v17 carry the same evidence behavior.
+WORKFLOW_VERSION = "scout-v21"
+FOLLOWUP_VERSION = "scout-followup-v22"
+RESCOUT_VERSION = "scout-research-v17"
 # v2: the synthesis prompt no longer shows result confidence. v3: it describes misattributed quotes.
 # v4: it addresses coverage items. v5: the synthesizer is always Claude and cites the ledger's passages through
 # Claude's citations, and code writes the report's [sN] citations and claim list from them (citations.py).
@@ -203,7 +208,8 @@ RESCOUT_VERSION = "scout-research-v16"
 # model is discarded.
 # v8: code puts a cited block's citation before the full stop of each of its sentences, not only after its last
 # word (run 6e811f5f).
-SYNTHESIS_VERSION = "scout-synthesis-v8"
+# v9: cited passages identify report assertions; multi-sentence provider blocks are ambiguous.
+SYNTHESIS_VERSION = "scout-synthesis-v9"
 # Every Scout version up to the current ones, so a version bump never locks out the runs before it: a fixed
 # list stopped at v8 and refused every v9 to v12 source.
 _SOURCE_VERSIONS = tuple(
@@ -631,7 +637,8 @@ class _Run:
         def checked(result: Any) -> ResearchResult:
             messages = result.all_messages()
             outcomes = tool_outcomes(messages)
-            return check_result(result.output, labeled_texts(messages)).model_copy(update={
+            return check_result(result.output, labeled_texts(messages),
+                                observed_at=datetime.now(UTC).isoformat()).model_copy(update={
                 "searches": outcomes.searches, "pages_read": outcomes.pages_read, "unreached": outcomes.unreached,
                 "read_via": outcomes.read_via})
 
@@ -1009,11 +1016,35 @@ def _checks(plan: ResearchPlan, ledger: EvidenceLedger, report: FinalReport | No
             *, synthesized: bool = True) -> RunChecks:
     claims = ledger.claims_by_id()
     evidence = [item for claim in claims.values() for item in claim.evidence]
+    cited_passages = {passage.passage_id: passage for source in ledger.passages() for passage in source.passages
+                      if passage.passage_id}
+
+    def statement_support(statement: ReportClaim | ReportAssertion) -> Support:
+        if statement.citation_scope in ("ambiguous", "uncited"):
+            return "unsupported"
+        if statement.citation_scope == "exact":
+            linked = [cited_passages[pid] for pid in statement.passage_ids if pid in cited_passages]
+            if len(linked) != len(statement.passage_ids) or not linked:
+                return "unsupported"
+            supporting = [passage for passage in linked if passage.supports]
+            if not supporting:
+                return "unsupported"
+            if any(p.snapshot_id and p.access in ("abstract", "full_text") for p in supporting):
+                return "read"
+            if any(p.quote_check is None and p.access in ("abstract", "full_text") for p in supporting):
+                return "paraphrase"
+            return "shallow"
+        if statement.source_ids:
+            restricted = [claims[i].model_copy(update={"evidence": [
+                item for item in claims[i].evidence if ledger.source_id(item.source) in statement.source_ids]})
+                for i in statement.claim_ids if i in claims]
+            return support_level(restricted)
+        return support_level(claims[i] for i in statement.claim_ids if i in claims)
+
     checks = RunChecks(
         citation_problems=citation_problems(report, ledger) if report else [],
-        statements=[StatementCheck(statement=c.statement, claim_ids=c.claim_ids,
-                                   support=support_level(claims[i] for i in c.claim_ids if i in claims))
-                    for c in (report.claims if report else [])],
+        statements=[StatementCheck(statement=c.statement, claim_ids=c.claim_ids, support=statement_support(c))
+                    for c in ((report.assertions or report.claims) if report else [])],
         not_established=_not_established(plan, ledger),
         unreached=[item for result in ledger.all() for item in result.unreached],
         quotes=sum(item.quote_check is not None for item in evidence),

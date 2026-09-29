@@ -15,7 +15,7 @@ _ACCESS = {"full_text": "read in full", "abstract": "abstract read", "metadata":
            "snippet": "search snippet only"}
 
 
-def render_markdown(record: dict[str, Any]) -> str:
+def render_markdown(record: dict[str, Any], *, include_provenance: bool = False) -> str:
     report = record.get("report")
     checks = record.get("checks") or {}
     ledger = EvidenceLedger.from_json(record.get("ledger") or {})
@@ -72,7 +72,43 @@ def render_markdown(record: dict[str, Any]) -> str:
         lines += ["## Sources that could not be read", ""]
         lines += [f"- {item['target']}: {item['reason']}" for item in unreached]
         lines.append("")
+    if include_provenance and report:
+        lines += _provenance_lines(report, ledger)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _provenance_lines(report: dict[str, Any], ledger: EvidenceLedger) -> list[str]:
+    assertions = report.get("assertions") or []
+    if not assertions:
+        return ["## Provenance", "", "This stored report predates assertion-level provenance.", ""]
+    passages = {passage.passage_id: (source.source_id, passage)
+                for source in ledger.passages() for passage in source.passages if passage.passage_id}
+    snapshots = {snapshot.id: snapshot for result in ledger.all() for snapshot in result.snapshots}
+    sources = {row["id"]: row for row in ledger.source_table()}
+    lines = ["## Provenance", "", "Each assertion is linked to the exact tool text Scout saved when available.", ""]
+    for number, assertion in enumerate(assertions, 1):
+        lines += [f"### {number}. {assertion['section']} ({assertion['citation_scope']})", "",
+                  assertion["statement"], ""]
+        if not assertion.get("passage_ids"):
+            lines += ["No exact cited passage is recorded.", ""]
+            continue
+        for passage_id in assertion["passage_ids"]:
+            linked = passages.get(passage_id)
+            if linked is None:
+                lines += [f"- Passage `{passage_id}` could not be resolved.", ""]
+                continue
+            source_id, passage = linked
+            row = sources.get(source_id, {})
+            where = row.get("url") or row.get("doi") or row.get("arxiv_id") or "unknown address"
+            snapshot = snapshots.get(passage.snapshot_id) if passage.snapshot_id else None
+            lines.append(f"- [{source_id}] {where}; passage `{passage_id}`; "
+                         + (f"{passage.access}; snapshot `{snapshot.id}`; SHA-256 `{snapshot.sha256}`; "
+                            f"observed {snapshot.observed_at or 'time unknown'}; "
+                            f"tool {snapshot.tool_call_id or 'unknown'} at {snapshot.locator or 'unknown'}"
+                            if snapshot else "legacy passage without a saved snapshot"))
+            if passage.source_text:
+                lines += ["", *(f"> {line}" for line in passage.source_text.splitlines()), ""]
+    return lines
 
 
 def _title(record: dict[str, Any]) -> str:
