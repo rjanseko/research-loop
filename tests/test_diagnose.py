@@ -15,9 +15,19 @@ from research_loop.diagnose import (
     research_text,
     stage_grade_row,
 )
-from research_loop.evals import GradeRecord, find_case
+from research_loop.evals import GradeRecord, StudyCase
 from research_loop.evidence import EvidenceLedger
 from research_loop.schemas import Claim, Evidence, ResearchResult, SourceRef
+
+
+def _case() -> StudyCase:
+    """A rubric case of the shape the diagnosis reads: 16 facts, two of them addresses, and 4 analysis points."""
+    facts = [f"States fact {n}." for n in range(1, 15)] + [
+        "Gives the OQMD's address: https://www.oqmd.org/",
+        "Gives the Materials Project's address: https://next-gen.materialsproject.org/"]
+    return StudyCase(id="case-diagnose", objective="Which materials databases matter?", output_mode="report",
+                     rubric_version="1", rubrics={"info_recall": facts,
+                                                  "analysis": [f"Explains point {n}." for n in range(1, 5)]})
 
 
 def _ledger() -> EvidenceLedger:
@@ -44,7 +54,7 @@ def test_the_claims_view_holds_statements_and_sources_and_the_research_view_ever
 
 
 def test_a_missed_point_takes_the_earliest_stage_that_met_it() -> None:
-    case = find_case("drb2-task8")
+    case = _case()
     report = {("info_recall", 1): True, ("info_recall", 2): False, ("info_recall", 3): False,
               ("info_recall", 4): False, ("info_recall", 5): True}
     claims = {("info_recall", 1): True, ("info_recall", 2): True}
@@ -59,7 +69,7 @@ def test_a_missed_point_takes_the_earliest_stage_that_met_it() -> None:
 
 
 def test_a_missed_url_point_is_flagged_when_the_report_gives_the_same_site() -> None:
-    case = find_case("drb2-task8")
+    case = _case()
     url_points = [(category, n) for category, texts in case.rubrics.items() for n, text in enumerate(texts, 1)
                   if "https://www.oqmd.org/" in text or "next-gen.materialsproject.org" in text]
     assert len(url_points) == 2
@@ -90,11 +100,11 @@ def test_judges_are_compared_point_by_point_on_the_runs_both_graded() -> None:
 
 
 def test_never_met_points_and_the_detectable_difference() -> None:
-    case = find_case("drb2-task8")
+    case = _case()
     everything = [{"category": c, "point": n, "met": True} for c, texts in case.rubrics.items()
                   for n in range(1, len(texts) + 1)]
-    but_one = [dict(p, met=not (p["category"] == "info_recall" and p["point"] == 23)) for p in everything]
-    assert never_met(case, [but_one]) == [("info_recall", 23)]
+    but_one = [dict(p, met=not (p["category"] == "info_recall" and p["point"] == 3)) for p in everything]
+    assert never_met(case, [but_one]) == [("info_recall", 3)]
     assert never_met(case, [but_one, everything]) == []
     # The study of 28 September 2026: Sol's scores for standard and deep.
     assert detectable_difference([24, 16, 17], [26, 24, 22]) == pytest.approx(7.75, abs=0.01)
@@ -102,13 +112,13 @@ def test_never_met_points_and_the_detectable_difference() -> None:
 
 
 def test_the_rendered_diagnosis_counts_stages_by_arm_and_says_what_the_score_can_show() -> None:
-    case = find_case("drb2-task8")
+    case = _case()
     points = [(c, n) for c, texts in case.rubrics.items() for n in range(1, len(texts) + 1)]
     runs, grades = [], []
-    for arm, reported in (("standard", 20), ("standard", 22), ("deep", 26), ("deep", 30)):
+    for arm, reported in (("standard", 6), ("standard", 8), ("deep", 10), ("deep", 12)):
         report = {p: i < reported for i, p in enumerate(points)}
-        claims = {p: i < reported + 4 for i, p in enumerate(points)}
-        research = {p: i < reported + 10 for i, p in enumerate(points)}
+        claims = {p: i < reported + 2 for i, p in enumerate(points)}
+        research = {p: i < reported + 4 for i, p in enumerate(points)}
         run = RunDiagnosis(uuid4(), case, "no urls", report, claims=claims, research=research, arm=arm)
         runs.append(run)
         grades.append({"run_id": run.run_id, "judge_model": "zai:glm-5.3", "judge_thinking": "high",
@@ -116,23 +126,23 @@ def test_the_rendered_diagnosis_counts_stages_by_arm_and_says_what_the_score_can
                                                           for (c, n), m in report.items()]})
     text = render(runs, "zai:glm-5.3@high", grades, {case.id: [g["points"] for g in grades]})
     assert "| Run | Arm | Reported | Claimed, not reported | Seen, not claimed | Not found |" in text
-    assert "| mean of 2 | standard | 21.0 | 4.0 | 6.0 | 21.0 | | |" in text
-    assert "| mean of 2 | deep | 28.0 | 4.0 | 6.0 | 14.0 | | |" in text
+    assert "| mean of 2 | standard | 7.0 | 2.0 | 2.0 | 9.0 | | |" in text
+    assert "| mean of 2 | deep | 11.0 | 2.0 | 2.0 | 5.0 | | |" in text
     assert "only one judge has graded these reports" in text
-    assert "**Never met:** 22 of 52 points" in text
+    assert "**Never met:** 8 of 20 points" in text
     assert "differ by less than about" in text
 
 
 def test_a_stage_grade_row_is_a_grade_row_with_its_view() -> None:
-    grade = GradeRecord(uuid4(), find_case("drb2-task8"), "succeeded", points=[], score=0.5,
+    grade = GradeRecord(uuid4(), _case(), "succeeded", points=[], score=0.5,
                         judge_model="zai:glm-5.3", judge_thinking="high")
     row = stage_grade_row(grade, "claims")
-    assert (row["view"], row["diagnose_version"], row["case_id"]) == ("claims", 1, "drb2-task8")
+    assert (row["view"], row["diagnose_version"], row["case_id"]) == ("claims", 1, "case-diagnose")
 
 
 def test_a_rescout_is_diagnosed_on_its_claims_and_arms_are_compared_on_points_claimed() -> None:
     # A fixed-plan rescout writes no report, so scout models are compared on what their claims met.
-    case = find_case("drb2-task8")
+    case = _case()
     points = [("info_recall", n) for n in range(1, 5)]
     runs = []
     for arm, met in (("luna", 2), ("luna", 3), ("flash", 1), ("flash", 2)):

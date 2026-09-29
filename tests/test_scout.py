@@ -439,7 +439,7 @@ async def test_fixed_plan_research_reuses_the_plan_without_planning_or_synthesis
     store = MemoryStore()
     original = await _run(settings, store)
     source = store.runs[original.run_id]
-    case = {"id": "drb2-test", "rubric_version": "1", "sha256": "0" * 64, "dataset_revision": ""}
+    case = {"id": "st-test", "rubric_version": "1", "sha256": "0" * 64}
     source["config"]["case"] = case
     before = set(store.calls)
     with scout_agent.override(model=researcher()):

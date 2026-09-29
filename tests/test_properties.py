@@ -153,8 +153,8 @@ def test_the_study_runner_reads_every_grade_line(met: int, extra: int, score: fl
     from research_loop.study import _grade_with
 
     points = met + extra
-    line = f"drb2-task8: {met} of {points} points ({score:.3f}), ${cost:.4f}. Unmet: none. Recorded as x.\n"
-    grade = _grade_with(lambda args, env: (0, line))("run", "drb2-task8", {}, 1.0)
+    line = f"st05-scaling-table: {met} of {points} points ({score:.3f}), ${cost:.4f}. Unmet: none. Recorded as x.\n"
+    grade = _grade_with(lambda args, env: (0, line))("run", "st05-scaling-table", {}, 1.0)
     assert grade == {"met": met, "points": points, "score": float(f"{score:.3f}"), "cost_usd": float(f"{cost:.4f}")}
 
 

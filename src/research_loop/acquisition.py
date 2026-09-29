@@ -222,10 +222,10 @@ class SourcePolicy:
     matches dx.doi.org. A work also matches by identifier: when an entry names a DOI or arXiv ID
     (a doi.org address, a publisher path holding the DOI), any address carrying that identifier,
     such as a mirror at another host, and any record or citation giving it are blocked. A work is also
-    known by its title (`titles`, a frozen case's `blocked_title`): a search result, a scholarly record, or a
+    known by its title (`titles`, given with `--block-title`): a search result, a scholarly record, or a
     cited source with that title, and a document whose opening prints it, are blocked. That catches a copy
     at an address that carries neither a blocked address nor the DOI, such as a publisher's CDN, which Exa
-    search surfaced among its top results for drb2-task8. Matching errs toward blocking.
+    search surfaced among its top results for a benchmark task. Matching errs toward blocking.
     """
 
     blocked: tuple[str, ...] = ()
@@ -261,7 +261,7 @@ class SourcePolicy:
         """The blocked title that `text` contains, ignoring case, accents, punctuation, and spacing, as
         "title: ..."; titles under four words are never matched, so a generic phrase cannot block a page. A
         title's main part, before its first colon, counts too when it is at least `_SHORTENED_WORDS` words
-        long: copies of drb2-task8's blocked review were titled without its subtitle ": A Review"."""
+        long: copies of a blocked benchmark review were titled without its subtitle ": A Review"."""
         if not text or not self._titles:
             return None
         normal = f" {_normal_title(text)} "
@@ -270,7 +270,7 @@ class SourcePolicy:
     def blocks_result(self, title: str | None, snippet: str | None) -> str | None:
         """The blocked entry that a search result matches by a blocked title in its title or snippet, by a
         blocked DOI its title or snippet prints, or by a shortened blocked title. Engines cut long titles
-        ("…") and add their site's name (" - ProQuest", " | PDF"), so the whole title of drb2-task8's blocked
+        ("…") and add their site's name (" - ProQuest", " | PDF"), so the whole title of a blocked benchmark
         review never appeared in the results that showed it to scouts (study log, 29 September 2026). A
         shortened title is matched when, without its ellipsis or site name, it is at least
         `_SHORTENED_WORDS` words long and the blocked title begins with it."""

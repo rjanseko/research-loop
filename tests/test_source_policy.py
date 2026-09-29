@@ -297,21 +297,6 @@ def test_a_scouts_evidence_citing_a_blocked_work_by_its_title_is_refused() -> No
                                 result)
 
 
-def test_every_frozen_case_blocks_its_expert_reports_title_and_a_rerun_recovers_it() -> None:
-    from research_loop.evals import (
-        blocked_titles,
-        case_blocked_titles,
-        case_identity,
-        study_cases,
-    )
-
-    drb2 = [case for case in study_cases().values() if case.id.startswith("drb2-")]
-    assert drb2 and all(blocked_titles(case) for case in drb2)
-    task8 = study_cases()["drb2-task8"]
-    assert case_blocked_titles(case_identity(task8)) == [TITLE]
-    assert case_blocked_titles(None) == [] and case_blocked_titles({"id": "no-such-case"}) == []
-
-
 def test_a_runs_stored_messages_show_what_an_older_policy_let_through() -> None:
     def returned(tool: str, content: dict) -> ModelRequest:
         return ModelRequest(parts=[ToolReturnPart(tool_name=tool, content=json.dumps(content), tool_call_id=tool)])

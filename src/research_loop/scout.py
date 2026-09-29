@@ -83,7 +83,6 @@ from .citations import (
     search_results,
 )
 from .config import ScoutLimits, Settings, split_model
-from .evals import case_blocked_titles
 from .evidence import (
     EvidenceLedger,
     SourcePassages,
@@ -1156,7 +1155,7 @@ def _rerun(source: dict[str, Any], settings: Settings, store: RunStore, study: S
     runner = _Run(source["question"], settings, store, source_config.get("notes") or [],
                   source_config.get("blocked_urls") or [], UUID(str(source["id"])), study, budget=budget,
                   case_identity=source_config.get("case"),
-                  blocked_titles=source_config.get("blocked_titles") or case_blocked_titles(source_config.get("case")))
+                  blocked_titles=source_config.get("blocked_titles") or [])
     runner.plan = plan = ResearchPlan.model_validate(source["plan"])
     runner.depth, runner.limits = plan.depth, settings.limits.for_depth(plan.depth)
     runner.workflow_version = workflow_version

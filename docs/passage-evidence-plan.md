@@ -39,7 +39,7 @@ The planner, scouts, gap analysis, deep dives, budgets, rate limits, acquisition
 
 ## Why, and what this does not fix
 
-The [29 September workflow audit](audit-2026-09-29-workflow-revisions.md#a-correction-where-points-are-lost) found where rubric points go missing on the broad development case:
+The [29 September workflow audit](audit-2026-09-29-workflow-revisions.md#a-correction-where-points-are-lost) found where rubric points go missing on the broad development case, drb2-task8 (since removed; its leaked snippets would, if anything, have made more points findable, so the retrieval loss is not overstated):
 
 - 17 to 28 of 52 points per run were never found in research.
 - Only 0 to 4 points were seen in research but not claimed.
@@ -55,7 +55,7 @@ The [29 September workflow audit](audit-2026-09-29-workflow-revisions.md#a-corre
 - **Acquired but not extracted.** Passage-first scouts and in-document search address this directly.
 - **Never acquired.** This needs search and discovery work, and the overhaul only provides the infrastructure for it.
 
-The grading is a judge call per run, so it waits for paid calls to resume. It needs the stored transcripts, so it must run before the database is archived, or later against a restored archive. The overhaul does not depend on its result. The result does decide what comes right after the overhaul: in-document search, or search and discovery.
+*Dropped on 29 September with DeepResearch Bench II.* This measurement needed the stored drb2-task8 runs and their rubric, and those cases were removed (see [evaluation](evaluation.md#the-study-cases)). The rebuild's stage funnel measures the same split on the new cases, since every observation it stores is searchable: a point is "acquired" when a passage of any text the run fetched states it. That result decides what comes after the rebuild: in-document search, or search and discovery.
 
 ## Invariants
 
@@ -396,7 +396,7 @@ The tests should be written before the code they cover, following the synthesis'
    - Merge `claude/scout-v15` (`b0ca70f`, which includes PR #47) into master as the last state of the old design. It carries the Claude citation adapter this plan keeps.
    - Tag that merge `archive/pre-passage-2026-09`.
    - Build the overhaul on a new branch from it. PR #47's code is replaced, not reverted first.
-2. **Archive the database** as last time: `pg_dump`, JSONL exports and checksums in `~/research-loop-archive/2026-09-<date>/`, with a README on how to restore it. Run the "acquired but not extracted" measurement and the splitter replay before this step, or restore the archive later to run them.
+2. **Archive the database** as last time: `pg_dump`, JSONL exports and checksums in `~/research-loop-archive/2026-09-<date>/`, with a README on how to restore it. Run the splitter replay before this step, or restore the archive later to run it.
 3. **Squash the migrations** into a new baseline that includes the tables above.
 4. **Version constants:**
    - `WORKFLOW_VERSION` becomes `scout-v22`, `FOLLOWUP_VERSION` `scout-followup-v23`, `RESCOUT_VERSION` `scout-research-v18` and `SYNTHESIS_VERSION` `scout-synthesis-v10`.
@@ -413,7 +413,7 @@ The tests should be written before the code they cover, following the synthesis'
 
 **Consequences of the clean break:**
 
-- Every baseline starts again: old grades are not comparable with new ones. This is acceptable because drb2-task8 is already development-only, and no study has separated its arms.
+- Every baseline starts again: old grades are not comparable with new ones. This is acceptable because DeepResearch Bench II has been removed, and no study had separated its arms.
 - `research show`, `grade`, `audit` and `diagnose` work only on new runs. Old runs can be read from the archive or by checking out the tag.
 
 ## Build order
@@ -454,7 +454,7 @@ The work happens on one branch. Each step ends with its tests passing, `make lin
 
 Paid calls are paused until the contamination audit passes. When they resume:
 
-1. **Scout handle check,** as a `--cheap` spec with a hard cap of $0.25 or less (pre-approved). It runs one or two scouts on a frozen development plan. It measures:
+1. **Scout handle check,** as a `--cheap` spec with a hard cap of $0.25 or less (pre-approved). It runs one or two scouts on a stored plan of an st case or a new development case. It measures:
    - how often the validator rejected invented handles;
    - retries per call;
    - the share of citations pointing to document text rather than snippets;
@@ -468,7 +468,7 @@ Paid calls are paused until the contamination audit passes. When they resume:
    - whether a cited passage is small enough for a reader to find the fact.
 
    Passage size is adjusted from these results before any baseline run.
-3. **New baseline:** paired runs on the development cases, and later on the held-out cases, **with separate approval.** It needs an estimate based on the most expensive comparable run and a hard `--max-usd` cap, as `AGENTS.md` requires. Its purpose is to establish the new design's level, not to decide between arms.
+3. **New baseline:** paired runs on the new development set, and later on its held-out set, **with separate approval.** It needs an estimate based on the most expensive comparable run and a hard `--max-usd` cap, as `AGENTS.md` requires. Its purpose is to establish the new design's level, not to decide between arms.
 
 ## Risks
 
@@ -494,7 +494,7 @@ The user approved every recommendation on 29 September 2026 ("whatever you think
 
 1. **PR #47's code, merged to `claude/scout-v15`, is replaced, not fixed in place.** No interim fixes, since no paid study is planned on scout-v21.
 2. **Branch sequence:** merge `claude/scout-v15` into master, tag the merge `archive/pre-passage-2026-09`, and branch the rebuild from it.
-3. **The database is archived and reset,** with squashed migrations, once the rebuild's migration baseline exists. The measurement of "acquired but not extracted" and the splitter replay run before the archive, or later against a restored copy.
+3. **The database is archived and reset,** with squashed migrations, once the rebuild's migration baseline exists. The splitter replay runs before the archive, or later against a restored copy.
 4. **The full extracted text of every fetch is stored** by content hash. The size estimate from the archive comes first.
 5. **Handles are per call** (`r7.3`).
 6. **No sub-quotes** in the first version.
@@ -502,7 +502,8 @@ The user approved every recommendation on 29 September 2026 ("whatever you think
 8. **Passages of about 800 characters,** tables whole up to 2,400, adjusted after the synthesis check.
 9. **`answer_support` is removed** in favour of the three axes.
 10. **In-document search is the first trial after the rebuild,** not part of it.
-11. **"Acquired but not extracted" is measured before archiving** if paid calls resume in time.
+11. ~~"Acquired but not extracted" is measured before archiving.~~ Dropped with DeepResearch Bench II, which the user removed on 29 September; the rebuild's funnel measures it on the new cases.
+12. **DeepResearch Bench II is removed entirely** (user, 29 September): its cases, importer, expected sets, and specs. The rebuild's baseline and trials run on a new development set and a held-out set frozen together, starting from [the draft](example-evaluation-set.md).
 
 ## Robustness work outside the evidence layer
 

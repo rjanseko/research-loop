@@ -223,8 +223,8 @@ def source_records(messages: Iterable[ModelMessage]) -> list[tuple[frozenset[str
 def blocked_shown(messages: Iterable[ModelMessage], policy: SourcePolicy) -> list[str]:
     """What the research tools showed in `messages` that `policy` blocks: search results, scholarly records, and
     fetched text, each as "tool: title or address". A run's tools applied the policy of its own fetch version, so
-    replaying its messages through the current one finds what an older, weaker policy let through; drb2-task8's
-    blocked review reached scouts under shortened titles until fetch version 19 (study log, 29 September 2026)."""
+    replaying its messages through the current one finds what an older, weaker policy let through: a blocked
+    benchmark report reached scouts under shortened titles until fetch version 19 (study log, 29 September 2026)."""
     shown: list[str] = []
     for part in _returns(messages):
         data = _data(part.content)

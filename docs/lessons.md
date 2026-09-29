@@ -123,3 +123,5 @@ These come from Scout's first three days of studies; the runs behind them are in
 **A study entry's "no blocked source reached a scout" must say how it was checked.** The v14 search study counted refused fetches, and so missed snippets and two rescouts that cited copies of the blocked review.
 
 **Checking reconstructed provenance keeps finding new cases.** Every evidence version since v4 fixed how a scout's copied quote is matched back to tool text, and the next review found more mismatches. The passage-evidence plan removes the reconstruction: code splits tool output into passages before a model sees it, and models cite their IDs.
+
+**A benchmark whose answers are on the web costs more to guard than it returns.** DeepResearch Bench II's expert reports were public, so each change to searching and reading opened a new way for them to reach the scouts, and each block was found wanting only after studies had run on it. Tuning on one of its cases then put that case's wording into the prompts. A development case should have no single hidden answer document for research to find, and a held-out case should be chosen before any output on it is read.

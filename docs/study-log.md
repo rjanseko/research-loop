@@ -50,6 +50,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-29 | [Serper rerun against DuckDuckGo on scout-v15 (run 28 September)](#2026-09-29-serper-rerun-against-duckduckgo-on-scout-v15-written-up-screen) | $1.87 | Serper met every condition but the blocked-source one: the blocked review's snippets reached scouts in both arms. Does not advance; rerun on fetch version 19 |
 | 09-29 | [DeepSeek scouts against Luna, stopped partway (run 28 September)](#2026-09-29-deepseek-scouts-against-luna-stopped-partway-written-up-screen) | $3.22 recorded | 5 of 9 rescouts; Flash 3 points above Luna at 2.2 times the cost, V4 Pro 2 below at 5 times. Undecided; neither advances |
 | 09-29 | [The blocked review reached scouts under shortened titles (fetch version 19)](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19) | free | Snippets of drb2-task8's expert report reached scouts in most runs of every study since fetch version 15, and two rescouts cited it; shortened titles, main titles, and printed DOIs are now blocked |
+| 09-29 | [DeepResearch Bench II removed](#2026-09-29-deepresearch-bench-ii-removed) | free | Its nine cases, importer, expected sets, and specs deleted; no development or held-out broad case until new ones are frozen |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -452,3 +453,14 @@ While writing up the two studies above, a free replay of every stored search res
 - **Still open.** A copy with none of these marks, such as the ProQuest page when reached from an address found elsewhere, still passes. The next study on a DRB-II case should check its stored search results with this replay before its results are read.
 
 The two runs left `running` by the contamination audit, `6e1d421b` and `e994230a`, were marked failed with `research db reconcile --older-than 600 --apply`.
+
+## 2026-09-29 DeepResearch Bench II removed
+
+At the user's request, DeepResearch Bench II was removed from the code: its nine frozen cases (drb2-task8, task68-plus, task98-plus, task75, task15, and task21 for development; task82, task59, and task78 held out), `scripts/import_drb2.py`, the pinned dataset constants, the blocked titles taken from case metadata, the frozen-case match check, the expected-set counts (`coverage.py`, `scripts/ledger_coverage.py`, and the study summary's coverage column), and the ten study specs that ran on those cases or on their stored runs. No model calls; no cost.
+
+Why:
+- Its expert reports are public, and blocking them needed fixes at fetch versions 12, 15, and 19; every drb2-task8 study since fetch version 15 showed scouts the blocked review.
+- drb2-task8 had been tuned on, and its wording was in model-visible examples from scout-v6 to v15.
+- Its 52-point rubric scores recall of one expert report's contents, and run-to-run and judge-to-judge variation exceeded every difference measured.
+
+The entries above keep their results as records of what was run. The cases, specs, and code are at the tag `archive/pre-passage-2026-09`, and the stored runs and grades stay in Postgres until the database is archived. `research grade` and `research diagnose` can no longer grade them from current code. The three held-out cases were never run. Their loss leaves no held-out set, so a new development set and a held-out set are to be frozen together ([roadmap](roadmap.md)). `SourcePolicy`, `--block`, `--block-title`, and fetch version 19's title matching stay, since users block sources too.
