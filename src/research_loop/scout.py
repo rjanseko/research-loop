@@ -123,7 +123,7 @@ from .schemas import (
     UnreachedSource,
 )
 from .scholar import ScholarClient
-from .store import MemoryStore, RunStore
+from .store import MemoryStore, ResearchCheckpoint, RunStore
 from .study_budget import (
     BUDGET_POLICY_VERSION,
     StudyBudget,
@@ -234,6 +234,8 @@ _CALL_FAILURES = (UsageLimitExceeded, ModelAPIError, ContentFilterError, Unexpec
                   TimeoutError, StudyBudgetRefusal, OSError)
 # How long recording a failed or cancelled call may take before it is given up.
 _RECORD_SECONDS = 5
+# Pauses before writing a paid result's record again (`_Run._durably`).
+_DURABLE_PAUSES = (0.5, 2.0)
 # Planning gets this long before the question is researched as one, so a slow plan cannot use up the scouts' time.
 _PLAN_SECONDS = 90
 
@@ -432,10 +434,13 @@ def _cut_off(question: ResearchQuestion, messages: list[ModelMessage], reason: s
 
 @dataclass
 class _Attempt:
-    """One scout's question, and the messages its call has exchanged so far."""
+    """One scout's question, the messages its call has exchanged so far, and the call's ID once it starts. `id`
+    names the attempt's stored result (store.ResearchCheckpoint)."""
 
     question: ResearchQuestion
     messages: list[ModelMessage] = field(default_factory=list)
+    id: UUID = field(default_factory=uuid4)
+    call_id: UUID | None = None
 
 
 class _Run:
@@ -455,6 +460,8 @@ class _Run:
         self.cost = Decimal(0)
         self.unpriced = False
         self.notes: list[str] = []
+        # Research results in the order they ended, by role: what a run cut short records as its ledger.
+        self.checkpointed: list[tuple[str, ResearchResult]] = []
         # What the synthesizer's reply lacked, and its citations that did not match the passages sent.
         self.missing_sections: list[str] = []
         self.invalid_citations: list[str] = []
@@ -526,6 +533,8 @@ class _Run:
         spec = spec or getattr(self.settings.models, role)
         model_id = split_model(spec)[0]
         call_id = await self.store.start_call(self.run_id, role=call_role or role, model=model_id, question_id=question_id)
+        if attempt is not None:
+            attempt.call_id = call_id
         # Labels the agent run's span in the trace; PydanticAI keeps it out of the model's requests.
         metadata = {"run_id": str(self.run_id), "role": call_role or role, "question_id": question_id,
                     "depth": self.depth}
@@ -555,11 +564,35 @@ class _Run:
             raise
         self._spend(usage)
         self._note_fallback(role, result.all_messages())
-        await self.store.finish_call(call_id, status="succeeded", usage=usage, cost_usd=usage.cost, output=output,
-                                     messages=result.all_messages(),
-                                     stop_reason=finished(result) if finished else "returned a result",
-                                     tool_seconds=tool_seconds() if tool_seconds else None)
+        # The output is paid for, so a failed write of its record must not discard it (architectural audit C04).
+        await self._durably(lambda: self.store.finish_call(
+            call_id, status="succeeded", usage=usage, cost_usd=usage.cost, output=output,
+            messages=result.all_messages(), stop_reason=finished(result) if finished else "returned a result",
+            tool_seconds=tool_seconds() if tool_seconds else None), f"the {call_role or role} call's record")
         return output
+
+    async def _durably(self, write: Callable[[], Awaitable[Any]], what: str) -> None:
+        """Write a record, trying again after a short pause; when every try fails, keep going with a note, since
+        what the record describes has already happened and is kept in memory."""
+        for pause in (*_DURABLE_PAUSES, None):
+            try:
+                await write()
+                return
+            except Exception as exc:  # noqa: BLE001 - a failed write must not lose a paid result
+                if pause is None:
+                    logfire.exception("could not store {what}", what=what)
+                    self.notes.append(f"{what} could not be stored ({type(exc).__name__}); the run kept it in memory")
+                    return
+                await asyncio.sleep(pause)
+
+    async def _checkpoint(self, attempt: _Attempt, result: ResearchResult, role: str) -> None:
+        """Store a scout's or deep dive's result as soon as it ends, so a run cut short keeps it
+        (architectural audit F09)."""
+        self.checkpointed.append((role, result))
+        await self._durably(lambda: self.store.record_research(ResearchCheckpoint(
+            attempt.id, self.run_id, attempt.call_id, attempt.question.id, role,
+            "cut_off" if result.cut_off else "returned", result.model_dump(mode="json"), result.cut_off)),
+            f"the research on {attempt.question.id}")
 
     def _note_fallback(self, role: Role, messages: list[ModelMessage]) -> None:
         fallback = self.settings.models.fallback
@@ -664,7 +697,7 @@ class _Run:
 
         async with semaphore:
             try:
-                return await self._call(
+                result = await self._call(
                     role="scout", call_role="deep_dive" if deep else None, agent=scout_agent,
                     prompt=prompt, question_id=question.id,
                     deps=Assignment(question, self.policy, frozenset(item.id for item in coverage), spend_key),
@@ -679,13 +712,17 @@ class _Run:
                                        "the run was cancelled"),
                     tool_seconds=lambda: toolset.seconds(question.id) - tool_seconds_before)
             except _CALL_FAILURES as exc:
-                return _cut_off(question, attempt.messages, _reason(exc))
+                result = _cut_off(question, attempt.messages, _reason(exc))
             except Exception as exc:  # noqa: BLE001 - a bug in one scout must not discard the others' paid research
                 # A UnicodeEncodeError from one PDF failed a run whose other three scouts had finished.
                 logfire.exception("scout {question_id} stopped on an unexpected error", question_id=question.id)
                 self.notes.append(f"research on {question.id} stopped on an unexpected error "
                                   f"({type(exc).__name__}); this is a bug")
-                return _cut_off(question, attempt.messages, f"unexpected error {type(exc).__name__}")
+                result = _cut_off(question, attempt.messages, f"unexpected error {type(exc).__name__}")
+        if not deep:
+            # A deep dive is stored by `_deep_dive`, once its claims carry the coverage item its gap targets.
+            await self._checkpoint(attempt, result, "scout")
+        return result
 
     async def _research(self, plan: ResearchPlan, deadline: float, toolset: TimedToolset) -> list[ResearchResult]:
         """Every question's result in plan order; questions still running at `deadline` are cut off."""
@@ -708,7 +745,8 @@ class _Run:
         results = []
         for attempt, task in zip(attempts, tasks, strict=True):
             if task.cancelled():
-                results.append(_cut_off(attempt.question, attempt.messages, _reason(TimeoutError())))
+                results.append(cut := _cut_off(attempt.question, attempt.messages, _reason(TimeoutError())))
+                await self._checkpoint(attempt, cut, "scout")
             elif (exc := task.exception()) is not None:
                 raise exc  # _scout turns every expected failure into a result, so this is a bug
             else:
@@ -761,6 +799,7 @@ class _Run:
             result = result.model_copy(update={"claims": [
                 claim if claim.covers else claim.model_copy(update={"covers": [gap.coverage_id]})
                 for claim in result.claims]})
+        await self._checkpoint(attempt, result, "deep_dive")
         return result
 
     async def _synthesize(self, plan: ResearchPlan, ledger: EvidenceLedger, deadline: float) -> FinalReport | None:
@@ -844,7 +883,7 @@ class _Run:
         except BaseException as exc:
             failed = "cancelled" if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt) else "failed"
             await _record(self.store.finish_run(
-                self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
+                self.run_id, status=failed, plan=self.plan, ledger=self._ledger_so_far().to_json(),
                 checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd,
                                  uncertain_usd=self._uncertain_usd(),
                                  external_usd=self._external_usd()) if self.budget else None,
@@ -914,6 +953,18 @@ class _Run:
             return status, checks
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
+
+    def _ledger_so_far(self) -> EvidenceLedger:
+        """The run's ledger, or when a run cut short before its research wave ended, one of the scout results
+        stored so far, in plan order."""
+        if self.ledger.all() or not self.checkpointed:
+            return self.ledger
+        order = {question.id: index for index, question in enumerate(self.plan.questions if self.plan else [])}
+        ledger = EvidenceLedger()
+        for _, result in sorted((item for item in self.checkpointed if item[0] == "scout"),
+                                key=lambda item: order.get(item[1].question_id, len(order))):
+            ledger.add(result)
+        return ledger
 
     def _report_contract(self, status: Status, checks: RunChecks) -> Status:
         """Record what the synthesizer's reply lacked or cited wrongly; a report without its title, summary,

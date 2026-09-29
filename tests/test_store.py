@@ -36,6 +36,41 @@ def test_errors_keep_type_status_and_a_short_message() -> None:
     assert len(error_record(RuntimeError("x" * 5000))["message"]) == 1000
 
 
+def _checkpoint(run_id, call_id, *, text: str = "Stored text.", handle: str = "r1"):
+    from datetime import UTC, datetime
+
+    from research_loop.passages import passage_id, text_sha256
+    from research_loop.store import ResearchCheckpoint
+
+    sha = text_sha256(text)
+    return ResearchCheckpoint(
+        uuid4(), run_id, call_id, "q1", "scout", "returned", {"question_id": "q1", "claims": []},
+        texts={sha: text},
+        observations=[{"id": uuid4(), "call_id": call_id, "question_id": "q1", "handle": handle, "tool": "fetch",
+                       "args": {"url": "https://example.org/"}, "status": "ok", "access": "document",
+                       "url": "https://example.org/", "text_sha256": sha, "window_start": 0, "window_end": len(text),
+                       "observed_at": datetime.now(UTC)}],
+        passages=[{"id": passage_id(sha, 0, len(text)), "text_sha256": sha, "splitter_version": 1, "ordinal": 0,
+                   "start_char": 0, "end_char": len(text), "kind": "text"}])
+
+
+async def test_a_memory_store_keeps_a_checkpoint_once_and_each_text_once() -> None:
+    import dataclasses
+
+    from research_loop.store import ResearchCheckpoint
+
+    store = MemoryStore()
+    run_id, call_id = uuid4(), uuid4()
+    checkpoint = _checkpoint(run_id, call_id)
+    await store.record_research(checkpoint)
+    await store.record_research(checkpoint)
+    await store.record_research(dataclasses.replace(_checkpoint(uuid4(), uuid4()), id=uuid4()))
+    assert len(store.research) == 2 and len(store.texts) == 1 and len(store.passages) == 1
+    assert len(store.observations) == 2
+    with pytest.raises(TypeError, match="unknown observation fields: secret"):
+        ResearchCheckpoint(uuid4(), run_id, call_id, "q1", "scout", "returned", {}, observations=[{"secret": 1}])
+
+
 def test_transcripts_cut_only_oversized_strings() -> None:
     long = [ModelRequest(parts=[UserPromptPart("y" * (MESSAGE_MAX_CHARS + 10))])]
     content = transcript(long)[0]["parts"][0]["content"]
@@ -267,3 +302,42 @@ def test_a_dry_rescout_study_gets_its_sources_copied_without_their_parents(dsn: 
     assert copy_sources_to_dry(dsn, [str(source)]) == []  # a second copy leaves the first as it is
     with psycopg.connect(dry) as conn:
         assert conn.execute("select parent_run_id, plan from runs").fetchall() == [(None, {"questions": []})]
+
+
+@pytest.mark.postgres
+async def test_postgres_keeps_a_checkpoint_once_shares_texts_across_runs_and_keeps_order(dsn: str) -> None:
+    import dataclasses
+
+    import psycopg
+
+    from research_loop.db import apply_migrations, migration_files, open_migrated_pool
+    from research_loop.store import load_research
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        apply_migrations(conn, migration_files())
+    async with AsyncExitStack() as stack:
+        pool = await open_migrated_pool(stack, dsn)
+        store = PostgresStore(pool)
+        runs = []
+        for _ in range(2):
+            run_id = uuid4()
+            await store.start_run(run_id, mode="scout", workflow_version="scout-v22", question="Q?", config={})
+            runs.append((run_id, await store.start_call(run_id, role="scout", model="m", question_id="q1")))
+        first = _checkpoint(*runs[0])
+        # Written twice, as a retry after an unclear failure would: stored once.
+        await store.record_research(first)
+        await store.record_research(first)
+        # Another run that read the same text shares its row; its own observation and result are its own.
+        await store.record_research(_checkpoint(*runs[1]))
+        later = dataclasses.replace(_checkpoint(*runs[0], handle="r2"), question_id="q2")
+        await store.record_research(later)
+        # A result whose attempt never started a call still stores.
+        await store.record_research(dataclasses.replace(_checkpoint(runs[0][0], None), observations=[],
+                                                        question_id="q3", status="cut_off", cut_off="deadline"))
+        rows = await load_research(pool, runs[0][0])
+    assert [row["question_id"] for row in rows] == ["q1", "q2", "q3"]
+    assert rows[2]["call_id"] is None and rows[2]["cut_off"] == "deadline"
+    with psycopg.connect(dsn) as conn:
+        counts = [conn.execute(f"select count(*) from {table}").fetchone()[0]
+                  for table in ("research_results", "texts", "passages", "observations")]
+    assert counts == [4, 1, 1, 3]

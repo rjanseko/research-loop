@@ -7,10 +7,11 @@ re-synthesized after Logfire's retention has passed.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
@@ -100,6 +101,46 @@ class RunStore(Protocol):
                           messages: list[ModelMessage] | None = None, error: BaseException | None = None,
                           stop_reason: str | None = None, tool_seconds: float | None = None) -> None: ...
 
+    async def record_research(self, checkpoint: ResearchCheckpoint) -> None:
+        """Store one scout or deep dive's result with what its tools returned, in one transaction. Writing the
+        same checkpoint again changes nothing."""
+
+
+# The columns an observation may set (migrations/007_research_checkpoints.sql).
+OBSERVATION_COLUMNS = ("id", "call_id", "question_id", "handle", "tool", "args", "status", "error", "access", "url",
+                       "final_url", "work", "metadata", "text_sha256", "window_start", "window_end", "pages",
+                       "observed_at")
+PASSAGE_COLUMNS = ("id", "text_sha256", "splitter_version", "ordinal", "start_char", "end_char", "page", "kind",
+                   "header_start", "header_end")
+_OBSERVATION_JSON = frozenset({"args", "error", "work", "metadata", "pages"})
+
+
+@dataclass(frozen=True)
+class ResearchCheckpoint:
+    """One scout or deep dive's research as it ended: its result, and the texts, observations, and passages its
+    tools returned. `id` belongs to the attempt, so a checkpoint written twice is stored once."""
+
+    id: UUID
+    run_id: UUID
+    call_id: UUID | None
+    question_id: str
+    role: str
+    status: Literal["returned", "cut_off"]
+    result: dict[str, Any]
+    cut_off: str | None = None
+    # Text by its SHA-256.
+    texts: Mapping[str, str] = field(default_factory=dict)
+    observations: Sequence[Mapping[str, Any]] = ()
+    passages: Sequence[Mapping[str, Any]] = ()
+
+    def __post_init__(self) -> None:
+        for observation in self.observations:
+            if unknown := set(observation) - set(OBSERVATION_COLUMNS):
+                raise TypeError(f"unknown observation fields: {', '.join(sorted(unknown))}")
+        for passage in self.passages:
+            if unknown := set(passage) - set(PASSAGE_COLUMNS):
+                raise TypeError(f"unknown passage fields: {', '.join(sorted(unknown))}")
+
 
 # `config` and `workflow_version` are set again at the end when planning changed them, such as a deep plan
 # that adds the gap follow-up.
@@ -113,6 +154,10 @@ class MemoryStore:
 
     runs: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     calls: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+    research: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+    texts: dict[str, str] = field(default_factory=dict)
+    observations: dict[tuple[UUID, str], dict[str, Any]] = field(default_factory=dict)
+    passages: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     async def start_run(self, run_id: UUID, *, mode: str, workflow_version: str, question: str,
                         config: dict[str, Any], parent_run_id: UUID | None = None, input_hash: str | None = None,
@@ -145,6 +190,19 @@ class MemoryStore:
             messages=transcript(messages) if messages else None,
             error=error_record(error) if error else None, stop_reason=stop_reason,
             tool_seconds=tool_seconds, finished_at=datetime.now(UTC))
+
+    async def record_research(self, checkpoint: ResearchCheckpoint) -> None:
+        for sha, body in checkpoint.texts.items():
+            self.texts.setdefault(sha, body)
+        for passage in checkpoint.passages:
+            self.passages.setdefault(passage["id"], dict(passage))
+        for observation in checkpoint.observations:
+            self.observations.setdefault((observation["call_id"], observation["handle"]),
+                                         {"run_id": checkpoint.run_id, **jsonable(dict(observation))})
+        self.research.setdefault(checkpoint.id, {
+            "id": checkpoint.id, "run_id": checkpoint.run_id, "call_id": checkpoint.call_id,
+            "question_id": checkpoint.question_id, "role": checkpoint.role, "status": checkpoint.status,
+            "cut_off": checkpoint.cut_off, "result": jsonable(checkpoint.result), "created_at": datetime.now(UTC)})
 
 
 def _json(value: Any) -> Any:
@@ -205,6 +263,31 @@ class PostgresStore:
                  stop_reason, tool_seconds, call_id),
             )
 
+    async def record_research(self, checkpoint: ResearchCheckpoint) -> None:
+        async with self.pool.connection() as conn, conn.transaction():
+            for sha, body in checkpoint.texts.items():
+                await conn.execute("insert into texts (sha256, body, chars) values (%s, %s, %s) "
+                                   "on conflict (sha256) do nothing", (sha, without_nul(body), len(body)))
+            for passage in checkpoint.passages:
+                columns = [name for name in PASSAGE_COLUMNS if name in passage]
+                # Column names come from PASSAGE_COLUMNS, never from the caller; values are parameters.
+                await conn.execute(
+                    f"insert into passages ({', '.join(columns)}) values ({', '.join(['%s'] * len(columns))}) "
+                    "on conflict (id) do nothing", [passage[name] for name in columns])
+            for observation in checkpoint.observations:
+                columns = [name for name in OBSERVATION_COLUMNS if name in observation]
+                values = [_json(observation[name]) if name in _OBSERVATION_JSON else observation[name]
+                          for name in columns]
+                await conn.execute(
+                    f"insert into observations (run_id, {', '.join(columns)}) "
+                    f"values (%s, {', '.join(['%s'] * len(columns))}) on conflict (call_id, handle) do nothing",
+                    [checkpoint.run_id, *values])
+            await conn.execute(
+                """insert into research_results (id, run_id, call_id, question_id, role, status, cut_off, result)
+                   values (%s, %s, %s, %s, %s, %s, %s, %s) on conflict (id) do nothing""",
+                (checkpoint.id, checkpoint.run_id, checkpoint.call_id, checkpoint.question_id, checkpoint.role,
+                 checkpoint.status, checkpoint.cut_off, _json(checkpoint.result)))
+
 
 async def load_run(pool: Any, run_id: UUID) -> dict[str, Any] | None:
     """A stored run's row, or None when there is none."""
@@ -213,6 +296,15 @@ async def load_run(pool: Any, run_id: UUID) -> dict[str, Any] | None:
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
         await cursor.execute("select * from runs where id = %s", (run_id,))
         return await cursor.fetchone()
+
+
+async def load_research(pool: Any, run_id: UUID) -> list[dict[str, Any]]:
+    """A run's stored research results in the order they were stored."""
+    from psycopg.rows import dict_row
+
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+        await cursor.execute("select * from research_results where run_id = %s order by created_at, id", (run_id,))
+        return await cursor.fetchall()
 
 
 async def load_calls(pool: Any, run_id: UUID) -> list[dict[str, Any]]:

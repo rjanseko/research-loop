@@ -55,6 +55,21 @@ def _record(**changes) -> dict:
     return record | changes
 
 
+def test_the_research_oracle_wants_one_stored_result_per_finished_call() -> None:
+    from research_loop.dryrun import check_research
+
+    call = {"id": "c1", "role": "scout", "question_id": "q1", "status": "succeeded"}
+    stored = {"call_id": "c1", "question_id": "q1", "status": "returned"}
+    assert check_research(_record(), [call], [stored]) == []
+    assert any("0 stored results" in p for p in check_research(_record(), [call], []))
+    assert any("2 stored results" in p for p in check_research(_record(), [call], [stored, stored]))
+    assert any("no stored result: q1" in p for p in check_research(_record(), [], []))
+    failed = {**call, "status": "failed"}
+    assert any("has a failed call" in p for p in check_research(_record(), [failed], [stored]))
+    # A cancelled run's ledger may hold only what finished.
+    assert check_research(_record(status="cancelled"), [], []) == []
+
+
 def test_the_oracles_catch_broken_records() -> None:
     assert check_record(_record(), [{"role": "scout", "status": "succeeded", "stop_reason": "done",
                                      "cost_usd": 0.01}]) == []

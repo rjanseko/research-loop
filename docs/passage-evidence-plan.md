@@ -426,9 +426,7 @@ The work happens on one branch. Each step ends with its tests passing, `make lin
    - Page offsets in `web._pdf_text`.
    - Property tests.
    - The replay script run against the database before it is archived.
-2. **Storage.**
-   - The migration baseline and the `RunStore` methods (`record_research` and `load_research`) for both stores.
-   - Checkpoint and idempotency tests.
+2. **Storage.** *Done 29 September:* migration 007 adds the four tables alongside the current schema, and the squashed baseline follows at the clean break. `RunStore.record_research` and `store.load_research` exist for both stores, each scout and deep dive is stored as it ends, a run cut short records the finished research as its ledger, and a failed write of a paid call's record keeps its result (C04). Checkpoint, idempotency, and cancellation tests, and a fuzz invariant.
 3. **Tools and the per-call registry.**
    - Tool output format, handles and markers, and windows on passage boundaries.
    - The handle list in the trimming note.
