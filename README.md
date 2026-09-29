@@ -660,16 +660,23 @@ In `scripts/`:
 - `import_drb2.py` freezes DeepResearch Bench II tasks as study cases;
 - `ledger_coverage.py` counts how much of a development case's expected set a run found;
 - `rescore_quotes.py` re-checks every stored scout call's quotes under the current evidence rules;
+- `budget_bottlenecks.py` shows which limits stopped stored runs' calls and how much of each budget they used;
+- `blocked_exposure.py` lists what stored runs' tools showed that the current source policy blocks; run it on a study of a case with blocked sources before reading its results;
+- `search_replay.py` replays stored scout searches through each search engine;
 - `fetch_bakeoff.py` tries other ways to read the pages our fetcher failed on.
 
-The last three make no model calls.
+None of them makes a model call. `search_replay.py` and `fetch_bakeoff.py` can call paid search and reading services; the others read only stored runs.
 
 | In `docs/` | What it holds |
 |---|---|
+| [project-synthesis.md](docs/project-synthesis.md) | Current state, reconciled audit findings, open suggestions, and the source map for all docs |
 | [study-log.md](docs/study-log.md) | Index of every study, paid run, and offline re-scoring, linking to archived detail where needed |
 | [evaluation.md](docs/evaluation.md) | How quality is measured and how a comparison is set up so that it can decide |
 | [lessons.md](docs/lessons.md) | What the first design and Scout's first days taught |
-| [notes.md](docs/notes.md) | Ideas with some evidence but no decision yet: cache warming and a source ranker |
+| [roadmap.md](docs/roadmap.md) | The current order of work |
+| [passage-evidence-plan.md](docs/passage-evidence-plan.md) | The approved plan to rebuild the evidence layer around passages |
+| [takeaways-2026-09-29.md](docs/takeaways-2026-09-29.md) | What the studies of 25 to 29 September support, and their limits |
+| [notes.md](docs/notes.md) | Pointer to unadopted ideas and their test conditions |
 | [archive/](docs/archive/) | Superseded plans and dated historical study-log entries |
 
 `.agents/skills/` holds agent skills used as API references, such as Exa's `build-with-exa`. The first design of this project, a six-role graph with benchmark adapters and long-horizon studies, is kept at the git tag `archive/pre-scout-2026-09`.

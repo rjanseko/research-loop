@@ -115,3 +115,11 @@ These come from Scout's first three days of studies; the runs behind them are in
 ## Provenance of new Scout reports (29 September 2026)
 
 **A valid citation pointer is not the same as support for an assertion.** A report can cite a search snippet while the same claim also has a full page from another source; grading the claim's whole evidence set made that assertion look well read. Evidence version 8 saves the exact checked tool-text span and a hash of its source snapshot, and report assertions keep the particular passage and source IDs they cite. The support check and audit follow those links. Numeric punctuation and attached units need stricter quote matching than ordinary PDF formatting. This design has offline tests but no paid study result yet; whether its labels agree with human review still needs measurement.
+
+## Blocking and rebuilding, later on 29 September 2026
+
+**Block what the engines show, not what the benchmark names.** The blocked title was the review's whole title. Search engines cut it short or append their site's name, and copies drop the subtitle, so the full title never appeared in the results that showed the review's abstract to scouts. The check passed its tests because the tests used the whole title. A block needs test cases taken from real stored results, and every study of a case with blocked sources needs a replay of what its scouts were shown before its results are read. Perfect blocking on the live web is not achievable, but measuring exposure is.
+
+**A study entry's "no blocked source reached a scout" must say how it was checked.** The v14 search study counted refused fetches, and so missed snippets and two rescouts that cited copies of the blocked review.
+
+**Checking reconstructed provenance keeps finding new cases.** Every evidence version since v4 fixed how a scout's copied quote is matched back to tool text, and the next review found more mismatches. The passage-evidence plan removes the reconstruction: code splits tool output into passages before a model sees it, and models cite their IDs.

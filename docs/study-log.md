@@ -47,6 +47,9 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-29 | [Smoke check of the synthesizer's fallback (synthesis v7, test branch)](#2026-09-29-smoke-check-of-the-synthesizers-fallback-synthesis-v7-test-branch) | $0.011 | Anthropic accepts Opus 5@medium as Opus 5.5's server-side fallback: the synthesizer's smoke call carried it and was answered |
 | 09-29 | [Opus 5.5 resynthesis of st07 on synthesis v7 (test branch)](#2026-09-29-opus-55-resynthesis-of-st07-on-synthesis-v7-test-branch) | $0.13 | Complete and supported; all 34 citations matched their passages. 18 of 45 answer sentences uncited, but 6 are counting artifacts and 7 framing; 5 are facts left uncited, mostly lead-ins |
 | 09-29 | [Uncited sentences re-scored on synthesis v8 (offline)](#2026-09-29-uncited-sentences-re-scored-on-synthesis-v8-offline) | $0 | Run 6e811f5f's stored reply, marked and counted by the v8 code: 12 of 47 answer sentences uncited, not 18 of 45; the 12 are 7 framing sentences and 5 facts |
+| 09-29 | [Serper rerun against DuckDuckGo on scout-v15 (run 28 September)](#2026-09-29-serper-rerun-against-duckduckgo-on-scout-v15-written-up-screen) | $1.87 | Serper met every condition but the blocked-source one: the blocked review's snippets reached scouts in both arms. Does not advance; rerun on fetch version 19 |
+| 09-29 | [DeepSeek scouts against Luna, stopped partway (run 28 September)](#2026-09-29-deepseek-scouts-against-luna-stopped-partway-written-up-screen) | $3.22 recorded | 5 of 9 rescouts; Flash 3 points above Luna at 2.2 times the cost, V4 Pro 2 below at 5 times. Undecided; neither advances |
+| 09-29 | [The blocked review reached scouts under shortened titles (fetch version 19)](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19) | free | Snippets of drb2-task8's expert report reached scouts in most runs of every study since fetch version 15, and two rescouts cited it; shortened titles, main titles, and printed DOIs are now blocked |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -338,7 +341,7 @@ Each cell gives the run, its status, and the rubric points its claims met, of 52
 - **Exa is disqualified.** Its verified-quote share was 5.2 points below DuckDuckGo's, past the 5-point limit. It also cost $0.30 more a rescout, over the $0.15 allowed, though it found the most.
 - **Brave does not advance.** Its empty share (27%) is not half of DuckDuckGo's, and it cost $0.23 more.
 - No point difference is larger than the study can detect: the diagnosis gives 5 to 14 points by arm.
-- Two fetches of a blocked source were refused, and no blocked source reached a scout.
+- Two fetches of a blocked source were refused, and no blocked source reached a scout. *Corrected on 29 September: snippets of the blocked review reached scouts in 7 of the 12 rescouts, and two cited it ([entry](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19)).*
 
 Both partial runs came from limits that scout-v15 changes. Serper's came from output checks, which now get two retries. DuckDuckGo's (`0acd61da`) came from the 2,000,000-token limit, which is now 8,000,000 and ends with a note rather than a cut-off. DuckDuckGo's plan-3 numbers include that lost question. With the user's approval, Serper is rerun against DuckDuckGo on scout-v15 (`studies/serper-rescout-task8.toml`).
 
@@ -406,3 +409,46 @@ Two changes followed the st07 resynthesis. Synthesis v8 puts a cited block's cit
 
 - **12 of 47 answer sentences are uncited, where v7 counted 18 of 45.** Four sentences inside multi-sentence cited blocks now carry their citation, and the header row and bold heading are no longer counted. The total rose by two because v7 put a block's citation after its full stop, where the sentence splitter read it as part of the next sentence and counted the two as one.
 - **The 12 are the 7 framing and conclusion sentences and the 5 uncited facts** listed in the previous entry. The report's text is otherwise unchanged.
+
+## 2026-09-29 Serper rerun against DuckDuckGo on scout-v15, written up (screen)
+
+`studies/serper-rescout-task8.toml` rescouted the same three stored drb2-task8 plans (`aea52be0`, `8f753940`, `27701a2f`) with Luna@xhigh scouts, once with DuckDuckGo and once with Serper, and diagnosed each rescout's claims with `zai:glm-5.3@high`. It ran on 28 September and finished before the contamination audit stopped paid calls and was written up on 29 September from its stored summary and Postgres, at no cost. It cost $1.87 of its $3.50 ceiling: $1.19 of rescouts and $0.67 of diagnoses.
+
+| Plan | DuckDuckGo run | Serper run | Points claimed, DuckDuckGo / Serper |
+|---|---|---|---|
+| `aea52be0` | `4c694720`, $0.171, 370 s | `c15443ef`, $0.296, 484 s | 25 / 30 |
+| `8f753940` | `d8521f90`, $0.155, 394 s | `e2d4c38b`, $0.224, 217 s | 27 / 23 |
+| `27701a2f` | `d5d0b231`, $0.108, 401 s | `05236b70`, $0.239, 258 s | 28 / 31 |
+
+Against its rule:
+- **No partial or failed run** in either arm.
+- **Empty or failed searches:** 91 of 217 (42%) for DuckDuckGo, 18 of 255 (7%) for Serper, under half.
+- **Verified quotes:** 224 of 247 (90.7%) against 236 of 260 (90.8%).
+- **Points claimed:** 26.7 against 28.0; the study could detect about 7.5.
+- **Median rescout cost:** $0.155 against $0.239, $0.084 more, within the $0.15 allowed. Costs include paid searches and exclude the diagnosis.
+- **Blocked sources: the condition fails.** Snippets of drb2-task8's blocked review, under shortened titles, reached scouts in 5 of the 6 rescouts, in both arms (see [the entry below](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19)).
+
+**Decision: Serper does not advance on this screen.** Every other condition held. The study is contaminated in both arms, unevenly: 1 to 4 snippets per DuckDuckGo run and 0 to 5 per Serper run. The comparison should be rerun on fetch version 19 and on more than one case before a confirmation.
+
+## 2026-09-29 DeepSeek scouts against Luna, stopped partway, written up (screen)
+
+`studies/deepseek-rescout-task8.toml` rescouted the same three drb2-task8 plans with Luna@xhigh, DeepSeek Flash@xhigh, and DeepSeek V4 Pro@xhigh, diagnosed by `zai:glm-5.3@high`. It ran on 28 September, and the contamination audit stopped it after 5 of its 9 rescouts; it was written up on 29 September at no cost. Luna's rescout of `8f753940` (`e994230a`) was interrupted: its four scout calls have no recorded cost, and it was marked failed by `research db reconcile` on 29 September. Plan `27701a2f` never ran. The recorded spend is $3.22: $2.48 of rescouts and $0.74 of diagnoses, plus the unrecorded part of `e994230a`, at most its $2.50 cap.
+
+| Plan | Luna | DeepSeek Flash | DeepSeek V4 Pro |
+|---|---|---|---|
+| `aea52be0` | `a295e09f`: 30 points, $0.159, 357 s, 90.7% verified | `e847b26b`: 33, $0.356, 446 s, 90.1% | `804ef968`: 28, $0.806, 410 s, 91.4% |
+| `8f753940` | interrupted | `19099ad9`: 27, $0.357, 443 s, 88.6% | `7a839a17`: 28, $0.798, 478 s, 92.0% |
+
+**Decision: undecided, and neither arm advances.** On the one plan with all three arms, Flash claimed 3 more points than Luna at 2.2 times the cost, and V4 Pro 2 fewer at 5 times the cost. Neither is cheaper or faster at Luna's score, and neither is 8 points better, so neither meets the rule on the evidence there is. Snippets of the blocked review reached scouts in 5 of the 6 runs (up to 5 per run).
+
+## 2026-09-29 The blocked review reached scouts under shortened titles (fetch version 19)
+
+While writing up the two studies above, a free replay of every stored search result found that fetch version 15's title block misses what search engines actually show. It matched only the whole title, "Machine Learning-Based Methods for Materials Inverse Design: A Review". Engines cut it ("…Inverse Design ...") or append their site's name ("…for Materials - ProQuest"), and copies drop the subtitle. The snippets under those titles carried the review's abstract, including its three strategy labels and the algorithms of each, which are rubric points.
+
+- **Exposure since fetch version 15** (runs whose scouts saw at least one such snippet, per study): the trimming study 5 of 6, the v14 search study 7 of 12, the first search study 5 of 7, the Serper rerun 5 of 6, the DeepSeek study 5 of 6. Runs saw 0 to 5 snippets each, unevenly across arms. Three drb2-task68-plus snippets of its own expert report got through in older runs.
+- **Two rescouts cited it.** In the v14 search study, `710c5d4e` (DuckDuckGo) read the review's ProQuest page, which prints its abstract with neither title nor DOI, and `7bdcebca` (Exa) cited its SciOpen record. Both claimed the review's taxonomy of three strategies. That study's entry above says no blocked source reached a scout; it counted only refused fetches and was wrong.
+- **What this changes.** Every drb2-task8 study since fetch version 15 is contaminated in every arm, unevenly, on top of the prompt contamination found on 28 September. Their within-study comparisons are weaker than recorded, and none should support a default.
+- **The fix, fetch version 19.** A search result is also blocked by a shortened blocked title (without its ellipsis or site name, at least six words, and the start of a blocked title), by a blocked title's main part before its colon, and by a blocked DOI in its title or snippet. A scout's cited source is checked the same way. Replayed over all stored results, it blocks 101 more drb2-task8 results and 3 task68-plus results. The only one found that does not carry the review's text mentions it in a reference list, which the policy blocks by design. `tests/test_source_policy.py` holds the stored titles as a regression test, and the dry-run oracle uses the same check.
+- **Still open.** A copy with none of these marks, such as the ProQuest page when reached from an address found elsewhere, still passes. The next study on a DRB-II case should check its stored search results with this replay before its results are read.
+
+The two runs left `running` by the contamination audit, `6e1d421b` and `e994230a`, were marked failed with `research db reconcile --older-than 600 --apply`.
