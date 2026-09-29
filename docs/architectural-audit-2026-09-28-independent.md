@@ -5,6 +5,8 @@
 
 **Workflow continuation:** [Step-by-step audit and complexity inventory](workflow-audit-addendum-2026-09-28.md) traces all 16 workflow stages and records additional findings on study caps, planner fallback, coverage, source identity, provenance, duplicate code, and removable complexity.
 
+**Third pass:** [Cache, spend, and retrieval integrity audit](third-pass-integrity-audit-2026-09-28.md) tests five further cross-module contracts with offline counterexamples.
+
 ## Executive assessment
 
 Scout has a sound *separation of responsibilities*: typed PydanticAI roles produce plans, research, and reports; the workflow controls their order and budgets; code builds the evidence ledger and checks quotations; Postgres stores runs; versioned, external evaluators inspect completed work. The bounded gap follow-up is a reasonable extension of that design. The offline harness, explicit study ceilings, frozen cases, and recorded prompt/version metadata are unusual strengths for a small research agent.
