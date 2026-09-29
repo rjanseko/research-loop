@@ -586,6 +586,12 @@ async def test_undispatched_budget_refusal_is_not_an_unpriced_call(settings) -> 
     assert not runner.unpriced and runner.cost == 0
     runner._spend(RunUsage(requests=1))
     assert runner.unpriced
+    # What the guard reserved for the unpriced call stays held, and the run says its charge is uncertain by it.
+    runner.budget.reserved_usd = Decimal("0.004")
+    assert runner._uncertain_usd() == Decimal("0.004")
+    runner.cost = Decimal("0.001")
+    assert runner._uncertain_usd() == Decimal("0.003")
+    assert _Run("Q?", settings, MemoryStore(), [], [], None, None)._uncertain_usd() is None
 
 
 async def test_guarded_scout_call_refuses_before_any_model_dispatch(settings, monkeypatch) -> None:

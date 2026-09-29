@@ -327,9 +327,18 @@ class Outcome:
                 + float((self.audit or {}).get("cost_usd") or 0) + float((self.diagnosis or {}).get("cost_usd") or 0))
 
     @property
+    def uncertain_usd(self) -> Decimal:
+        """What the run's budget guard still held beyond its reported cost (`RunChecks.uncertain_usd`): calls with
+        no price, or requests that failed after they may have been billed. Before budget policy v8 it was left out,
+        so a run with an unpriced call released study room it may have spent (architectural review B1)."""
+        uncertain = ((self.record or {}).get("checks") or {}).get("uncertain_usd")
+        return Decimal(str(uncertain)) if uncertain else Decimal(0)
+
+    @property
     def charged_usd(self) -> Decimal:
-        """What counts against the study's ceiling: the reported costs, and the caps of steps whose cost is unknown."""
-        return Decimal(str(self.cost_usd)) + self.unaccounted_usd
+        """What counts against the study's ceiling: the reported costs, what the run's charge is uncertain by, and
+        the caps of steps whose cost is unknown."""
+        return Decimal(str(self.cost_usd)) + self.uncertain_usd + self.unaccounted_usd
 
 
 def _usd(amount: float) -> Decimal:
@@ -727,9 +736,12 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
         lines.append("| " + " | ".join(cells) + " |")
     spent = sum(outcome.cost_usd for outcome in outcomes)
     unaccounted = sum((outcome.unaccounted_usd for outcome in outcomes), Decimal(0))
+    uncertain = sum((outcome.uncertain_usd for outcome in outcomes), Decimal(0))
     lines += ["", f"Total ${spent:.2f} of a ${spec.ceiling_usd:.2f} ceiling"
               + (f", plus up to ${unaccounted:.2f} from steps whose cost could not be read (research breakdown "
-                 "shows a stored run's cost)." if unaccounted else ".")]
+                 "shows a stored run's cost)" if unaccounted else "")
+              + (f", plus up to ${uncertain:.2f} held by runs' guards for calls with no price or that failed after "
+                 "they may have been billed" if uncertain else "") + "."]
     lines += [f"- {o.run.label}: {note}" for o in outcomes for note in o.notes]
     if violations := [(o.run.label, v) for o in outcomes for v in o.violations]:
         lines += ["", f"## {len(violations)} invariant violations", ""]

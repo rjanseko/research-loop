@@ -291,6 +291,10 @@ class RunChecks(BaseModel):
     gap_analysis: GapAnalysis | None = None
     follow_up_unresolved: bool = False
     study_budget_reserved_usd: Decimal | None = None
+    # Under a hard cap, what the guard still holds beyond `cost_usd`: reservations of calls that returned no
+    # price, or of requests that failed after they may have been billed. The run's charge is known only up to
+    # it, and a study counts it against its ceiling (architectural review B1).
+    uncertain_usd: Decimal | None = None
     # Requests sent again, by cause (rate_limit.RateLimitModel): each may have been billed.
     retries: dict[str, int] = Field(default_factory=dict)
 
@@ -825,11 +829,13 @@ class _Run:
             await _record(self.store.finish_run(
                 self.run_id, status=failed, plan=self.plan, ledger=self.ledger.to_json(),
                 checks=RunChecks(study_budget_reserved_usd=self.budget.reserved_usd,
+                                 uncertain_usd=self._uncertain_usd(),
                                  external_usd=self._external_usd()) if self.budget else None,
                 cost_usd=self._total_cost(), error=_error(exc), trace_id=span_trace, cache=self._cache_counts(),
                 config=self.config, workflow_version=self.workflow_version))
             raise
         checks.study_budget_reserved_usd = self.budget.reserved_usd if self.budget else None
+        checks.uncertain_usd = self._uncertain_usd()
         checks.external_usd = self._external_usd()
         checks.retries = retry_counts(self.models.values())
         # A call without a price adds nothing, so the cost is then a lower bound; a review reason says so.
@@ -891,6 +897,12 @@ class _Run:
             return status, checks
 
         return await self._recorded("scout", input_hash(self.question, self.notes_in, self.blocked_urls), body)
+
+    def _uncertain_usd(self) -> Decimal | None:
+        """What the budget guard holds beyond the run's known cost, or None without a hard cap."""
+        if self.budget is None:
+            return None
+        return max(self.budget.reserved_usd - self._total_cost(), Decimal(0))
 
     def _external_usd(self) -> Decimal | None:
         """What paid searches and page reads cost, or None when the run used only free services."""
