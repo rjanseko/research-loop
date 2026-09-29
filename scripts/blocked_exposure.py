@@ -3,10 +3,10 @@
     .venv/bin/python scripts/blocked_exposure.py --study serper-rescout-task8
     .venv/bin/python scripts/blocked_exposure.py 710c5d4e-fba5-414e-92f6-85cf647d6c65
 
-Each run is replayed with its own blocked addresses and its frozen case's blocked title
-(`research_loop.tools.blocked_shown`). Run it on a study of a case with blocked sources before reading the
-study's results: fetch versions 15 to 18 let drb2-task8's blocked review reach scouts under shortened titles
-(docs/study-log.md, 29 September 2026). It reads Postgres (`DATABASE_URL`) and nothing else.
+Each run is replayed with the blocked addresses and titles it recorded (`research_loop.tools.blocked_shown`).
+Run it before reading the results of runs that blocked sources: fetch versions 15 to 18 let a blocked
+benchmark report reach scouts under shortened titles (docs/study-log.md, 29 September 2026). It reads
+Postgres (`DATABASE_URL`) and nothing else.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from research_loop.acquisition import SourcePolicy
 from research_loop.config import Settings
-from research_loop.evals import case_blocked_titles
 from research_loop.tools import blocked_shown
 
 
@@ -38,7 +37,7 @@ def main() -> int:
         for run_id, study, arm, config in rows:
             config = config or {}
             policy = SourcePolicy(tuple(config.get("blocked_urls") or []),
-                                  titles=tuple(config.get("blocked_titles") or case_blocked_titles(config.get("case"))))
+                                  titles=tuple(config.get("blocked_titles") or []))
             shown: list[str] = []
             for (messages,) in conn.execute("select messages from run_calls where run_id = %s and messages is not null "
                                             "order by started_at", (run_id,)):

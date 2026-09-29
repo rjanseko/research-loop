@@ -8,49 +8,14 @@ A run is judged in three separate ways, and none of them stands in for another. 
 
 The frozen cases are in `src/research_loop/study_cases.jsonl`. A case is never edited once it has been graded; a correction is a new rubric version.
 
-A [draft development set of five new questions and rubrics](example-evaluation-set.md) is available for review. It has not been frozen or run.
+Two draft development sets are available for review: [five general questions](example-evaluation-set.md) and [six paper, market, and revised-data questions](evaluation-candidates-academic-market.md). They have not been frozen or run.
 
 - **Short cases.** st01 to st05 are a direct fact, a two-hop fact, a figure from one primary source, a false premise (st04), and a table of facts from three papers (st05). They test whether Scout answers precisely and cheaply, and they catch regressions: a drop from full marks is easy to see.
 - **Broad cases.** st06 and st07 are broad research questions. st07, whether SWE-bench Verified is still a trustworthy measure, is kept as a contested-topic diagnostic and a bridge to the first design's grades; both are retired as selection cases.
-- **Development cases from DeepResearch Bench II.** `drb2-task8` and `drb2-task68-plus` are long expert tasks, used to tune changes. Four more were frozen on 27 September 2026 with `role: development`, so that tuning no longer rests on two cases: `drb2-task98-plus`, `drb2-task75`, `drb2-task15`, and `drb2-task21` (see below).
-- **Held-out cases.** `drb2-task82`, `drb2-task59`, and `drb2-task78` are run only to confirm a change before adopting it, never to tune one.
 
-### How the DeepResearch Bench II cases were frozen
+**DeepResearch Bench II was removed on 29 September 2026.** Its nine cases (six development, three held-out), the importer, and the expected-set counts were deleted. Its expert reports are public on the web, so blocking them needed three rounds of fixes (fetch versions 12, 15, and 19), and every drb2-task8 study since fetch version 15 showed scouts the blocked review. drb2-task8's wording was also in model-visible prompt examples from scout-v6, and most decisions rested on that one tuned-on case. Its 52-point rubric rewarded naming what one expert report contained, and run-to-run and judge-to-judge variation was larger than any difference measured. The results remain in the [study log](study-log.md) as records of what was run. The cases and their code are at the git tag `archive/pre-passage-2026-09`, and their stored runs remain in Postgres until the database is archived.
 
-Two English, CC BY 4.0 cases from [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II)
-are now frozen as `drb2-task8` and `drb2-task68-plus` in `study_cases.jsonl`, while st04 and st07 remain diagnostics:
-
-| Official ID | Domain | Expert rubric points | What it tests |
-|---|---|---:|---|
-| `task8` (idx 16) | Materials inverse design | 52 | Synthesis of three method families, their limits, and source-backed database comparison. |
-| `task68+` (idx 46) | Cloud auto-scaling | 54 | Reactive versus proactive methods and evidence for five practical challenges. |
-
-Selection was based on the official English tasks' topic and scope, before any Scout output on these
-cases was read. The dataset snapshot was `imlrz/DeepResearch-Bench-II` commit
-`b38f360603db9531b102aef8c166cedb8509b6f6` (download SHA-256
-`263aaabb8c279fb16cbe7c9499afe82d657a8ab3ccfb07ace084387e367d921a`). Each case now preserves the exact `content.task`, expert rubric, blocked source URLs, license, official ID and index, and dataset revision. The case content digests are `840c63bd8195a546bbd3ee4bee15ba24aae4fee7e34f06b7461651d641ad4367` and `2ef645b6ab3c877e82eaca77463f873fceaebe3d4f274f53dc4552f5a3208500`. The Scout case command sends only the task to research agents; the rubric and blocked expert report remain out of research context. Before fetch version 12 the scholarly tools did not apply the blocked list, and five early drb2-task8 ledgers cite the blocked report by its DOI (study log, 27 September 2026, architectural audit). Blocked sources are now matched by address and by the DOI or arXiv ID a blocked address names, in every tool and in the scouts' evidence. A copy that carries neither is not recognized, and the blocked lists of drb2-task68-plus, drb2-task82, and drb2-task78 name no DOI. Grading requires the saved run to match the frozen case and has a separate enforced pre-dispatch ceiling.
-
-Four more development cases were frozen on 27 September 2026 from the same snapshot, with `scripts/import_drb2.py --role development`, before any Scout run on them. They were chosen from the English, CC BY 4.0 tasks by these criteria:
-- each tests a different kind of research, in a domain the other cases do not cover;
-- each rubric has 39 to 75 points, near the existing cases' 44 to 62;
-- each can be answered from public English sources;
-- each blocked list names the expert report's address.
-
-Tasks over 100 points, and tasks that depend on Chinese-language, company-specific, or single-author sources, were passed over.
-
-| Official ID | Domain | Expert rubric points | What it tests |
-|---|---|---:|---|
-| `task98+` (idx 130) | Sugar substitutes, before March 2019 | 75 | A categorized comparison table filled in field by field, and three mechanisms of harm. |
-| `task75` (idx 62) | Salt substitutes, trials to March 2022 | 39 | Finding every trial and extracting its numbers: baseline blood pressure, follow-up, and composition. |
-| `task15` (idx 36) | Quantum technology standards, to the end of 2022 | 59 | A complete set across five standards bodies, down to document numbers. |
-| `task21` (idx 52) | Generative AI in education, to May 2023 | 55 | A broad qualitative synthesis, anchored by dated facts. |
-
-The blocked lists of task75, task15, and task21 name the expert report's own DOI, so every copy that carries it is blocked. task98+'s list names only a CABI record's DOI, not the paper's own (10.3390/nu11030644). So a copy of that paper outside its listed addresses, such as MDPI, PubMed, and PMC, is not recognized.
-
-These are stress cases: a bounded Scout run may return partial coverage of a rubric drawn from a long
-expert report. Report task coverage, unresolved sections, cost, and deadline behavior separately from
-overall reader quality. The existing seven-country pension case (`task2+`, 72 points) is an extreme
-stress diagnostic if the first two cases show the workflow can finish useful research.
+Until new cases are frozen, there is **no development or held-out broad case**. The [draft development set](example-evaluation-set.md) is the proposed replacement: questions with no single hidden answer document, so nothing needs blocking. A held-out set should be chosen and frozen at the same time, before any Scout output on it is read.
 
 ## Three views of a run
 
@@ -95,7 +60,7 @@ The first audit of all stored reports found that about one in five quoted statem
 
 `research grade` scores a report against a case's rubric with one verdict per rubric point (judge version 2, the first design's judge, ported unchanged so that old and new grades compare). It measures coverage of what an expert report contains, not overall quality. It was stable at high effort in the settings study, varying by at most one point in 72 on repeat gradings of one report.
 
-The judge itself matters more than that stability suggests. Regraded by `zai:glm-5.3` with the same prompt, the stored reports agreed on 92.6% of rubric points, but GLM credited 27 points that `gpt-6-sol` did not, and on the DeepResearch Bench II cases the judge alone moved a score by up to 8 points, as much as the run-to-run variation a study tries to see past. In the disputes checked by hand, `gpt-6-sol` was too strict about equivalent wording. So a decision that rests on a few rubric points uses both judges and has their disagreements checked by hand.
+The judge itself matters more than that stability suggests. Regraded by `zai:glm-5.3` with the same prompt, the stored reports agreed on 92.6% of rubric points, but GLM credited 27 points that `gpt-6-sol` did not, and on the former DeepResearch Bench II cases the judge alone moved a score by up to 8 points, as much as the run-to-run variation a study tries to see past. In the disputes checked by hand, `gpt-6-sol` was too strict about equivalent wording. So a decision that rests on a few rubric points uses both judges and has their disagreements checked by hand.
 
 ### Where the points were lost: `research diagnose`
 

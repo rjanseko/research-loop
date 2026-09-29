@@ -77,8 +77,8 @@ def _report(run: Any, out: Path | None, summary: str) -> int:
 
 async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     from .db import open_migrated_pool
-    from .evals import case_blocked_titles, find_case
     from .evals import case_identity as frozen_case_identity
+    from .evals import find_case
     from .scout import StudyLabels, scout
     from .store import MemoryStore, PostgresStore
     from .study_budget import StudyBudget
@@ -96,12 +96,8 @@ async def _scout(args: argparse.Namespace, settings: Settings) -> int:
     budget = StudyBudget(args.max_usd) if args.max_usd is not None else None
     question = case.objective if case else args.question
     blocked = case.blocked_urls if case else args.block
-    titles = case_blocked_titles(frozen_case_identity(case)) if case else args.block_title
-    case_identity = None
-    if case:
-        case_identity = frozen_case_identity(case)
-        if case.metadata.get("role") == "held-out":
-            print(f"{case.id} is a held-out case: run it to confirm a change, not while tuning one.", file=sys.stderr)
+    titles = [] if case else args.block_title
+    case_identity = frozen_case_identity(case) if case else None
     depth = None if args.depth == "auto" else args.depth
 
     def envelope(chosen: str) -> str:
@@ -309,7 +305,6 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
         find_case,
         grade_reports,
         grade_row,
-        matches_frozen_case,
         reader_text,
     )
     from .evidence import EvidenceLedger
@@ -331,9 +326,6 @@ async def _grade(args: argparse.Namespace, settings: Settings) -> int:
         if row is None or not row.get("report"):
             print(f"Run {args.run_id} {'has no report' if row else 'does not exist'}", file=sys.stderr)
             return 1
-        if case.id.startswith("drb2-") and not matches_frozen_case(row, case):
-            print(f"Run {args.run_id} was not recorded for frozen case {case.id}.", file=sys.stderr)
-            return 2
         text = reader_text(FinalReport.model_validate(row["report"]), EvidenceLedger.from_json(row["ledger"] or {}))
         budget = StudyBudget(args.max_usd)
         print(f"Grading run {args.run_id} against {case.id} (rubric v{case.rubric_version}) with {settings.models.judge}, "
@@ -428,7 +420,6 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
         find_case,
         grade_row,
         judge,
-        matches_frozen_case,
         reader_text,
     )
     from .evidence import EvidenceLedger
@@ -492,7 +483,7 @@ async def _diagnose(args: argparse.Namespace, settings: Settings) -> int:
                 case = find_case(case_id) if case_id else None
             except KeyError:
                 case = None
-            if case is None or not case.rubrics or (case.id.startswith("drb2-") and not matches_frozen_case(row, case)):
+            if case is None or not case.rubrics:
                 print(f"Run {run_id} was not recorded for a rubric case, so it has nothing to be graded against.",
                       file=sys.stderr)
                 code = 1
@@ -676,7 +667,7 @@ def main(argv: list[str] | None = None) -> None:
 
     grade = commands.add_parser("grade", help="Grade a stored run's report against a study case's rubric (paid)")
     grade.add_argument("run_id", type=UUID)
-    grade.add_argument("--case", required=True, help="The study case, such as st05 or drb2-task8")
+    grade.add_argument("--case", required=True, help="The study case, such as st05")
     grade.add_argument("--max-usd", required=True, type=Decimal, help="Pre-dispatch dollar cap for this call")
 
     assess = commands.add_parser("assess", help="Assess a stored report's quality and facts against a source packet (paid)")

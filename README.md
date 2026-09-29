@@ -414,7 +414,7 @@ A scout's request that fails on a connection fault that is not a timeout, such a
 
 The scouts' `web_search` tool runs on DuckDuckGo unless `RESEARCH_SEARCH_ENGINE` says otherwise. DuckDuckGo is reached through `ddgs`, a library that scrapes whichever of several search sites it picks. It is free but unreliable: in production runs it returned nothing for 34% of 2,636 searches and timed out on 104 more, and 4 of 6 of those empty queries found results when tried again later.
 
-`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. The setting also accepts `serper`, `brave`, `exa`, or a comma-separated chain such as `duckduckgo,brave,exa`; a later engine runs only when earlier ones found nothing or failed. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. Its API default controls the result count; the returned highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a frozen case's blocked work is also known by its title, so a copy at an address that carries neither, which Exa finds readily, is left out too.
+`RESEARCH_SEARCH_ENGINE=hybrid` asks DuckDuckGo first, and Exa only when DuckDuckGo finds nothing or fails, so only those searches are paid for. The setting also accepts `serper`, `brave`, `exa`, or a comma-separated chain such as `duckduckgo,brave,exa`; a later engine runs only when earlier ones found nothing or failed. Exa is sent its recommended request, the query with `auto` search and highlights, with each result's highlights capped at 600 characters. Its API default controls the result count; the returned highlights become the snippets. They are labeled `snippet` like DuckDuckGo's, so a scout still fetches a page to read it in full. Blocked sources are left out of every engine's results, by address, DOI, or title: a work blocked with `--block-title` is also known by its title, including the shortened forms engines show ("…", " - ProQuest"), so a copy at an address that carries neither, which Exa finds readily, is left out too.
 
 Each Exa search's reported cost is added to the run's cost, and shown as `external_usd` in its checks and as "search+read" in `research breakdown`. Each engine keeps its own cache entries and rate slot. The run records its engine, so a study can compare engines with an arm that sets `RESEARCH_SEARCH_ENGINE` in its `env`.
 
@@ -476,7 +476,7 @@ A model selected for a paid command is refused before calls if it has no price, 
 
 Research Loop includes the tools used to choose its own configuration:
 - labeled runs;
-- frozen benchmark cases;
+- frozen study cases;
 - a rubric judge and a source-grounded quality judge;
 - a support audit;
 - commands that repeat one part of a stored run with a different model.
@@ -488,8 +488,8 @@ research study plan studies/SPEC.toml                   # the planned runs and t
 research study run studies/SPEC.toml --dry              # free: fake models, an offline web, and a separate database
 research study run studies/SPEC.toml --cheap            # cents: every role on a cheap model, against the real web
 research study run studies/SPEC.toml                    # the paid study
-research scout --case drb2-task8 --max-usd 3.00 --study NAME --arm ARM --replicate 1
-research grade <run id> --case drb2-task8 --max-usd 1.00
+research scout --case st05 --max-usd 3.00 --study NAME --arm ARM --replicate 1
+research grade <run id> --case st05 --max-usd 1.00
 research assess <run id> --case st07 --max-usd 1.00
 research audit <run id> [<run id> ...] --model zai:glm-5.3@high --max-usd 1.00
 research synthesize <run id> --model anthropic:claude-opus-5-5@medium --max-usd 1.00 --study NAME --arm ARM --replicate 1
@@ -504,17 +504,17 @@ research rescout <run id> --model zai:glm-5.3-flash@high --max-usd 3.00 --study 
 
 A rescout writes no report, so a rescout study cannot be graded or audited. Its `diagnose = true` grades each rescout's claims and research instead, and the summary compares arms on the rubric points their claims met (`research diagnose` accepts a rescout's run ID the same way). This compares scout models on one fixed plan with no planner or synthesizer in between. `--dry` copies a rescout or synthesis study's source runs from the main database into the dry one first.
 
-It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It snapshots model IDs, effort, and model-call limits from the parent configuration once at the start, then applies each arm's overrides and the dry or cheap mode. It checks each arm with that effective environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, coverage, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far. A spec’s `audit_model` or `diagnose_model` overrides the corresponding model from the arm’s environment; when omitted, the study uses the configured defaults above.
+It refuses a spec whose planned runs could cost more than its ceiling by their estimates. It also refuses one with an arm whose runs would not start, such as an arm that turns on the reading fallback without its API keys. It snapshots model IDs, effort, and model-call limits from the parent configuration once at the start, then applies each arm's overrides and the dry or cheap mode. It checks each arm with that effective environment and code before any run, so an earlier arm cannot spend first. The estimates only plan the study; the ceiling is enforced by the hard caps. Each run, grade, and audit gets a cap no larger than what remains of the ceiling, and a run's cap keeps room for its grade and audit by their estimates. A step whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole cap as spent. Set the ceiling above the worst case by the estimates, or the last runs get smaller caps than the first and may be cut short. It writes a summary table to `runs/STUDY/summary.md`: status, answer support, cost, time, quote checks, statement support, audit verdicts, and grades. The spec format is described in `src/research_loop/study.py`, and `studies/` holds the specs used so far. A spec’s `audit_model` or `diagnose_model` overrides the corresponding model from the arm’s environment; when omitted, the study uses the configured defaults above.
 
 Every run records a digest of its input, its prompt fingerprint, its git commit, and the settings each model was actually sent. A run labeled with `--study` keeps its searches, pages, and scholarly records in `.cache/studies/NAME` in `reuse` mode. A lookup any run of the study has made returns the same answer to every later run, on any day, which removes changes in the web from a comparison. The models themselves cannot be made deterministic, so arms still need repeated runs.
 
 The study cases are in `src/research_loop/study_cases.jsonl`:
 - **Short cases,** st01 to st05, catch regressions.
-- **st07,** a contested question, is a diagnostic.
-- **Development cases,** `drb2-task8`, `drb2-task68-plus`, `drb2-task98-plus`, `drb2-task75`, `drb2-task15`, and `drb2-task21`, keep the exact tasks, expert rubrics, and blocked expert-report URLs from a pinned snapshot of [DeepResearch Bench II](https://github.com/imlrz/DeepResearch-Bench-II).
-- **Held-out cases,** `drb2-task82`, `drb2-task59`, and `drb2-task78`, are run only to confirm a change before adopting it.
+- **st06 and st07,** broad questions, are kept as diagnostics; st07, a contested question, is the README's example.
 
-`research scout --case` sends only the task to the research agents and blocks the expert reports as sources. It requires a database and `--max-usd`. `scripts/import_drb2.py TASK... --role held-out` freezes further tasks.
+The DeepResearch Bench II cases were removed on 29 September 2026: their expert reports kept reaching the scouts through the web, and one tuned-on case carried most decisions ([docs/evaluation.md](docs/evaluation.md#the-study-cases)). A new development set, drafted in [docs/example-evaluation-set.md](docs/example-evaluation-set.md), has not been frozen yet, so there is no broad development or held-out case for now.
+
+`research scout --case` sends only the case's question to the research agents, and blocks any sources the case lists. It requires a database and `--max-usd`.
 
 The judges and the audit:
 - **`research grade`** scores a stored report against a case's rubric, one verdict per point. Grade close decisions with both judges: the choice of judge alone has moved a long case's score by up to 8 points.
@@ -652,16 +652,14 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `evals.py`, `quality.py`, `study_cases.jsonl`, `quality_packets.jsonl` | The rubric judge, the quality judge, and their cases |
 | `audit.py` | The support audit: whether the verified quotes behind each report statement say what it says |
 | `diagnose.py` | The post-run diagnosis: where a run's rubric points were lost, and whether a score can show a change |
-| `study.py`, `coverage.py` | The study runner, and the count of a development case's expected set a run found |
+| `study.py` | The study runner |
 | `dryrun.py` | The bug-finding harness: the fuzz model, the offline world, the invariants, and `research fuzz` |
 
 In `scripts/`:
 - `bootstrap.sh` sets up the environment;
-- `import_drb2.py` freezes DeepResearch Bench II tasks as study cases;
-- `ledger_coverage.py` counts how much of a development case's expected set a run found;
 - `rescore_quotes.py` re-checks every stored scout call's quotes under the current evidence rules;
 - `budget_bottlenecks.py` shows which limits stopped stored runs' calls and how much of each budget they used;
-- `blocked_exposure.py` lists what stored runs' tools showed that the current source policy blocks; run it on a study of a case with blocked sources before reading its results;
+- `blocked_exposure.py` lists what stored runs' tools showed that the current source policy blocks; run it before reading the results of runs that blocked sources;
 - `search_replay.py` replays stored scout searches through each search engine;
 - `fetch_bakeoff.py` tries other ways to read the pages our fetcher failed on.
 

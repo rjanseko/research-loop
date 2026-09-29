@@ -1,7 +1,6 @@
 """Grading stored reports, offline: the judge is a scripted model, and nothing is stored."""
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -17,18 +16,14 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from research_loop.acquisition import SourcePolicy
 from research_loop.breakdown import breakdown
 from research_loop.config import Settings
 from research_loop.evals import (
     JUDGE_VERSION,
     StoredReport,
-    case_identity,
-    drb2_case,
     find_case,
     grade_reports,
     grade_row,
-    matches_frozen_case,
     reader_text,
     study_cases,
 )
@@ -55,60 +50,11 @@ def test_the_study_cases_ship_frozen_and_are_found_by_short_id() -> None:
     assert [case_id.split("-")[0] for case_id in list(cases)[:7]] == [f"st0{n}" for n in range(1, 8)]
     assert set(cases) == {*(f"st0{n}-{suffix}" for n, suffix in enumerate((
         "transformer-venue", "resnet-author", "swebv-annotators", "ilsvrc-captioning",
-        "scaling-table", "cot-small-models", "swebench-trust"), 1)),
-        "drb2-task8", "drb2-task68-plus", "drb2-task82", "drb2-task59", "drb2-task78",
-        "drb2-task98-plus", "drb2-task75", "drb2-task15", "drb2-task21"}
+        "scaling-table", "cot-small-models", "swebench-trust"), 1))}
     st05 = find_case("st05")
     assert st05.rubric_version == "1" and sum(len(points) for points in st05.rubrics.values()) == 11
     with pytest.raises(KeyError):
         find_case("st99")
-
-
-def test_expert_cases_keep_official_tasks_rubrics_and_blocks_separate() -> None:
-    expected = {"drb2-task8": ("task8", 52, 5, "840c63bd8195a546bbd3ee4bee15ba24aae4fee7e34f06b7461651d641ad4367"),
-                "drb2-task68-plus": ("task68+", 54, 4, "2ef645b6ab3c877e82eaca77463f873fceaebe3d4f274f53dc4552f5a3208500"),
-                "drb2-task82": ("task82", 62, 7, "8a225e99ea0a0c1d5bea39d95329a6d5b5160cfc4e56efacfe35a3ff5a8a7daf"),
-                "drb2-task59": ("task59", 44, 7, "5b5f8641dbf4cf41e0cbb240cc9e2feaa0bed6124b63b8c4b69588cadf6e1a4b"),
-                "drb2-task78": ("task78", 62, 5, "72445981bd5a25a51afe97fba2eebf94b6c2dd3cf7cf860810f3ed0959cebc3a")}
-    for case_id, (official_id, points, blocks, digest) in expected.items():
-        case = find_case(case_id)
-        assert case.metadata["official_id"] == official_id
-        assert case.metadata["dataset_revision"] == "b38f360603db9531b102aef8c166cedb8509b6f6"
-        assert case.metadata["license"] == "CC BY 4.0"
-        assert len(case.blocked_urls) == blocks and sum(map(len, case.rubrics.values())) == points
-        assert all(url not in case.objective for url in case.blocked_urls)
-        canonical = json.dumps({"task": case.objective, "rubric": case.rubrics,
-                                "blocked_urls": case.blocked_urls}, ensure_ascii=False, sort_keys=True,
-                               separators=(",", ":"))
-        assert hashlib.sha256(canonical.encode()).hexdigest() == digest
-        policy = SourcePolicy(tuple(case.blocked_urls))
-        assert all(policy.blocks(url) for url in case.blocked_urls)
-
-
-def test_the_importer_rebuilds_the_frozen_cases_from_their_source_rows() -> None:
-    for case in study_cases().values():
-        if not case.id.startswith("drb2-"):
-            continue
-        meta = case.metadata
-        row = {"id": meta["official_id"], "idx": meta["idx"], "theme": meta["theme"],
-               "description": meta["description"], "language": meta["language"], "license": meta["license"],
-               "content": {"task": case.objective, "rubric": case.rubrics,
-                           "blocked": {"title": meta["blocked_title"], "urls": case.blocked_urls}}}
-        assert drb2_case(row, meta.get("role")).model_dump_json() == case.model_dump_json()
-    roles = {case_id: case.metadata.get("role") for case_id, case in study_cases().items() if case_id.startswith("drb2-")}
-    assert roles == {"drb2-task8": None, "drb2-task68-plus": None, "drb2-task82": "held-out",
-                     "drb2-task59": "held-out", "drb2-task78": "held-out", "drb2-task98-plus": "development",
-                     "drb2-task75": "development", "drb2-task15": "development", "drb2-task21": "development"}
-
-
-def test_frozen_case_match_rejects_old_context_and_changed_sources() -> None:
-    case = find_case("drb2-task8")
-    row = {"question": case.objective,
-           "config": {"case": case_identity(case), "notes": [], "blocked_urls": case.blocked_urls}}
-    assert matches_frozen_case(row, case)
-    assert not matches_frozen_case({**row, "config": {**row["config"], "notes": ["old context"]}}, case)
-    assert not matches_frozen_case({**row, "config": {**row["config"], "blocked_urls": []}}, case)
-    assert not matches_frozen_case({**row, "config": {**row["config"], "case": {"id": case.id}}}, case)
 
 
 def _report_and_ledger() -> tuple[FinalReport, EvidenceLedger]:
@@ -192,7 +138,7 @@ async def test_guarded_rubric_grade_refuses_before_model_dispatch() -> None:
         return ModelResponse(parts=[])
 
     budget = StudyBudget(Decimal("0.0001"))
-    _, (grade,) = await grade_reports([StoredReport(find_case("drb2-task8"), uuid4(), "report")], Settings(),
+    _, (grade,) = await grade_reports([StoredReport(find_case("st05"), uuid4(), "report")], Settings(),
                                       model=FunctionModel(respond), budget=budget)
     assert grade.status == "failed" and isinstance(grade.error, StudyBudgetRefusal)
     assert not calls and budget.reserved_usd == 0

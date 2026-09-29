@@ -20,8 +20,6 @@ _STOP = {"the", "a", "an", "of", "and", "or", "to", "in", "for", "on", "with", "
          "any", "one", "two"}
 # Phrases shared with a case that are ordinary research wording, each with why it may stay.
 ALLOWED = {
-    "the answer must": "generic instruction wording (drb2-task82's question also uses it)",
-    "a comprehensive report": "generic (drb2-task21's question asks for one)",
     "can no longer": "generic English",
     "preprints and published": "keeping preprints apart from published work is general source hygiene (since v1)",
     "about its own": "part of the vendor-claims rule below",

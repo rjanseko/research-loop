@@ -31,22 +31,22 @@ def test_frozen_case_requires_one_case_and_a_hard_cap(monkeypatch, capsys) -> No
     monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/none")
     assert _exit(["scout"]) == 2
     assert "exactly one" in capsys.readouterr().err
-    assert _exit(["scout", "Q?", "--case", "drb2-task8"]) == 2
+    assert _exit(["scout", "Q?", "--case", "st05"]) == 2
     assert "exactly one" in capsys.readouterr().err
-    assert _exit(["scout", "--case", "drb2-task8"]) == 2
+    assert _exit(["scout", "--case", "st05"]) == 2
     assert "--max-usd" in capsys.readouterr().err
-    assert _exit(["scout", "--case", "drb2-task8", "--max-usd", "2", "--no-persist"]) == 2
+    assert _exit(["scout", "--case", "st05", "--max-usd", "2", "--no-persist"]) == 2
     assert "persistence" in capsys.readouterr().err
-    assert _exit(["scout", "--case", "drb2-task8", "--max-usd", "2", "--note", "new context"]) == 2
+    assert _exit(["scout", "--case", "st05", "--max-usd", "2", "--note", "new context"]) == 2
     assert "frozen" in capsys.readouterr().err
 
 
 def test_grading_requires_a_positive_hard_cap(monkeypatch, capsys) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/none")
     run_id = "00000000-0000-0000-0000-000000000000"
-    assert _exit(["grade", run_id, "--case", "drb2-task8"]) == 2
+    assert _exit(["grade", run_id, "--case", "st05"]) == 2
     assert "--max-usd" in capsys.readouterr().err
-    assert _exit(["grade", run_id, "--case", "drb2-task8", "--max-usd", "0"]) == 2
+    assert _exit(["grade", run_id, "--case", "st05", "--max-usd", "0"]) == 2
     assert "positive" in capsys.readouterr().err
 
 

@@ -24,7 +24,7 @@ from research_loop.study import (
 
 SPEC = """
 study = "deep-vs-standard"
-cases = ["drb2-task8"]
+cases = ["st05-scaling-table"]
 replicates = 2
 cap_usd = 3.00
 estimate_usd = 0.40
@@ -59,7 +59,7 @@ def spec(tmp_path: Path) -> StudySpec:
 
 def _record(run_id: str, cost: float) -> dict:
     return {"run_id": run_id, "status": "complete", "cost_usd": cost, "seconds": 300.0, "report": {"answer": "a"},
-            "config": {"case": {"id": "drb2-task8"}},
+            "config": {"case": {"id": "st05-scaling-table"}},
             "checks": {"answer_support": "weak", "quotes": 10, "quotes_verified": 8, "quotes_misattributed": 1,
                        "quotes_short": 2, "statements": [{"support": "read"}, {"support": "read"},
                                                          {"support": "paraphrase"}, {"support": "shallow"}]},
@@ -122,7 +122,7 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
 
     outcomes = run_study(spec, tmp_path, invoke=invoke, grade=grade, worktrees=_no_worktrees)
     first_args, first_env = calls[0]
-    assert first_args[:3] == ["scout", "--case", "drb2-task8"]
+    assert first_args[:3] == ["scout", "--case", "st05-scaling-table"]
     assert first_args[first_args.index("--study") + 1] == "deep-vs-standard"
     # The spec's $3 run cap is lowered to the $2 ceiling, less the room kept for the run's $0.05 grade.
     assert first_args[first_args.index("--max-usd") + 1] == "1.95" and first_args[-2:] == ["--depth", "standard"]
@@ -134,7 +134,7 @@ def test_runs_are_labeled_capped_and_summarized(spec: StudySpec, tmp_path: Path)
     assert json.loads(fallbacks) == Settings().models.synthesizer_fallbacks
     assert len(graded) == 4 and sum(o.cost_usd for o in outcomes) == pytest.approx(4 * 0.34)
     table = summary(spec, outcomes)
-    assert "| drb2-task8 | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s |  | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 2/7 (1) | 20/52 |" in table
+    assert "| st05-scaling-table | standard | 1 | 00000001 | complete | weak | $0.340 | 300 s |  | 8 / 1 / 1 (2) | 2 / 1 / 1 |  | 20/52 |" in table
 
 
 def test_an_audited_study_runs_the_audit_with_the_modes_model_and_counts_its_cost(spec: StudySpec, tmp_path: Path) -> None:
@@ -194,16 +194,16 @@ def test_the_plan_command_lists_runs_without_running_them(tmp_path: Path, monkey
     assert exit_info.value.code == 0
     captured = capsys.readouterr()
     assert "4 scout runs over 2 arms, worst case $1.80" in captured.err
-    assert "drb2-task8-deep-1: drb2-task8 deep replicate 1 at main" in captured.out
+    assert "st05-scaling-table-deep-1: st05-scaling-table deep replicate 1 at main" in captured.out
 
 
 def test_the_grade_line_is_read_as_research_grade_prints_it() -> None:
     from research_loop.study import _grade_with
 
-    line = ("drb2-task8: 20 of 52 points (0.385), $0.0403. Unmet: info_recall 3, analysis 2. "
+    line = ("st05-scaling-table: 20 of 52 points (0.385), $0.0403. Unmet: info_recall 3, analysis 2. "
             "Recorded as 214fb3be-136f-4cd7-89d7-f902ee470660.\n")
     grade = _grade_with(lambda args, env: (0, line))
-    assert grade("run", "drb2-task8", {}, 1.0) == {"met": 20, "points": 52, "score": 0.385, "cost_usd": 0.0403}
+    assert grade("run", "st05-scaling-table", {}, 1.0) == {"met": 20, "points": 52, "score": 0.385, "cost_usd": 0.0403}
 
 
 def test_a_cheap_study_caps_each_run_at_the_cheap_ceiling(spec: StudySpec) -> None:
@@ -243,7 +243,7 @@ def test_low_estimates_cannot_carry_a_study_past_its_ceiling(tmp_path: Path) -> 
 
 
 def test_a_step_whose_cost_is_unknown_counts_its_whole_cap(tmp_path: Path) -> None:
-    spec = StudySpec(study="s", cases=["drb2-task8"], arms=[{"name": "a"}], replicates=3, cap_usd=0.5,
+    spec = StudySpec(study="s", cases=["st05-scaling-table"], arms=[{"name": "a"}], replicates=3, cap_usd=0.5,
                      estimate_usd=0.2, ceiling_usd=1.2, grade=True, grade_estimate_usd=0.05, grade_cap_usd=0.1)
     seen: list[str] = []
     outcomes = run_study(spec, tmp_path, invoke=_costing([None, 0.30, 0.30], seen), grade=lambda *a: None,
@@ -257,7 +257,7 @@ def test_a_step_whose_cost_is_unknown_counts_its_whole_cap(tmp_path: Path) -> No
 
 
 def test_a_grade_and_audit_are_capped_by_what_the_ceiling_leaves(tmp_path: Path) -> None:
-    spec = StudySpec(study="s", cases=["drb2-task8"], arms=[{"name": "a"}], cap_usd=1, estimate_usd=0.5,
+    spec = StudySpec(study="s", cases=["st05-scaling-table"], arms=[{"name": "a"}], cap_usd=1, estimate_usd=0.5,
                      ceiling_usd=1, grade=True, grade_estimate_usd=0.1, grade_cap_usd=1, audit=True,
                      audit_estimate_usd=0.1, audit_cap_usd=1)
     caps: dict[str, float] = {}
@@ -363,9 +363,9 @@ def test_a_diagnosed_study_diagnoses_each_run_with_the_current_code_and_sums_the
 
     def invoke_output(args: list[str], env: dict[str, str]) -> tuple[int, str]:
         calls.append(args)
-        return 0, "00000000-run: diagnosed with m, 0 new grade(s) and 3 reused; $0.0000.\n\n## drb2-task8: tables\n"
+        return 0, "00000000-run: diagnosed with m, 0 new grade(s) and 3 reused; $0.0000.\n\n## st05-scaling-table: tables\n"
 
-    assert study_diagnosis(diagnosed, outcomes, invoke_output=invoke_output) == "## drb2-task8: tables\n"
+    assert study_diagnosis(diagnosed, outcomes, invoke_output=invoke_output) == "## st05-scaling-table: tables\n"
     assert calls == [["diagnose", "00000000-run", "00000001-run", "--model", "zai:glm-5.3@high", "--free"]]
     assert study_diagnosis(spec, outcomes, invoke_output=invoke_output) == ""  # a spec without diagnose
 

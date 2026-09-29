@@ -7,9 +7,7 @@ also grades two earlier views of a stored run:
   excerpts, conclusions, open items, and what the scouts could not establish.
 A point the report missed takes the earliest stage that met it (`STAGES`). A fixed-plan rescout writes no
 report, so only its claims and research are graded, and its points start at "claimed": this compares scout
-models on one plan without a synthesizer's variation. In the audit of drb2-task8 on
-28 September 2026, most missed points had reached the synthesizer only as quote text or open items, which
-no claim stated, and about six were never found at all.
+models on one plan without a synthesizer's variation.
 
 The free checks read only stored grades:
 - how often two judges disagree about one report, and on which points;

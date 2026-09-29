@@ -14,14 +14,14 @@ earlier arm does not spend first. The estimates only plan; the ceiling is enforc
 leaves room for its grade and audit by their estimates. What a step cost comes from its record; a step
 whose cost cannot be read, because it wrote no record or its output could not be parsed, counts its whole
 cap against the ceiling, since it may have spent it. It skips a run when what remains could not cover the
-run's estimates. At the end it prints and saves a table of status, answer support, cost, time, quote checks, support audits, coverage,
+run's estimates. At the end it prints and saves a table of status, answer support, cost, time, quote checks, support audits,
 and grades.
 
 A spec is TOML:
 
     study = "deep-vs-standard"      # the study label; also names its cache and output folder
     kind = "scout"                  # scout (frozen cases), rescout or synthesize (stored runs)
-    cases = ["drb2-task8"]          # for scout; `sources = [run IDs]` for rescout and synthesize
+    cases = ["st05"]                # for scout; `sources = [run IDs]` for rescout and synthesize
     replicates = 2
     cap_usd = 3.00                  # each run's hard cap (--max-usd), lowered to what remains of the ceiling
     estimate_usd = 0.45             # the most a comparable run has cost, for the ceiling check
@@ -71,7 +71,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .config import ModelCallLimits, ScoutModels, Settings
-from .coverage import EXPECTED, coverage
 
 REPO = Path(__file__).resolve().parents[2]
 # `research grade` ends its line with "... (0.385), $0.0403. Unmet: ...", so the cost stops at the digits.
@@ -705,8 +704,8 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
     """A Markdown table of every planned run, the ones not run included."""
     header = ("| Target | Arm | Rep | Run | Status | Answer | Cost | Time | Searches found / empty / failed · pages "
               "read / failed | Quotes verified / misattributed / not found (short) | Statements quoted / summary only "
-              "/ thin | Audit supported / partial / unsupported / no quote | Coverage found (named) | Grade |")
-    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "/ thin | Audit supported / partial / unsupported / no quote | Grade |")
+    lines = [f"# Study {spec.study}", "", header, "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for outcome in outcomes:
         record, run = outcome.record or {}, outcome.run
         checks = record.get("checks") or {}
@@ -716,10 +715,6 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
         support = [statement.get("support") for statement in checks.get("statements") or []]
         statements = (f"{support.count('read')} / {support.count('paraphrase')} / "
                       f"{len(support) - support.count('read') - support.count('paraphrase')}") if support else ""
-        cover = ""
-        if _case_id(record) in EXPECTED:
-            found = coverage(record)
-            cover = f"{len(found['found'])}/{found['expected']} ({len(found['named_only'])})"
         grade = outcome.grade
         cells = [run.target[:24], run.arm.name, str(run.replicate), str(record.get("run_id", ""))[:8],
                  str(record.get("status") or ("not run" if outcome.exit_code == -1 else f"exit {outcome.exit_code}")),
@@ -728,7 +723,7 @@ def summary(spec: StudySpec, outcomes: list[Outcome]) -> str:
                  f"{float(record['seconds']):.0f} s" if record.get("seconds") is not None else "",
                  _tools_cell(outcome.tools),
                  f"{verified} / {wrong} / {quotes - verified - wrong}{short}" if quotes else "",
-                 statements, _audit_cell(outcome.audit), cover, f"{grade['met']}/{grade['points']}" if grade else ""]
+                 statements, _audit_cell(outcome.audit), f"{grade['met']}/{grade['points']}" if grade else ""]
         lines.append("| " + " | ".join(cells) + " |")
     spent = sum(outcome.cost_usd for outcome in outcomes)
     unaccounted = sum((outcome.unaccounted_usd for outcome in outcomes), Decimal(0))

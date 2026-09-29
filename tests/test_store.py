@@ -191,7 +191,7 @@ def test_diagnose_grades_each_view_once_and_then_reuses_the_stored_grades(dsn: s
 
     with psycopg.connect(dsn, autocommit=True) as conn:
         apply_migrations(conn, migration_files())
-    case = find_case("drb2-task8")
+    case = find_case("st07")
     ledger = EvidenceLedger()
     ledger.add(ResearchResult(question_id="q1", question="Databases?", conclusion="c", confidence=0.9, claims=[
         Claim(id="c1", statement="Materials Project holds computed data", confidence=0.9, evidence=[
@@ -219,7 +219,7 @@ def test_diagnose_grades_each_view_once_and_then_reuses_the_stored_grades(dsn: s
         seen.append(view)
         met = {"report": {1}, "claims": {1, 2}, "research": {1, 2, 3}}[view]
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"verdicts": [
-            {"category": category, "point": p["point"], "met": category == "info_recall" and p["point"] in met}
+            {"category": category, "point": p["point"], "met": category == "information_recall" and p["point"] in met}
             for category, points in json.loads(messages[0].parts[-1].content)["rubric"].items() for p in points]})])
 
     monkeypatch.setattr("research_loop.evals.build_model", lambda *args, **kwargs: FunctionModel(respond))
@@ -230,9 +230,8 @@ def test_diagnose_grades_each_view_once_and_then_reuses_the_stored_grades(dsn: s
     out = capsys.readouterr().out
     assert done.value.code == 0 and seen == ["report", "claims", "research"]
     assert "3 new grade(s) and 0 reused" in out
-    # One point reported, one lost at synthesis, one seen but never claimed, 49 never found; and the missed
-    # Materials Project URL point is flagged, since the report gives the same site.
-    assert f"| {str(run_id)[:8]} | deep | 1 | 1 | 1 | 49 | 0 | 1 |" in out
+    # One point reported, one lost at synthesis, one seen but never claimed, and 6 of st07's 9 never found.
+    assert f"| {str(run_id)[:8]} | deep | 1 | 1 | 1 | 6 | 0 | 0 |" in out
 
     # Diagnosed again, with no budget at all, it reuses the report grade and both stage grades.
     with pytest.raises(SystemExit) as again:
