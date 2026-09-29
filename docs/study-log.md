@@ -44,6 +44,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-28 | [Case contamination audit (scout-v16)](#2026-09-28-case-contamination-audit-scout-v16) | $0.04 | drb2-task8's wording was in model-visible examples since v6 and v13; its absolute scores since v6 are suspect, comparisons within a study stand; held-out cases untouched |
 | 09-28 | [Scouts pay for their own searches (scout-v15)](#2026-09-28-scouts-pay-for-their-own-searches-scout-v15) | under $0.001 | A scout's share counts its paid searches and reads; productive calls become a loop guard at 128; replies may be 48,000 tokens; budgets loosened where the bottleneck check found them close |
 | 09-29 | [First live synthesis with Claude's citations (synthesis v5, test branch)](#2026-09-29-first-live-synthesis-with-claudes-citations-synthesis-v5-test-branch) | $0.03 | The citation path works end to end on the real API: a complete, supported st07 report with 21 citations, all mapped to their claims. A first attempt was refused before dispatch because the passages were stored twice; fixed |
+| 09-29 | [Smoke check of the synthesizer's fallback (synthesis v7, test branch)](#2026-09-29-smoke-check-of-the-synthesizers-fallback-synthesis-v7-test-branch) | $0.011 | Anthropic accepts Opus 5@medium as Opus 5.5's server-side fallback: the synthesizer's smoke call carried it and was answered |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -381,3 +382,9 @@ A functional check of the citations test branch (`claude/citations-synthesis`, s
 - **Claude followed the format.** It wrote all five tagged sections and cited inside them. Its reply came as 41 text blocks, 20 of them with 21 citations, and every citation mapped to its source and to the claims behind the cited blocks. The report lists 20 cited statements that use 17 of the 21 claims, all at support level `read`. There were no citation problems. 6 of the 14 answer sentences the check counts were uncited, mostly framing and concluding sentences.
 - **Two costs to watch.** PydanticAI's automatic prompt caching wrote the whole prompt to the cache at 1.25 times the input price, which pays only when a retry follows. And the guard's bound for a first request is about eight times the tokens this one used, so a synthesis at the default 32,000-token output cap needs a cap above $0.25 even on Haiku.
 
+## 2026-09-29 Smoke check of the synthesizer's fallback (synthesis v7, test branch)
+
+`research doctor --smoke` on commit `a3a95bf` (scout-v19, synthesis v7), which the user asked for while other paid work stays paused. It is a check that the configuration is accepted, not a quality measurement. Each call was capped at $0.05, so $0.20 at most.
+
+- **The synthesizer's call carried the fallback and was answered.** `anthropic:claude-opus-5-5@medium` was sent with `fallbacks: [{"model": "claude-opus-5", "output_config": {"effort": "medium"}}]` under the `server-side-fallback-2026-07-01` beta, and answered with a tool call for $0.0053. Anthropic rejects a request up front when a named fallback is not one of the requested model's permitted targets, so Opus 5 is a permitted fallback for Opus 5.5. No refusal occurred, so the handoff itself, its pricing, and the report built across it have been tested only offline.
+- **The other models answered too:** `openai:gpt-6-sol@high` for $0.0006, `openai:gpt-6-luna@high` for under $0.0001, and `anthropic:claude-opus-5@medium`, the fallback on its own, for $0.0054. Total about $0.011.
