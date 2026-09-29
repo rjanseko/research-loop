@@ -51,6 +51,7 @@ Run IDs are the first eight characters of the run's UUID unless given in full. C
 | 09-29 | [DeepSeek scouts against Luna, stopped partway (run 28 September)](#2026-09-29-deepseek-scouts-against-luna-stopped-partway-written-up-screen) | $3.22 recorded | 5 of 9 rescouts; Flash 3 points above Luna at 2.2 times the cost, V4 Pro 2 below at 5 times. Undecided; neither advances |
 | 09-29 | [The blocked review reached scouts under shortened titles (fetch version 19)](#2026-09-29-the-blocked-review-reached-scouts-under-shortened-titles-fetch-version-19) | free | Snippets of drb2-task8's expert report reached scouts in most runs of every study since fetch version 15, and two rescouts cited it; shortened titles, main titles, and printed DOIs are now blocked |
 | 09-29 | [DeepResearch Bench II removed](#2026-09-29-deepresearch-bench-ii-removed) | free | Its nine cases, importer, expected sets, and specs deleted; no development or held-out broad case until new ones are frozen |
+| 09-29 | [Stored page windows replayed through the passage splitter](#2026-09-29-stored-page-windows-replayed-through-the-passage-splitter-offline) | free | About 1,700 windows split with no invariant failures, about 20 passages per 10,000 characters; a run's full texts are a median 0.73 MB |
 
 ## 2026-09-28 Deep against standard on drb2-task8 (scout-v10, followup-v11)
 
@@ -464,3 +465,12 @@ Why:
 - Its 52-point rubric scores recall of one expert report's contents, and run-to-run and judge-to-judge variation exceeded every difference measured.
 
 The entries above keep their results as records of what was run. The cases, specs, and code are at the tag `archive/pre-passage-2026-09`, and the stored runs and grades stay in Postgres until the database is archived. `research grade` and `research diagnose` can no longer grade them from current code. The three held-out cases were never run. Their loss leaves no held-out set, so a new development set and a held-out set are to be frozen together ([roadmap](roadmap.md)). `SourcePolicy`, `--block`, `--block-title`, and fetch version 19's title matching stay, since users block sources too.
+
+## 2026-09-29 Stored page windows replayed through the passage splitter (offline)
+
+The first build step of the [passage-evidence plan](passage-evidence-plan.md) is the passage splitter (`passages.py`, splitter version 1). `scripts/passage_replay.py` ran every distinct page window scouts read in the newest 5,000 scout calls, about 1,700 windows, through it at no cost.
+
+- **No invariant failures** in any format: passages in order, trimmed, covering every non-whitespace character once, and within their size limits.
+- **About 20 to 25 passages per 10,000 characters** for HTML (trafilatura), PDF, Exa, and JSON text, with a median passage of 370 to 515 characters. Europe PMC's XML text, which has no line breaks, gives about 15 of about 720 characters, cut at sentence ends. A 40,000-character window so gains about 80 markers, around 1.5% more characters.
+- **PDF paragraphs.** Comparing a PDF line with the whole text's usual width broke two-column paragraphs mid-sentence. Comparing it with its neighbours joins them; a numbered heading joins the paragraph it introduces.
+- **Full texts are small.** From the document lengths fetches report, a run's full extracted texts come to a median of 0.73 MB, 1.60 MB at the 90th percentile, and 11.7 MB at most, over 142 runs: 127 MB in all before deduplication and compression. The plan's storage of full texts stands.

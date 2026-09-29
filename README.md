@@ -646,6 +646,7 @@ The tests never reach a model provider or the internet. `tests/conftest.py` refu
 | `tools.py`, `web.py`, `scholar.py`, `acquisition.py` | The research tools, web search (DuckDuckGo and Exa), page and PDF extraction, the public-HTTPS fetch guard, and the cache |
 | `reading.py` | The reading fallback: open-access copies, Exa's crawl, and Firecrawl, tried in order when our fetch fails |
 | `evidence.py`, `schemas.py` | The evidence ledger, the quote and source checks, the support levels, and the data types |
+| `passages.py` | The passage splitter for the evidence rebuild (docs/passage-evidence-plan.md); not yet used by a run |
 | `budget_notes.py` | The scouts' per-request budget notes, tool withdrawal, and tool-batch trimming |
 | `rate_limit.py`, `study_budget.py` | Rate-limit and network retries, pacing, and the hard-cap reservation guard |
 | `config.py`, `models.py`, `prices.py`, `prices.toml` | Settings, model construction, and price corrections |
@@ -662,6 +663,7 @@ In `scripts/`:
 - `rescore_quotes.py` re-checks every stored scout call's quotes under the current evidence rules;
 - `budget_bottlenecks.py` shows which limits stopped stored runs' calls and how much of each budget they used;
 - `blocked_exposure.py` lists what stored runs' tools showed that the current source policy blocks; run it before reading the results of runs that blocked sources;
+- `passage_replay.py` runs stored page windows through the passage splitter, checks its invariants, and estimates what storing full texts would take;
 - `search_replay.py` replays stored scout searches through each search engine;
 - `fetch_bakeoff.py` tries other ways to read the pages our fetcher failed on.
 
